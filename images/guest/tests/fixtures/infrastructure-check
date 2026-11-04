@@ -1,0 +1,152 @@
+#!/usr/bin/python3
+"""Fixed disposable reference check; never installed in factory output."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+sys.path.insert(0, '/opt/bridge/guest')
+import lifecycle
+
+
+def command(args, *, body=None):
+    result = subprocess.run(args, env=env, input=body, capture_output=True, timeout=180, check=True)
+    return result.stdout
+
+
+class HelmRefusal(ValueError):
+    pass
+
+
+def require_service_success(env):
+    result = subprocess.run(['systemctl', 'show', '--property=ActiveState,Result', 'bridge-infrastructure.service'], env=env, capture_output=True, timeout=20, check=True)
+    fields = dict(line.split('=', 1) for line in result.stdout.decode().splitlines())
+    assert fields.get('ActiveState') == 'active' and fields.get('Result') == 'success', 'infrastructure service did not succeed'
+
+
+def failed_helm_probe(args, env):
+    result = subprocess.run(args, env=env, capture_output=True, timeout=600, check=False)
+    reason = b'offline Orka release identity/status differs; refusing adoption, overwrite or partial retry'
+    assert result.returncode != 0 and reason in result.stdout + result.stderr, 'not the pinned kmx failed-release refusal'
+    raise HelmRefusal('verified pinned failed-release refusal')
+
+
+def refusal_phase(state):
+    phase = json.loads((state / 'bootstrap.json').read_bytes())['phase']
+    assert phase == 'cache-verified', 'refusal did not reach install'
+    return phase
+
+
+try:
+    state = Path('/var/lib/bridge')
+    seed = json.loads(Path('/run/bridge/reference.json').read_bytes())
+    installation = json.loads((state / 'identity.json').read_bytes())['installationId']
+    env = lifecycle.environment(state, installation)
+    if seed['caseId'] != 'interrupted':
+        require_service_success(env)
+    if seed['caseId'] == 'interrupted':
+        if seed['stateCreation'] == 'new':
+            original = lifecycle.execute
+            def interrupted(args, **kwargs):
+                value = original(args, **kwargs)
+                if 'ctr' in args and 'import' in args:
+                    raise RuntimeError('fixed import interruption')
+                return value
+            lifecycle.execute = interrupted
+            try:
+                lifecycle.bootstrap(lifecycle.load_lock(lifecycle.BUNDLE / 'inputs.json'), state)
+                raise AssertionError('interruption not exercised')
+            except RuntimeError:
+                pass
+            journal = json.loads((state / 'bootstrap.json').read_bytes())
+            assert journal['phase'] == 'cluster-ready' and len(journal['nodeIds']) == 1
+            print('BRIDGE_INFRA ' + json.dumps({'phase': journal['phase'], 'importInterrupted': True, 'nodeIds': journal['nodeIds']}), flush=True)
+            os.execv('/usr/lib/bridge/reference-check', ['reference-check'])
+        lifecycle.resume(lifecycle.load_lock(lifecycle.BUNDLE / 'inputs.json'), state)
+    journal = json.loads((state / 'bootstrap.json').read_bytes())
+    assert journal['phase'] == 'infrastructure-ready', journal['phase']
+    context = 'kind-' + env['KIND_CLUSTER']
+    kube = ['kubectl', '--context', context]
+    def get(*args):
+        return json.loads(command([*kube, *args, '-o', 'json']))
+    assert command([*kube, 'get', '--raw=/readyz']).strip() == b'ok'
+    assert get('get', 'providers.core.orka.ai', '-A')['items'] == []
+    secret = get('-n', 'orka-system', 'get', 'secret', 'orka-api-agent-execution-snapshot')
+    nodes = get('get', 'nodes')['items']
+    assert len(nodes) == 1
+    fingerprints = {'nodeUID': nodes[0]['metadata']['uid'], 'namespaceUID': get('get', 'namespace', 'orka-system')['metadata']['uid'],
+                    'snapshotUID': secret['metadata']['uid'], 'snapshotDataSha256': hashlib.sha256(json.dumps(secret['data'], sort_keys=True).encode()).hexdigest(),
+                    'nodeIds': journal['nodeIds']}
+    for path in ('/etc/kubernetes/pki/ca.crt', '/etc/kubernetes/pki/sa.pub', '/etc/kubernetes/pki/etcd/ca.crt'):
+        fingerprints[path] = command(['docker', 'exec', journal['nodeIds'][0], 'sha256sum', path]).decode().split()[0]
+    manifest = json.loads((lifecycle.BUNDLE / 'install.json').read_bytes())
+    deployments = get('-n', 'orka-system', 'get', 'deployments')['items']
+    arguments = [a for d in deployments for c in d['spec']['template']['spec']['containers'] for a in c.get('args', [])]
+    for component, flag in (('ai-worker', '--ai-worker-image'), ('general-worker', '--general-worker-image'), ('session-loader', '--session-loader-image')):
+        row = next(r for r in manifest['images'] if r['component'] == component)
+        values = [a.split('=', 1)[1] for a in arguments if a.startswith(flag + '=')]
+        if not values:
+            values = [arguments[i + 1] for i, a in enumerate(arguments[:-1]) if a == flag]
+        assert values == [row['repository'] + '@' + row['manifestDigest']], flag
+    result = {'schemaVersion': 'bridge-infrastructure-test/v1', 'phase': journal['phase'], 'noProvider': True, 'fingerprints': fingerprints, 'workerFlagsVerified': True}
+    prior = Path('/dev/disk/by-id/virtio-bridge-prior')
+    if prior.exists():
+        mount = Path('/run/bridge/prior')
+        mount.mkdir()
+        command(['mount', '-o', 'ro,noload', str(prior), str(mount)])
+        a = json.loads(command(['kubectl', '--kubeconfig', str(mount / 'kubeconfig'), 'config', 'view', '--raw', '-o', 'json']))
+        b = json.loads(command([*kube, 'config', 'view', '--raw', '-o', 'json']))
+        b['users'] = a['users']
+        for entry in b['contexts']:
+            entry['context']['user'] = a['users'][0]['name']
+        transient = Path('/run/bridge/credentials/cross-auth.json')
+        transient.write_text(json.dumps(b))
+        transient.chmod(0o600)
+        p = subprocess.run(['kubectl', '--kubeconfig', str(transient), '--context', context, 'get', 'nodes', '--request-timeout=15s'], env=env, capture_output=True, timeout=30)
+        assert p.returncode != 0 and any(s in p.stderr.lower() for s in (b'unauthorized', b'forbidden', b'bad certificate', b'certificate required')), 'not an attributable auth refusal'
+        transient.unlink()
+        command(['umount', str(mount)])
+        result['priorCredentialsRejectedOnReachableTarget'] = True
+    if seed['caseId'] == 'interrupted':
+        import base64
+        import gzip
+        releases = get('-n', 'orka-system', 'get', 'secrets', '-l', 'owner=helm')['items']
+        assert len(releases) == 1
+        release = releases[0]
+        data = json.loads(gzip.decompress(base64.b64decode(base64.b64decode(release['data']['release']))))
+        data['info']['status'] = 'failed'
+        release['data']['release'] = base64.b64encode(base64.b64encode(gzip.compress(json.dumps(data).encode()))).decode()
+        release['metadata']['labels']['status'] = 'failed'
+        command([*kube, '-n', 'orka-system', 'replace', '-f', '-'], body=json.dumps(release).encode())
+        original = lifecycle.execute
+        install_args = ['kmx', '--context', context, 'cluster', 'orka', 'install', '--provider', '-', '--offline-bundle', str(lifecycle.BUNDLE)]
+        def verify_refusal(args, **kwargs):
+            if args == install_args:
+                return failed_helm_probe(args, kwargs['env'])
+            return original(args, **kwargs)
+        lifecycle.execute = verify_refusal
+        try:
+            lifecycle.resume(lifecycle.load_lock(lifecycle.BUNDLE / 'inputs.json'), state)
+            raise AssertionError('failed Helm release was accepted')
+        except HelmRefusal:
+            phase = refusal_phase(state)
+        finally:
+            lifecycle.execute = original
+        after = get('-n', 'orka-system', 'get', 'secret', 'orka-api-agent-execution-snapshot')
+        assert after['metadata']['uid'] == fingerprints['snapshotUID'] and hashlib.sha256(json.dumps(after['data'], sort_keys=True).encode()).hexdigest() == fingerprints['snapshotDataSha256']
+        result.update(phase=phase, partialInstallRefused=True, identityPreserved=True)
+    if seed['caseId'] == 'offline-tasks':
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('task_check', '/usr/lib/bridge/task-check.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        command(['mount', '-t', 'iso9660', '-o', 'ro', '/dev/disk/by-id/virtio-bridge-test', '/run/bridge-seed'])
+        result['tasks'] = module.run(env, context, journal['nodeIds'][0], Path('/run/bridge-seed/fixture.tar'), seed['fixtureSha256'], lifecycle.BUNDLE)
+    print('BRIDGE_INFRA ' + json.dumps(result), flush=True)
+    os.execv('/usr/lib/bridge/reference-check', ['reference-check'])
+except Exception as error:
+    print('BRIDGE_INFRA_ERROR ' + type(error).__name__ + ' ' + str(error), flush=True)
+    subprocess.run(['systemctl', 'poweroff'], check=False)
+    sys.exit(1)

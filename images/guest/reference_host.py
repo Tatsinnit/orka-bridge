@@ -61,8 +61,8 @@ def wait_for_verifier(root, process, stop, deadline):
         stop.wait(0.05)
 
 
-def control_worker(root, boot, process, stop, frames, errors):
-    deadline = time.monotonic() + 180
+def control_worker(root, boot, process, stop, frames, errors, timeout=180):
+    deadline = time.monotonic() + timeout
     try:
         with socket.socket(socket.AF_UNIX) as channel:
             while True:

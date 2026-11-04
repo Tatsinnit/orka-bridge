@@ -45,6 +45,22 @@ class BuildTests(unittest.TestCase):
         self.assertTrue((root / "var/lib/bridge").is_dir())
         self.assertEqual([], list((root / "var/lib/bridge").iterdir()))
 
+    def test_native_payload_installs_only_runtime_modules_and_native_archives(self):
+        from .test_offline import native_inputs
+        from .test_runtime import runtime_inputs
+        value, _ = native_inputs(self.root)
+        runtime_inputs(self.root, value)
+        self.api.stage_rootfs(value, source=self.root, out=self.root / 'native')
+        root = self.root / 'native'
+        self.assertTrue((root / 'opt/bridge/guest/lifecycle.py').is_file())
+        self.assertTrue((root / 'opt/bridge/bundle/install.json').is_file())
+        self.assertTrue((root / 'usr/local/bin/kmx').is_symlink())
+        self.assertTrue((root / 'etc/systemd/system/multi-user.target.wants/bridge-infrastructure.service').is_symlink())
+        for name in ('boot_test.py', 'test_seed.py', 'reference_host.py'):
+            self.assertFalse((root / 'opt/bridge/guest' / name).exists())
+        self.assertFalse((root / 'opt/bridge/bundle/components/telegram.oci.tar').exists())
+        self.assertEqual([], list((root / 'var/lib/bridge').iterdir()))
+
     def test_archive_has_guest_root_ownership_not_builder_ownership(self):
         import tarfile
         self.assertTrue(callable(getattr(self.api, "rootfs_archive", None)), "normalized rootfs archive missing")

@@ -195,7 +195,8 @@ OVMF 4M firmware and variable template. It uses 4 vCPU and 6 GiB RAM. Keep the
 runner isolated from external networking; user networking is also restricted.
 It neither invokes native app backends nor publishes anything.
 
-The runner copies the unbooted factory OS and instruments only that private copy.
+The runner creates a private QCOW2 overlay over the immutable unbooted factory OS
+and instruments only that overlay; the factory remains standalone.
 A separate read-only seed uses `bridge-guest-test/v1` with case, installation UUID,
 explicit `new` or `existing` authority and the state serial. Only the runner's
 exclusively created empty state receives `new`. No arbitrary commands are accepted.
@@ -216,7 +217,100 @@ the latter two may change logical state contents. Logs and failed private disks 
 `boot.json` follows `qualification.schema.json`. It records the actual backend,
 inputs, firmware, instrumentation and seed hashes, per-case disk bytes and elapsed
 VM launch-to-poweroff time. That time is not cluster readiness or first Task time.
-The OS check covers only selected OS inputs: application archives are neither
-installed nor verified by this step. Source-fixture metadata cannot qualify Orka.
-Offline cluster setup, native platform boots and a real model Task remain later
-work. Both build and boot results keep `publicationReady: false`.
+The base case alone does not qualify application caches or Orka. Without the
+native offline inputs below, OS assembly stages no application archives.
+Source-fixture metadata cannot qualify Orka. Native platform boots and real-model
+quality remain separate work. Every build and boot keeps `publicationReady: false`.
+
+## Native offline infrastructure
+
+To enable the native six-role profile, select additional hash-locked tools `kmx`,
+`helm`, `kubectl`, `kmx-offline-manifest` and `orka-images`. The manifest is the
+original supported `kmx-offline/v1` install.json, selected by hash, not another
+Bridge schema. Its source, platform, complete profile, chart, descriptor, tool and
+six image identities must agree with the input lock. Source qualification uses
+kmx 4844d8dbead61bd70331f52b17ab25afb7d7a463 and Orka 59703d6e; it does not approve
+a production release. Missing tools or references fail rather than download.
+
+Assembly normalizes the six OCI archive references with the existing collector,
+retaining original manifest/config/layer bytes. The node additionally becomes a
+Docker-save archive, with original config and verified uncompressed layer diffIDs,
+for Docker's classic outer store. The factory contains only the native node,
+controller, AI worker, general-worker, publisher and session-loader payloads.
+Future Vekil/adapter declarations are not shipped or qualified. Test archives,
+model fixtures and initialized clusters are not part of the factory.
+
+After validated state and both daemons, bridge-infrastructure.service runs the
+stdlib-only lifecycle. It uses kmx exclusively for cluster creation and Orka
+installation: `cluster up --step cluster --offline-bundle` and
+`cluster orka install --provider - --offline-bundle`. There is no Helm/CRD shadow
+installer. Cluster/context are installation-specific; kubeconfig and kmx state
+live on the state disk. The minimal child environment contains no inherited
+provider credentials. The lifecycle imports application OCI archives into the
+owned node's k8s.io store and requires exact CRI references/config IDs before kmx
+can install. API, CoreDNS, kmx rollout and PVC checks precede infrastructure-ready.
+This marker is not authority: every resume rechecks ownership, caches and kmx.
+
+The fsynced journal records identity-prepared, cluster-ready, cache-verified,
+orka-ready and infrastructure-ready observations. A nonblocking per-state lock
+serializes operations. Resume may start only exact journaled Docker IDs with the
+selected node config and cluster label. Missing/replaced nodes, unjournaled nodes
+and uncertain creation are retained and refused. A durable creation intent covers
+the window before node IDs are journaled. Imports may safely repeat; failed or
+pending Helm effects are left to kmx's refusal semantics, never forced or reset.
+
+## Fixed infrastructure and Task reference cases
+
+Run in the same externally isolated Linux KVM builder as the base proof:
+
+```sh
+python3 images/guest/boot_test.py --case infrastructure \
+  --image /build/new-os/os.qcow2 --lock /build/inputs/inputs.json \
+  --out /build/infrastructure-proof
+python3 images/guest/boot_test.py --case restart \
+  --image /build/new-os/os.qcow2 --lock /build/inputs/inputs.json \
+  --out /build/restart-proof
+python3 images/guest/boot_test.py --case interrupted \
+  --image /build/new-os/os.qcow2 --lock /build/inputs/inputs.json \
+  --out /build/interrupted-proof
+python3 images/guest/tests/make_fixture.py --out /build/test-fixture
+python3 images/guest/boot_test.py --case offline-tasks \
+  --image /build/new-os/os.qcow2 --lock /build/inputs/inputs.json \
+  --fixture /build/test-fixture/fixture.tar --out /build/task-proof
+```
+
+The fixture builder needs Go 1.26.2 and Git on the builder, not in the guest product.
+It creates a separate digest-bound static deterministic Responses server and bare
+local Git repository; the seed accepts no arbitrary command. Fixture state and
+resources are exclusive to the disposable test cluster, with an explicit fixture
+ServiceAccount. No real model credentials or external Git service are required.
+
+Infrastructure checks real rendered worker/session-loader image arguments and no
+initial Provider. It also boots a distinct new state B, attaches stopped A read-only,
+and tries A's client identity against B with B's server/CA. B must first be reachable
+with its own identity, then reject A for an attributable authorization/TLS reason.
+Transient test credentials stay in private tmpfs, not the seed, manifest, argv or log.
+Restart uses the same stopped state and EFI across an OS-only replacement and checks
+node, namespace, snapshot secret/data, cluster CA, service-account key and etcd CA
+fingerprints. These are identity checks, not a full etcd durability certification.
+Interrupted setup stops after a real first import, cold-resumes the journal, then
+injects a failed Helm release status into the owned test target. kmx must refuse it
+without replacing the snapshot identity. The failed target remains failed; this is
+not a claim that arbitrary partial installs are automatically repairable.
+
+Offline Tasks require successful standalone and session-bound native AI Tasks,
+a completed fetch-session init, and local-Git prepare-workspace using general-worker.
+Evidence follows Task→Job→Pod UIDs and actual successful imageIDs, not only declared
+images. It establishes deterministic fixture execution, not real-model quality.
+Native cases retain NIC captures, zero observed external IPv4 TCP and DNS query names,
+with the IPv4 counter excluding only traffic addressed back to the guest, not LAN
+or other private destinations. IPv6 and VLAN traffic are not decoded by this counter;
+with restricted QEMU user networking. Keep the builder externally isolated too.
+
+Optional `--from-receipt /build/prior/boot.json` reuses that receipt's stopped `new`
+state and EFI; selected software and disk contracts must match. The interrupted
+case rejects this option before creating output or starting a VM. It is an explicit
+owned-test capability, not a production migration path. It can mutate the prior
+private test state. Never run it against a running or shared disk. All failure
+artifacts are retained; choose a fresh output and never silently reset an ambiguous
+target. Native-case timings are launch-to-poweroff, not isolated first-Task latency.

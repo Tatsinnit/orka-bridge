@@ -1,0 +1,16 @@
+[Unit]
+Description=Bridge offline infrastructure
+Requires=bridge-state.service docker.service containerd.service
+After=bridge-state.service docker.service containerd.service bridge-guest.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/lib/bridge/check-state
+ExecStart=/usr/bin/python3 /opt/bridge/guest/lifecycle.py bootstrap --lock /opt/bridge/bundle/inputs.json --state /var/lib/bridge
+RemainAfterExit=yes
+TimeoutStartSec=900
+UMask=0077
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

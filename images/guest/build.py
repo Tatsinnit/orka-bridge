@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING
 
 if __package__ or TYPE_CHECKING:
     from .lock import checked_file, file_hash, load_lock, require, validate_lock
+    from .offline import stage_bundle
 else:
     from lock import checked_file, file_hash, load_lock, require, validate_lock
+    from offline import stage_bundle
 
 OS_BYTES, STATE_BYTES = 16 * 1024**3, 32 * 1024**3
 ROOTFS_FILES = {
@@ -100,6 +102,23 @@ def stage_rootfs(lock, *, source, out):
     enabled = out / "etc/systemd/system/multi-user.target.wants"
     enabled.mkdir(parents=True)
     (enabled / "bridge-guest.service").symlink_to("../bridge-guest.service")
+    if any(t['name'] == 'kmx-offline-manifest' for t in lock['tools']):
+        bundle = out / 'opt/bridge/bundle'
+        hashes.update({'/opt/bridge/bundle/' + name: digest for name, digest in stage_bundle(lock, source=source, out=bundle).items()})
+        modules = out / 'opt/bridge/guest'
+        modules.mkdir(parents=True)
+        for name in ('lifecycle.py', 'lock.py', 'cache.py', 'versions.json'):
+            target = modules / name
+            shutil.copyfile(Path(__file__).with_name(name), target)
+            target.chmod(0o644)
+            hashes['/opt/bridge/guest/' + name] = file_hash(target)
+        for name in ('kmx', 'kubectl', 'helm'):
+            (out / 'usr/local/bin' / name).symlink_to('/opt/bridge/bundle/tools/' + name)
+        unit = out / 'etc/systemd/system/bridge-infrastructure.service'
+        shutil.copyfile(Path(__file__).with_name('rootfs') / unit.name, unit)
+        unit.chmod(0o644)
+        hashes['/etc/systemd/system/' + unit.name] = file_hash(unit)
+        (enabled / unit.name).symlink_to('../' + unit.name)
     return {"rootfsStaged": True, "diskBuilt": False, "bootVerified": False, "publicationReady": False, "files": hashes}
 
 
@@ -233,7 +252,7 @@ def build(lock, out, *, source):
     snapshot.unlink()
     result = {"schemaVersion": "bridge-guest-build/v1", "architecture": lock["architecture"], "contract": inputs["contract"],
               "inputSha256": hashlib.sha256(encoded(lock)).hexdigest(), "builderTools": builder_tools, "runtime": inputs["runtime"],
-              "recipeFiles": {"build.py": file_hash(Path(__file__)), "lock.py": file_hash(Path(__file__).with_name("lock.py")), **overlay["files"]},
+              "recipeFiles": {"build.py": file_hash(Path(__file__)), "offline.py": file_hash(Path(__file__).with_name('offline.py')), "lock.py": file_hash(Path(__file__).with_name("lock.py")), **overlay["files"]},
               "payload": payload.name, "sha256": file_hash(payload), "fileBytes": payload.stat().st_size,
               "allocatedBytes": payload.stat().st_blocks * 512, "componentCacheVerified": False, "bootVerified": False, "publicationReady": False}
     pending = out / "build.json.partial"

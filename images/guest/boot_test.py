@@ -60,21 +60,29 @@ def parse_result(serial, installation_id):
     return result
 
 
-def instrument(image):
+def instrument(image, case_name='base'):
     commands = []
     for name, target in (("reference-seed", "/etc/initramfs-tools/scripts/local-bottom/00-bridge-test"),
                          ("reference-check", "/usr/lib/bridge/reference-check"),
                          ("reference-check.service", "/etc/systemd/system/reference-check.service")):
         commands += ["--upload", str(FIXTURES / name) + ":" + target]
+    if case_name != 'base':
+        for name, target in (('infrastructure-check', '/usr/lib/bridge/infrastructure-check'), ('infrastructure-check.service', '/etc/systemd/system/reference-check.service')):
+            commands += ['--upload', str(FIXTURES / name) + ':' + target]
+    if case_name == 'offline-tasks':
+        commands += ['--upload', str(FIXTURES / 'task-check.py') + ':/usr/lib/bridge/task-check.py']
+    extra = 'chmod 755 /usr/lib/bridge/infrastructure-check; ' if case_name != 'base' else ''
+    if case_name in ('base', 'interrupted'):
+        extra += 'ln -sf /dev/null /etc/systemd/system/bridge-infrastructure.service; '
     run(["virt-customize", "--no-network", "-a", image, *commands, "--run-command",
-         "chmod 755 /etc/initramfs-tools/scripts/local-bottom/00-bridge-test /usr/lib/bridge/reference-check; chmod 644 /etc/systemd/system/reference-check.service; systemctl enable reference-check.service; update-initramfs -u -k all"])
+         extra + "chmod 755 /etc/initramfs-tools/scripts/local-bottom/00-bridge-test /usr/lib/bridge/reference-check; chmod 644 /etc/systemd/system/reference-check.service; systemctl enable reference-check.service; update-initramfs -u -k all"])
 
 
-def boot_case(factory, root, installation_id, mode, state=None, missing=False, copy_state=False):
+def boot_case(factory, root, installation_id, mode, state=None, missing=False, copy_state=False, *, case_name='base', fixture=None, prior=None):
     require(mode != "new" or state is None and not missing, "new authority requires exclusive state creation")
     root.mkdir()
-    run(["qemu-img", "convert", "-O", "qcow2", factory, root / "os.qcow2"])
-    instrument(root / "os.qcow2")
+    run(['qemu-img', 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', factory.resolve(), root / 'os.qcow2'])
+    instrument(root / "os.qcow2", case_name)
     if state is None and not missing:
         run(["qemu-img", "create", "-f", "qcow2", root / "state.qcow2", str(STATE_BYTES)])
     elif state is not None:
@@ -83,24 +91,36 @@ def boot_case(factory, root, installation_id, mode, state=None, missing=False, c
         else:
             # Same stopped state inode across OS replacement, not a restored copy.
             (root / "state.qcow2").symlink_to(state.resolve())
-    seed = write_seed(root / "seed.iso", installation_id, mode)
+    seed = write_seed(root / "seed.iso", installation_id, mode, case_name=case_name, fixture=fixture)
     efi_source = state.parent / "efi.fd" if state is not None else FIRMWARE / "OVMF_VARS_4M.fd"
     if state is not None and not copy_state:
         (root / "efi.fd").symlink_to(efi_source.resolve())
     else:
         shutil.copyfile(efi_source, root / "efi.fd")
+    hooks = ['reference-seed', 'reference-check', 'reference-check.service']
+    if case_name != 'base':
+        hooks += ['infrastructure-check', 'infrastructure-check.service']
+    if case_name == 'offline-tasks':
+        hooks += ['task-check.py']
     before = {"baseSha256": file_hash(factory), "instrumentedSha256": file_hash(root / "os.qcow2"),
               "seedSha256": file_hash(root / "seed.iso"), "seed": seed, "efiBeforeSha256": file_hash(root / "efi.fd"),
-              "testHookSha256": {p: file_hash(FIXTURES / p) for p in ("reference-seed", "reference-check", "reference-check.service")}}
+              "testHookSha256": {p: file_hash(FIXTURES / p) for p in hooks},
+              'runnerSha256': {p: file_hash(Path(__file__).with_name(p)) for p in ('boot_test.py', 'reference_host.py', 'test_seed.py')}}
     start = time.monotonic()
     boot = {"installationId": installation_id, "generation": 1, "bootNonce": str(uuid.uuid4()), "stateCreation": mode,
             "stateFsUuid": installation_id, "stateBytes": STATE_BYTES, "hostUtc": int(time.time())}
     frames, errors, stop = [], [], threading.Event()
-    with (root / "qemu.log").open("w") as log, subprocess.Popen(qemu_argv(root, installation_id, not missing), stdout=log, stderr=log) as process:
-        worker = threading.Thread(target=control_worker, args=(root, boot, process, stop, frames, errors), daemon=True)
+    timeout = 180 if case_name == 'base' else 900
+    argv = qemu_argv(root, installation_id, not missing)
+    if case_name != 'base':
+        argv += ['-object', 'filter-dump,id=trace,netdev=net,file=' + option_path(root / 'network.pcap')]
+    if prior is not None:
+        argv += ['-drive', 'if=none,id=prior,format=qcow2,readonly=on,file=' + option_path(prior.resolve()), '-device', 'virtio-blk-pci,drive=prior,serial=bridge-prior']
+    with (root / "qemu.log").open("w") as log, subprocess.Popen(argv, stdout=log, stderr=log) as process:
+        worker = threading.Thread(target=control_worker, args=(root, boot, process, stop, frames, errors, timeout), daemon=True)
         worker.start()
         try:
-            require(process.wait(timeout=180) == 0, "QEMU reference VM failed")
+            require(process.wait(timeout=timeout) == 0, "QEMU reference VM failed")
         finally:
             if process.poll() is None:
                 process.kill()
@@ -168,13 +188,22 @@ def base(image, lock_path, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--case", choices=["base"], required=True)
+    parser.add_argument("--case", choices=['base', 'infrastructure', 'offline-tasks', 'restart', 'interrupted'], required=True)
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--lock", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument('--fixture', type=Path)
+    parser.add_argument('--from-receipt', type=Path)
     args = parser.parse_args()
     try:
-        base(args.image.resolve(), args.lock.resolve(), args.out.absolute())
+        if args.case == 'base':
+            base(args.image.resolve(), args.lock.resolve(), args.out.absolute())
+        else:
+            if __package__ or TYPE_CHECKING:
+                from .infrastructure_test import infrastructure
+            else:
+                from infrastructure_test import infrastructure
+            infrastructure(args.image.resolve(), args.lock.resolve(), args.out.absolute(), args.case, args.fixture, args.from_receipt)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         print("guest base: " + str(error) + "\n" + (getattr(error, "stderr", "") or ""), file=sys.stderr)
         return 2

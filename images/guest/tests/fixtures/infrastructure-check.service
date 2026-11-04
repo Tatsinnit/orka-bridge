@@ -1,0 +1,15 @@
+[Unit]
+Description=Disposable infrastructure reference check
+Requires=docker.service containerd.service bridge-guest.service
+Wants=bridge-infrastructure.service
+After=docker.service containerd.service bridge-guest.service bridge-infrastructure.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/bridge/infrastructure-check
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+
+[Install]
+WantedBy=multi-user.target

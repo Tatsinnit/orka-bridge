@@ -1,32 +1,283 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Reference base boot evidence, not release approval",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schemaVersion", "case", "backend", "qualificationOnly", "publicationReady", "build", "new", "replacement", "missing", "mismatch", "blank", "blankExistingRefusedWithoutMutation", "missingStateRefused", "uuidMismatchRefusedWithoutMutation", "firmware", "qemuVersion", "machine"],
-  "properties": {
-    "schemaVersion": {"const": "bridge-guest-boot/v1"},
-    "case": {"const": "base"},
-    "backend": {"const": "qemu-kvm"},
-    "qualificationOnly": {"const": true},
-    "publicationReady": {"const": false},
-    "build": {"type": "object", "required": ["sha256", "inputSha256", "recipeFiles", "builderTools", "contract", "publicationReady"], "properties": {"publicationReady": {"const": false}}},
-    "new": {"$ref": "#/$defs/boot"},
-    "replacement": {"$ref": "#/$defs/boot"},
-    "missing": {"$ref": "#/$defs/negative"},
-    "mismatch": {"$ref": "#/$defs/negative"},
-    "blank": {"$ref": "#/$defs/negative"},
-    "blankExistingRefusedWithoutMutation": {"const": true},
-    "missingStateRefused": {"const": true},
-    "uuidMismatchRefusedWithoutMutation": {"const": true},
-    "firmware": {"type": "object", "minProperties": 2, "additionalProperties": {"$ref": "#/$defs/hash"}},
-    "qemuVersion": {"type": "string", "minLength": 1},
-    "machine": {"type": "string", "minLength": 1}
-  },
+  "title": "Private Linux guest reference evidence",
+  "oneOf": [{"$ref":"#/$defs/base"},{"$ref":"#/$defs/infrastructure"}],
   "$defs": {
-    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "negative": {"type": "object", "required": ["baseSha256", "instrumentedSha256", "seedSha256", "testHookSha256", "efiBeforeSha256", "seed", "elapsedSeconds", "diskBytes"], "properties": {"baseSha256": {"$ref": "#/$defs/hash"}, "instrumentedSha256": {"$ref": "#/$defs/hash"}, "seedSha256": {"$ref": "#/$defs/hash"}, "elapsedSeconds": {"type": "number", "minimum": 0}, "seed": {"$ref": "#/$defs/seed"}}},
-    "boot": {"allOf": [{"$ref": "#/$defs/negative"}, {"type": "object", "required": ["result"], "properties": {"result": {"type": "object", "required": ["schemaVersion", "installationId", "stateUuid", "machineId", "sentinel", "stateBeforeDaemons", "machineIdBeforeSystemd", "credentialsType", "dockerRoot", "containerdRoot", "controlPort"], "properties": {"schemaVersion": {"const": "bridge-guest-base/v1"}, "machineId": {"type": "string", "pattern": "^[0-9a-f]{32}$"}, "sentinel": {"const": true}, "stateBeforeDaemons": {"const": true}, "machineIdBeforeSystemd": {"const": true}, "credentialsType": {"const": "tmpfs"}, "controlPort": {"const": true}}}}}]},
-    "seed": {"type": "object", "additionalProperties": false, "required": ["schemaVersion", "caseId", "installationId", "stateCreation", "stateSerial"], "properties": {"schemaVersion": {"const": "bridge-guest-test/v1"}, "caseId": {"const": "base"}, "installationId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}, "stateCreation": {"enum": ["new", "existing"]}, "stateSerial": {"const": "bridge-state"}}}
+    "hash": {"type":"string","pattern":"^[0-9a-f]{64}$"},
+    "negative": {
+      "type": "object",
+      "required": [
+        "baseSha256",
+        "instrumentedSha256",
+        "seedSha256",
+        "testHookSha256",
+        "efiBeforeSha256",
+        "seed",
+        "elapsedSeconds",
+        "diskBytes"
+      ],
+      "properties": {
+        "baseSha256": {"$ref":"#/$defs/hash"},
+        "instrumentedSha256": {"$ref":"#/$defs/hash"},
+        "seedSha256": {"$ref":"#/$defs/hash"},
+        "elapsedSeconds": {"type":"number","minimum":0},
+        "seed": {"$ref":"#/$defs/seed"}
+      }
+    },
+    "boot": {
+      "allOf": [
+        {"$ref":"#/$defs/negative"},
+        {
+          "type": "object",
+          "required": ["result"],
+          "properties": {
+            "result": {
+              "type": "object",
+              "required": [
+                "schemaVersion",
+                "installationId",
+                "stateUuid",
+                "machineId",
+                "sentinel",
+                "stateBeforeDaemons",
+                "machineIdBeforeSystemd",
+                "credentialsType",
+                "dockerRoot",
+                "containerdRoot",
+                "controlPort"
+              ],
+              "properties": {
+                "schemaVersion": {"const":"bridge-guest-base/v1"},
+                "machineId": {"type":"string","pattern":"^[0-9a-f]{32}$"},
+                "sentinel": {"const":true},
+                "stateBeforeDaemons": {"const":true},
+                "machineIdBeforeSystemd": {"const":true},
+                "credentialsType": {"const":"tmpfs"},
+                "controlPort": {"const":true}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "seed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion","caseId","installationId","stateCreation","stateSerial"],
+      "properties": {
+        "schemaVersion": {"const":"bridge-guest-test/v1"},
+        "caseId": {"enum":["base","infrastructure","offline-tasks","restart","interrupted"]},
+        "installationId": {"type":"string","pattern":"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+        "stateCreation": {"enum":["new","existing"]},
+        "stateSerial": {"const":"bridge-state"},
+        "fixtureSha256": {"$ref":"#/$defs/hash"}
+      }
+    },
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "case",
+        "backend",
+        "qualificationOnly",
+        "publicationReady",
+        "build",
+        "new",
+        "replacement",
+        "missing",
+        "mismatch",
+        "blank",
+        "blankExistingRefusedWithoutMutation",
+        "missingStateRefused",
+        "uuidMismatchRefusedWithoutMutation",
+        "firmware",
+        "qemuVersion",
+        "machine"
+      ],
+      "properties": {
+        "schemaVersion": {"const":"bridge-guest-boot/v1"},
+        "case": {"const":"base"},
+        "backend": {"const":"qemu-kvm"},
+        "qualificationOnly": {"const":true},
+        "publicationReady": {"const":false},
+        "build": {
+          "type": "object",
+          "required": ["sha256","inputSha256","recipeFiles","builderTools","contract","publicationReady"],
+          "properties": {"publicationReady":{"const":false}}
+        },
+        "new": {"$ref":"#/$defs/boot"},
+        "replacement": {"$ref":"#/$defs/boot"},
+        "missing": {"$ref":"#/$defs/negative"},
+        "mismatch": {"$ref":"#/$defs/negative"},
+        "blank": {"$ref":"#/$defs/negative"},
+        "blankExistingRefusedWithoutMutation": {"const":true},
+        "missingStateRefused": {"const":true},
+        "uuidMismatchRefusedWithoutMutation": {"const":true},
+        "firmware": {"type":"object","minProperties":2,"additionalProperties":{"$ref":"#/$defs/hash"}},
+        "qemuVersion": {"type":"string","minLength":1},
+        "machine": {"type":"string","minLength":1}
+      }
+    },
+    "nativeBoot": {
+      "allOf": [
+        {"$ref":"#/$defs/negative"},
+        {
+          "type": "object",
+          "required": ["baseResult","result","network","runtimeFrames"],
+          "properties": {
+            "baseResult": {
+              "type": "object",
+              "required": [
+                "schemaVersion",
+                "installationId",
+                "stateUuid",
+                "machineId",
+                "sentinel",
+                "stateBeforeDaemons",
+                "machineIdBeforeSystemd",
+                "credentialsType",
+                "dockerRoot",
+                "containerdRoot",
+                "controlPort"
+              ],
+              "properties": {
+                "schemaVersion": {"const":"bridge-guest-base/v1"},
+                "machineId": {"type":"string","pattern":"^[0-9a-f]{32}$"},
+                "sentinel": {"const":true},
+                "stateBeforeDaemons": {"const":true},
+                "machineIdBeforeSystemd": {"const":true},
+                "credentialsType": {"const":"tmpfs"},
+                "controlPort": {"const":true}
+              }
+            },
+            "result": {
+              "type": "object",
+              "required": ["phase"],
+              "properties": {"phase":{"enum":["cluster-ready","cache-verified","infrastructure-ready"]}}
+            },
+            "network": {
+              "type": "object",
+              "required": ["captureSha256","dnsQueries","qemuRestrictedUserNet"],
+              "oneOf": [{"required":["externalIpv4TcpPackets"]},{"required":["externalTcpPackets"]}],
+              "properties": {
+                "captureSha256": {"$ref":"#/$defs/hash"},
+                "externalTcpPackets": {"const":0,"description":"Legacy IPv4-only count"},
+                "externalIpv4TcpPackets": {"const":0},
+                "dnsQueries": {"type":"array","maxItems":0},
+                "qemuRestrictedUserNet": {"const":true}
+              }
+            },
+            "runtimeFrames": {"type":"array","minItems":6,"maxItems":6}
+          }
+        }
+      ]
+    },
+    "infrastructure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion","case","backend","publicationReady","build","new"],
+      "properties": {
+        "schemaVersion": {"const":"bridge-guest-infrastructure/v1"},
+        "case": {"enum":["infrastructure","offline-tasks","restart","interrupted"]},
+        "backend": {"const":"qemu-kvm"},
+        "publicationReady": {"const":false},
+        "build": {
+          "type": "object",
+          "required": ["sha256","inputSha256","recipeFiles","builderTools","contract","publicationReady"],
+          "properties": {"publicationReady":{"const":false}}
+        },
+        "new": {"$ref":"#/$defs/nativeBoot"},
+        "second": {"$ref":"#/$defs/nativeBoot"}
+      },
+      "allOf": [
+        {
+          "if": {"properties":{"case":{"enum":["infrastructure","restart","interrupted"]}}},
+          "then": {"required":["second"]}
+        },
+        {
+          "if": {"properties":{"case":{"const":"infrastructure"}}},
+          "then": {
+            "properties": {
+              "second": {
+                "properties": {
+                  "result": {
+                    "required": ["priorCredentialsRejectedOnReachableTarget"],
+                    "properties": {"priorCredentialsRejectedOnReachableTarget":{"const":true}}
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties":{"case":{"const":"offline-tasks"}}},
+          "then": {
+            "properties": {
+              "new": {
+                "properties": {
+                  "result": {
+                    "required": ["tasks"],
+                    "properties": {
+                      "tasks": {
+                        "type": "object",
+                        "required": ["fixtureSha256","tasks"],
+                        "properties": {
+                          "fixtureSha256": {"$ref":"#/$defs/hash"},
+                          "tasks": {"type":"array","minItems":3,"maxItems":3}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties":{"case":{"const":"interrupted"}}},
+          "then": {
+            "properties": {
+              "new": {
+                "properties": {
+                  "result": {
+                    "required": ["importInterrupted"],
+                    "properties": {"phase":{"const":"cluster-ready"},"importInterrupted":{"const":true}}
+                  }
+                }
+              },
+              "second": {
+                "properties": {
+                  "result": {
+                    "required": ["partialInstallRefused","identityPreserved"],
+                    "properties": {
+                      "phase": {"const":"cache-verified"},
+                      "partialInstallRefused": {"const":true},
+                      "identityPreserved": {"const":true}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {"properties":{"case":{"const":"infrastructure"}}},
+          "then": {"properties":{"new":{"properties":{"seed":{"properties":{"caseId":{"const":"infrastructure"}}}}}}}
+        },
+        {
+          "if": {"properties":{"case":{"const":"offline-tasks"}}},
+          "then": {"properties":{"new":{"properties":{"seed":{"properties":{"caseId":{"const":"offline-tasks"}}}}}}}
+        },
+        {
+          "if": {"properties":{"case":{"const":"restart"}}},
+          "then": {"properties":{"new":{"properties":{"seed":{"properties":{"caseId":{"const":"restart"}}}}}}}
+        },
+        {
+          "if": {"properties":{"case":{"const":"interrupted"}}},
+          "then": {"properties":{"new":{"properties":{"seed":{"properties":{"caseId":{"const":"interrupted"}}}}}}}
+        }
+      ]
+    }
   }
 }
