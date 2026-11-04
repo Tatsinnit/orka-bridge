@@ -278,7 +278,7 @@ fn factory_child_probe() {
 }
 #[tokio::test]
 async fn vm_boundary_is_explicitly_unavailable() {
-    let transport = bridge_engine::engine::vm::VmTransport;
+    let transport = bridge_engine::engine::vm::VmTransport::default();
     assert_eq!(
         transport
             .execute(EngineRequest { action: list() })

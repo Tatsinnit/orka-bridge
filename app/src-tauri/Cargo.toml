@@ -12,6 +12,9 @@ name = "bridge_engine"
 tauri-build = "=2.7.4"
 
 [dependencies]
+cap-std = "=4.0.3"
+cap-fs-ext = "=4.0.3"
+libc = "=0.2.191"
 tauri = { version = "=2.12.5", features = [] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"

@@ -29,7 +29,7 @@ impl EngineState {
             };
         }
         Self {
-            transport: Arc::new(vm::VmTransport),
+            transport: Arc::new(vm::VmTransport::default()),
             closed,
         }
     }

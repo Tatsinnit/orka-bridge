@@ -3,7 +3,40 @@
 The separate Linux-only `bridge-guest` package shares the pure protocol crate,
 not Tauri. It has only `--early`, `--serve` and harmless `--help` modes.
 Readiness means validated identity, mounts and endpoint, not cluster or Orka health.
-Engine execution, chunks, credentials and run-file operations are not implemented.
+Serve accepts digest-committed agent/test snapshots and the delivered typed kmx
+Version and ListAgents actions. File-Test, mutations, remote cancellation and model
+credentials remain unavailable until their upstream contracts are delivered.
+
+## Files and typed operations
+
+The single desktop client lives in `app/src-tauri/src/runtime/client.rs` and is
+consumed by the VM engine adapter; later setup must extend it, not add another
+client. It accepts a serving channel only after the owned R1 handshake. Native
+channel implementations must enforce I/O deadlines. Default app transport remains
+unavailable; this does not launch a VM.
+
+Inputs are only the explicitly selected agent/test pair, at most 1 MiB each,
+with no symlink or parent traversal. Capture walks relative to held directory
+handles with cap-std/cap-fs-ext, including Windows; it never reopens an admitted
+ambient path. Capture rereads both files, retains immutable
+bytes and binds both SHA-256 digests. Guest chunks are sequential and at most
+32 KiB; commit verifies both digests before atomically installing the snapshot.
+There is no shared folder or arbitrary archive extraction. The state store caches
+at most 32 committed snapshots and 32 result payloads, evicting older cached bytes
+without stopping future reads. Nonsecret operation metadata is retained for deduplication;
+eviction never permits execution of an old ID. Historical results may become Unknown
+once their payload expires. Future file-execution support must pin active input bytes.
+
+Operations record their caller ID before fixed `/usr/local/bin/kmx` execution.
+Argv uses the existing version and scoped JSON agent-list commands; no shell or
+caller environment is accepted. Guest HOME and KUBECONFIG are fixed to `/root`
+and `/root/.kube/config`; image integration must supply the pinned kmx and its
+helper dependencies. Output is bounded; only version/Agent metadata is persisted,
+not CRD specs or raw stderr. Results are ID-bound chunks, never guest-selected
+paths or writes over creator files. A lost response stays Unknown until an explicit
+ID lookup; duplicate IDs never reexecute. Interrupted active records become Unknown.
+Current actions are read-only: no file execution flags, Task/package lookup or
+cancellation is inferred from incomplete upstream machine-output work.
 
 ## Image integration boundary
 

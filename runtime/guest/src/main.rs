@@ -7,7 +7,7 @@ use bridge_guest::{
 use bridge_runtime_protocol::*;
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     os::{
         fd::AsRawFd,
         unix::{
@@ -48,21 +48,37 @@ fn wait(fd: i32, event: i16, deadline: Instant) -> io::Result<()> {
         return Err(early::invalid());
     }
 }
-fn read(stream: &mut (impl Read + AsRawFd), session: &mut Session) -> io::Result<WireRequest> {
+fn read(
+    stream: &mut BufReader<impl Read + AsRawFd>,
+    session: &mut Session,
+) -> io::Result<WireRequest> {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
-        wait(stream.as_raw_fd(), libc::POLLIN, deadline)?;
-        let mut byte = [0];
-        match stream.read(&mut byte) {
-            Ok(1) => {
-                if let Some(r) = session.push(byte[0])? {
-                    return Ok(r);
-                }
-            }
+        if stream.buffer().is_empty() {
+            wait(stream.get_ref().as_raw_fd(), libc::POLLIN, deadline)?
+        }
+        let bytes = match stream.fill_buf() {
+            Ok(bytes) if !bytes.is_empty() => bytes,
             Err(e)
                 if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::Interrupted => {}
+                    || e.kind() == io::ErrorKind::Interrupted =>
+            {
+                continue
+            }
             _ => return Err(early::invalid()),
+        };
+        let mut used = 0;
+        let mut result = None;
+        for byte in bytes {
+            used += 1;
+            if let Some(request) = session.push(*byte)? {
+                result = Some(request);
+                break;
+            }
+        }
+        stream.consume(used);
+        if let Some(request) = result {
+            return Ok(request);
         }
     }
 }
@@ -141,15 +157,42 @@ impl Drop for Socket {
     }
 }
 fn control(
-    io: &mut (impl Read + Write + AsRawFd),
+    io: &mut BufReader<impl Read + Write + AsRawFd>,
     session: &mut Session,
     system: &mut Linux,
     b: &BootDescriptor,
+    operations: &mut bridge_guest::engine::Operations<bridge_guest::engine::Kmx>,
+    staging: &mut bridge_guest::staging::Staging,
 ) -> io::Result<bool> {
     let r = read(io, session)?;
-    let (body, stop) = service::handle(system, b, &r);
-    write(io, service::result(&r, body))?;
+    let (body, stop) = if matches!(r.body, RequestBody::Readiness {} | RequestBody::Shutdown {}) {
+        service::handle(system, b, &r)
+    } else {
+        (
+            operations
+                .handle(staging, &r.body)
+                .unwrap_or(ResultBody::Error {
+                    code: ErrorCode::InvalidRequest,
+                }),
+            false,
+        )
+    };
+    write(io.get_mut(), service::result(&r, body))?;
     Ok(stop)
+}
+type Serving = (
+    bridge_guest::engine::Operations<bridge_guest::engine::Kmx>,
+    bridge_guest::staging::Staging,
+);
+fn serve_ready(
+    root: &std::path::Path,
+    ready: impl FnOnce() -> io::Result<()>,
+) -> io::Result<Serving> {
+    let operations =
+        bridge_guest::engine::Operations::new(root.join("operations"), bridge_guest::engine::Kmx)?;
+    let staging = bridge_guest::staging::Staging::new(root.join("snapshots"))?;
+    ready()?;
+    Ok((operations, staging))
 }
 fn run(mode: &str) -> io::Result<()> {
     // SAFETY: geteuid has no pointers or preconditions.
@@ -175,8 +218,8 @@ fn run(mode: &str) -> io::Result<()> {
     } else {
         Session::serve(saved.clone())?
     };
-    let mut channel = port()?;
-    write(&mut channel, Frame::Hello(session.hello().clone()))?;
+    let mut channel = BufReader::new(port()?);
+    write(channel.get_mut(), Frame::Hello(session.hello().clone()))?;
     let r = read(&mut channel, &mut session)?;
     let RequestBody::Boot(b) = &r.body else {
         return Err(early::invalid());
@@ -188,7 +231,7 @@ fn run(mode: &str) -> io::Result<()> {
     };
     if result.is_err() {
         write(
-            &mut channel,
+            channel.get_mut(),
             service::result(
                 &r,
                 ResultBody::Error {
@@ -203,15 +246,32 @@ fn run(mode: &str) -> io::Result<()> {
     } else {
         Some(Socket::bind()?)
     };
-    write(&mut channel, service::result(&r, ResultBody::Ready {}))?;
     if early_mode {
+        write(channel.get_mut(), service::result(&r, ResultBody::Ready {}))?;
         return Ok(());
     }
     let socket = socket.ok_or_else(early::invalid)?;
+    let (mut operations, mut staging) =
+        serve_ready(std::path::Path::new("/var/lib/bridge"), || {
+            write(channel.get_mut(), service::result(&r, ResultBody::Ready {}))
+        })?;
     loop {
+        if !channel.buffer().is_empty() {
+            if control(
+                &mut channel,
+                &mut session,
+                &mut system,
+                b,
+                &mut operations,
+                &mut staging,
+            )? {
+                return Ok(());
+            }
+            continue;
+        }
         let mut fds = [
             libc::pollfd {
-                fd: channel.as_raw_fd(),
+                fd: channel.get_ref().as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
             },
@@ -229,18 +289,37 @@ fn run(mode: &str) -> io::Result<()> {
             }
             return Err(early::invalid());
         }
-        if fds[0].revents != 0 && control(&mut channel, &mut session, &mut system, b)? {
+        if fds[0].revents != 0
+            && control(
+                &mut channel,
+                &mut session,
+                &mut system,
+                b,
+                &mut operations,
+                &mut staging,
+            )?
+        {
             return Ok(());
         }
         if fds[1].revents & libc::POLLIN != 0 {
-            let (mut client, _) = socket.listener.accept()?;
+            let (client, _) = socket.listener.accept()?;
             if peer::check(&client).is_err() {
                 continue;
             }
             client.set_nonblocking(true)?;
+            let mut client = BufReader::new(client);
             let mut local = Session::local(b.clone())?;
             // A bad local peer cannot poison the serial session or its request IDs.
-            if control(&mut client, &mut local, &mut system, b).unwrap_or(false) {
+            if control(
+                &mut client,
+                &mut local,
+                &mut system,
+                b,
+                &mut operations,
+                &mut staging,
+            )
+            .unwrap_or(false)
+            {
                 return Ok(());
             }
         }
@@ -249,7 +328,7 @@ fn run(mode: &str) -> io::Result<()> {
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--help" {
-        println!("bridge-guest --early | --serve\nLinux guest only; fixed paths, no execution operations.");
+        println!("bridge-guest --early | --serve\nLinux guest only; fixed paths and typed kmx operations.");
         return;
     }
     if args.len() != 1 || (args[0] != "--early" && args[0] != "--serve") {
@@ -278,8 +357,80 @@ mod tests {
         }
     }
     #[test]
+    fn large_guest_request_is_buffered_and_preserves_the_next_frame() {
+        struct Count {
+            stream: UnixStream,
+            reads: usize,
+        }
+        impl Read for Count {
+            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                self.stream.read(b)
+            }
+        }
+        impl AsRawFd for Count {
+            fn as_raw_fd(&self) -> i32 {
+                self.stream.as_raw_fd()
+            }
+        }
+        let (mut host, guest) = UnixStream::pair().unwrap();
+        let b = boot();
+        let mut bytes = Vec::new();
+        for (request_id, body) in [
+            (
+                3,
+                RequestBody::StageChunk {
+                    upload: Uuid::new_v4(),
+                    slot: FileSlot::Agent,
+                    offset: 0,
+                    data: encode_chunk(&vec![1; MAX_CHUNK]),
+                },
+            ),
+            (4, RequestBody::Readiness {}),
+        ] {
+            bytes.extend(
+                encode(&Frame::Request(WireRequest {
+                    version: VERSION,
+                    boot_nonce: b.boot_nonce,
+                    request_id,
+                    body,
+                }))
+                .unwrap(),
+            );
+        }
+        let sender = std::thread::spawn(move || host.write_all(&bytes).unwrap());
+        let mut guest = BufReader::new(Count {
+            stream: guest,
+            reads: 0,
+        });
+        let mut session = Session::local(b).unwrap();
+        assert_eq!(read(&mut guest, &mut session).unwrap().request_id, 3);
+        assert_eq!(read(&mut guest, &mut session).unwrap().request_id, 4);
+        assert!(guest.get_ref().reads < 16);
+        sender.join().unwrap();
+    }
+    #[test]
+    fn readiness_is_not_acknowledged_if_serving_store_initialization_fails() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("operations"), b"not a directory").unwrap();
+        let mut acknowledged = false;
+        assert!(serve_ready(root.path(), || {
+            acknowledged = true;
+            Ok(())
+        })
+        .is_err());
+        assert!(!acknowledged);
+        fs::remove_file(root.path().join("operations")).unwrap();
+        assert!(serve_ready(root.path(), || {
+            acknowledged = true;
+            Ok(())
+        })
+        .is_ok());
+        assert!(acknowledged);
+    }
+    #[test]
     fn real_socket_io_accepts_the_host_boot_frame() {
-        let (mut host, mut guest) = UnixStream::pair().unwrap();
+        let (mut host, guest) = UnixStream::pair().unwrap();
         let b = boot();
         let frame = Frame::Request(WireRequest {
             version: VERSION,
@@ -289,7 +440,7 @@ mod tests {
         });
         let bytes = encode(&frame).unwrap();
         let sender = std::thread::spawn(move || host.write_all(&bytes).unwrap());
-        let got = read(&mut guest, &mut Session::early()).unwrap();
+        let got = read(&mut BufReader::new(guest), &mut Session::early()).unwrap();
         assert!(matches!(got.body,RequestBody::Boot(saved) if saved==b));
         sender.join().unwrap();
     }

@@ -3,6 +3,15 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 pub use uuid::Uuid;
 
+mod operations;
+pub use operations::*;
+pub fn encode_chunk(bytes: &[u8]) -> String {
+    STANDARD.encode(bytes)
+}
+pub fn decode_chunk(data: &str) -> Result<Vec<u8>, ProtocolError> {
+    chunk(data)?;
+    STANDARD.decode(data).map_err(|_| ProtocolError::Invalid)
+}
 pub const VERSION: u16 = 1;
 /// Includes the terminating LF. A decoder retains at most this many bytes.
 pub const MAX_FRAME: usize = 128 * 1024;
@@ -57,7 +66,34 @@ pub enum EngineActionWire {
 pub enum RequestBody {
     Boot(BootDescriptor),
     Engine(EngineActionWire),
-    Chunk { data: String },
+    Chunk {
+        data: String,
+    },
+    StageBegin {
+        upload: Uuid,
+        snapshot: SnapshotId,
+    },
+    StageChunk {
+        upload: Uuid,
+        slot: FileSlot,
+        offset: usize,
+        data: String,
+    },
+    StageCommit {
+        upload: Uuid,
+    },
+    Execute {
+        operation: Uuid,
+        action: EngineActionWire,
+        snapshot: Option<SnapshotId>,
+    },
+    Status {
+        operation: Uuid,
+    },
+    ReadResult {
+        operation: Uuid,
+        offset: usize,
+    },
     Readiness {},
     Shutdown {},
 }
@@ -78,8 +114,19 @@ pub struct WireRequest {
 )]
 pub enum ResultBody {
     Ready {},
-    Chunk { data: String },
-    Error { code: ErrorCode },
+    Snapshot {
+        snapshot: SnapshotId,
+    },
+    Operation {
+        operation: Uuid,
+        info: OperationInfo,
+    },
+    Chunk {
+        data: String,
+    },
+    Error {
+        code: ErrorCode,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +187,17 @@ pub fn validate_hello(hello: &StageHello, stage: Stage, nonce: Uuid) -> Result<(
     }
     Ok(())
 }
+pub fn validate_action(action: &EngineActionWire) -> Result<(), ProtocolError> {
+    if let EngineActionWire::ListAgents { context, namespace } = action {
+        if [context, namespace]
+            .iter()
+            .any(|s| s.trim().is_empty() || s.len() > 4096 || s.contains('\0'))
+        {
+            return Err(ProtocolError::Invalid);
+        }
+    }
+    Ok(())
+}
 fn chunk(data: &str) -> Result<(), ProtocolError> {
     if data.len() > MAX_CHUNK.div_ceil(3) * 4 {
         return Err(ProtocolError::Oversize);
@@ -165,6 +223,39 @@ impl Frame {
                     {
                         return Err(ProtocolError::Invalid)
                     }
+                    RequestBody::StageBegin { upload, snapshot }
+                        if upload.is_nil() || !snapshot.valid() =>
+                    {
+                        return Err(ProtocolError::Invalid)
+                    }
+                    RequestBody::StageChunk {
+                        upload,
+                        offset,
+                        data,
+                        ..
+                    } => {
+                        if upload.is_nil() || *offset > MAX_FILE {
+                            return Err(ProtocolError::Invalid);
+                        }
+                        chunk(data)?
+                    }
+                    RequestBody::StageCommit { upload } if upload.is_nil() => {
+                        return Err(ProtocolError::Invalid)
+                    }
+                    RequestBody::Execute {
+                        operation,
+                        snapshot,
+                        ..
+                    } if operation.is_nil() || snapshot.as_ref().is_some_and(|s| !s.valid()) => {
+                        return Err(ProtocolError::Invalid)
+                    }
+                    RequestBody::Status { operation }
+                    | RequestBody::ReadResult { operation, .. }
+                        if operation.is_nil() =>
+                    {
+                        return Err(ProtocolError::Invalid)
+                    }
+                    RequestBody::Execute { action, .. } => validate_action(action)?,
                     RequestBody::Chunk { data } => chunk(data)?,
                     RequestBody::Engine(EngineActionWire::ListAgents { context, namespace }) => {
                         if context.trim().is_empty() || namespace.trim().is_empty() {

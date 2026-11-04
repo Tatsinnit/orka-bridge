@@ -1,5 +1,7 @@
+pub mod client;
 pub mod identity;
 pub mod journal;
+pub mod snapshot;
 pub mod types;
 pub mod wire;
 
