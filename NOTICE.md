@@ -25,6 +25,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## JavaScript bridge
+
+The Tauri JavaScript API is distributed under its MIT license option.
+Its complete notice is shipped as `licenses/Tauri-API-MIT.txt`.
+
 ## Fonts
 
 Geist and Geist Mono are bundled under the SIL Open Font License 1.1.

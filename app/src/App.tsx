@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import mark from './assets/orka-mark.svg';
+import EngineStatus from './components/EngineStatus';
 
 const pages = ['Overview', 'Designer', 'Clusters'] as const;
 type Page = (typeof pages)[number];
@@ -61,6 +62,7 @@ export default function App() {
             <p className="muted">{copy.detail}</p>
           </div>
         </section>
+        {page === 'Clusters' && <EngineStatus />}
       </main>
     </div>
   );

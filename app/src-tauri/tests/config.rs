@@ -14,8 +14,17 @@ fn native_window_uses_local_assets_and_fits_a_laptop() {
     assert_eq!(window.min_height, Some(640.0));
     assert!(window.width >= 960.0 && window.height >= 640.0);
     assert!(!config.app.with_global_tauri);
-    assert!(config.app.security.capabilities.is_empty());
-    // An empty configured list also enables capabilities discovered on disk.
+    assert_eq!(
+        serde_json::to_value(&config.app.security.capabilities).unwrap(),
+        serde_json::json!([{
+            "identifier": "engine",
+            "description": "Typed engine access from the main window only.",
+            "windows": ["main"],
+            "permissions": ["engine"],
+            "local": true
+        }])
+    );
+    // No implicit capability files may widen this single-command grant.
     assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("capabilities")
         .exists());
@@ -36,6 +45,7 @@ fn release_context_embeds_fonts_and_all_license_notices() {
         "index.html",
         "licenses/shell-MIT.txt",
         "licenses/Orka-MIT.txt",
+        "licenses/Tauri-API-MIT.txt",
         "licenses/Geist-OFL.txt",
         "licenses/Geist-Mono-OFL.txt",
     ] {

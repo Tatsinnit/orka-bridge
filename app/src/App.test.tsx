@@ -1,9 +1,10 @@
+import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import App from './App';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
 
 test('navigation_order', () => {
   render(<App />);
@@ -47,20 +48,32 @@ test('honest_empty_states', async () => {
     await user.click(screen.getByRole('button', { name }));
     const main = screen.getByRole('main', { name });
     expect(within(main).getByText('Nothing is connected yet.')).toBeTruthy();
-    expect(within(main).getByRole('heading', { level: 2 }).textContent).toBeTruthy();
+    expect(within(main).getAllByRole('heading', { level: 2 })).toHaveLength(name === 'Clusters' ? 2 : 1);
     expect(within(main).queryByRole('button')).toBeNull();
     expect(within(main).queryByRole('link')).toBeNull();
   }
 });
 
-test('no_legacy_host_ipc', async () => {
-  const invoke = vi.fn();
+test('only_requests_engine_version_on_Clusters_without_fetch_or_legacy_IPC', async () => {
+  const ipc = vi.fn(() => ({ kind: 'version', version: 'v0.4.2', hasDiagnostics: false }));
+  mockIPC(ipc);
+  vi.stubGlobal('isTauri', true);
   const fetch = vi.fn();
-  vi.stubGlobal('__TAURI_INTERNALS__', { invoke });
   vi.stubGlobal('fetch', fetch);
+  const user = userEvent.setup();
   render(<App />);
-  await userEvent.setup().click(screen.getByRole('button', { name: 'Clusters' }));
-  await new Promise(resolve => setTimeout(resolve, 300));
-  expect(invoke).not.toHaveBeenCalled();
+  expect(ipc).not.toHaveBeenCalled();
+  expect(screen.queryByRole('heading', { name: 'Engine available' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  expect(ipc).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  expect(await screen.findByRole('heading', { name: 'Engine available' })).toBeTruthy();
+  expect(screen.getByText('Version v0.4.2. Cluster readiness has not been checked.')).toBeTruthy();
+  expect(screen.getAllByRole('heading', { level: 2 }).map(heading => heading.textContent))
+    .toEqual(['A place for your agents to run', 'Engine available']);
+  expect(ipc).toHaveBeenCalledExactlyOnceWith('engine_call', { request: { action: { type: 'version' } } });
+  await user.click(screen.getByRole('button', { name: 'Overview' }));
+  expect(screen.queryByRole('heading', { name: 'Engine available' })).toBeNull();
+  expect(ipc).toHaveBeenCalledTimes(1);
   expect(fetch).not.toHaveBeenCalled();
 });

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "engine"
+description = "Allows typed engine diagnostics and read-only inventory."
+commands.allow = ["engine_call"]
