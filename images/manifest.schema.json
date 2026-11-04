@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orka-bridge:bridge-image:v1",
+  "$comment": "PROVISIONAL: native-runtime owner acceptance is required before freezing bridge-image/v1. This schema does not authorize publication or prove a bootable image.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "publicationReady", "imageId", "buildSourceCommit", "stateCompatibilityId", "target", "components", "layout", "artifact"],
+  "properties": {
+    "schemaVersion": {"const": "bridge-image/v1"},
+    "publicationReady": {"const": false},
+    "imageId": {"allOf": [{"$ref": "#/$defs/id"}, {"not": {"pattern": "\\.\\."}}]},
+    "buildSourceCommit": {"$ref": "#/$defs/commit"},
+    "stateCompatibilityId": {"$ref": "#/$defs/id"},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["platform", "architecture", "format", "minimumHostVersion", "minimumAppVersion"],
+      "properties": {
+        "platform": {"enum": ["macos", "windows"]},
+        "architecture": {"enum": ["arm64", "amd64"]},
+        "format": {"enum": ["raw", "qcow2"]},
+        "minimumHostVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$"},
+        "minimumAppVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.-]+)?$"}
+      }
+    },
+    "components": {
+      "type": "object", "additionalProperties": false,
+      "required": ["inputSchemaVersion", "inputIdentity", "canonicalLockSha256", "versionPolicySha256", "orka", "kmxProfileSha256", "kind", "kubernetes", "vekil", "tools"],
+      "properties": {
+        "inputSchemaVersion": {"const": "bridge-guest-inputs/v1"},
+        "inputIdentity": {"$ref": "#/$defs/hex"},
+        "canonicalLockSha256": {"$ref": "#/$defs/hex"},
+        "versionPolicySha256": {"$ref": "#/$defs/hex"},
+        "orka": {
+          "type": "object", "additionalProperties": false,
+          "required": ["mode", "identity", "sourceCommit", "chartSha256"],
+          "properties": {
+            "mode": {"enum": ["source", "release"]}, "identity": {"$ref": "#/$defs/version"},
+            "sourceCommit": {"$ref": "#/$defs/commit"}, "chartSha256": {"$ref": "#/$defs/hex"}
+          }
+        },
+        "kmxProfileSha256": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/hex"}]},
+        "kind": {"$ref": "#/$defs/versionHash"},
+        "kubernetes": {
+          "type": "object", "additionalProperties": false, "required": ["version", "provenance"],
+          "properties": {"version": {"$ref": "#/$defs/version"}, "provenance": {"const": "policy-declared"}}
+        },
+        "vekil": {
+          "type": "object", "additionalProperties": false, "required": ["manifestDigest", "configDigest"],
+          "properties": {"manifestDigest": {"$ref": "#/$defs/digest"}, "configDigest": {"$ref": "#/$defs/digest"}}
+        },
+        "tools": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/tool"}}
+      }
+    },
+    "layout": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contractVersion", "osDisk", "stateDisk", "devices", "transport", "testResources"],
+      "properties": {
+        "contractVersion": {"const": "H1/v1"},
+        "osDisk": {
+          "type": "object", "additionalProperties": false,
+          "required": ["role", "format", "virtualCapacityBytes", "blockSerial", "partitionTable", "boot", "privateWritableCopy"],
+          "properties": {
+            "role": {"const": "os-disk"}, "format": {"enum": ["raw", "qcow2"]},
+            "virtualCapacityBytes": {"const": 17179869184}, "blockSerial": {"const": "bridge-os"},
+            "partitionTable": {"const": "gpt"}, "boot": {"const": "uefi"}, "privateWritableCopy": {"const": true}
+          }
+        },
+        "stateDisk": {
+          "description": "Creation descriptor only, never an initialized state payload. Formatting still requires the live host's exclusive new-disk authorization.",
+          "type": "object", "additionalProperties": false,
+          "required": ["role", "operation", "format", "virtualCapacityBytes", "blockSerial", "filesystem", "partitioning", "formatPolicy"],
+          "properties": {
+            "role": {"const": "state-disk"}, "operation": {"const": "create-empty"},
+            "format": {"enum": ["raw", "qcow2"]}, "virtualCapacityBytes": {"const": 34359738368},
+            "blockSerial": {"const": "bridge-state"}, "filesystem": {"const": "ext4"},
+            "partitioning": {"const": "whole-device"}, "formatPolicy": {"const": "new-only"}
+          }
+        },
+        "devices": {"const": {"contractVersion": "H1/v1", "diskBus": "virtio", "network": "nat", "entropy": true, "clock": "utc", "controlPort": "ai.orka.bridge.control", "diagnostics": "separate"}},
+        "transport": {"const": {"protocolMajor": 1, "framing": "json-lines"}},
+        "testResources": {"description": "Engineering settings, not measured host minimums.", "const": {"vcpus": 4, "memoryBytes": 6442450944}}
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "format", "compression", "uncompressedBytes", "uncompressedSha256", "compressedBytes", "compressedSha256", "chunks"],
+      "properties": {
+        "role": {"const": "os-disk"}, "format": {"enum": ["raw", "qcow2"]}, "compression": {"const": "gzip"},
+        "uncompressedBytes": {"type": "integer", "minimum": 1}, "uncompressedSha256": {"$ref": "#/$defs/hex"},
+        "compressedBytes": {"type": "integer", "minimum": 1}, "compressedSha256": {"$ref": "#/$defs/hex"},
+        "chunks": {"type": "array", "minItems": 1, "maxItems": 50000, "items": {"$ref": "#/$defs/chunk"}}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"target": {"properties": {"platform": {"const": "macos"}}}}},
+      "then": {"properties": {
+        "target": {"properties": {"architecture": {"const": "arm64"}, "format": {"const": "raw"}}},
+        "layout": {"properties": {"osDisk": {"properties": {"format": {"const": "raw"}}}, "stateDisk": {"properties": {"format": {"const": "raw"}}}}},
+        "artifact": {"properties": {"format": {"const": "raw"}}}
+      }},
+      "else": {"properties": {
+        "target": {"properties": {"architecture": {"const": "amd64"}, "format": {"const": "qcow2"}}},
+        "layout": {"properties": {"osDisk": {"properties": {"format": {"const": "qcow2"}}}, "stateDisk": {"properties": {"format": {"const": "qcow2"}}}}},
+        "artifact": {"properties": {"format": {"const": "qcow2"}}}
+      }}
+    }
+  ],
+  "$defs": {
+    "hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]{0,62}$"},
+    "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,95}$"},
+    "versionHash": {
+      "type": "object", "additionalProperties": false, "required": ["version", "sha256"],
+      "properties": {"version": {"$ref": "#/$defs/version"}, "sha256": {"$ref": "#/$defs/hex"}}
+    },
+    "tool": {
+      "type": "object", "additionalProperties": false, "required": ["name", "version", "sha256"],
+      "properties": {"name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9+.-]{0,95}$"}, "version": {"$ref": "#/$defs/version"}, "sha256": {"$ref": "#/$defs/hex"}}
+    },
+    "chunk": {
+      "type": "object", "additionalProperties": false, "required": ["order", "name", "bytes", "sha256"],
+      "properties": {
+        "order": {"type": "integer", "minimum": 0},
+        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*-(macos-arm64|windows-amd64)\\.part-[0-9]{6}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}, "sha256": {"$ref": "#/$defs/hex"}
+      }
+    }
+  }
+}

@@ -1,0 +1,75 @@
+name: Image assets
+
+on:
+  pull_request:
+    paths: ['images/**', '.github/workflows/images.yml']
+  push:
+    paths: ['images/**', '.github/workflows/images.yml']
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Reviewed checked-in publisher profile (none approved yet)
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test without network
+        run: sudo unshare --net sh -c 'PYTHONPATH=images python3 -m unittest discover -s images -p "test_*.py" -v'
+
+  prepare:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge'
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROFILE: ${{ inputs.profile }}
+          OUT: ${{ runner.temp }}/image-package
+        run: python3 images/qualify.py prepare --profile "$PROFILE" --out "$OUT"
+
+  draft:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge'
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: image-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Requalify exact bytes and roundtrip draft assets by ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROFILE: ${{ inputs.profile }}
+          EXPECTED_MANIFEST: ${{ needs.prepare.outputs.manifest_sha256 }}
+          OUT: ${{ runner.temp }}/image-package
+        run: python3 images/qualify.py draft --profile "$PROFILE" --out "$OUT" --manifest-sha256 "$EXPECTED_MANIFEST"
