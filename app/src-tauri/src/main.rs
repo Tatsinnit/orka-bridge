@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use bridge_engine::engine::{types::*, EngineState};
+use bridge_engine::runtime::RuntimeState;
 use tauri::Manager;
 
 #[tauri::command]
@@ -14,6 +15,7 @@ async fn engine_call(
 fn main() {
     tauri::Builder::default()
         .manage(EngineState::configured())
+        .manage(RuntimeState::default())
         .invoke_handler(tauri::generate_handler![engine_call])
         .on_window_event(|window, event| {
             if window.label() == "main"
@@ -23,6 +25,8 @@ fn main() {
                 )
             {
                 window.state::<EngineState>().shutdown();
+                // No backend is configured yet. A future backend must observe stop.
+                let _ = window.state::<RuntimeState>().shutdown();
             }
         })
         .run(tauri::generate_context!())
