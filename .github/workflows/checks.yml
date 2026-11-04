@@ -98,16 +98,33 @@ jobs:
           test -x smoke-app/Bridge.app/Contents/MacOS/orka-bridge
           cmp "$bundle/Contents/MacOS/orka-bridge" smoke-app/Bridge.app/Contents/MacOS/orka-bridge
           for notice in public/licenses/*.txt; do cmp "$notice" "smoke-app/Bridge.app/Contents/Resources/licenses/${notice##*/}"; done
-          # Test standard macOS keyboard navigation, restoring the runner preference.
+          # Test both system themes and keyboard navigation; restore runner preferences.
+          prior_dark="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
+          prior_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
+          prior_auto="$(defaults read -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true)"
           prior="$(defaults read -g AppleKeyboardUIMode 2>/dev/null || true)"
-          restore_keyboard() {
-            if [[ -n "$prior" ]]; then defaults write -g AppleKeyboardUIMode -int "$prior"
+          restore_preferences() {
+            local status=0
+            if [[ -n "$prior" ]]; then defaults write -g AppleKeyboardUIMode -int "$prior" || status=$?
             else defaults delete -g AppleKeyboardUIMode 2>/dev/null || true
             fi
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $prior_dark" || status=$?
+            if [[ -n "$prior_style" ]]; then defaults write -g AppleInterfaceStyle -string "$prior_style" || status=$?
+            else defaults delete -g AppleInterfaceStyle 2>/dev/null || true
+            fi
+            if [[ -n "$prior_auto" ]]; then defaults write -g AppleInterfaceStyleSwitchesAutomatically -bool "$prior_auto" || status=$?
+            else defaults delete -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true
+            fi
+            return "$status"
           }
-          trap restore_keyboard EXIT
+          trap restore_preferences EXIT
           defaults write -g AppleKeyboardUIMode -int 3
-          swift ../scripts/native-smoke.swift native-walk "$PWD/smoke-app/Bridge.app"
+          for theme in light dark; do
+            if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
+            test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
+            swift ../scripts/native-smoke.swift "native-walk/$theme" "$PWD/smoke-app/Bridge.app" "$theme"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: runner.os == 'Windows'
         with:

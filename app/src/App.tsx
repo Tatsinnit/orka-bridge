@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import mark from './assets/orka-mark.png';
+import mark from './assets/orka-mark.svg';
 
 const pages = ['Overview', 'Designer', 'Clusters'] as const;
 type Page = (typeof pages)[number];
@@ -39,7 +39,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="tab-bar">
-        <span className="brand"><img src={mark} width="32" height="36" alt="Orka" /><b>Bridge</b></span>
+        <span className="brand"><img src={mark} width="32" height="32" alt="Orka" /><b>Bridge</b></span>
         <nav className="page-nav" aria-label="Main">
           {pages.map(name => (
             <button key={name} className="page-tab" type="button"

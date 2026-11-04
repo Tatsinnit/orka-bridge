@@ -6,6 +6,8 @@ func require(_ condition: Bool, _ message: String) {
     if !condition { fputs("\(message)\n", stderr); exit(1) }
 }
 let output = CommandLine.arguments[1]
+let theme = CommandLine.arguments[3]
+require(["light", "dark"].contains(theme), "Expected light or dark theme")
 require(NSRunningApplication.runningApplications(withBundleIdentifier: "ai.orka.bridge").isEmpty,
         "Quit running Bridge before running the native walk")
 let opened = Process()
@@ -21,7 +23,14 @@ for _ in 0..<30 {
     Thread.sleep(forTimeInterval: 1)
 }
 guard let app = running else { fatalError("Bridge process did not appear") }
-defer { app.terminate() }
+defer {
+    app.terminate()
+    for _ in 0..<30 {
+        if app.isTerminated { break }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    }
+    require(app.isTerminated, "Bridge did not quit after the native walk")
+}
 app.activate(options: [])
 func window() -> (CGWindowID, CGRect)? {
     let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
@@ -65,6 +74,12 @@ func capture(_ name: String, _ page: String) throws {
     command.arguments = ["-x", "-o", "-l", String(window()!.0), file]
     try command.run(); command.waitUntilExit()
     require(command.terminationStatus == 0, "Cannot capture Bridge")
+    guard let bitmap = NSBitmapImageRep(data: try Data(contentsOf: URL(fileURLWithPath: file))),
+        let colour = bitmap.colorAt(x: bitmap.pixelsWide - 20, y: bitmap.pixelsHigh - 20)?.usingColorSpace(NSColorSpace.deviceRGB)
+        else { fatalError("Cannot sample native screenshot") }
+    let brightness = (colour.redComponent + colour.greenComponent + colour.blueComponent) / 3
+    require(theme == "dark" ? brightness < 0.2 : brightness > 0.9,
+            "Native screenshot does not show the expected \(theme) theme")
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     try VNImageRequestHandler(url: URL(fileURLWithPath: file)).perform([request])

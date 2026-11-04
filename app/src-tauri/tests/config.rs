@@ -36,8 +36,8 @@ fn release_context_embeds_fonts_and_all_license_notices() {
         "index.html",
         "licenses/shell-MIT.txt",
         "licenses/Orka-MIT.txt",
-        "licenses/Inter-OFL.txt",
-        "licenses/JetBrains-Mono-OFL.txt",
+        "licenses/Geist-OFL.txt",
+        "licenses/Geist-Mono-OFL.txt",
     ] {
         assert!(!assets
             .get(&name.into())
@@ -45,7 +45,7 @@ fn release_context_embeds_fonts_and_all_license_notices() {
             .is_empty());
     }
     let names: Vec<_> = assets.iter().map(|(name, _)| name.into_owned()).collect();
-    for font in ["inter-latin-", "jetbrains-mono-latin-"] {
+    for font in ["geist-latin-", "geist-mono-latin-"] {
         assert!(names
             .iter()
             .any(|name| name.contains(font) && name.ends_with(".woff2")));

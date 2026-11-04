@@ -27,11 +27,9 @@ SOFTWARE.
 
 ## Fonts
 
-Inter and JetBrains Mono are bundled under the SIL Open Font License 1.1.
+Geist and Geist Mono are bundled under the SIL Open Font License 1.1.
 Their complete notices are in `app/public/licenses/` and are included in app
 artifacts. These licenses do not replace this project's Microsoft MIT license.
 
-The Orka mark is derived from the image in the public Orka v0.3.0 source,
-licensed under its Microsoft MIT license. The complete notice is shipped as
-`licenses/Orka-MIT.txt`. Third-party trademarks remain
-subject to their owners' policies.
+The app's Microsoft MIT notice is shipped as `licenses/Orka-MIT.txt`.
+Third-party trademarks remain subject to their owners' policies.

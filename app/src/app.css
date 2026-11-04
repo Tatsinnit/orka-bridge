@@ -1,34 +1,59 @@
-/* Estuary: cool sage surfaces and deep teal actions. */
 :root {
   color-scheme: light;
-  --color-text: oklch(0.24110 0.01368 253.087);
-  --color-text-secondary: oklch(0.44251 0.01937 254.038);
-  --color-page: oklch(0.97059 0.00344 174.483);
-  --color-card: oklch(0.99226 0.00248 165.077);
-  --color-chrome: oklch(0.88145 0.01355 179.422);
-  --color-hover: oklch(0.99226 0.00248 165.077 / 0.35);
-  --color-border: oklch(0.290 0.030 216 / 0.10);
-  --color-border-strong: oklch(0.290 0.030 216 / 0.18);
-  --color-action: oklch(0.44548 0.07191 206.780);
-  --color-icon-tile: oklch(0.83916 0.04425 190.961);
-  --font-ui: 'Inter Variable', -apple-system, 'Segoe UI', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono Variable', ui-monospace, Menlo, Consolas, monospace;
+  --color-text: #0B0B0C;
+  --color-text-secondary: #4B4C52;
+  --color-page: #FFFFFF;
+  --color-card: #FFFFFF;
+  --color-chrome: #FAFAFA;
+  --color-hover: #F0F0F2;
+  --color-border: #E8E8EB;
+  --color-border-strong: #D4D4D8;
+  --color-action: #0B0B0C;
+  --color-icon-tile: #F0F0F2;
+  --color-status-pending: #B45309;
+  --color-status-running: #0369A1;
+  --color-status-succeeded: #15803D;
+  --color-status-failed: #DC2626;
+  --color-status-cancelled: #71717A;
+  --mark-filter: none;
+  --font-ui: 'Geist Variable', -apple-system, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --color-text: #F4F4F5;
+    --color-text-secondary: #A1A1A9;
+    --color-page: #0E0E10;
+    --color-card: #1B1B1E;
+    --color-chrome: #121214;
+    --color-hover: #242428;
+    --color-border: #26262A;
+    --color-border-strong: #353539;
+    --color-action: #F4F4F5;
+    --color-icon-tile: #121214;
+    --color-status-pending: #F5B544;
+    --color-status-running: #4CB8F5;
+    --color-status-succeeded: #4ADE80;
+    --color-status-failed: #F87171;
+    --color-status-cancelled: #8B8B93;
+    --mark-filter: invert(1);
+  }
 }
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
 body {
   background: var(--color-page);
   color: var(--color-text);
-  font: 400 0.8125rem/1.4 var(--font-ui);
-  font-feature-settings: 'cv11', 'ss03';
+  font: 400 0.8125rem/1.53846 var(--font-ui);
   -webkit-font-smoothing: antialiased;
 }
 h1, h2, p { margin: 0; }
-h1 { font-size: 1.375rem; font-weight: 680; line-height: 1.27; letter-spacing: -0.017em; }
-h2 { font-size: 0.9375rem; font-weight: 640; line-height: 1.5; }
+h1 { font-size: 1.5rem; font-weight: 600; line-height: 1.16667; letter-spacing: -0.02em; }
+h2 { font-size: 0.9375rem; font-weight: 600; line-height: 1.33333; }
 button { font: inherit; color: inherit; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--color-action); outline-offset: 3px; }
 .muted { color: var(--color-text-secondary); }
 .icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.icon-tile { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; border-radius: 7px; color: var(--color-action); background: var(--color-icon-tile); }
-.card { padding: 20px; border-radius: 11px; background: var(--color-card); box-shadow: 0 0 0 0.5px var(--color-border), 0 1px 2px oklch(0.24110 0.01368 253.087 / 0.04), 0 6px 16px -8px oklch(0.24110 0.01368 253.087 / 0.10); }
+.icon-tile { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; border-radius: 6px; color: var(--color-action); background: var(--color-icon-tile); }
+.card { padding: 20px; border-radius: 10px; background: var(--color-card); box-shadow: 0 0 0 1px var(--color-border); }
