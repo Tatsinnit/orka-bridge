@@ -101,7 +101,32 @@ one, comment on the relevant issue first to avoid duplicating work.
 
 ## Development
 
-Build and run instructions will be added with the initial app shell.
+The native shell opens Overview, Designer and Clusters with empty screens.
+It does not connect to kmx or a cluster yet.
+
+Install Node 26.5.0, npm 11.17.0, Rust 1.98.1 and the
+[Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).
+From `app/`:
+
+```sh
+npm ci
+npm run lint
+npm test
+npm run build
+npm run tauri dev
+```
+
+Build frontend assets before running the native checks:
+
+```sh
+cargo +1.98.1 fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
+cargo +1.98.1 clippy --release --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
+```
+
+CI builds Windows x64 and Apple silicon Mac, with a native Mac navigation walk
+and screenshots. These unsigned test artifacts are not installers or releases.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for platform build commands and notices.
 
 ## Contributing
 
