@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/bridge-logo.png" alt="Bridge: the Orka mascot leaping over a bridge" width="520" />
+<img width="1811" height="868" alt="Kubernetes Orca Bridge Logo" src="https://github.com/user-attachments/assets/4e735bcf-ef79-4476-9e56-f367004f8308" />
 
 </div>
 
