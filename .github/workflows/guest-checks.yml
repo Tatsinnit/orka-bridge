@@ -1,0 +1,26 @@
+name: Guest inputs
+
+on:
+  pull_request:
+    paths:
+      - 'images/guest/**'
+      - '.github/workflows/guest-checks.yml'
+  push:
+    paths:
+      - 'images/guest/**'
+      - '.github/workflows/guest-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 --version
+      - name: Verify local collector without networking
+        run: sudo unshare --net sh -c 'PYTHONPATH=images python3 -m unittest discover -s images/guest/tests -t images -v'

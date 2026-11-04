@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "bridge-guest-versions/v1",
+  "debianBase": "20261026-2643",
+  "kind": "v0.33.0",
+  "kubernetes": "v1.35.0",
+  "orkaSource": "59703d6eac1760aa2dc5fed4dee9dcb74c6e5186",
+  "productionDependency": "Orka release including #833",
+  "releaseProfiles": {}
+}

@@ -1,0 +1,312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/orka-agents/orka-bridge/images/guest/input.schema.json",
+  "title": "Local guest input lock (not a runtime qualification)",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "const": "bridge-guest-inputs/v1"
+    },
+    "architecture": {
+      "enum": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "orka": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "enum": [
+            "source",
+            "release"
+          ]
+        },
+        "identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chartPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chartSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "mode",
+        "identity",
+        "chartPath",
+        "chartSha256"
+      ],
+      "additionalProperties": false
+    },
+    "components": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "items": {
+        "$ref": "#/$defs/component"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "kind-node"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "controller"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "ai-worker"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "general-worker"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "publisher"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "session-loader"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "vekil"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "telegram"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "teams"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        }
+      ]
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
+    "nodeLocalRef": {
+      "type": "string",
+      "pattern": "^kindest/node:bridge-[0-9a-f]{16}-(amd64|arm64)$"
+    },
+    "kmxProfileSha256": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "architecture",
+    "sourceCommit",
+    "orka",
+    "components",
+    "packages",
+    "tools",
+    "nodeLocalRef",
+    "kmxProfileSha256"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "component": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "enum": [
+            "kind-node",
+            "controller",
+            "ai-worker",
+            "general-worker",
+            "publisher",
+            "session-loader",
+            "vekil",
+            "telegram",
+            "teams"
+          ]
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^(localhost|[a-z0-9.-]+\\.[a-z0-9.-]+|[a-z0-9.-]+:[0-9]+)/[a-z0-9]+([._/-][a-z0-9]+)*$"
+        },
+        "manifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "configDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "archive": {
+          "type": "string",
+          "minLength": 1
+        },
+        "archiveSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "indexDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "indexPath": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "name",
+        "repository",
+        "manifestDigest",
+        "configDigest",
+        "archive",
+        "archiveSha256"
+      ],
+      "additionalProperties": false,
+      "dependentRequired": {
+        "indexDigest": [
+          "indexPath"
+        ],
+        "indexPath": [
+          "indexDigest"
+        ]
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9+.-]{0,95}$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
