@@ -1,0 +1,60 @@
+name: Guest endpoint
+on:
+  pull_request:
+  push:
+permissions:
+  contents: read
+concurrency:
+  group: guest-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - run: |
+          cargo +1.98.1 fmt --manifest-path runtime/Cargo.toml --all -- --check
+          cargo +1.98.1 test --manifest-path runtime/Cargo.toml --locked --workspace
+          cargo +1.98.1 clippy --manifest-path runtime/Cargo.toml --locked --workspace --all-targets -- -D warnings
+          python3 -m unittest discover -s runtime -p test_artifact.py -v
+  binary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    env:
+      GUEST_TARGET: ${{ matrix.target }}
+      RUSTFLAGS: '-C linker=rust-lld -C link-self-contained=yes -C target-feature=+crt-static'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: '1.98.1'
+          targets: ${{ matrix.target }}
+      - run: |
+          cargo +1.98.1 build --manifest-path runtime/Cargo.toml --locked --release -p bridge-guest --target "$GUEST_TARGET"
+          python3 runtime/artifact.py --target "$GUEST_TARGET" --binary "runtime/target/$GUEST_TARGET/release/bridge-guest" --out "runtime/target/$GUEST_TARGET/release/provenance.json"
+      - name: Harmless native-architecture CLI check
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: runtime/target/x86_64-unknown-linux-musl/release/bridge-guest --help
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bridge-guest-${{ matrix.target }}
+          retention-days: 3
+          if-no-files-found: error
+          path: |
+            runtime/target/${{ matrix.target }}/release/bridge-guest
+            runtime/target/${{ matrix.target }}/release/provenance.json

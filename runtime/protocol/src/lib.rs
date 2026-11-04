@@ -58,6 +58,7 @@ pub enum RequestBody {
     Boot(BootDescriptor),
     Engine(EngineActionWire),
     Chunk { data: String },
+    Readiness {},
     Shutdown {},
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
