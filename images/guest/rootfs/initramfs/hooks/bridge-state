@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0;; esac
+. /usr/share/initramfs-tools/hook-functions
+copy_exec /usr/lib/bridge/bridge-early-state
+copy_exec /usr/bin/jq
+# Copy real binaries to unique names: a dangling mkfs symlink otherwise lets
+# the later busybox hook install its unsupported mke2fs applet in our place.
+for binary in mke2fs blkid blockdev; do copy_exec "/usr/sbin/$binary" "/usr/lib/bridge/$binary"; done
+manual_add_modules virtio_pci virtio_blk virtio_console virtio_rng virtio_net ext4 isofs

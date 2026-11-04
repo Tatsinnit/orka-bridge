@@ -1,0 +1,3 @@
+version = 2
+root = "/var/lib/bridge/containerd"
+state = "/run/containerd"

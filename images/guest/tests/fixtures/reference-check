@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eux
+trap 'rc=$?; if [ "$rc" != 0 ]; then echo BRIDGE_TEST_FAILURE > /dev/ttyS0; fi; sync; systemctl poweroff' EXIT
+/usr/lib/bridge/check-state
+id=$(jq -r .installationId /run/bridge/boot.json)
+mode=$(jq -r .stateCreation /run/bridge/boot.json)
+machine=$(cat /etc/machine-id)
+state=/var/lib/bridge
+[ "$(blkid -s UUID -o value /dev/disk/by-id/virtio-bridge-state)" = "$id" ]
+[ "$(findmnt -rn -T /var/lib/docker -o TARGET)" = /var/lib/docker ]
+[ "$(findmnt -rn -T /var/lib/containerd -o TARGET)" = /var/lib/containerd ]
+[ "$(docker info --format '{{.DockerRootDir}}')" = /var/lib/bridge/docker ]
+ctr version >/dev/null
+ctr namespaces list >/dev/null
+[ -d /var/lib/bridge/containerd/io.containerd.metadata.v1.bolt ]
+[ -c /dev/virtio-ports/ai.orka.bridge.control ]
+[ "$(stat -Lc %a /dev/virtio-ports/ai.orka.bridge.control)" = 600 ]
+[ "$(cat /proc/1/comm)" = systemd ]
+[ "$(jq -r .pid1 /run/bridge/early.json)" != systemd ]
+[ "$(jq -r .machineId /run/bridge/early.json)" = "$machine" ]
+early=$(jq -r .uptime /run/bridge/early.json)
+for daemon in docker containerd; do
+    start=$(systemctl show -p ExecMainStartTimestampMonotonic --value "$daemon.service")
+    jq -en --argjson start "$start" --argjson early "$early" '$start >= ($early * 1000000)' >/dev/null
+done
+if [ "$mode" = new ]; then printf '%s\n' "$machine" > "$state/reference-sentinel"; fi
+[ "$(cat "$state/reference-sentinel")" = "$machine" ]
+jq -cn --arg id "$id" --arg machine "$machine" '{schemaVersion:"bridge-guest-base/v1",installationId:$id,stateUuid:$id,machineId:$machine,sentinel:true,stateBeforeDaemons:true,machineIdBeforeSystemd:true,credentialsType:"tmpfs",dockerRoot:"/var/lib/bridge/docker",containerdRoot:"/var/lib/bridge/containerd",controlPort:true}' > /run/bridge/result.json
+printf 'BRIDGE_BASE %s\n' "$(cat /run/bridge/result.json)" > /dev/ttyS0

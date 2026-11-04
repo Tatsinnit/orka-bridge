@@ -1,0 +1,1 @@
+SUBSYSTEM=="virtio-ports", ATTR{name}=="ai.orka.bridge.control", OWNER="root", GROUP="root", MODE="0600"

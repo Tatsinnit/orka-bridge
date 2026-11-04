@@ -1,0 +1,5 @@
+[Match]
+Driver=virtio_net
+
+[Network]
+DHCP=ipv4

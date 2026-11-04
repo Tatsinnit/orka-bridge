@@ -1,0 +1,14 @@
+[Unit]
+Description=Disposable reference case
+Requires=docker.service containerd.service
+After=docker.service containerd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/bridge/reference-check
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+
+[Install]
+WantedBy=multi-user.target

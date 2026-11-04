@@ -128,3 +128,83 @@ The later guest path must import application archives in node containerd's
 session-bound Tasks with registry egress blocked. This collector does not claim
 those gates passed. Hashes bind selected bytes, not upstream authenticity or
 code signing. No image, chart, archive or release is published by these commands.
+
+## Offline OS assembly
+
+Use a native Linux builder with Python 3.11+, KVM, libguestfs, QEMU, OVMF and
+`genisoimage`. These are **builder dependencies**, not requirements on the
+creator's laptop. Collect the dated Debian factory disk and complete local Debian
+package dependency set before assembly. Do not use a previously booted guest as
+factory input. The selected profile requires one ext4 root, one EFI filesystem
+and only optional unformatted BIOS space; other or extra filesystems are rejected,
+not silently removed from fstab. The assembler rejects known installation directories rather than
+attempting to erase a configured installation.
+
+The existing lock's `packages` list contains `debian-base` plus the Debian packages
+needed for Docker, containerd, jq, initramfs tools and their dependencies. Package
+names, versions and exact file hashes are selected during input collection, not
+resolved by the offline assembler. The `tools` list also pins `qemu-img`,
+`guestfish`, `virt-resize` and `virt-customize`: `path` names a retained copy of
+each executable, `sha256` must match the installed executable, and `version` is
+its exact `--version` output. The builder's kernel, shared libraries and execution
+environment must also be retained in build provenance, such as a selected local
+builder image digest. No downloader or package fallback runs during assembly.
+
+```sh
+LIBGUESTFS_BACKEND=direct python3 images/guest/build.py \
+  --lock /build/inputs/inputs.json --out /build/new-os
+```
+
+Run the builder without an external network interface in addition to
+`virt-customize --no-network`. Assembly uses libguestfs, local files and `dpkg`,
+with service startup disabled. It installs an EFI fallback loader and a clean OS,
+not a pre-created cluster. AMD64 output is standalone GPT QCOW2; ARM64 output is
+GPT raw. The OS has 16 GiB virtual capacity. A separate descriptor requests a new
+32 GiB state disk, not a distributed initialized filesystem. Actual file and
+allocated sizes are recorded in `build.json` and differ from virtual capacity.
+
+The initramfs hook selects state by `bridge-state` serial, validates its ext4 UUID
+and persistent journal, binds machine identity before systemd, and mounts private
+credential memory before either daemon. Docker and separate containerd have
+state-root settings and per-start guards. Unknown state never becomes formatting
+permission. Swap, hibernation, login gettys and SSH are disabled; the console is
+for diagnostics. The control port is named `ai.orka.bridge.control` and root-only.
+
+This change supplies the reference early hook. Native authenticated creation and
+the runtime endpoint are a later integration. Without that native channel or the
+separate reference instrumentation, the factory hook stops rather than guessing
+that a disk is new. It is not a production-ready laptop VM release.
+
+## Disposable reference boot
+
+```sh
+LIBGUESTFS_BACKEND=direct python3 images/guest/boot_test.py --case base \
+  --image /build/new-os/os.qcow2 --lock /build/inputs/inputs.json \
+  --out /build/new-reference-run
+```
+
+This runner is Linux AMD64 KVM only, using QEMU's `pc-q35-7.2` machine with matching
+OVMF 4M firmware and variable template. It uses 4 vCPU and 6 GiB RAM. Keep the
+runner isolated from external networking; user networking is also restricted.
+It neither invokes native app backends nor publishes anything.
+
+The runner copies the unbooted factory OS and instruments only that private copy.
+A separate read-only seed uses `bridge-guest-test/v1` with case, installation UUID,
+explicit `new` or `existing` authority and the state serial. Only the runner's
+exclusively created empty state receives `new`. No arbitrary commands are accepted.
+The seed reader, normal test service and verifier are absent from factory output.
+The instrumented disk and seed hashes are separate from the factory hash.
+
+The base case checks real daemon roots, mount types, early ordering, control-port
+permissions and a persistent sentinel, then shuts down. It replaces only the OS,
+reuses the same stopped state and EFI files, and checks the same machine identity.
+Missing-state, mismatched-UUID and blank-existing boots must refuse; neither of
+the latter two may change logical state contents. Logs and failed private disks are retained, never silently reset.
+
+`boot.json` follows `qualification.schema.json`. It records the actual backend,
+inputs, firmware, instrumentation and seed hashes, per-case disk bytes and elapsed
+VM launch-to-poweroff time. That time is not cluster readiness or first Task time.
+The OS check covers only selected OS inputs: application archives are neither
+installed nor verified by this step. Source-fixture metadata cannot qualify Orka.
+Offline cluster setup, native platform boots and a real model Task remain later
+work. Both build and boot results keep `publicationReady: false`.

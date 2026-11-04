@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reference base boot evidence, not release approval",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "case", "backend", "qualificationOnly", "publicationReady", "build", "new", "replacement", "missing", "mismatch", "blank", "blankExistingRefusedWithoutMutation", "missingStateRefused", "uuidMismatchRefusedWithoutMutation", "firmware", "qemuVersion", "machine"],
+  "properties": {
+    "schemaVersion": {"const": "bridge-guest-boot/v1"},
+    "case": {"const": "base"},
+    "backend": {"const": "qemu-kvm"},
+    "qualificationOnly": {"const": true},
+    "publicationReady": {"const": false},
+    "build": {"type": "object", "required": ["sha256", "inputSha256", "recipeFiles", "builderTools", "contract", "publicationReady"], "properties": {"publicationReady": {"const": false}}},
+    "new": {"$ref": "#/$defs/boot"},
+    "replacement": {"$ref": "#/$defs/boot"},
+    "missing": {"$ref": "#/$defs/negative"},
+    "mismatch": {"$ref": "#/$defs/negative"},
+    "blank": {"$ref": "#/$defs/negative"},
+    "blankExistingRefusedWithoutMutation": {"const": true},
+    "missingStateRefused": {"const": true},
+    "uuidMismatchRefusedWithoutMutation": {"const": true},
+    "firmware": {"type": "object", "minProperties": 2, "additionalProperties": {"$ref": "#/$defs/hash"}},
+    "qemuVersion": {"type": "string", "minLength": 1},
+    "machine": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "negative": {"type": "object", "required": ["baseSha256", "instrumentedSha256", "seedSha256", "testHookSha256", "efiBeforeSha256", "seed", "elapsedSeconds", "diskBytes"], "properties": {"baseSha256": {"$ref": "#/$defs/hash"}, "instrumentedSha256": {"$ref": "#/$defs/hash"}, "seedSha256": {"$ref": "#/$defs/hash"}, "elapsedSeconds": {"type": "number", "minimum": 0}, "seed": {"$ref": "#/$defs/seed"}}},
+    "boot": {"allOf": [{"$ref": "#/$defs/negative"}, {"type": "object", "required": ["result"], "properties": {"result": {"type": "object", "required": ["schemaVersion", "installationId", "stateUuid", "machineId", "sentinel", "stateBeforeDaemons", "machineIdBeforeSystemd", "credentialsType", "dockerRoot", "containerdRoot", "controlPort"], "properties": {"schemaVersion": {"const": "bridge-guest-base/v1"}, "machineId": {"type": "string", "pattern": "^[0-9a-f]{32}$"}, "sentinel": {"const": true}, "stateBeforeDaemons": {"const": true}, "machineIdBeforeSystemd": {"const": true}, "credentialsType": {"const": "tmpfs"}, "controlPort": {"const": true}}}}}]},
+    "seed": {"type": "object", "additionalProperties": false, "required": ["schemaVersion", "caseId", "installationId", "stateCreation", "stateSerial"], "properties": {"schemaVersion": {"const": "bridge-guest-test/v1"}, "caseId": {"const": "base"}, "installationId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}, "stateCreation": {"enum": ["new", "existing"]}, "stateSerial": {"const": "bridge-state"}}}
+  }
+}

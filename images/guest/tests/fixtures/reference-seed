@@ -1,0 +1,13 @@
+#!/bin/sh
+case "$1" in prereqs) exit 0;; esac
+# Instrumented reference overlay only; absent from factory output.
+modprobe isofs
+seed=/dev/disk/by-id/virtio-bridge-test
+for attempt in 1 2 3 4 5; do [ -b "$seed" ] && break; sleep 1; done
+[ -b "$seed" ] || exit 1
+mkdir -p /run/bridge-seed /run/bridge
+mount -t iso9660 -o ro "$seed" /run/bridge-seed || exit 1
+cp /run/bridge-seed/bridge.json /run/bridge/boot.json
+chmod 600 /run/bridge/boot.json
+: > /run/bridge/reference-test
+umount /run/bridge-seed

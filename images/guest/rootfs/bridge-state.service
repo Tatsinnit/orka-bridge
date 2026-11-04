@@ -1,0 +1,9 @@
+[Unit]
+Description=Verify early persistent identity and volatile credential mounts
+After=local-fs.target var-lib-bridge.mount run-bridge-credentials.mount
+Before=docker.service containerd.service bridge-guest.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/bridge/check-state
+RemainAfterExit=yes

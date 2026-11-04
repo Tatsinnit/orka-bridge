@@ -1,0 +1,17 @@
+#!/bin/sh
+# Validate the early endpoint's mounts. This guard never mounts or formats.
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+fail() { printf '%s\n' "bridge-state: $1" >&2; exit 1; }
+test -s /run/bridge/boot.json || fail 'accepted early descriptor unavailable'
+test "$(findmnt -rn -M /var/lib/bridge -o FSTYPE)" = ext4 || fail 'state mount unavailable'
+state_uuid=$(findmnt -rn -M /var/lib/bridge -o UUID)
+test -n "$state_uuid" || fail 'state mount identity unavailable'
+test "$(jq -er .installationId /run/bridge/boot.json)" = "$state_uuid" || fail 'accepted installation identity mismatch'
+test "$(findmnt -rn -M /run/bridge/credentials -o FSTYPE)" = tmpfs || fail 'credential tmpfs unavailable'
+test "$(findmnt -rn -T /etc/machine-id -o TARGET)" = /etc/machine-id || fail 'persistent machine identity mount unavailable'
+test "$(findmnt -rn -T /etc/machine-id -o UUID)" = "$state_uuid" || fail 'persistent machine identity mismatch'
+for path in /var/lib/docker /var/lib/containerd; do
+    test "$(findmnt -rn -M "$path" -o UUID)" = "$state_uuid" || fail 'daemon state bind unavailable'
+done
