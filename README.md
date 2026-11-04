@@ -31,6 +31,8 @@ your agent, runs the same tests there, and deploys it.
 The local environment makes development easier, but the agent definition, tools, and tests are the same ones used on
 the destination cluster.
 
+The [happy path](docs/happy-path.md) walks through these steps, with open design questions for each.
+
 ### Setup
 
 Bridge has three tabs: Overview, Designer, and Clusters.
