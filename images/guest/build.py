@@ -19,7 +19,7 @@ else:
 OS_BYTES, STATE_BYTES = 16 * 1024**3, 32 * 1024**3
 ROOTFS_FILES = {
     "/usr/lib/bridge/check-state": "check-state",
-    "/usr/lib/bridge/bridge-early-state": "bridge-early-state",
+    "/etc/systemd/system/bridge-guest.service": "bridge-guest.service",
     "/etc/initramfs-tools/hooks/bridge-state": "initramfs/hooks/bridge-state",
     "/etc/initramfs-tools/scripts/local-bottom/bridge-state": "initramfs/scripts/local-bottom/bridge-state",
     "/etc/systemd/system/bridge-state.service": "bridge-state.service",
@@ -49,7 +49,18 @@ def disk_contract(architecture):
 def verify_os_inputs(lock, *, source):
     validate_lock(lock, production=False)
     files = {group: {a["name"]: checked_file(source, a["path"], a["sha256"]) for a in lock[group]} for group in ("packages", "tools")}
-    return {"base": files["packages"]["debian-base"], **files, "contract": disk_contract(lock["architecture"]),
+    tools = {t["name"]: t for t in lock["tools"]}
+    require({"bridge-guest", "bridge-guest-provenance"} <= tools.keys(), "verified runtime inputs required")
+    runtime = json.loads(files["tools"]["bridge-guest-provenance"].read_text())
+    binary = files["tools"]["bridge-guest"].read_bytes()
+    target, machine = {"amd64": ("x86_64-unknown-linux-musl", 62), "arm64": ("aarch64-unknown-linux-musl", 183)}[lock["architecture"]]
+    require(isinstance(runtime, dict) and runtime.get("schemaVersion") == "bridge-guest-binary/v1"
+            and runtime.get("sourceCommit") == tools["bridge-guest"]["version"] == tools["bridge-guest-provenance"]["version"]
+            and runtime.get("binarySha256") == tools["bridge-guest"]["sha256"] and runtime.get("binaryBytes") == len(binary)
+            and runtime.get("target") == target and runtime.get("contractVersion") == "H1/v1" and runtime.get("protocolMajor") == 1,
+            "runtime provenance mismatch")
+    require(len(binary) >= 64 and binary[:6] == b"\x7fELF\x02\x01" and int.from_bytes(binary[18:20], "little") == machine, "runtime ELF target mismatch")
+    return {"base": files["packages"]["debian-base"], **files, "runtime": runtime, "contract": disk_contract(lock["architecture"]),
             "componentCacheVerified": False, "publicationReady": False}
 
 
@@ -62,7 +73,7 @@ def stage_rootfs(lock, *, source, out):
         target = out / dest.lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((Path(__file__).with_name("rootfs") / name).read_bytes())
-        target.chmod(0o755 if name in ("check-state", "bridge-early-state") or name.startswith("initramfs/") else 0o644)
+        target.chmod(0o755 if name == "check-state" or name.startswith("initramfs/") else 0o644)
         hashes[dest] = file_hash(target)
     target = out / "usr/local/bin/kind"
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -70,6 +81,25 @@ def stage_rootfs(lock, *, source, out):
     target.chmod(0o755)
     expected = next(t["sha256"] for t in lock["tools"] if t["name"] == "kind")
     require(file_hash(target) == expected, "kind changed during staging")
+    for name, dest in (("bridge-guest", "usr/lib/bridge/bridge-guest"), ("bridge-guest-provenance", "usr/share/doc/bridge-guest/provenance.json")):
+        target = out / dest
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(inputs["tools"][name], target)
+        expected = next(t["sha256"] for t in lock["tools"] if t["name"] == name)
+        require(file_hash(target) == expected, "runtime changed during staging")
+        target.chmod(0o755 if name == "bridge-guest" else 0o644)
+        hashes["/" + dest] = expected
+    for name in ("LICENSE", "NOTICE.md"):
+        target = out / "usr/share/doc/bridge-guest" / name
+        shutil.copyfile(Path(__file__).resolve().parents[2] / name, target)
+        target.chmod(0o644)
+        hashes["/usr/share/doc/bridge-guest/" + name] = file_hash(target)
+    for dest in ("var/lib/bridge", "var/lib/docker", "var/lib/containerd"):
+        (out / dest).mkdir(parents=True, exist_ok=True)
+    (out / "etc/machine-id").write_bytes(b"")
+    enabled = out / "etc/systemd/system/multi-user.target.wants"
+    enabled.mkdir(parents=True)
+    (enabled / "bridge-guest.service").symlink_to("../bridge-guest.service")
     return {"rootfsStaged": True, "diskBuilt": False, "bootVerified": False, "publicationReady": False, "files": hashes}
 
 
@@ -96,6 +126,9 @@ def rootfs_archive(overlay, target):
                 info.mode = 0o755
                 tar.addfile(info)
             else:
+                if info.issym():
+                    tar.addfile(info)
+                    continue
                 require(info.isfile(), "unexpected rootfs entry")
                 with path.open("rb") as stream:
                     tar.addfile(info, stream)
@@ -199,7 +232,7 @@ def build(lock, out, *, source):
     require(image_info(payload)["virtual-size"] == OS_BYTES, "wrong OS capacity")
     snapshot.unlink()
     result = {"schemaVersion": "bridge-guest-build/v1", "architecture": lock["architecture"], "contract": inputs["contract"],
-              "inputSha256": hashlib.sha256(encoded(lock)).hexdigest(), "builderTools": builder_tools,
+              "inputSha256": hashlib.sha256(encoded(lock)).hexdigest(), "builderTools": builder_tools, "runtime": inputs["runtime"],
               "recipeFiles": {"build.py": file_hash(Path(__file__)), "lock.py": file_hash(Path(__file__).with_name("lock.py")), **overlay["files"]},
               "payload": payload.name, "sha256": file_hash(payload), "fileBytes": payload.stat().st_size,
               "allocatedBytes": payload.stat().st_blocks * 512, "componentCacheVerified": False, "bootVerified": False, "publicationReady": False}

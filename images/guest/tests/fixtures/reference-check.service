@@ -1,7 +1,7 @@
 [Unit]
 Description=Disposable reference case
-Requires=docker.service containerd.service
-After=docker.service containerd.service
+Requires=docker.service containerd.service bridge-guest.service
+After=docker.service containerd.service bridge-guest.service
 
 [Service]
 Type=oneshot

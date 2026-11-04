@@ -12,6 +12,13 @@ test "$(jq -er .installationId /run/bridge/boot.json)" = "$state_uuid" || fail '
 test "$(findmnt -rn -M /run/bridge/credentials -o FSTYPE)" = tmpfs || fail 'credential tmpfs unavailable'
 test "$(findmnt -rn -T /etc/machine-id -o TARGET)" = /etc/machine-id || fail 'persistent machine identity mount unavailable'
 test "$(findmnt -rn -T /etc/machine-id -o UUID)" = "$state_uuid" || fail 'persistent machine identity mismatch'
+same_source() {
+    target_identity=$(stat -Lc '%d:%i' "$1") || fail 'state identity unavailable'
+    source_identity=$(stat -Lc '%d:%i' "$2") || fail 'state identity unavailable'
+    test "$target_identity" = "$source_identity" || fail 'state source mismatch'
+}
 for path in /var/lib/docker /var/lib/containerd; do
     test "$(findmnt -rn -M "$path" -o UUID)" = "$state_uuid" || fail 'daemon state bind unavailable'
+    same_source "$path" "/var/lib/bridge/${path##*/}"
 done
+same_source /etc/machine-id /var/lib/bridge/machine-id

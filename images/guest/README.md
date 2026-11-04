@@ -146,7 +146,11 @@ names, versions and exact file hashes are selected during input collection, not
 resolved by the offline assembler. The `tools` list also pins `qemu-img`,
 `guestfish`, `virt-resize` and `virt-customize`: `path` names a retained copy of
 each executable, `sha256` must match the installed executable, and `version` is
-its exact `--version` output. The builder's kernel, shared libraries and execution
+its exact `--version` output. Also select `bridge-guest` and
+`bridge-guest-provenance` tool files with the same source commit as their version.
+The original `bridge-guest-binary/v1` record must bind the binary bytes/hash,
+architecture target, protocol major and two-disk contract. Installation copies the
+selected binary, original provenance and project notices; it does not rebuild it. The builder's kernel, shared libraries and execution
 environment must also be retained in build provenance, such as a selected local
 builder image digest. No downloader or package fallback runs during assembly.
 
@@ -170,10 +174,13 @@ state-root settings and per-start guards. Unknown state never becomes formatting
 permission. Swap, hibernation, login gettys and SSH are disabled; the console is
 for diagnostics. The control port is named `ai.orka.bridge.control` and root-only.
 
-This change supplies the reference early hook. Native authenticated creation and
-the runtime endpoint are a later integration. Without that native channel or the
-separate reference instrumentation, the factory hook stops rather than guessing
-that a disk is new. It is not a production-ready laptop VM release.
+The same selected static endpoint runs `--early` in initramfs and `--serve` as a
+normal service. Initramfs must use `/root`, retain `/run` across switch-root, and
+supply the endpoint's fixed utility paths and pre-created mount targets. The early
+hook accepts only the real serial BootDescriptor; no test marker can authorize it.
+The serve stage requires a fresh hello and existing-state reaffirmation for the
+same lease. A failed early endpoint stops boot, including when shutdown fails.
+This integration is not a production-ready laptop VM release.
 
 ## Disposable reference boot
 
@@ -192,7 +199,12 @@ The runner copies the unbooted factory OS and instruments only that private copy
 A separate read-only seed uses `bridge-guest-test/v1` with case, installation UUID,
 explicit `new` or `existing` authority and the state serial. Only the runner's
 exclusively created empty state receives `new`. No arbitrary commands are accepted.
-The seed reader, normal test service and verifier are absent from factory output.
+The observer, normal test service and verifier are absent from factory output.
+The seed is test metadata only: it never populates the endpoint's accepted boot
+record. The reference host exchanges the real early/serve frames, retains fresh
+stage nonces and checks endpoint readiness. It requests shutdown only after both
+endpoint readiness and the guest verifier have completed. No reference formatter
+is installed.
 The instrumented disk and seed hashes are separate from the factory hash.
 
 The base case checks real daemon roots, mount types, early ordering, control-port

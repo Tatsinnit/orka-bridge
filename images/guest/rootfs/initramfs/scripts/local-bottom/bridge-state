@@ -1,4 +1,6 @@
 #!/bin/sh
 PREREQ=""
 case "$1" in prereqs) echo "$PREREQ"; exit 0;; esac
-exec /usr/lib/bridge/bridge-early-state "$rootmnt"
+fail() { trap - EXIT; set +e; echo "BRIDGE_EARLY_ERROR native endpoint refused" > /dev/console; poweroff -f; while :; do sleep 60; done; }
+[ "$rootmnt" = /root ] || fail
+/usr/lib/bridge/bridge-guest --early || fail

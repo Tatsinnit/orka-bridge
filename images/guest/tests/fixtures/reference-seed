@@ -1,13 +1,14 @@
 #!/bin/sh
-case "$1" in prereqs) exit 0;; esac
-# Instrumented reference overlay only; absent from factory output.
+case "$1" in prereqs) echo bridge-state; exit 0;; esac
+# Observe the real endpoint after it has completed; never provide boot authority.
+set -eu
+[ "$rootmnt" = /root ]
 modprobe isofs
-seed=/dev/disk/by-id/virtio-bridge-test
-for attempt in 1 2 3 4 5; do [ -b "$seed" ] && break; sleep 1; done
-[ -b "$seed" ] || exit 1
-mkdir -p /run/bridge-seed /run/bridge
-mount -t iso9660 -o ro "$seed" /run/bridge-seed || exit 1
-cp /run/bridge-seed/bridge.json /run/bridge/boot.json
-chmod 600 /run/bridge/boot.json
-: > /run/bridge/reference-test
+mkdir -p /run/bridge-seed
+mount -t iso9660 -o ro /dev/disk/by-id/virtio-bridge-test /run/bridge-seed
+cp /run/bridge-seed/bridge.json /run/bridge/reference.json
 umount /run/bridge-seed
+read uptime rest < /proc/uptime
+pid1=$(cat /proc/1/comm)
+machine=$(cat /root/etc/machine-id)
+printf '{"pid1":"%s","machineId":"%s","uptime":%s}\n' "$pid1" "$machine" "$uptime" > /run/bridge/early.json

@@ -1,12 +1,12 @@
 #!/bin/sh
 set -e
 PREREQ=""
-prereqs() { echo "$PREREQ"; }
-case "$1" in prereqs) prereqs; exit 0;; esac
+case "$1" in prereqs) echo "$PREREQ"; exit 0;; esac
 . /usr/share/initramfs-tools/hook-functions
-copy_exec /usr/lib/bridge/bridge-early-state
-copy_exec /usr/bin/jq
-# Copy real binaries to unique names: a dangling mkfs symlink otherwise lets
-# the later busybox hook install its unsupported mke2fs applet in our place.
-for binary in mke2fs blkid blockdev; do copy_exec "/usr/sbin/$binary" "/usr/lib/bridge/$binary"; done
+copy_exec /usr/lib/bridge/bridge-guest
+# Native endpoint uses these fixed paths. Copy canonical executable bytes, not
+# dangling aliases that a later busybox hook could fill with an unsupported applet.
+for binary in /sbin/blkid /sbin/blockdev /sbin/mkfs.ext4 /bin/mount /usr/bin/findmnt; do
+    copy_exec "$(readlink -f "$binary")" "$binary"
+done
 manual_add_modules virtio_pci virtio_blk virtio_console virtio_rng virtio_net ext4 isofs

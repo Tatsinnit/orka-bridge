@@ -1,0 +1,12 @@
+[Unit]
+Description=Bridge guest endpoint
+Requires=bridge-state.service
+After=bridge-state.service
+
+[Service]
+ExecStart=/usr/lib/bridge/bridge-guest --serve
+UMask=0077
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

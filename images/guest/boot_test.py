@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -13,10 +14,12 @@ from typing import TYPE_CHECKING
 if __package__ or TYPE_CHECKING:
     from .build import STATE_BYTES, encoded, image_info, run
     from .lock import file_hash, load_lock, matches, require
+    from .reference_host import control_worker
     from .test_seed import write_seed
 else:
     from build import STATE_BYTES, encoded, image_info, run
     from lock import file_hash, load_lock, matches, require
+    from reference_host import control_worker
     from test_seed import write_seed
 
 FIXTURES = Path(__file__).with_name("tests") / "fixtures"
@@ -90,14 +93,31 @@ def boot_case(factory, root, installation_id, mode, state=None, missing=False, c
               "seedSha256": file_hash(root / "seed.iso"), "seed": seed, "efiBeforeSha256": file_hash(root / "efi.fd"),
               "testHookSha256": {p: file_hash(FIXTURES / p) for p in ("reference-seed", "reference-check", "reference-check.service")}}
     start = time.monotonic()
-    with (root / "qemu.log").open("w") as log:
-        subprocess.run(qemu_argv(root, installation_id, not missing), check=True, stdout=log, stderr=log, timeout=180)
+    boot = {"installationId": installation_id, "generation": 1, "bootNonce": str(uuid.uuid4()), "stateCreation": mode,
+            "stateFsUuid": installation_id, "stateBytes": STATE_BYTES, "hostUtc": int(time.time())}
+    frames, errors, stop = [], [], threading.Event()
+    with (root / "qemu.log").open("w") as log, subprocess.Popen(qemu_argv(root, installation_id, not missing), stdout=log, stderr=log) as process:
+        worker = threading.Thread(target=control_worker, args=(root, boot, process, stop, frames, errors), daemon=True)
+        worker.start()
+        try:
+            require(process.wait(timeout=180) == 0, "QEMU reference VM failed")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            stop.set()
+            worker.join(2)
+        require(not worker.is_alive() and not errors, "runtime host exchange failed: " + "; ".join(errors))
+    before["runtimeFrames"] = frames
+    before["bootDescriptor"] = boot
     serial = root / "serial.log"
     require(serial.stat().st_size <= 4 * 1024**2, "serial output exceeds bound")
     text = serial.read_text(errors="replace")
     metrics = {name: {"fileBytes": (root / name).stat().st_size, "allocatedBytes": (root / name).stat().st_blocks * 512}
                for name in ("os.qcow2", "efi.fd", "seed.iso", "state.qcow2") if (root / name).exists()}
-    return {**before, "elapsedSeconds": time.monotonic() - start, "serial": text, "diskBytes": metrics}
+    receipt = {**before, "elapsedSeconds": time.monotonic() - start, "diskBytes": metrics}
+    (root / "case.json").write_bytes(encoded(receipt) + b"\n")
+    return {**receipt, "serial": text}
 
 
 def base(image, lock_path, out):
@@ -117,19 +137,23 @@ def base(image, lock_path, out):
     second = boot_case(image, out / "replacement", installation, "existing", out / "new/state.qcow2")
     b = parse_result(second.pop("serial"), installation)
     require(a["machineId"] == b["machineId"], "OS replacement changed machine identity")
+    for case in (first, second):
+        require(len(case["runtimeFrames"]) == 6 and case["runtimeFrames"][-1]["body"]["body"]["op"] == "ready", "native runtime handoff incomplete")
     absent = boot_case(image, out / "missing", installation, "existing", missing=True)
     missing_serial = absent.pop("serial")
-    require("BRIDGE_EARLY_ERROR state disk missing" in missing_serial and "systemd[1]" not in missing_serial and "BRIDGE_BASE" not in missing_serial, "missing-state case did not refuse before services")
+    require("BRIDGE_EARLY_ERROR native endpoint refused" in missing_serial and "systemd[1]" not in missing_serial and "BRIDGE_BASE" not in missing_serial, "missing-state case did not refuse before services")
     mismatch = boot_case(image, out / "mismatch", str(uuid.uuid4()), "existing", out / "replacement/state.qcow2", copy_state=True)
     mismatch_serial = mismatch.pop("serial")
-    require("BRIDGE_EARLY_ERROR state UUID mismatch" in mismatch_serial and "systemd[1]" not in mismatch_serial and "BRIDGE_BASE" not in mismatch_serial, "UUID mismatch did not refuse before services")
+    require("BRIDGE_EARLY_ERROR native endpoint refused" in mismatch_serial and "systemd[1]" not in mismatch_serial and "BRIDGE_BASE" not in mismatch_serial, "UUID mismatch did not refuse before services")
     run(["qemu-img", "compare", out / "replacement/state.qcow2", out / "mismatch/state.qcow2"])
     blank = boot_case(image, out / "blank-existing", installation, "existing")
     blank_serial = blank.pop("serial")
-    require("BRIDGE_EARLY_ERROR existing state is unformatted" in blank_serial and "systemd[1]" not in blank_serial, "blank existing state did not refuse")
+    require("BRIDGE_EARLY_ERROR native endpoint refused" in blank_serial and "systemd[1]" not in blank_serial, "blank existing state did not refuse")
     empty = out / "expected-empty.qcow2"
     run(["qemu-img", "create", "-f", "qcow2", empty, str(STATE_BYTES)])
     run(["qemu-img", "compare", empty, out / "blank-existing/state.qcow2"])
+    for case in (absent, mismatch, blank):
+        require(len(case["runtimeFrames"]) == 2 and case["runtimeFrames"][-1]["body"]["body"] == {"op": "error", "body": {"code": "incompatibleState"}}, "native early refusal missing")
     result = {"schemaVersion": "bridge-guest-boot/v1", "case": "base", "backend": "qemu-kvm", "qualificationOnly": True,
               "publicationReady": False, "build": build, "new": {**first, "result": a}, "replacement": {**second, "result": b},
               "missingStateRefused": True, "uuidMismatchRefusedWithoutMutation": True, "missing": absent, "mismatch": mismatch,

@@ -14,9 +14,11 @@ class BuildTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.value = lock(self.root)
+        from .test_runtime import runtime_inputs
+        runtime_inputs(self.root, self.value)
         self.api = importlib.import_module("guest.build")
 
-    def test_reference_assembly_does_not_wait_for_runtime_endpoint(self):
+    def test_runtime_inputs_are_verified_without_claiming_application_cache(self):
         result = self.api.verify_os_inputs(self.value, source=self.root)
         self.assertFalse(result["componentCacheVerified"])
         self.assertFalse(result["publicationReady"])
@@ -36,10 +38,12 @@ class BuildTests(unittest.TestCase):
         self.assertFalse(result["diskBuilt"])
         self.assertFalse(result["bootVerified"])
         root = self.root / "overlay"
-        self.assertTrue((root / "usr/lib/bridge/bridge-early-state").is_file())
-        self.assertFalse((root / "etc/systemd/system/multi-user.target.wants/bridge-guest.service").exists())
+        self.assertTrue((root / "usr/lib/bridge/bridge-guest").is_file())
+        self.assertFalse((root / "usr/lib/bridge/bridge-early-state").exists())
+        self.assertTrue((root / "etc/systemd/system/multi-user.target.wants/bridge-guest.service").is_symlink())
         self.assertFalse((root / "run/bridge/boot.json").exists())
-        self.assertFalse((root / "var/lib/bridge").exists())
+        self.assertTrue((root / "var/lib/bridge").is_dir())
+        self.assertEqual([], list((root / "var/lib/bridge").iterdir()))
 
     def test_archive_has_guest_root_ownership_not_builder_ownership(self):
         import tarfile

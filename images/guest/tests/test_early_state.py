@@ -13,7 +13,7 @@ class StateGuardTests(unittest.TestCase):
         self.assertTrue(path.is_file(), "missing image integration file: " + name)
         return path
 
-    def run_guard(self, *, filesystem="ext4", credentials="tmpfs", state_uuid="install", machine_uuid="install", machine_mount="/etc/machine-id", descriptor=True, expected_uuid="install", legacy_uuid="install"):
+    def run_guard(self, *, filesystem="ext4", credentials="tmpfs", state_uuid="install", machine_uuid="install", machine_mount="/etc/machine-id", descriptor=True, expected_uuid="install", legacy_uuid="install", bind_source="1:2", stat_fail=False):
         script = self.file("check-state")
         with tempfile.TemporaryDirectory() as temp:
             trace = Path(temp) / "trace"
@@ -21,6 +21,7 @@ class StateGuardTests(unittest.TestCase):
             # functions and values never enter the installed image/service.
             wrapper = r'''
 jq() { printf '%s\n' "$EXPECTED_UUID"; }
+stat() { [ "$STAT_FAIL" = no ] || return 1; case "$*" in *'/var/lib/docker') printf '%s\n' "$BIND_SOURCE";; *) printf '%s\n' '1:2';; esac; }
 findmnt() {
     printf '%s\n' "$*" >> "$TRACE"
     case "$*" in
@@ -44,7 +45,7 @@ test() {
             environment = {"GUARD": str(script), "TRACE": str(trace), "STATE_FS": filesystem,
                            "STATE_UUID": state_uuid, "CREDENTIAL_FS": credentials,
                            "MACHINE_UUID": machine_uuid, "MACHINE_MOUNT": machine_mount,
-                           "DESCRIPTOR": "yes" if descriptor else "no", "EXPECTED_UUID": expected_uuid, "LEGACY_UUID": legacy_uuid}
+                           "DESCRIPTOR": "yes" if descriptor else "no", "EXPECTED_UUID": expected_uuid, "LEGACY_UUID": legacy_uuid, "BIND_SOURCE": bind_source, "STAT_FAIL": "yes" if stat_fail else "no"}
             result = subprocess.run(["/bin/sh", "-c", wrapper], env=environment, capture_output=True, text=True, check=False)
             calls = trace.read_text() if trace.exists() else ""
             self.assertNotIn("mkfs", calls)
@@ -64,25 +65,20 @@ test() {
         result = self.run_guard(legacy_uuid="root-os")
         self.assertNotEqual(0, result.returncode)
 
-    def test_early_machine_identity_validator_rejects_corruption(self):
-        import re
-        script = self.file("bridge-early-state").read_text()
-        match = re.search(r"valid_machine_id\(\) \{.*?\n\}", script, re.DOTALL)
-        if match is None:
-            self.fail("early persistent-ID validation missing")
-        with tempfile.TemporaryDirectory() as temp:
-            path = Path(temp) / "machine-id"
-            for value in ("", "0" * 32, "g" * 32, "a" * 31, "a" * 33, "a" * 32 + "\n\n", "a" * 16 + "\x00" + "a" * 16):
-                path.write_bytes(value.encode())
-                result = subprocess.run(["/bin/sh", "-c", match[0] + '\nvalid_machine_id "$1"', "validate", str(path)], capture_output=True, check=False)
-                self.assertNotEqual(0, result.returncode, repr(value))
-            for value in ("a" * 32, "a" * 32 + "\n"):
-                path.write_text(value)
-                result = subprocess.run(["/bin/sh", "-c", match[0] + '\nvalid_machine_id "$1"', "validate", str(path)], capture_output=True, check=False)
-                self.assertEqual(0, result.returncode, result.stderr)
+    def test_failed_identity_reads_block_services(self):
+        self.assertNotEqual(0, self.run_guard(stat_fail=True).returncode)
+
+    def test_wrong_same_uuid_bind_source_blocks_services(self):
+        self.assertNotEqual(0, self.run_guard(bind_source="9:9").returncode)
+
+    def test_runtime_owns_persisted_identity_validation(self):
+        script = self.file("initramfs/scripts/local-bottom/bridge-state").read_text()
+        self.assertIn('/usr/lib/bridge/bridge-guest --early || fail', script)
+        self.assertNotIn("mke2fs", script)
+        self.assertNotIn("mkfs", script)
 
     def test_terminal_failure_stays_closed_if_logging_or_shutdown_fail(self):
-        handler = next(line for line in self.file("bridge-early-state").read_text().splitlines() if line.startswith("fail()"))
+        handler = next(line for line in self.file("initramfs/scripts/local-bottom/bridge-state").read_text().splitlines() if line.startswith("fail()"))
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             for broken_console in (True, False):
@@ -154,12 +150,14 @@ test() {
 
     def test_initramfs_hook_owns_early_identity_before_systemd(self):
         script = self.file("initramfs/scripts/local-bottom/bridge-state").read_text()
-        self.assertIn('exec /usr/lib/bridge/bridge-early-state "$rootmnt"', script)
-        early = self.file("bridge-early-state").read_text()
-        self.assertLess(early.index('mount --bind "$state/machine-id"'), early.index('> /run/bridge/early.json'))
-        self.assertIn('creation" = new', early)
-        self.assertNotIn("docker run", early)
+        self.assertIn('[ "$rootmnt" = /root ] || fail', script)
+        self.assertIn('/usr/lib/bridge/bridge-guest --early || fail', script)
+        hook = self.file("initramfs/hooks/bridge-state").read_text()
+        for path in ("/sbin/blkid", "/sbin/blockdev", "/sbin/mkfs.ext4", "/bin/mount", "/usr/bin/findmnt"):
+            self.assertIn(path, hook)
 
     def test_credential_mount_has_no_persistent_backing(self):
-        script = self.file("bridge-early-state").read_text()
-        self.assertIn("mount -t tmpfs -o mode=0700,nosuid,nodev,noexec", script)
+        unit = self.file("bridge-guest.service").read_text()
+        self.assertIn("After=bridge-state.service", unit)
+        self.assertIn("ExecStart=/usr/lib/bridge/bridge-guest --serve", unit)
+        self.assertNotIn("Restart=", unit)
