@@ -1,0 +1,166 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bridge-creator-a
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bridge-creator-b
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bridge-creator
+  namespace: bridge-creator-a
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bridge-creator
+  namespace: bridge-creator-b
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bridge-observer
+  namespace: bridge-creator-a
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bridge-observer
+  namespace: bridge-creator-b
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bridge-orka-creator
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+rules:
+  - apiGroups: ["core.orka.ai"]
+    resources: ["agents"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["agents/status"]
+    verbs: ["get"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["tasks"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["tasks/status"]
+    verbs: ["get"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["tasks/approvals"]
+    verbs: ["update"]
+  # Sessions are virtual Orka API resources authorized by SubjectAccessReview.
+  - apiGroups: ["core.orka.ai"]
+    resources: ["sessions"]
+    verbs: ["get", "list", "create", "update", "delete"]
+  # Chat creation and configuration are separate virtual API resources.
+  - apiGroups: ["core.orka.ai"]
+    resources: ["chats"]
+    verbs: ["create"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["chats/config"]
+    verbs: ["get"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["providers", "tools", "skills"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: bridge-orka-observer
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+rules:
+  - apiGroups: ["core.orka.ai"]
+    resources: ["agents"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["agents/status"]
+    verbs: ["get"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["tasks"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["core.orka.ai"]
+    resources: ["tasks/status"]
+    verbs: ["get"]
+  # Session reads include transcripts and execution events.
+  - apiGroups: ["core.orka.ai"]
+    resources: ["sessions"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bridge-creator
+  namespace: bridge-creator-a
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bridge-orka-creator
+subjects:
+  - kind: ServiceAccount
+    name: bridge-creator
+    namespace: bridge-creator-a
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bridge-creator
+  namespace: bridge-creator-b
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bridge-orka-creator
+subjects:
+  - kind: ServiceAccount
+    name: bridge-creator
+    namespace: bridge-creator-b
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bridge-observer
+  namespace: bridge-creator-a
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bridge-orka-observer
+subjects:
+  - kind: ServiceAccount
+    name: bridge-observer
+    namespace: bridge-creator-a
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bridge-observer
+  namespace: bridge-creator-b
+  labels:
+    app.kubernetes.io/part-of: orka-bridge-rbac-validation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: bridge-orka-observer
+subjects:
+  - kind: ServiceAccount
+    name: bridge-observer
+    namespace: bridge-creator-b

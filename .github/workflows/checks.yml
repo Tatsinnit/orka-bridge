@@ -12,6 +12,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  shared-cluster-rbac:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test shared-cluster RBAC validator
+        run: python3 -m unittest scripts/test_validate_shared_cluster_rbac.py -v
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -146,7 +156,7 @@ jobs:
 
   gate:
     name: App gate
-    needs: [frontend, native]
+    needs: [shared-cluster-rbac, frontend, native]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
