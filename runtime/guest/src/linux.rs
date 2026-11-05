@@ -1,4 +1,5 @@
 //! Fixed-purpose Linux guest operations; never called by filesystem unit adapters.
+use crate::diagnostics::{self, Context};
 use crate::early::{invalid, validate, BootSystem, Disk, Identity};
 use bridge_runtime_protocol::*;
 use std::{
@@ -20,8 +21,14 @@ pub struct Linux {
 }
 impl Linux {
     pub fn early() -> io::Result<Self> {
-        private_run()?;
+        const STAGE: &str = "early";
+        private_run(STAGE)?;
         if fs::symlink_metadata(BOOT).is_ok() {
+            diagnostics::log(
+                Context::new(STAGE, "boot-exists"),
+                io::ErrorKind::Other,
+                None,
+            );
             return Err(invalid());
         }
         Ok(Self {
@@ -30,11 +37,19 @@ impl Linux {
         })
     }
     pub fn serve() -> io::Result<Self> {
-        private_run()?;
+        const STAGE: &str = "serve";
+        private_run(STAGE)?;
         Ok(Self {
             root: "",
             device: PathBuf::new(),
         })
+    }
+    fn stage(&self) -> &'static str {
+        if self.root == "/root" {
+            "early"
+        } else {
+            "serve"
+        }
     }
     fn state(&self) -> PathBuf {
         PathBuf::from(format!("{}/var/lib/bridge", self.root))
@@ -43,30 +58,63 @@ impl Linux {
         format!("{}{suffix}", self.root)
     }
     pub fn accepted() -> io::Result<BootDescriptor> {
-        let b: BootDescriptor =
-            serde_json::from_slice(&read_regular(Path::new(BOOT), 4096)?).map_err(|_| invalid())?;
-        validate(&b)?;
+        const STAGE: &str = "serve";
+        let b: BootDescriptor = match serde_json::from_slice(&read_regular(Path::new(BOOT), 4096)?)
+        {
+            Ok(b) => b,
+            Err(_) => {
+                diagnostics::log(
+                    Context::new(STAGE, "accepted-decode"),
+                    io::ErrorKind::InvalidData,
+                    None,
+                );
+                return Err(invalid());
+            }
+        };
+        if let Err(e) = validate(&b) {
+            diagnostics::note(Context::new(STAGE, "accepted-validate"), &e);
+            return Err(e);
+        }
         Ok(b)
     }
     pub fn set_clock(b: &BootDescriptor) -> io::Result<()> {
+        const STAGE: &str = "early";
         let time = libc::timespec {
-            tv_sec: b.host_utc.try_into().map_err(|_| invalid())?,
+            tv_sec: match b.host_utc.try_into() {
+                Ok(s) => s,
+                Err(_) => {
+                    diagnostics::log(
+                        Context::new(STAGE, "clock-convert"),
+                        io::ErrorKind::InvalidInput,
+                        None,
+                    );
+                    return Err(invalid());
+                }
+            },
             tv_nsec: 0,
         };
         // SAFETY: the initialized timespec lives through the system call.
         if unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &time) } != 0 {
-            return Err(io::Error::last_os_error());
+            let e = io::Error::last_os_error();
+            diagnostics::note(Context::new(STAGE, "clock-settime"), &e);
+            return Err(e);
         }
         Ok(())
     }
     pub fn request_poweroff() -> io::Result<()> {
-        checked("/usr/bin/systemctl", &["--no-block", "poweroff"]).map(|_| ())
+        checked("serve", "/usr/bin/systemctl", &["--no-block", "poweroff"]).map(|_| ())
     }
 }
-fn private_run() -> io::Result<()> {
-    directory(Path::new(RUN), true)?;
-    fs::set_permissions(RUN, fs::Permissions::from_mode(0o700))?;
-    mount_is(RUN, "tmpfs", None, false)
+fn private_run(stage: &'static str) -> io::Result<()> {
+    diagnostics::context(
+        Context::new(stage, "run-dir"),
+        directory(Path::new(RUN), true),
+    )?;
+    diagnostics::context(
+        Context::new(stage, "run-perms"),
+        fs::set_permissions(RUN, fs::Permissions::from_mode(0o700)),
+    )?;
+    mount_is(stage, RUN, "tmpfs", None, false)
 }
 fn bind_source(expected: &Path, target: &Path) -> io::Result<()> {
     let source = fs::symlink_metadata(expected)?;
@@ -119,21 +167,42 @@ fn create_file(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     f.sync_all()?;
     File::open(path.parent().ok_or_else(invalid)?)?.sync_all()
 }
-fn run(program: &str, args: &[&str]) -> io::Result<(i32, Vec<u8>)> {
-    let mut child = Command::new(program)
+fn run(stage: &'static str, program: &str, args: &[&str]) -> io::Result<(i32, Vec<u8>)> {
+    let mut child = match Command::new(program)
         .args(args)
         .env_clear()
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
-    let output = child.stdout.take().ok_or_else(invalid)?;
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            diagnostics::note(Context::new(stage, "command-spawn"), &e);
+            return Err(e);
+        }
+    };
+    let output = child.stdout.take().ok_or_else(|| {
+        diagnostics::log(
+            Context::new(stage, "command-stdout-pipe"),
+            io::ErrorKind::Other,
+            None,
+        );
+        invalid()
+    })?;
     let reader = std::thread::spawn(move || {
         let mut b = Vec::new();
         output.take(4097).read_to_end(&mut b).map(|_| b)
     });
-    let errors = child.stderr.take().ok_or_else(invalid)?;
+    let errors = child.stderr.take().ok_or_else(|| {
+        diagnostics::log(
+            Context::new(stage, "command-stderr-pipe"),
+            io::ErrorKind::Other,
+            None,
+        );
+        invalid()
+    })?;
     let error_reader = std::thread::spawn(move || {
         let mut b = Vec::new();
         errors.take(4097).read_to_end(&mut b).map(|_| b)
@@ -143,7 +212,20 @@ fn run(program: &str, args: &[&str]) -> io::Result<(i32, Vec<u8>)> {
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            _ => {
+            Ok(None) => {
+                diagnostics::log(
+                    Context::new(stage, "command-timeout"),
+                    io::ErrorKind::TimedOut,
+                    None,
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                let _ = error_reader.join();
+                return Err(invalid());
+            }
+            Err(e) => {
+                diagnostics::note(Context::new(stage, "command-wait"), &e);
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = reader.join();
@@ -152,16 +234,73 @@ fn run(program: &str, args: &[&str]) -> io::Result<(i32, Vec<u8>)> {
             }
         }
     };
-    let bytes = reader.join().map_err(|_| invalid())??;
-    let errors = error_reader.join().map_err(|_| invalid())??;
-    if bytes.len() > 4096 || !errors.is_empty() {
+    let bytes = match reader.join() {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            diagnostics::note(Context::new(stage, "command-stdout-read"), &e);
+            return Err(e);
+        }
+        Err(_) => {
+            diagnostics::log(
+                Context::new(stage, "command-stdout-read"),
+                io::ErrorKind::Other,
+                None,
+            );
+            return Err(invalid());
+        }
+    };
+    let errors = match error_reader.join() {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            diagnostics::note(Context::new(stage, "command-stderr-read"), &e);
+            return Err(e);
+        }
+        Err(_) => {
+            diagnostics::log(
+                Context::new(stage, "command-stderr-read"),
+                io::ErrorKind::Other,
+                None,
+            );
+            return Err(invalid());
+        }
+    };
+    if bytes.len() > 4096 {
+        diagnostics::log(
+            Context::new(stage, "command-stdout-limit"),
+            io::ErrorKind::Other,
+            None,
+        );
         return Err(invalid());
     }
-    Ok((status.code().ok_or_else(invalid)?, bytes))
+    if !errors.is_empty() {
+        diagnostics::log(
+            Context::new(stage, "command-stderr"),
+            io::ErrorKind::Other,
+            None,
+        );
+        return Err(invalid());
+    }
+    let code = match status.code() {
+        Some(c) => c,
+        None => {
+            diagnostics::log(
+                Context::new(stage, "command-signal"),
+                io::ErrorKind::Other,
+                None,
+            );
+            return Err(invalid());
+        }
+    };
+    Ok((code, bytes))
 }
-fn checked(program: &str, args: &[&str]) -> io::Result<Vec<u8>> {
-    let (status, b) = run(program, args)?;
+fn checked(stage: &'static str, program: &str, args: &[&str]) -> io::Result<Vec<u8>> {
+    let (status, b) = run(stage, program, args)?;
     if status != 0 {
+        diagnostics::log(
+            Context::new(stage, "command-status"),
+            io::ErrorKind::Other,
+            None,
+        );
         return Err(invalid());
     }
     Ok(b)
@@ -171,25 +310,54 @@ fn text(b: Vec<u8>) -> io::Result<String> {
         .map(|s| s.trim().to_owned())
         .map_err(|_| invalid())
 }
-fn mount_is(path: &str, kind: &str, uuid: Option<Uuid>, exact: bool) -> io::Result<()> {
+fn mount_is(
+    stage: &'static str,
+    path: &str,
+    kind: &str,
+    uuid: Option<Uuid>,
+    exact: bool,
+) -> io::Result<()> {
     let selector = if exact { "-M" } else { "-T" };
     if text(checked(
+        stage,
         "/usr/bin/findmnt",
         &["-rn", selector, path, "-o", "FSTYPE"],
     )?)? != kind
     {
+        diagnostics::log(
+            Context::new(stage, "mount-fstype-mismatch"),
+            io::ErrorKind::Other,
+            None,
+        );
         return Err(invalid());
     }
     if let Some(id) = uuid {
         if text(checked(
+            stage,
             "/usr/bin/findmnt",
             &["-rn", selector, path, "-o", "UUID"],
         )?)? != id.to_string()
         {
+            diagnostics::log(
+                Context::new(stage, "mount-uuid-mismatch"),
+                io::ErrorKind::Other,
+                None,
+            );
             return Err(invalid());
         }
     }
     Ok(())
+}
+fn machine_id_mount_target(stage: &'static str, target: &str) -> io::Result<String> {
+    diagnostics::context(
+        Context::new(stage, "ready-machine-id-findmnt"),
+        checked(
+            stage,
+            "/usr/bin/findmnt",
+            &["-rn", "-T", target, "-o", "TARGET"],
+        )
+        .and_then(text),
+    )
 }
 impl BootSystem for Linux {
     fn probe(&mut self) -> io::Result<Disk> {
@@ -200,17 +368,22 @@ impl BootSystem for Linux {
             return Err(invalid());
         }
         let path = self.device.to_str().ok_or_else(invalid)?;
-        let bytes = text(checked("/sbin/blockdev", &["--getsize64", path])?)?
-            .parse::<u64>()
-            .map_err(|_| invalid())?;
+        let bytes = text(checked(
+            self.stage(),
+            "/sbin/blockdev",
+            &["--getsize64", path],
+        )?)?
+        .parse::<u64>()
+        .map_err(|_| invalid())?;
         // A probe error on an unreadable device must not be interpreted as blank.
         let mut header = [0; 4096];
         File::open(&self.device)?.read_exact(&mut header)?;
-        let (status, output) = run("/sbin/blkid", &["-p", "-o", "export", path])?;
+        let (status, output) = run(self.stage(), "/sbin/blkid", &["-p", "-o", "export", path])?;
         parse_probe(status, &output, bytes)
     }
     fn format(&mut self, id: Uuid) -> io::Result<()> {
         checked(
+            self.stage(),
             "/sbin/mkfs.ext4",
             &[
                 "-q",
@@ -225,6 +398,7 @@ impl BootSystem for Linux {
         let state = self.state();
         target_directory(&state)?;
         checked(
+            self.stage(),
             "/bin/mount",
             &[
                 "-t",
@@ -284,6 +458,7 @@ impl BootSystem for Linux {
                 return Err(invalid());
             }
             checked(
+                self.stage(),
                 "/bin/mount",
                 &["--bind", source.to_str().ok_or_else(invalid)?, &target],
             )?;
@@ -294,6 +469,7 @@ impl BootSystem for Linux {
         let path = "/run/bridge/credentials";
         directory(Path::new(path), true)?;
         checked(
+            self.stage(),
             "/bin/mount",
             &[
                 "-t",
@@ -304,36 +480,84 @@ impl BootSystem for Linux {
                 path,
             ],
         )?;
-        mount_is(path, "tmpfs", None, true)
+        mount_is(self.stage(), path, "tmpfs", None, true)
     }
     fn ready(&mut self, b: &BootDescriptor) -> io::Result<()> {
-        validate(b)?;
-        mount_is(
-            self.state().to_str().ok_or_else(invalid)?,
-            "ext4",
-            Some(b.state_fs_uuid),
-            true,
+        let stage = self.stage();
+        if let Err(e) = validate(b) {
+            diagnostics::note(Context::new(stage, "ready-validate"), &e);
+            return Err(e);
+        }
+        diagnostics::context(
+            Context::new(stage, "ready-state-mount"),
+            mount_is(
+                stage,
+                self.state().to_str().ok_or_else(invalid)?,
+                "ext4",
+                Some(b.state_fs_uuid),
+                true,
+            ),
         )?;
         for name in ["docker", "containerd"] {
             let target = self.target(&format!("/var/lib/{name}"));
-            mount_is(&target, "ext4", Some(b.state_fs_uuid), true)?;
-            bind_source(&self.state().join(name), Path::new(&target))?;
+            let (mount_phase, bind_phase) = if name == "docker" {
+                ("ready-docker-mount", "ready-docker-bind-source")
+            } else {
+                ("ready-containerd-mount", "ready-containerd-bind-source")
+            };
+            diagnostics::context(
+                Context::new(stage, mount_phase),
+                mount_is(stage, &target, "ext4", Some(b.state_fs_uuid), true),
+            )?;
+            diagnostics::context(
+                Context::new(stage, bind_phase),
+                bind_source(&self.state().join(name), Path::new(&target)),
+            )?;
         }
         let target = self.target("/etc/machine-id");
-        if text(checked(
-            "/usr/bin/findmnt",
-            &["-rn", "-T", &target, "-o", "TARGET"],
-        )?)? != target
-        {
+        if machine_id_mount_target(stage, &target)? != target {
+            diagnostics::log(
+                Context::new(stage, "ready-machine-id-target"),
+                io::ErrorKind::Other,
+                None,
+            );
             return Err(invalid());
         }
-        mount_is(&target, "ext4", Some(b.state_fs_uuid), false)?;
-        bind_source(&self.state().join("machine-id"), Path::new(&target))?;
-        mount_is("/run/bridge/credentials", "tmpfs", None, true)?;
-        let identity = self.identity()?.ok_or_else(invalid)?;
+        diagnostics::context(
+            Context::new(stage, "ready-machine-id-mount"),
+            mount_is(stage, &target, "ext4", Some(b.state_fs_uuid), false),
+        )?;
+        diagnostics::context(
+            Context::new(stage, "ready-machine-id-bind-source"),
+            bind_source(&self.state().join("machine-id"), Path::new(&target)),
+        )?;
+        diagnostics::context(
+            Context::new(stage, "ready-credentials-mount"),
+            mount_is(stage, "/run/bridge/credentials", "tmpfs", None, true),
+        )?;
+        let identity = match self.identity() {
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                diagnostics::log(
+                    Context::new(stage, "ready-identity-missing"),
+                    io::ErrorKind::NotFound,
+                    None,
+                );
+                return Err(invalid());
+            }
+            Err(e) => {
+                diagnostics::note(Context::new(stage, "ready-identity"), &e);
+                return Err(e);
+            }
+        };
         if identity.schema_version != "bridge-state/v1"
             || identity.installation_id != b.installation_id
         {
+            diagnostics::log(
+                Context::new(stage, "ready-identity-mismatch"),
+                io::ErrorKind::Other,
+                None,
+            );
             return Err(invalid());
         }
         Ok(())
@@ -432,7 +656,63 @@ mod tests {
     fn probe_tool_io_error_is_not_blank() {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("missing");
-        assert!(run("/bin/ls", &[missing.to_str().unwrap()]).is_err());
+        assert!(run("serve", "/bin/ls", &[missing.to_str().unwrap()]).is_err());
+    }
+    #[test]
+    fn diagnostic_command_child() {
+        if std::env::var_os("BRIDGE_TEST_DIAGNOSTIC_COMMAND").is_none() {
+            return;
+        }
+        let err = run("early", "/nonexistent/definitely-not-a-binary", &[]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert_eq!(err.raw_os_error(), Some(2));
+        assert!(run(
+            "serve",
+            "/bin/sh",
+            &["-c", "printf synthetic-credential-do-not-log >&2; exit 3"]
+        )
+        .is_err());
+        assert!(checked("serve", "/bin/sh", &["-c", "exit 3"]).is_err());
+        assert!(machine_id_mount_target("serve", "/dev/null/not-a-directory").is_err());
+    }
+    #[test]
+    fn command_failure_logs_keep_context_without_content() {
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "linux::tests::diagnostic_command_child",
+                "--nocapture",
+            ])
+            .env("BRIDGE_TEST_DIAGNOSTIC_COMMAND", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(!stderr.contains("synthetic-credential-do-not-log"));
+        assert!(!stderr.contains("/nonexistent"));
+        assert_eq!(
+            stderr.lines().collect::<Vec<_>>(),
+            [
+                "bridge-guest: stage=early phase=command-spawn kind=NotFound errno=2",
+                "bridge-guest: stage=serve phase=command-stderr kind=Other errno=none",
+                "bridge-guest: stage=serve phase=command-status kind=Other errno=none",
+                "bridge-guest: stage=serve phase=command-status kind=Other errno=none",
+                "bridge-guest: stage=serve phase=ready-machine-id-findmnt kind=Other errno=none",
+            ]
+        );
+    }
+    #[test]
+    fn caller_stage_tracks_the_runtime_root() {
+        for (root, stage) in [("/root", "early"), ("", "serve")] {
+            assert_eq!(
+                Linux {
+                    root,
+                    device: PathBuf::new()
+                }
+                .stage(),
+                stage
+            );
+        }
     }
     #[test]
     fn probe_rejects_foreign_ambiguous_and_bad_bytes() {

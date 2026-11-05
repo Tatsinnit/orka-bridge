@@ -49,32 +49,74 @@ pub trait BootSystem {
     fn shutdown(&mut self) -> io::Result<()>;
 }
 pub fn apply(system: &mut impl BootSystem, b: &BootDescriptor) -> io::Result<()> {
-    validate(b)?;
-    let mut disk = system.probe()?;
+    use crate::diagnostics::{self, Context};
+    const STAGE: &str = "early";
+    if let Err(e) = validate(b) {
+        diagnostics::note(Context::new(STAGE, "boot-descriptor-validate"), &e);
+        return Err(e);
+    }
+    let mut disk = diagnostics::context(Context::new(STAGE, "probe"), system.probe())?;
     if disk.bytes != STATE_BYTES {
+        diagnostics::log(
+            Context::new(STAGE, "state-size-mismatch"),
+            io::ErrorKind::Other,
+            None,
+        );
         return Err(invalid());
     }
     let fresh = disk.blank && b.state_creation == StateCreation::New;
     if fresh {
-        system.format(b.state_fs_uuid)?;
-        disk = system.probe()?;
+        diagnostics::context(
+            Context::new(STAGE, "format"),
+            system.format(b.state_fs_uuid),
+        )?;
+        disk = diagnostics::context(Context::new(STAGE, "probe-after-format"), system.probe())?;
     } else if b.state_creation == StateCreation::New {
+        diagnostics::log(
+            Context::new(STAGE, "state-creation-conflict"),
+            io::ErrorKind::Other,
+            None,
+        );
         return Err(invalid());
     }
     if disk.blank || disk.bytes != STATE_BYTES || disk.fs_uuid != Some(b.state_fs_uuid) {
+        diagnostics::log(
+            Context::new(STAGE, "state-post-format-mismatch"),
+            io::ErrorKind::Other,
+            None,
+        );
         return Err(invalid());
     }
-    system.mount_state()?;
+    diagnostics::context(Context::new(STAGE, "mount-state"), system.mount_state())?;
     if fresh {
-        system.initialize(&Identity::new(b.installation_id))?;
+        diagnostics::context(
+            Context::new(STAGE, "initialize"),
+            system.initialize(&Identity::new(b.installation_id)),
+        )?;
     }
-    let identity = system.identity()?.ok_or_else(invalid)?;
+    let identity = diagnostics::context(Context::new(STAGE, "identity"), system.identity())?
+        .ok_or_else(|| {
+            diagnostics::log(
+                Context::new(STAGE, "identity-missing"),
+                io::ErrorKind::Other,
+                None,
+            );
+            invalid()
+        })?;
     if identity.schema_version != "bridge-state/v1" || identity.installation_id != b.installation_id
     {
+        diagnostics::log(
+            Context::new(STAGE, "identity-mismatch"),
+            io::ErrorKind::Other,
+            None,
+        );
         return Err(invalid());
     }
-    system.bind_persistent()?;
-    system.credentials()?;
-    system.ready(b)?;
-    system.save_boot(b)
+    diagnostics::context(
+        Context::new(STAGE, "bind-persistent"),
+        system.bind_persistent(),
+    )?;
+    diagnostics::context(Context::new(STAGE, "credentials"), system.credentials())?;
+    diagnostics::context(Context::new(STAGE, "apply-ready"), system.ready(b))?;
+    diagnostics::context(Context::new(STAGE, "save-boot"), system.save_boot(b))
 }

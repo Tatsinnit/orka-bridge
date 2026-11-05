@@ -51,11 +51,21 @@ impl Session {
             return Err(invalid());
         }
         let result = self.push_inner(byte);
-        if result.is_err() {
+        if let Err(e) = &result {
+            crate::diagnostics::note(
+                crate::diagnostics::Context::new(self.stage_label(), "frame-validation"),
+                e,
+            );
             self.poisoned = true;
             self.bytes.clear();
         }
         result
+    }
+    fn stage_label(&self) -> &'static str {
+        match self.stage {
+            Stage::Early => "early",
+            Stage::Serve => "serve",
+        }
     }
     fn push_inner(&mut self, byte: u8) -> io::Result<Option<WireRequest>> {
         if byte != b'\n' {

@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod early;
 pub mod engine;
 #[cfg(target_os = "linux")]
