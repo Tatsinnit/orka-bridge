@@ -1,0 +1,294 @@
+{
+  "schemaVersion": "bridge-windows-sources/v1",
+  "sourceDateEpoch": 1777269494,
+  "reference": {
+    "repository": "https://github.com/omacom/try-omarchy-windows",
+    "commit": "b830a873f29b907ebfbefb96b5cfc617cc01899a"
+  },
+  "qemu": {
+    "repository": "https://github.com/cmspam/winq-emu-qemu",
+    "commit": "2ce303cfbbc8b0e4a7a3c66e27a094a980426d73",
+    "baseCommit": "98b060da3a4f92b2a994ead5b16a87e783baf77c"
+  },
+  "patches": [
+    {
+      "path": "patches/qemu/0001-whpx-continue-when-nested-virtualization-is-refused.patch",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/patches/qemu/0001-whpx-continue-when-nested-virtualization-is-refused.patch",
+      "bytes": 1915,
+      "sha256": "8dd4e1f9a3dcf6d09e01277262493ffa99ba66f11ba704742b1cd929b4088d57"
+    },
+    {
+      "path": "patches/qemu/0005-restore-windows-socket-handle-protection.patch",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/patches/qemu/0005-restore-windows-socket-handle-protection.patch",
+      "bytes": 506,
+      "sha256": "3d25a06e9b0eeb11a6781e4655cbee7ce201f2f75f55457f96e9ae4bde0a7623"
+    },
+    {
+      "path": "patches/qemu/0009-use-utf8-for-windows-runtime-paths.patch",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/patches/qemu/0009-use-utf8-for-windows-runtime-paths.patch",
+      "bytes": 1927,
+      "sha256": "635c48e6d10ddc80ac3a068f275b877c51e062d188986fdd86ebb775a0a74670"
+    },
+    {
+      "path": "patches/qemu/0015-reclaim-free-guest-pages-on-whpx.patch",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/patches/qemu/0015-reclaim-free-guest-pages-on-whpx.patch",
+      "bytes": 5341,
+      "sha256": "b262c8348f25fde5cc7526276e1f59ba559df2076e413a69949506e3f0790d74"
+    },
+    {
+      "path": "patches/qemu/0019-honor-whpx-cpu-model.patch",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/patches/qemu/0019-honor-whpx-cpu-model.patch",
+      "bytes": 11390,
+      "sha256": "264a2fea4309e2b8f445a4cf590d87333c5c232b3dcdc5d5506ace9e71a18cc2"
+    },
+    {
+      "path": "patches/qemu/0024-raise-windows-fd-setsize-for-slirp.patch",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/patches/qemu/0024-raise-windows-fd-setsize-for-slirp.patch",
+      "bytes": 703,
+      "sha256": "ba94ed3e314c9388aeba6e888747d92e797f1c98c9c546b4ed71a76f10163059"
+    }
+  ],
+  "checks": [
+    {
+      "path": "checks/test-socket-close.py",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/test-socket-close.py",
+      "bytes": 1972,
+      "sha256": "b7283c74715cce9d74a82f73407e127fe290a2be42d13104b24a9e35a667435d"
+    },
+    {
+      "path": "checks/test-fd-setsize.py",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/test-fd-setsize.py",
+      "bytes": 2487,
+      "sha256": "0a1978032f063a12f8ea0b1837ae4243d802e637391d0ad205bdb73f1dcb7311"
+    },
+    {
+      "path": "checks/test-whpx-cpu-model.py",
+      "url": "https://raw.githubusercontent.com/omacom/try-omarchy-windows/b830a873f29b907ebfbefb96b5cfc617cc01899a/runtime-build/test-whpx-cpu-model.py",
+      "bytes": 4172,
+      "sha256": "d224cd4f1c7ef0ec9e64e100eb0258330b14475c7a1a011a9b7385b24b624401"
+    }
+  ],
+  "submodules": [
+    {
+      "path": "roms/QemuMacDrivers",
+      "commit": "90c488d5f4a407342247b9ea869df1c2d9c8e266",
+      "repository": "https://gitlab.com/qemu-project/QemuMacDrivers.git"
+    },
+    {
+      "path": "roms/SLOF",
+      "commit": "b7f755248e2dcc56c02634d288e1c0ff7e0ce1c7",
+      "repository": "https://gitlab.com/qemu-project/SLOF.git"
+    },
+    {
+      "path": "roms/edk2",
+      "commit": "4dfdca63a93497203f197ec98ba20e2327e4afe4",
+      "repository": "https://gitlab.com/qemu-project/edk2.git"
+    },
+    {
+      "path": "roms/ipxe",
+      "commit": "4bd064de239dab2426b31c9789a1f4d78087dc63",
+      "repository": "https://gitlab.com/qemu-project/ipxe.git"
+    },
+    {
+      "path": "roms/openbios",
+      "commit": "c3a19c1e54977a53027d6232050e1e3e39a98a1b",
+      "repository": "https://gitlab.com/qemu-project/openbios.git"
+    },
+    {
+      "path": "roms/opensbi",
+      "commit": "a32a91069119e7a5aa31e6bc51d5e00860be3d80",
+      "repository": "https://gitlab.com/qemu-project/opensbi.git"
+    },
+    {
+      "path": "roms/qboot",
+      "commit": "8ca302e86d685fa05b16e2b208888243da319941",
+      "repository": "https://gitlab.com/qemu-project/qboot.git"
+    },
+    {
+      "path": "roms/qemu-palcode",
+      "commit": "99d9b4dcf27d7fbcbadab71bdc88ef6531baf6bf",
+      "repository": "https://gitlab.com/qemu-project/qemu-palcode.git"
+    },
+    {
+      "path": "roms/seabios",
+      "commit": "b52ca86e094d19b58e2304417787e96b940e39c6",
+      "repository": "https://gitlab.com/qemu-project/seabios.git/"
+    },
+    {
+      "path": "roms/seabios-hppa",
+      "commit": "d9560852a34f156155b3777745baa0d96d553f22",
+      "repository": "https://gitlab.com/qemu-project/seabios-hppa.git"
+    },
+    {
+      "path": "roms/skiboot",
+      "commit": "785a5e3070a86e18521e62fe202b87209de30fa2",
+      "repository": "https://gitlab.com/qemu-project/skiboot.git"
+    },
+    {
+      "path": "roms/u-boot",
+      "commit": "840658b093976390e9537724f802281c9c8439f5",
+      "repository": "https://gitlab.com/qemu-project/u-boot.git"
+    },
+    {
+      "path": "roms/u-boot-sam460ex",
+      "commit": "1e5f4a1607cc6713d27ffe48dd9de84e69cfc1c2",
+      "repository": "https://gitlab.com/qemu-project/u-boot-sam460ex.git"
+    },
+    {
+      "path": "roms/vbootrom",
+      "commit": "1c8e9510b22c5b0fd7d7753f08042a4bcbd2939d",
+      "repository": "https://gitlab.com/qemu-project/vbootrom.git"
+    },
+    {
+      "path": "tests/lcitool/libvirt-ci",
+      "commit": "5176e136ab11e275eb9f57c3d5c80e77af6507cb",
+      "repository": "https://gitlab.com/libvirt/libvirt-ci.git"
+    }
+  ],
+  "wraps": [
+    {
+      "path": "subprojects/anyhow-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/anyhow-1-rs.wrap",
+      "bytes": 270,
+      "sha256": "71a7d3ee5587705c0c5d27ffb9139f386356221755d14f7eead06e5f016383f4"
+    },
+    {
+      "path": "subprojects/arbitrary-int-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/arbitrary-int-1-rs.wrap",
+      "bytes": 375,
+      "sha256": "f7afbb76405691789b99d41d5ae2e4b3d793dc1fb9573372a1d50f34236240fb"
+    },
+    {
+      "path": "subprojects/attrs-0.2-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/attrs-0.2-rs.wrap",
+      "bytes": 265,
+      "sha256": "f6a17bc031e97623f3bad29b9242f71d3a11b8992501f00192b803b4f57eb670"
+    },
+    {
+      "path": "subprojects/berkeley-softfloat-3.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/berkeley-softfloat-3.wrap",
+      "bytes": 175,
+      "sha256": "f5b245e02a2f9400d7cfcc4a10860ed8c6d088577cf753ce6fe161e475a7d9ff"
+    },
+    {
+      "path": "subprojects/berkeley-testfloat-3.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/berkeley-testfloat-3.wrap",
+      "bytes": 175,
+      "sha256": "b4d204e9f59e671c1c636259d8521b9c7f29116cc4b9ff6598e8e635f0359bef"
+    },
+    {
+      "path": "subprojects/bilge-0.2-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/bilge-0.2-rs.wrap",
+      "bytes": 345,
+      "sha256": "85d182e6404eb16887056b6d1ef8e491561539436ef692cb70479daf7db71afe"
+    },
+    {
+      "path": "subprojects/bilge-impl-0.2-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/bilge-impl-0.2-rs.wrap",
+      "bytes": 365,
+      "sha256": "571c4ba805e18587694a3e587182dae061177425da964baddc636ef1d6e8d903"
+    },
+    {
+      "path": "subprojects/dtc.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/dtc.wrap",
+      "bytes": 119,
+      "sha256": "932ca47fc50a6932207a6fc82e15d07d848e93c4ff9abcd0cc34c15f40a30885"
+    },
+    {
+      "path": "subprojects/either-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/either-1-rs.wrap",
+      "bytes": 350,
+      "sha256": "b88eb965bd13649319233adc12871917a4da434921a72e3f26452c2335c68905"
+    },
+    {
+      "path": "subprojects/foreign-0.3-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/foreign-0.3-rs.wrap",
+      "bytes": 273,
+      "sha256": "930d678ccc0faef9b29369ee1b9f4ef2e5c0ef186a1012ba4946fc872d6dd22f"
+    },
+    {
+      "path": "subprojects/glib-sys-0.21-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/glib-sys-0.21-rs.wrap",
+      "bytes": 281,
+      "sha256": "18941548a38e69cc39243a2ef15cc28c2ebce2e673a5af25199f1ce287de93ca"
+    },
+    {
+      "path": "subprojects/itertools-0.11-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/itertools-0.11-rs.wrap",
+      "bytes": 365,
+      "sha256": "56a556d79240600c2ea526d49629a2097b2628ba6c759231a77386e8b6cba190"
+    },
+    {
+      "path": "subprojects/keycodemapdb.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/keycodemapdb.wrap",
+      "bytes": 128,
+      "sha256": "306b37c10ce735432220c08c6832dc67c0a306b88a0023c65937c90c638dba97"
+    },
+    {
+      "path": "subprojects/libblkio.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/libblkio.wrap",
+      "bytes": 138,
+      "sha256": "575ae56cbf38bf357817698b949779dac37a0c09f43ce88a8690cbee06019507"
+    },
+    {
+      "path": "subprojects/libc-0.2-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/libc-0.2-rs.wrap",
+      "bytes": 267,
+      "sha256": "e4fe58cbce2e8c494f6a8ae454c452d24de97f9fd658c160d687f0ac87f5d1f4"
+    },
+    {
+      "path": "subprojects/libvfio-user.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/libvfio-user.wrap",
+      "bytes": 128,
+      "sha256": "29b96e29021a38aac3544a1baacf367f905801439af61fe7a112a60894f4f2b4"
+    },
+    {
+      "path": "subprojects/probe-0.5-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/probe-0.5-rs.wrap",
+      "bytes": 265,
+      "sha256": "9e656748758c9db84f9f87686848889b32c78f49fe10d2caad186acc73807b16"
+    },
+    {
+      "path": "subprojects/proc-macro-error-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/proc-macro-error-1-rs.wrap",
+      "bytes": 387,
+      "sha256": "911aed6a9a56cd9ded2576c8980e9cf00c09dd083d6c97b3c0eac451c42655e1"
+    },
+    {
+      "path": "subprojects/proc-macro-error-attr-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/proc-macro-error-attr-1-rs.wrap",
+      "bytes": 407,
+      "sha256": "f24f38172d1a497c7d017b66e098b5ca50c416efb47cc85a0a77babfca6a7984"
+    },
+    {
+      "path": "subprojects/proc-macro2-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/proc-macro2-1-rs.wrap",
+      "bytes": 372,
+      "sha256": "3ffac54c061b6a4f6d18f141a8338724ec91d653173b48928d5f36d3f84517b9"
+    },
+    {
+      "path": "subprojects/quote-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/quote-1-rs.wrap",
+      "bytes": 348,
+      "sha256": "122f42d2c9bc55865e95964fddd79b0e47b122df1170554fce49ac0e0d9d1dc9"
+    },
+    {
+      "path": "subprojects/slirp.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/slirp.wrap",
+      "bytes": 151,
+      "sha256": "aac02c4da0958a7d1066aa369bd79e5faf479988ba0c34f0c3d3f9f7d1ec5280"
+    },
+    {
+      "path": "subprojects/syn-2-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/syn-2-rs.wrap",
+      "bytes": 343,
+      "sha256": "457232f12b621d46669a7887f76fb03501c2ad93e8f33e12bf4c751ddbee201c"
+    },
+    {
+      "path": "subprojects/unicode-ident-1-rs.wrap",
+      "url": "https://raw.githubusercontent.com/cmspam/winq-emu-qemu/2ce303cfbbc8b0e4a7a3c66e27a094a980426d73/subprojects/unicode-ident-1-rs.wrap",
+      "bytes": 378,
+      "sha256": "73eed4a58c39cc41c3d536e673f62004402f5459b45cce7677eba1ea7d6eaf88"
+    }
+  ]
+}
