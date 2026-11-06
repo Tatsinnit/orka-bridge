@@ -1,28 +1,14 @@
 # Shared Orka clusters
 
-## Status and scope
+**Share the cluster, not the Orka installation.** For example, team A and team B
+can use one Kubernetes cluster while each keeps its own Orka release, watched
+namespace, runtime namespace, API endpoint and credentials. Team B cannot manage
+team A's Agents, Tasks or Sessions; an observer needs an explicit read grant and
+a namespace-local identity for each installation it observes.
 
-This document defines and validates the namespace and access model proposed for
-shared team clusters. Bridge does not configure these namespaces or roles today.
-The current app also has no credential store or shared-cluster connection flow.
-
-The design was checked against:
-
-- Bridge baseline `80fb6e4`.
-- The Orka source revision selected by
-  [`images/guest/versions.json`](../images/guest/versions.json),
-  `59703d6eac1760aa2dc5fed4dee9dcb74c6e5186`.
-- kind v0.33.0 and the digest-pinned Kubernetes v1.35.8 node image used by
-  [`scripts/validate_shared_cluster_rbac.py`](../scripts/validate_shared_cluster_rbac.py).
-
-Bridge's selected guest profile names Kubernetes v1.35.0. The validator uses
-the v1.35.8 image published with kind v0.33.0, so it remains in that Kubernetes
-minor release while receiving its available patch fixes. Neither input is an
-approved Bridge production image profile yet.
-
-The included validator exercises Kubernetes authorization. It does not install
-Orka or claim that controller reconciliation, stored Session data, network
-isolation, or production identity-provider behavior was tested.
+This is a proposed access model with Kubernetes authorization validation.
+Bridge does not configure these namespaces or roles today and has no credential
+store or shared-cluster connection flow.
 
 ## Decision
 
@@ -79,9 +65,17 @@ direct access to their Pods, Jobs, ServiceAccounts, tokens, Secrets, or RBAC.
 
 The example rules live in
 [`docs/shared-clusters/rbac.yaml`](shared-clusters/rbac.yaml). They are a design
-fixture, not an installer. Production bindings should normally name identities
-from the cluster's identity provider. The ServiceAccounts in the fixture exist
-only to make the kind validation reproducible.
+fixture, not an installer. At the selected Orka revision, this creator/observer
+model applies only to namespace-local ServiceAccounts authenticated through
+Kubernetes TokenReview. Human identity-provider users are deferred to a separate
+authentication and authorization design.
+
+A human identity returned by TokenReview has no ServiceAccount namespace, so
+Orka's namespace-isolated API refuses it even if Kubernetes RoleBindings permit
+CRD access. Direct Orka OIDC authentication is a different path: it skips these
+Kubernetes authorization checks. An OIDC caller with an observer RoleBinding
+could therefore still create Tasks. These roles must not be presented as an
+enforced read-only/creator boundary for direct OIDC users.
 
 | Role | Scope | Access |
 |---|---|---|
@@ -131,14 +125,31 @@ A ServiceAccount from one namespace cannot use one token to read every
 installation's virtual Session store, even if Kubernetes RoleBindings grant it
 access elsewhere. The fixture therefore creates one observer ServiceAccount per
 installation. Bridge would need a namespace-local observer identity and API
-endpoint for each connected installation, then fan out those reads. A production
-identity-provider design may replace these fixture identities but must preserve
-the same namespace and disclosure boundaries.
+endpoint for each connected installation, then fan out those reads. Human IdP
+users need a later design that enforces equivalent namespace and operation
+checks on every supported API path before replacing these identities.
 
 ### Platform administrator
 
-Installation is a platform operation. The exact Orka chart can create or use
-CRDs, admission resources, cluster and namespace RBAC, workloads, Services,
+Installation is a platform operation. Bridge's selected source profile uses the
+staged chart, `manifest_staging/charts/orka`, rather than the older checked-in
+release chart. Its pinned
+[`templates/rbac.yaml`](https://github.com/orka-agents/orka/blob/59703d6eac1760aa2dc5fed4dee9dcb74c6e5186/manifest_staging/charts/orka/templates/rbac.yaml)
+binds controller Secret and Job access through a tenant RoleBinding, with a
+separate runtime RoleBinding for runtime workloads and Secrets. An optional
+agent-host namespace also has a separate binding. Each such namespace must be
+installation-specific.
+
+The staged chart also grants separate cluster authority for TokenReview,
+SubjectAccessReview, selected shared resources and cross-namespace preflight
+lists. A watched namespace limits reconciliation, not Kubernetes authority:
+platform administrators must review the rendered roles and any optional
+aggregated grants. The integration check should deny reads and writes of the
+other installation's Secrets and workloads, while accounting for the explicitly
+granted shared-resource and inventory reads.
+
+The chart can create or use CRDs, admission resources, cluster and namespace
+RBAC, workloads, Services,
 PVCs, Secrets, NetworkPolicies and runtime resources. The disposable validation
 cluster uses its built-in `cluster-admin` identity for this role rather than
 pretending a static partial role is sufficient.
@@ -146,6 +157,25 @@ pretending a static partial role is sufficient.
 Controller and worker roles are not human roles. They include authority such as
 Secret access, workload creation, ServiceAccount token creation and selected
 RBAC operations. Bridge, creators and observers must never be bound to them.
+
+## Version details and validation scope
+
+The design was checked against:
+
+- Bridge baseline `80fb6e4`.
+- The Orka source revision selected by
+  [`images/guest/versions.json`](../images/guest/versions.json),
+  `59703d6eac1760aa2dc5fed4dee9dcb74c6e5186`, including its staged chart.
+- kind v0.33.0 and the digest-pinned Kubernetes v1.35.8 node image used by
+  [`scripts/validate_shared_cluster_rbac.py`](../scripts/validate_shared_cluster_rbac.py).
+
+Bridge's selected guest profile names Kubernetes v1.35.0. The validator uses
+the v1.35.8 image published with kind v0.33.0, staying in the selected minor
+release. Neither input is an approved Bridge production image profile yet.
+
+The validator exercises Kubernetes authorization. It does not install Orka or
+test controller reconciliation, stored Session data, network isolation or human
+identity-provider authorization.
 
 ## Important limits
 
@@ -189,8 +219,12 @@ administrative operations. Those controls are outside this RBAC fixture.
 
 The validator creates a uniquely named disposable kind cluster and a private
 kubeconfig. It never reads or changes the user's current kubeconfig. It applies
-the example roles and submits real Kubernetes SubjectAccessReview requests for
-two creator identities and two namespace-local observer identities.
+the example roles and runs a `kubectl auth can-i` matrix for two creator
+identities and two namespace-local observer identities, including their
+ServiceAccount groups. Orka's virtual Sessions and Chat, and uninstalled
+dependency resources, retain explicit SubjectAccessReview checks: `can-i`
+relies on Kubernetes discovery and otherwise loses their API group. These
+reviews check grants only, not the Orka API's behavior or stored records.
 
 It checks that:
 
@@ -205,7 +239,12 @@ It checks that:
 - Two creators bound in one deliberately unsafe shared namespace can both patch
   Agents there. This is the negative control proving that a namespace is the
   ownership boundary.
-- An actual request for a sentinel Secret is rejected for a creator identity.
+
+The only object mutation scenario is the shared-namespace negative control.
+Commands use standard-library subprocess timeouts and private file-backed
+output, avoiding reader threads and inherited-pipe waits. Failure messages omit
+child output entirely, so credential redaction is unnecessary. Output read into
+memory is capped; temporary output files are not a disk-output quota.
 
 Prerequisites are Python 3.11 or newer, kubectl v1.35, kind v0.33.0, and a
 running Docker or Podman Linux-container provider. Supply the provider
@@ -229,9 +268,10 @@ python3 -m unittest scripts/test_validate_shared_cluster_rbac.py -v
 This validation does not replace an integration run with two real Orka
 installations. Before Bridge implements shared clusters, that run must also
 prove that each controller and runtime identity is denied the other
-installation's resources, that creator A's token receives `403` from Orka B,
-and that namespace-local observer identities can read only the intended stored
-Sessions and execution events.
+installation's Secrets and workloads, accounting for the staged chart's
+explicit shared-resource and inventory grants; that creator A's token receives
+`403` from Orka B; and that namespace-local observer identities can read only
+the intended stored Sessions and execution events.
 
 ## Bridge implications
 

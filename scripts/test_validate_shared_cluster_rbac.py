@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -84,6 +85,8 @@ class ValidatorTests(unittest.TestCase):
         self.assertTrue(names["creator-a read own chat config"].allowed)
         self.assertFalse(names["creator-a denied create serviceaccounts/token"].allowed)
         self.assertFalse(names["creator-a denied bind creator role"].allowed)
+        self.assertEqual(api.CREATOR_A_NAMESPACE, names["creator-a denied bind creator role"].namespace)
+        self.assertEqual(api.CREATOR_B_NAMESPACE, names["creator-b denied bind creator role"].namespace)
         self.assertFalse(names["creator-a denied impersonate users"].allowed)
         self.assertFalse(names["creator-a denied impersonate groups"].allowed)
         self.assertFalse(names["creator-a denied impersonate serviceaccounts"].allowed)
@@ -100,7 +103,7 @@ class ValidatorTests(unittest.TestCase):
         check = api.AccessCheck(
             "named bind",
             api.CREATOR_A,
-            "",
+            api.CREATOR_A_NAMESPACE,
             "rbac.authorization.k8s.io",
             "clusterroles",
             "bind",
@@ -109,7 +112,10 @@ class ValidatorTests(unittest.TestCase):
         )
         attributes = api.subject_access_review(check)["spec"]["resourceAttributes"]
         self.assertEqual("bridge-orka-creator", attributes["name"])
-        self.assertNotIn("namespace", attributes)
+        self.assertEqual(api.CREATOR_A_NAMESPACE, attributes["namespace"])
+        args = api.can_i_args(check)
+        self.assertIn("clusterroles.rbac.authorization.k8s.io/bridge-orka-creator", args)
+        self.assertEqual(api.CREATOR_A_NAMESPACE, args[args.index("--namespace") + 1])
         self.assertEqual(
             [
                 "system:serviceaccounts",
@@ -133,6 +139,7 @@ class ValidatorTests(unittest.TestCase):
             "approvals",
             api.subject_access_review(approval)["spec"]["resourceAttributes"]["subresource"],
         )
+        self.assertEqual(["--subresource", "approvals"], api.can_i_args(approval)[-2:])
 
     def test_cleanup_marker_must_match_run_and_label(self):
         api = load_validator()
@@ -157,13 +164,37 @@ class ValidatorTests(unittest.TestCase):
                 "expected",
             )
 
-    def test_forbidden_check_rejects_other_failures(self):
+    def test_can_i_rejects_errors_and_annotated_denials(self):
         api = load_validator()
-        api.expect_forbidden(subprocess.CompletedProcess([], 1, b"", b"Error: Forbidden"), "denied")
-        with self.assertRaisesRegex(api.ValidationError, "without a Forbidden"):
-            api.expect_forbidden(subprocess.CompletedProcess([], 1, b"", b"connection refused"), "broken")
-        with self.assertRaisesRegex(api.ValidationError, "unexpectedly succeeded"):
-            api.expect_forbidden(subprocess.CompletedProcess([], 0, b"", b""), "allowed")
+
+        class FakeKube:
+            def run(self, *args, **kwargs):
+                return subprocess.CompletedProcess(args, self.code, self.output, b"")
+
+        kube = FakeKube()
+        check = api.AccessCheck("denial", api.CREATOR_A, api.CREATOR_A_NAMESPACE, "", "secrets", "get", False)
+        kube.code, kube.output = 1, b"no\n"
+        api.validate_access_matrix(kube, [check])
+        for kube.code, kube.output in ((1, b""), (1, b"no - evaluation failed\n"), (0, b"no\n")):
+            with self.assertRaisesRegex(api.ValidationError, "invalid can-i verdict"):
+                api.validate_access_matrix(kube, [check])
+
+    def test_virtual_resources_use_explicit_group_reviews(self):
+        api = load_validator()
+
+        class FakeKube:
+            def json(self, *args, **kwargs):
+                self.review = kwargs["input_value"]
+                return {"status": self.status}
+
+        kube = FakeKube()
+        check = api.AccessCheck("session", api.OBSERVER_A, api.CREATOR_A_NAMESPACE, "core.orka.ai", "sessions", "get", True)
+        kube.status = {"allowed": True}
+        api.validate_access_matrix(kube, [check])
+        self.assertEqual("core.orka.ai", kube.review["spec"]["resourceAttributes"]["group"])
+        for kube.status in ({}, {"allowed": True, "denied": True}, {"allowed": True, "evaluationError": "error"}):
+            with self.assertRaisesRegex(api.ValidationError, "invalid authorization verdict"):
+                api.validate_access_matrix(kube, [check])
 
     def test_runner_stops_output_at_the_bound(self):
         api = load_validator()
@@ -172,14 +203,27 @@ class ValidatorTests(unittest.TestCase):
                 [sys.executable, "-c", f"import sys; sys.stdout.write('x' * {api.OUTPUT_LIMIT + 1})"]
             )
 
-    def test_failure_diagnostics_are_bounded_and_redacted(self):
+    def test_timeout_does_not_wait_for_descendant_output_handles(self):
         api = load_validator()
-        detail = api.safe_detail(
-            b"old" * api.DIAGNOSTIC_LIMIT + b"\x00Authorization: Bearer secret-value\nlast"
-        )
-        self.assertLessEqual(len(detail), api.DIAGNOSTIC_LIMIT)
-        self.assertNotIn("secret-value", detail)
-        self.assertNotIn("\x00", detail)
+        start = time.monotonic()
+        with self.assertRaisesRegex(api.CommandError, "timed out"):
+            api.Runner().run([
+                sys.executable, "-c",
+                "import subprocess, sys, time; "
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(3)']); "
+                "time.sleep(10)",
+            ], timeout=0.2)
+        self.assertLess(time.monotonic() - start, 2)
+
+    def test_failure_diagnostics_never_include_child_output(self):
+        api = load_validator()
+        with self.assertRaises(api.CommandError) as raised:
+            api.Runner().run([
+                sys.executable, "-c",
+                "import sys; sys.stderr.write('Authorization: Bearer ' + 'secret-value' * 1000); sys.exit(1)",
+            ])
+        self.assertNotIn("secret-value", str(raised.exception))
+        self.assertNotIn("Authorization", str(raised.exception))
 
     def test_delete_uses_the_private_kubeconfig(self):
         api = load_validator()

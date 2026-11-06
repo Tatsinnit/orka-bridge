@@ -18,7 +18,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -34,7 +33,6 @@ NODE_IMAGE = (
     "sha256:07b2536e30b803ed61d1677a79df6115f798ce64c80f9e22f6ed45afd09323c0"
 )
 OUTPUT_LIMIT = 1024 * 1024
-DIAGNOSTIC_LIMIT = 4096
 COMMAND_TIMEOUT = 120
 CLUSTER_TIMEOUT = 300
 MARKER_NAME = "bridge-shared-cluster-rbac"
@@ -59,7 +57,7 @@ class CommandError(ValidationError):
 
 
 class Runner:
-    """Run bounded child commands without a shell."""
+    """Use file-backed output so inherited pipes cannot delay timeout cleanup."""
 
     def __init__(self, env: dict[str, str] | None = None):
         self.env = os.environ.copy()
@@ -74,80 +72,29 @@ class Runner:
         timeout: int = COMMAND_TIMEOUT,
         check: bool = True,
     ) -> subprocess.CompletedProcess[bytes]:
-        try:
-            process = subprocess.Popen(
-                args,
-                stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=self.env,
-            )
-        except OSError as exc:
-            raise CommandError(f"cannot start command: {args[0]}: {exc}") from exc
-        assert process.stdout is not None and process.stderr is not None
-        buffers = {"stdout": bytearray(), "stderr": bytearray()}
-        overflow: list[str] = []
-        lock = threading.Lock()
-
-        def drain(name: str, stream: Any) -> None:
-            while True:
-                chunk = stream.read(65536)
-                if not chunk:
-                    return
-                with lock:
-                    room = OUTPUT_LIMIT - len(buffers[name])
-                    if room > 0:
-                        buffers[name].extend(chunk[:room])
-                    if len(chunk) > room:
-                        overflow.append(name)
-                        process.kill()
-                        return
-
-        threads = [
-            threading.Thread(target=drain, args=("stdout", process.stdout), daemon=True),
-            threading.Thread(target=drain, args=("stderr", process.stderr), daemon=True),
-        ]
-        for thread in threads:
-            thread.start()
-        if input_bytes is not None:
-            assert process.stdin is not None
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             try:
-                process.stdin.write(input_bytes)
-            except BrokenPipeError:
-                pass
-            finally:
-                process.stdin.close()
-        timed_out = False
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            process.kill()
-            process.wait()
-        for thread in threads:
-            thread.join()
-        process.stdout.close()
-        process.stderr.close()
-        result = subprocess.CompletedProcess(
-            args,
-            process.returncode,
-            bytes(buffers["stdout"]),
-            bytes(buffers["stderr"]),
-        )
-        if timed_out:
-            raise CommandError(f"command timed out after {timeout}s: {args[0]}")
-        if overflow:
-            raise CommandError(f"command {overflow[0]} exceeded {OUTPUT_LIMIT} bytes: {args[0]}")
-        if check and result.returncode != 0:
-            detail = safe_detail(result.stderr or result.stdout)
-            raise CommandError(f"command failed ({result.returncode}): {args[0]}: {detail}")
-        return result
-
-
-def safe_detail(value: bytes) -> str:
-    text = value[-DIAGNOSTIC_LIMIT:].decode("utf-8", "replace")
-    text = re.sub(r"(?i)(authorization:\s*bearer\s+)[^\s]+", r"\1[redacted]", text)
-    return "".join(character if character in "\n\t" or character.isprintable() else "?" for character in text).strip()
+                result = subprocess.run(
+                    args, input=input_bytes,
+                    stdin=subprocess.DEVNULL if input_bytes is None else None,
+                    stdout=stdout, stderr=stderr,
+                    env=self.env, timeout=timeout, check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise CommandError(f"command timed out after {timeout}s: {args[0]}") from exc
+            except OSError as exc:
+                raise CommandError(f"cannot start command: {args[0]}") from exc
+            # Child output is opaque: never include it in failure diagnostics.
+            if check and result.returncode != 0:
+                raise CommandError(f"command failed ({result.returncode}): {args[0]}")
+            outputs = []
+            for name, stream in (("stdout", stdout), ("stderr", stderr)):
+                stream.seek(0)
+                value = stream.read(OUTPUT_LIMIT + 1)
+                if len(value) > OUTPUT_LIMIT:
+                    raise CommandError(f"command {name} exceeded {OUTPUT_LIMIT} bytes: {args[0]}")
+                outputs.append(value)
+            return subprocess.CompletedProcess(args, result.returncode, *outputs)
 
 
 class Kube:
@@ -476,7 +423,7 @@ def access_matrix() -> list[AccessCheck]:
         add(
             f"{label} denied bind creator role",
             user,
-            "",
+            own,
             "clusterroles",
             "bind",
             False,
@@ -562,19 +509,37 @@ def subject_access_review(check: AccessCheck) -> dict[str, Any]:
 
 def validate_access_matrix(kube: Kube, checks: Iterable[AccessCheck]) -> None:
     for check in checks:
-        response = kube.json("create", "-f", "-", "-o", "json", input_value=subject_access_review(check))
-        status = response.get("status", {})
-        if status.get("evaluationError"):
-            raise ValidationError(f"{check.name}: {status['evaluationError']}")
-        if not isinstance(status.get("allowed"), bool) or status.get("denied") is True:
-            raise ValidationError(f"{check.name}: malformed or contradictory authorization verdict")
-        actual = status["allowed"]
+        if check.group == "core.orka.ai" and check.resource not in ("agents", "tasks"):
+            # can-i relies on discovery and loses the group for resources absent
+            # from Kubernetes. Orka's virtual APIs need an explicit review.
+            response = kube.json("create", "-f", "-", "-o", "json", input_value=subject_access_review(check))
+            status = response.get("status", {})
+            if status.get("evaluationError") or not isinstance(status.get("allowed"), bool) or status.get("denied") is True:
+                raise ValidationError(f"{check.name}: invalid authorization verdict")
+            actual = status["allowed"]
+        else:
+            result = kube.run(*can_i_args(check), as_user=check.user, check=False)
+            verdict = result.stdout.strip()
+            if (result.returncode, verdict) not in ((0, b"yes"), (1, b"no")):
+                raise ValidationError(f"{check.name}: invalid can-i verdict")
+            actual = verdict == b"yes"
         if actual != check.allowed:
             raise ValidationError(
                 f"{check.name}: expected {'allowed' if check.allowed else 'denied'}, "
                 f"got {'allowed' if actual else 'denied'}"
             )
         print(f"PASS authorization: {check.name}")
+
+
+def can_i_args(check: AccessCheck) -> list[str]:
+    resource = check.resource + (f".{check.group}" if check.group else "")
+    if check.resource_name:
+        resource += f"/{check.resource_name}"
+    args = ["auth", "can-i", check.verb, resource]
+    args += ["--namespace", check.namespace] if check.namespace else ["--all-namespaces"]
+    if check.subresource:
+        args += ["--subresource", check.subresource]
+    return args
 
 
 def custom_resource(kind: str, name: str, namespace: str, owner: str) -> dict[str, Any]:
@@ -590,107 +555,7 @@ def custom_resource(kind: str, name: str, namespace: str, owner: str) -> dict[st
     }
 
 
-def replace_with_annotation(kube: Kube, resource: str, name: str, namespace: str, user: str) -> None:
-    value = kube.json("get", resource, name, "-n", namespace, "-o", "json", as_user=user)
-    value["metadata"].setdefault("annotations", {})["bridge.orka.ai/updated"] = "true"
-    kube.run("replace", "-f", "-", as_user=user, input_value=value)
-
-
-def expect_forbidden(result: subprocess.CompletedProcess[bytes], name: str) -> None:
-    if result.returncode == 0:
-        raise ValidationError(f"{name}: request unexpectedly succeeded")
-    detail = (result.stdout + result.stderr).decode("utf-8", "replace").lower()
-    if "forbidden" not in detail:
-        raise ValidationError(f"{name}: request failed without a Forbidden response")
-    print(f"PASS request denied: {name}")
-
-
-def validate_real_requests(kube: Kube) -> None:
-    secret = {
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {"name": "rbac-sentinel", "namespace": CREATOR_A_NAMESPACE},
-        "stringData": {"value": "validation-only"},
-    }
-    kube.apply(secret)
-
-    agent = custom_resource("Agent", "creator-a-agent", CREATOR_A_NAMESPACE, "creator-a")
-    kube.run("create", "-f", "-", as_user=CREATOR_A, input_value=agent)
-    kube.run("get", "agent", "creator-a-agent", "-n", CREATOR_A_NAMESPACE, "-o", "json", as_user=CREATOR_A)
-    replace_with_annotation(kube, "agent", "creator-a-agent", CREATOR_A_NAMESPACE, CREATOR_A)
-    kube.run(
-        "patch",
-        "agent",
-        "creator-a-agent",
-        "-n",
-        CREATOR_A_NAMESPACE,
-        "--type=merge",
-        "-p",
-        '{"metadata":{"labels":{"bridge.orka.ai/validated":"true"}}}',
-        as_user=CREATOR_A,
-    )
-    kube.run("get", "agent", "creator-a-agent", "-n", CREATOR_A_NAMESPACE, "-o", "json", as_user=OBSERVER_A)
-    print("PASS request allowed: creator and observer Agent access")
-
-    expect_forbidden(
-        kube.run(
-            "get",
-            "agent",
-            "creator-a-agent",
-            "-n",
-            CREATOR_A_NAMESPACE,
-            as_user=CREATOR_B,
-            check=False,
-        ),
-        "creator B reads creator A Agent",
-    )
-    expect_forbidden(
-        kube.run(
-            "patch",
-            "agent",
-            "creator-a-agent",
-            "-n",
-            CREATOR_A_NAMESPACE,
-            "--type=merge",
-            "-p",
-            '{"metadata":{"labels":{"bridge.orka.ai/foreign":"true"}}}',
-            as_user=OBSERVER_A,
-            check=False,
-        ),
-        "observer patches Agent",
-    )
-    expect_forbidden(
-        kube.run(
-            "get",
-            "secret",
-            "rbac-sentinel",
-            "-n",
-            CREATOR_A_NAMESPACE,
-            as_user=CREATOR_A,
-            check=False,
-        ),
-        "creator reads namespace Secret",
-    )
-
-    task = custom_resource("Task", "creator-a-task", CREATOR_A_NAMESPACE, "creator-a")
-    kube.run("create", "-f", "-", as_user=CREATOR_A, input_value=task)
-    kube.run("get", "task", "creator-a-task", "-n", CREATOR_A_NAMESPACE, "-o", "json", as_user=CREATOR_A)
-    replace_with_annotation(kube, "task", "creator-a-task", CREATOR_A_NAMESPACE, CREATOR_A)
-    kube.run("get", "task", "creator-a-task", "-n", CREATOR_A_NAMESPACE, "-o", "json", as_user=OBSERVER_A)
-    print("PASS request allowed: creator and observer Task access")
-    expect_forbidden(
-        kube.run(
-            "get",
-            "task",
-            "creator-a-task",
-            "-n",
-            CREATOR_A_NAMESPACE,
-            as_user=OBSERVER_B,
-            check=False,
-        ),
-        "observer B reads creator A Task",
-    )
-
+def validate_shared_namespace_mutation(kube: Kube) -> None:
     shared = custom_resource("Agent", "shared-agent", UNSAFE_NAMESPACE, "creator-a")
     kube.run("create", "-f", "-", as_user=CREATOR_A, input_value=shared)
     kube.run(
@@ -709,8 +574,6 @@ def validate_real_requests(kube: Kube) -> None:
         raise ValidationError("unsafe shared-namespace control did not demonstrate cross-creator mutation")
     print("PASS negative control: creator B changed creator A's shared-namespace Agent")
 
-    kube.run("delete", "task", "creator-a-task", "-n", CREATOR_A_NAMESPACE, as_user=CREATOR_A)
-    kube.run("delete", "agent", "creator-a-agent", "-n", CREATOR_A_NAMESPACE, as_user=CREATOR_A)
     kube.run("delete", "agent", "shared-agent", "-n", UNSAFE_NAMESPACE, as_user=CREATOR_B)
 
 
@@ -795,7 +658,7 @@ def validate(args: argparse.Namespace) -> None:
             raise ValidationError(f"private kubeconfig selected {current!r}, expected {context!r}")
         install_validation_resources(kube, run_id)
         validate_access_matrix(kube, access_matrix())
-        validate_real_requests(kube)
+        validate_shared_namespace_mutation(kube)
         print("PASS shared-cluster RBAC validation")
     except BaseException as exc:  # Cleanup also runs for Ctrl-C.
         failure = exc
