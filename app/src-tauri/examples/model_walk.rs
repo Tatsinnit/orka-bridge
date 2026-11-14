@@ -3,12 +3,133 @@
 #[cfg(not(all(target_os = "macos", feature = "custom-protocol")))]
 fn main() {}
 
+// Stages are advanced only by explicit UI actions and status reads. The final
+// turn waits for Stop so the driver cannot miss that control on a fast runner.
+#[cfg(all(target_os = "macos", feature = "custom-protocol"))]
+struct ChatFixture {
+    view: bridge_engine::chat::ChatSnapshot,
+    started: Option<std::time::Instant>,
+    fresh: bool,
+    wait_for_stop: bool,
+}
+#[cfg(all(target_os = "macos", feature = "custom-protocol"))]
+impl ChatFixture {
+    fn new() -> Self {
+        Self {
+            view: bridge_engine::chat::ChatSnapshot {
+                document_id: bridge_engine::agent_folder::DocumentId::SAMPLE,
+                state: bridge_engine::chat::ChatState::Ready,
+                busy: false,
+                can_send: true,
+                versions: vec![],
+                error: None,
+            },
+            started: None,
+            fresh: true,
+            wait_for_stop: false,
+        }
+    }
+    fn call(
+        &mut self,
+        command: &str,
+        args: &serde_json::Value,
+        run_active: bool,
+    ) -> Result<bridge_engine::chat::ChatSnapshot, bridge_engine::chat::ChatError> {
+        use bridge_engine::chat::{ChatError, ChatState, ChatTurn, ChatVersion, ToolObservation};
+        if args["documentId"] != serde_json::json!(self.view.document_id) {
+            return Err(ChatError::Source);
+        }
+        if let Some(started) = self.started {
+            if started.elapsed().as_millis() >= 1500 {
+                let first = self.view.versions[0].turns.len() == 1;
+                let turn = self
+                    .view
+                    .versions
+                    .last_mut()
+                    .unwrap()
+                    .turns
+                    .last_mut()
+                    .unwrap();
+                if self.view.state == ChatState::RequestingStop {
+                    turn.phase = "Stop requested".into();
+                    turn.termination_unconfirmed = true;
+                } else {
+                    turn.phase = "Succeeded".into();
+                    turn.answer = Some(if first {
+                        "The checksum is ALPHA. <script>fixture</script>".into()
+                    } else {
+                        "You asked me to remember ALPHA.".into()
+                    });
+                    turn.context_retained = true;
+                }
+                self.view.state = ChatState::Ready;
+                self.view.busy = false;
+                self.view.can_send = true;
+                self.started = None;
+            } else if self.view.state == ChatState::Preparing {
+                self.view.state = ChatState::Working;
+            }
+        }
+        match command {
+            "agent_chat_send" => {
+                if self.view.busy || run_active {
+                    return Err(ChatError::Busy);
+                }
+                let message = args["message"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or(ChatError::InvalidMessage)?;
+                self.wait_for_stop = self.fresh && !self.view.versions.is_empty();
+                if self.fresh {
+                    self.view.versions.push(ChatVersion::default());
+                    self.fresh = false;
+                }
+                self.view.versions.last_mut().unwrap().turns.push(ChatTurn {
+                    message: message.into(),
+                    phase: "Running".into(),
+                    tools: vec![ToolObservation {
+                        name: "web_fetch".into(),
+                        call_id: "fixture-tool".into(),
+                        phase: "running".into(),
+                    }],
+                    ..ChatTurn::default()
+                });
+                self.view.state = if self.wait_for_stop {
+                    ChatState::Working
+                } else {
+                    ChatState::Preparing
+                };
+                self.view.busy = true;
+                self.view.can_send = false;
+                self.started = (!self.wait_for_stop).then(std::time::Instant::now);
+            }
+            "agent_chat_stop" => {
+                if !self.view.busy {
+                    return Err(ChatError::Busy);
+                }
+                self.view.state = ChatState::RequestingStop;
+                self.started = Some(std::time::Instant::now());
+            }
+            "agent_chat_new" => {
+                if self.view.busy {
+                    return Err(ChatError::Busy);
+                }
+                self.fresh = true;
+            }
+            "agent_chat_status" | "agent_chat_reconnect" => {}
+            _ => unreachable!("bounded fixture commands"),
+        }
+        Ok(self.view.clone())
+    }
+}
+
 #[cfg(all(target_os = "macos", feature = "custom-protocol"))]
 fn main() {
     use serde_json::json;
     use tauri::Manager;
     let removed_once = std::sync::atomic::AtomicBool::new(false);
     let running = std::sync::atomic::AtomicBool::new(false);
+    let chat = std::sync::Mutex::new(ChatFixture::new());
     let selected = std::sync::atomic::AtomicBool::new(true);
     let connected = std::sync::atomic::AtomicBool::new(false);
     let first_test_pending = std::sync::atomic::AtomicBool::new(false);
@@ -55,6 +176,16 @@ fn main() {
                 "cluster_places" => json!({"places":[], "selectedKey":null}),
                 "send_history" => json!([]),
                 "send_status" => json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "view":null, "busy":null}),
+                command @ ("agent_chat_status" | "agent_chat_send" | "agent_chat_reconnect" | "agent_chat_stop" | "agent_chat_new") => {
+                    let tauri::ipc::InvokeBody::Json(args) = invoke.message.payload() else {
+                        invoke.resolver.reject(bridge_engine::chat::ChatError::Source);
+                        return true;
+                    };
+                    match chat.lock().unwrap().call(command, args, running.load(std::sync::atomic::Ordering::SeqCst)) {
+                        Ok(view) => json!(view),
+                        Err(error) => { invoke.resolver.reject(error); return true; }
+                    }
+                }
                 "agent_run_status" | "agent_run" => {
                     if invoke.message.command() == "agent_run" {
                         // The automatic first test finishes with the fixed failed report.

@@ -2,6 +2,7 @@
 
 use bridge_engine::agent_folder::{AgentFolder, AgentPair, DocumentId};
 use bridge_engine::agents::Agents;
+use bridge_engine::chat::{ChatError, ChatOwner, ChatSnapshot};
 use bridge_engine::engine::{types::*, EngineState};
 use bridge_engine::local_vm::{self, ExamplePair, LocalVm, LocalVmStatus};
 use bridge_engine::send::{SendOwner, SendStatus};
@@ -219,6 +220,50 @@ async fn agent_run(
 }
 
 #[tauri::command]
+fn agent_chat_status(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+) -> ChatSnapshot {
+    state.status(document_id)
+}
+#[tauri::command]
+async fn agent_chat_send(
+    document_id: DocumentId,
+    message: String,
+    agents: tauri::State<'_, Arc<Agents>>,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ChatSnapshot, ChatError> {
+    let folder = document_folder(agents.inner().clone(), document_id)
+        .await
+        .map_err(|_| ChatError::Source)?;
+    state.send(vm.inner().clone(), folder, message)
+}
+#[tauri::command]
+fn agent_chat_reconnect(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ChatSnapshot, ChatError> {
+    state.reconnect(vm.inner().clone(), document_id)
+}
+#[tauri::command]
+fn agent_chat_stop(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ChatSnapshot, ChatError> {
+    state.stop(vm.inner().clone(), document_id)
+}
+#[tauri::command]
+fn agent_chat_new(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+) -> Result<ChatSnapshot, ChatError> {
+    state.new_conversation(document_id)
+}
+
+#[tauri::command]
 fn cluster_places(
     state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
 ) -> bridge_engine::clusters::commands::ClusterPlaceSnapshot {
@@ -332,6 +377,9 @@ fn main() {
             });
             app.manage(store.clone());
             app.manage(vm.clone());
+            app.manage(ChatOwner::new(
+                tauri::async_runtime::handle().inner().clone(),
+            ));
             let session = bridge_engine::clusters::commands::ClusterSession::default();
             app.manage(session.clone());
             let agents = Agents::new(app.path().home_dir().ok(), app.path().app_data_dir().ok());
@@ -377,6 +425,11 @@ fn main() {
             setup_remove_model,
             agent_run_status,
             agent_run,
+            agent_chat_status,
+            agent_chat_send,
+            agent_chat_reconnect,
+            agent_chat_stop,
+            agent_chat_new,
             agents_list,
             overview_files,
             overview_agents,

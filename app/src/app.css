@@ -129,7 +129,27 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .designer-file, .designer-checks, .designer-tests { margin-top: 16px; display: grid; gap: 12px; }
 .designer-work { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
 .designer-tests { grid-column: 2; grid-row: 1; }
-.designer-tests[hidden] { display: none; }
+.designer-tests[hidden], .designer-work[hidden] { display: none; }
+.chat-panel { margin-top: var(--space-4); display: grid; gap: var(--space-4); }
+.chat-heading, .chat-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.chat-heading { justify-content: space-between; }
+.chat-panel .part-button { min-height: 32px; padding: 4px 12px; background: var(--color-card); }
+.chat-panel .part-button:disabled { background: var(--color-chrome); border-color: transparent; color: var(--color-text-tertiary); }
+.chat-panel .chat-primary { background: var(--color-action); color: var(--color-action-text); border-color: transparent; }
+.chat-panel .chat-primary:not(:disabled):hover { background: var(--color-action-hover); }
+.chat-transcript { min-height: 160px; max-height: 40dvh; overflow-y: auto; overflow-wrap: anywhere; padding: var(--space-2) var(--space-1); }
+.chat-version + .chat-version { margin-top: var(--space-6); padding-top: var(--space-4); border-top: 1px solid var(--color-border-strong); }
+.chat-version h3 { margin: 0 0 var(--space-3); font: var(--type-body); font-weight: 600; }
+.chat-turn { display: grid; gap: var(--space-2); margin-top: var(--space-4); }
+.chat-turn + .chat-turn { margin-top: var(--space-6); }
+.chat-turn h4 { margin: 0; font: var(--type-body); font-weight: 600; }
+.chat-turn .reading + h4 { margin-top: var(--space-2); }
+.chat-notice { color: var(--color-text-secondary); border-left: 2px solid var(--color-status-pending); padding-left: var(--space-3); }
+.chat-tools { padding-left: var(--space-4); }
+.chat-composer { display: grid; gap: var(--space-2); }
+.chat-composer label { font-weight: 600; }
+.chat-composer textarea { width: 100%; max-width: 520px; min-height: 80px; resize: vertical; padding: var(--space-3); border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-card); color: var(--color-text); font: var(--type-reading); }
+.chat-panel > .card-details p + p { margin-top: var(--space-3); }
 .designer-editing { grid-column: 1; grid-row: 1; min-width: 0; }
 .designer-remote { grid-template-columns: minmax(0, 1fr); }
 .file-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }

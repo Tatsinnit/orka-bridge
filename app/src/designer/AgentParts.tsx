@@ -79,7 +79,9 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
       const edited = await changeSoulInline(source, value);
       if (version === editVersion.current) { pendingSoul.current = false; change(edited); }
     } catch { if (version === editVersion.current) setSoulError('Personality could not be updated. The file is unchanged; try editing in File view.'); }
-    finally { if (version === editVersion.current) { pendingSoul.current = false; onPendingEdit?.(false); } }
+    // A failed conversion still has an unsaved visible draft. Run/Chat must not
+    // silently use the earlier personality while that draft needs attention.
+    finally { if (version === editVersion.current) onPendingEdit?.(pendingSoul.current); }
   };
   return <div className="agent-parts">
     {catalogLoading && <p className="muted" role="status">Loading available tools and models…</p>}

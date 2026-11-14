@@ -190,7 +190,7 @@ test('Continue shows real startup states and a ready session can open the owned 
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
   expect(await screen.findByText('exact agent source')).toBeTruthy();
   expect(screen.getByText('exact test source')).toBeTruthy();
-  expect(ipc.mock.calls.every(([name]) => ['setup_status', 'setup_requirements', 'setup_select_local', 'setup_example', 'agent_open', 'agent_run_status', 'send_status', 'send_history', 'engine_call', 'cluster_places'].includes(name))).toBe(true);
+  expect(ipc.mock.calls.every(([name]) => ['setup_status', 'setup_requirements', 'setup_select_local', 'setup_example', 'agent_open', 'agent_run_status', 'agent_chat_status', 'send_status', 'send_history', 'engine_call', 'cluster_places'].includes(name))).toBe(true);
 });
 
 test.each([

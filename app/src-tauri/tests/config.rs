@@ -89,6 +89,11 @@ fn agent_commands_are_granted_only_to_local_main_window() {
         "send_stop",
         "agent_run",
         "agent_run_status",
+        "agent_chat_status",
+        "agent_chat_send",
+        "agent_chat_reconnect",
+        "agent_chat_stop",
+        "agent_chat_new",
         "agents_list",
         "agent_selected",
         "agent_open",
@@ -113,6 +118,11 @@ fn agent_commands_are_granted_only_to_local_main_window() {
                     url: "https://example.com".parse().unwrap()
                 }
             )
+            .is_none());
+    }
+    for command in ["agent_chat", "agent_chat_request", "agent_chat_delete"] {
+        assert!(authority
+            .resolve_access(command, "main", "main", &Origin::Local)
             .is_none());
     }
 }

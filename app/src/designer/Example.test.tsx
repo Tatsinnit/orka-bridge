@@ -38,7 +38,7 @@ test('opens the owned pair without a VM and exposes a keyboard File switch', asy
   expect(screen.getByText('Reads a page you name.', { selector: 'p' })).toBeTruthy();
   expect(screen.getByText('Checks from disk')).toBeTruthy();
   const chat = screen.getByRole('button', { name: 'Chat' });
-  expect(chat.hasAttribute('disabled')).toBe(true); expect(chat.title).toMatch(/coming/i);
+  expect(chat.hasAttribute('disabled')).toBe(false);
   screen.getByRole('button', { name: 'File' }).focus(); await user.keyboard('{Enter}');
   expect((screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement).value).toBe(pair.agent);
 });
