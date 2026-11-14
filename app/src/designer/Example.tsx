@@ -7,17 +7,40 @@ import { readWorkspaceCatalog, type WorkspaceCatalogReply } from '../catalog';
 import AgentParts from './AgentParts';
 import FileEditor from './FileEditor';
 import FileLocation from './FileLocation';
+import NewAgent from './NewAgent';
+import { listDocuments, selectDocument, type AgentEntry } from './documents-api';
 import { readForm } from './agent-form';
 import type { RunSnapshot } from './run-api';
 import type { SelectedPlace } from '../clusters/api';
 import Send, { SendEntry, SendHistory } from '../clusters/Send';
 
-export default function Example({ documentId = SAMPLE_DOCUMENT_ID, active = true, setupPending = false, remote = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, actions, onPair, onRun, onSaveState, onStale }: {
-  documentId?: string; active?: boolean; setupPending?: boolean; remote?: boolean; catalogKey?: number; place?: SelectedPlace; onChooseCluster?: () => void; actions?: ReactNode;
+export default function Example({ agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, actions, onPair, onRun, onSaveState, onStale }: {
+  agentsRevision?: number; onRegistered?: () => void; documentId?: string; persistInitialSelection?: boolean; openDocumentRequest?: number; newAgentRequest?: number; onNewAgentHandled?: () => void; onDocument?: (id: string) => void; active?: boolean; setupPending?: boolean; remote?: boolean; catalogKey?: number; place?: SelectedPlace; onChooseCluster?: () => void; actions?: ReactNode;
   onPair?: (pair: AgentPair | undefined, documentId: string) => void; onRun?: (snapshot: RunSnapshot | undefined, documentId: string) => void;
   onSaveState?: (state: SaveState, documentId: string) => void; onStale?: (stale: boolean, documentId: string) => void;
 }) {
   const [boundDocument, setBoundDocument] = useState(documentId);
+  const [requestedDocument, setRequestedDocument] = useState(documentId);
+  const [selectionNeeded, setSelectionNeeded] = useState(persistInitialSelection);
+  const requestedNow = useRef(documentId);
+  const observedDocument = useRef(documentId);
+  const requestDocument = useCallback((id: string) => { requestedNow.current = id; setRequestedDocument(id); setSelectionNeeded(true); }, []);
+  const [wantsCreate, setWantsCreate] = useState(newAgentRequest > 0);
+  const [creating, setCreating] = useState(false);
+  const [entries, setEntries] = useState<AgentEntry[]>();
+  const [listAttempt, setListAttempt] = useState(0);
+  const [selectionError, setSelectionError] = useState<string>();
+  const [selecting, setSelecting] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { if (observedDocument.current !== documentId) { observedDocument.current = documentId; requestDocument(documentId); } }, [documentId, requestDocument]);
+  useEffect(() => { if (newAgentRequest) setWantsCreate(true); }, [newAgentRequest]);
+  const handledOpen = useRef(openDocumentRequest);
+  useEffect(() => {
+    if (!openDocumentRequest || handledOpen.current === openDocumentRequest) return;
+    handledOpen.current = openDocumentRequest;
+    setWantsCreate(false); setCreating(false); requestDocument(documentId);
+  }, [openDocumentRequest, documentId, requestDocument]);
   const [catalogAttempt, setCatalogAttempt] = useState(0);
   const [catalog, setCatalog] = useState<{ key: number; attempt: number; reply?: WorkspaceCatalogReply }>();
   const catalogEnabled = catalogKey !== undefined && !setupPending && !remote;
@@ -31,6 +54,7 @@ export default function Example({ documentId = SAMPLE_DOCUMENT_ID, active = true
   }, [catalogEnabled, catalogKey, catalogAttempt]);
   const currentCatalog = catalogEnabled && catalog?.key === catalogKey && catalog.attempt === catalogAttempt ? catalog : undefined;
   const [pair, setPair] = useState<AgentPair>();
+  useEffect(() => { let mounted = true; void listDocuments().then(value => { if (mounted) setEntries(value); }); return () => { mounted = false; }; }, [boundDocument, creating, pair?.documentId, agentsRevision, listAttempt]);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string>();
   const [saveState, setSaveState] = useState<SaveState>('saved');
@@ -52,6 +76,7 @@ export default function Example({ documentId = SAMPLE_DOCUMENT_ID, active = true
   const latest = useRef(''); const saved = useRef(''); const busy = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const lineEnding = useRef('\n'); const needsCommit = useRef(false);
+  const [openAttempt, setOpenAttempt] = useState(0);
   useEffect(() => {
     let mounted = true;
     const open = agentCall('agent_open', undefined, boundDocument);
@@ -61,13 +86,13 @@ export default function Example({ documentId = SAMPLE_DOCUMENT_ID, active = true
       lineEnding.current = value.agent.includes('\r\n') ? '\r\n' : '\n'; onPair?.(value, boundDocument);
     }, () => { if (mounted) { setError('Your agent folder could not be opened. Open it again from Designer.'); onPair?.(undefined, boundDocument); } });
     return () => { mounted = false; };
-  }, [onPair, boundDocument]);
+  }, [onPair, boundDocument, openAttempt]);
   useEffect(() => { onSaveState?.(pendingSoul ? 'dirty' : saveState, boundDocument); }, [saveState, pendingSoul, onSaveState, boundDocument]);
   useEffect(() => { onStale?.(stale, boundDocument); }, [stale, onStale, boundDocument]);
 
   const flush = useCallback(async (retry = false) => {
     clearTimeout(timer.current);
-    if (busy.current) return;
+    if (busy.current || pendingSoulCurrent.current) return;
     if (!retry && !needsCommit.current && latest.current === saved.current) { setSaveState('saved'); return; }
     busy.current = true; setSaveState('saving'); setError(undefined);
     try {
@@ -83,17 +108,39 @@ export default function Example({ documentId = SAMPLE_DOCUMENT_ID, active = true
     } catch { needsCommit.current = true; setSaveState('error'); setError('Your changes could not be saved. Your draft is still here.'); }
     finally { busy.current = false; }
   }, [onPair, boundDocument]);
+  useEffect(() => {
+    // Resume an earlier autosave when the pending personality edit is resolved.
+    if (!pendingSoul && !needsCommit.current && latest.current !== saved.current) {
+      clearTimeout(timer.current); timer.current = setTimeout(() => { void flush(); }, 500);
+    }
+  }, [pendingSoul, flush]);
   useEffect(() => () => { clearTimeout(timer.current); reloadEpoch.current++; }, []);
   useEffect(() => {
-    if (documentId === boundDocument) return;
-    if (busy.current || pendingSoul || saveState === 'saving' || saveState === 'error') return;
+    if (requestedDocument === boundDocument && !wantsCreate && !selectionNeeded) return;
+    if (busy.current || pendingSoul || saveState === 'saving' || saveState === 'error' || selecting) return;
     if (saveState === 'dirty') { void flush(); return; }
-    reloadEpoch.current++; reloadAdmitted.current = false; setReloading(false);
-    setPair(undefined); setDraft(''); latest.current = saved.current = '';
-    setLocalRun(undefined); setStale(false); setError(undefined); setSendOpen(false);
-    // Clear the destination view, not the previous document's last observed result.
-    onPair?.(undefined, documentId); onRun?.(undefined, documentId); setBoundDocument(documentId);
-  }, [documentId, boundDocument, pendingSoul, saveState, flush, onPair, onRun]);
+    if (wantsCreate) { setCreating(true); setWantsCreate(false); onNewAgentHandled?.(); return; }
+    // Persist only after the current draft is safe. The mounted editor survives failures.
+    const next = requestedDocument;
+    setSelecting(true);
+    void selectDocument(next).then(() => {
+      if (!mounted.current || requestedNow.current !== next) return;
+      // The editor stays writable during IPC. Re-admit after any newer edit is saved.
+      if (busy.current || needsCommit.current || pendingSoulCurrent.current || latest.current !== saved.current) return;
+      setSelectionNeeded(false); setSelectionError(undefined);
+      if (next === boundDocument) return;
+      reloadEpoch.current++; reloadAdmitted.current = false; setReloading(false);
+      setPair(undefined); setDraft(''); latest.current = saved.current = '';
+      setLocalRun(undefined); setStale(false); setError(undefined); setSendOpen(false); setSelectionError(undefined);
+      onPair?.(undefined, next); onRun?.(undefined, next); setBoundDocument(next); onDocument?.(next);
+    }, () => {
+      if (!mounted.current || requestedNow.current !== next) return;
+      setSelectionError('Your agent selection could not be saved. Try choosing it again.');
+      requestedNow.current = observedDocument.current = boundDocument;
+      setRequestedDocument(boundDocument); setSelectionNeeded(false); onDocument?.(boundDocument);
+    })
+      .finally(() => { if (mounted.current) setSelecting(false); });
+  }, [requestedDocument, boundDocument, wantsCreate, selectionNeeded, pendingSoul, saveState, selecting, flush, onPair, onRun, onDocument, onNewAgentHandled]);
   const edit = (value: string, rawFile = false) => {
     const content = rawFile ? value.replace(/\r\n/g, '\n').replaceAll('\n', lineEnding.current) : value;
     if (content === latest.current) return;
@@ -128,21 +175,31 @@ export default function Example({ documentId = SAMPLE_DOCUMENT_ID, active = true
     : pendingSoul ? 'Wait for your personality edit to save. Check Agent view if it needs attention.'
     : saveState !== 'saved' ? saveState === 'error' ? 'Your changes could not be saved. Try saving again in Agent view.' : 'Wait for your changes to save.' : undefined;
   const testSource = pair && <details className="check-source"><summary>Test file: {pair.name ?? 'web-reader'}.agent.test.md</summary><pre className="example-source" tabIndex={0} aria-label="Test file, read-only">{pair.tests}</pre></details>;
-  return <section className="designer" aria-labelledby={active ? 'page-title' : undefined}>
+  return <>
+    {creating && <NewAgent active={active} onRegistered={() => { if (onRegistered) onRegistered(); else if (mounted.current) setListAttempt(value => value + 1); }} model={currentCatalog?.reply?.defaultModel} onCreated={async id => {
+      setCreating(false); requestDocument(id);
+    }} onCancel={() => { setCreating(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.new-agent-entry')?.focus()); }} />}
+    <section className="designer" hidden={creating} aria-labelledby={active && !creating ? 'page-title' : undefined}>
     <div className="page-heading designer-heading">
-      <div className="agent-heading-copy"><h1 className="agent-name" id={active ? 'page-title' : undefined}>{info.name ?? (pair ? 'Agent file' : 'Designer')}</h1>{info.description && <p className="muted">{info.description}</p>}</div>
+      <div className="agent-heading-copy"><h1 className="agent-name" id={active && !creating ? 'page-title' : undefined}>{info.name ?? (pair ? 'Agent file' : 'Designer')}</h1>{info.description && <p className="muted">{info.description}</p>}</div>
       <div className="heading-actions">
         <div className="view-switch" role="group" aria-label="Designer view">
           <button type="button" aria-pressed={view === 'Agent'} onClick={() => setView('Agent')}>Agent</button>
           <button type="button" aria-pressed={view === 'Chat'} disabled={!pair} title={!pair ? 'Wait for your agent folder to open' : undefined} onClick={() => setView('Chat')}>Chat</button>
           <button type="button" aria-pressed={view === 'File'} disabled={!pair} title={!pair ? 'Wait for your agent folder to open' : undefined} onClick={() => setView('File')}>File</button>
         </div>
+        {entries && <label className="agent-selector"><span className="sr-only">Agent</span><select className="field" disabled={selecting} title={selecting ? 'Opening your agent' : undefined} value={boundDocument} onChange={event => { setSelectionError(undefined); setWantsCreate(false); onNewAgentHandled?.(); requestDocument(event.target.value); }}>
+          {!entries.some(entry => entry.id === boundDocument) && <option value={boundDocument}>{pair?.name ?? 'Current agent'}</option>}
+          {entries.map(entry => <option key={entry.id} value={entry.id}>{entry.name}{entry.available ? '' : ' (unavailable)'}</option>)}
+        </select></label>}
+        <Button type="button" kind="secondary" className="new-agent-entry" onClick={() => setWantsCreate(true)}>New agent</Button>
         {actions}
         {view !== 'Chat' && <SendEntry blocked={sendBlocked} failingCheck={!stale && localRun?.sourceCurrent !== false ? localRun?.report?.cases.find(c => c.verdict === 'failed')?.id : undefined}
           onProceed={openSend} onFix={() => { setView('Agent'); requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.instructions-editor')?.focus()); }} />}
       </div>
     </div>
-    {!pair ? error ? <p role="alert">{error}</p> : <div className="designer-file card designer-skeleton" role="status" aria-label="Opening your agent" aria-busy="true"><span className="sr-only">Opening your agent…</span><div aria-hidden="true"><div className="skeleton-field skeleton-prompt" /><div className="skeleton-field" /><div className="skeleton-field" /><div className="skeleton-field" /></div></div> : <>
+    {selectionError && <p role="alert">{selectionError}</p>}
+    {!pair ? error ? <div className="designer-file card"><p role="alert">{error}</p><div className="heading-actions"><Button type="button" kind="secondary" onClick={() => { setError(undefined); requestDocument(boundDocument); setOpenAttempt(value => value + 1); }}>Try opening again</Button></div></div> : <div className="designer-file card designer-skeleton" role="status" aria-label="Opening your agent" aria-busy="true"><span className="sr-only">Opening your agent…</span><div aria-hidden="true"><div className="skeleton-field skeleton-prompt" /><div className="skeleton-field" /><div className="skeleton-field" /><div className="skeleton-field" /></div></div> : <>
       <div hidden={view !== 'Chat'}><Chat key={boundDocument} documentId={boundDocument} blocked={chatBlocked} /></div>
       <div hidden={view === 'Chat'} className={`designer-work${remote ? ' designer-remote' : ''}`}>
       <div className="designer-tests card" hidden={remote}>
@@ -172,5 +229,5 @@ export default function Example({ documentId = SAMPLE_DOCUMENT_ID, active = true
       </div>
     </>}
     {!pair && <div className="designer-checks card"><SendHistory revision={boundDocument} /></div>}
-  </section>;
+  </section></>;
 }

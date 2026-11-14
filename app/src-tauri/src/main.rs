@@ -133,6 +133,31 @@ async fn agent_selected(state: tauri::State<'_, Arc<Agents>>) -> Result<Document
         .map_err(|_| "The agents are unavailable.")?
 }
 #[tauri::command]
+async fn agent_create(
+    name: String,
+    model: Option<String>,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<DocumentId, &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.create(&name, model.as_deref()))
+        .await
+        .map_err(|_| "The agent could not be created. Existing files have been kept.")?
+}
+#[tauri::command]
+async fn agent_select(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<(), &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.select(document_id))
+        .await
+        .map_err(|_| "The agent selection could not be saved.")?
+}
+#[tauri::command]
+fn agent_creation_root(state: tauri::State<'_, Arc<Agents>>) -> Option<String> {
+    state.creation_root()
+}
+#[tauri::command]
 async fn agent_open(
     document_id: DocumentId,
     state: tauri::State<'_, Arc<Agents>>,
@@ -464,6 +489,9 @@ fn main() {
             overview_agents,
             overview_places,
             agent_selected,
+            agent_create,
+            agent_select,
+            agent_creation_root,
             agent_open,
             agent_save,
             agent_reveal,

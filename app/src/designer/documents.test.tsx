@@ -52,6 +52,7 @@ test('switch waits for autosave, keeps failed draft, and retry switches without 
   mockIPC((command, args) => {
     const request = args as { documentId: string; content: string };
     if (command === 'agent_open') return request.documentId === a ? pair : { ...pair, documentId: b, name: 'beta', agent: 'Instructions B' };
+    if (command === 'agent_select') return null;
     if (command === 'agent_save') { writes.push(request.documentId); if (fail) throw Error('save failed'); return { ...pair, agent: request.content }; }
     if (command.startsWith('agent_run')) return { ...idle, documentId: request.documentId };
     if (command === 'send_status') return { documentId: request.documentId, view: null, busy: null };

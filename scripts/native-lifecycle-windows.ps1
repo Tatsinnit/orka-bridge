@@ -330,7 +330,16 @@ try {
             $value = $null
             if ($control -and !$control.Current.IsOffscreen -and $control.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$value) -and !$value.Current.IsReadOnly) { $true }
         } | Out-Null
-        Press (Wait-For 'Enabled File button missing' { $control = Find-Control $script:window 'File' $button; if ($control -and $control.Current.IsEnabled) { $control } })
+        $file = Wait-For 'Enabled File button missing' { $control = Find-Control $script:window 'File' $button; if ($control -and $control.Current.IsEnabled -and !$control.Current.IsOffscreen) { $control } }
+        # aria-pressed exposes Toggle rather than Invoke. Activate the exact
+        # control semantically; a coordinate fallback can miss during layout.
+        $toggle = $null
+        if (!$file.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$toggle)) {
+            $patterns = @($file.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) -join ', '
+            throw "File button has no Toggle pattern; supported: $patterns"
+        }
+        Write-Host "File navigation: one Toggle action from $($toggle.Current.ToggleState)"
+        $toggle.Toggle()
         $editor = Wait-For 'Editable loaded File view missing' {
             $control = Find-Control $script:window 'Agent file' ([System.Windows.Automation.ControlType]::Edit)
             $value = $null

@@ -135,7 +135,7 @@ test.each(['pending', 'failed'])('saved Sends are readable while the document op
   expect(await screen.findByText('bridge-run-before-restart')).toBeTruthy();
   if (state === 'failed') expect(screen.getByText('Your agent folder could not be opened. Open it again from Designer.')).toBeTruthy();
   expect(document.body.textContent).not.toContain('PRIVATE_SOURCE_FAILURE');
-  expect(ipc.mock.calls.every(([command]) => ['agent_open', 'send_history'].includes(command))).toBe(true);
+  expect(ipc.mock.calls.every(([command]) => ['agent_open', 'agents_list', 'send_history'].includes(command))).toBe(true);
 });
 
 test('empty history says no saved Sends, not that no remote Agents exist', async () => {

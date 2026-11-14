@@ -6,6 +6,7 @@ import { firstTestPending, retireFirstTest, useFirstTest } from './setup/first-t
 import Example from './designer/Example';
 import Overview from './overview/Overview';
 import { SAMPLE_DOCUMENT_ID } from './designer/agent-api';
+import { selectedDocument } from './designer/documents-api';
 import type { SetupStatus, ExamplePair } from './setup/state';
 import type { SelectedPlace } from './clusters/api';
 import type { ModelState } from './setup/Model';
@@ -63,6 +64,11 @@ export default function App() {
   useEffect(() => { if (content.current) content.current.scrollTop = 0; }, [page]);
   const [exampleOpen, setExampleOpen] = useState(false);
   const [documentId, setDocumentId] = useState(SAMPLE_DOCUMENT_ID);
+  const [newAgentRequest, setNewAgentRequest] = useState(0);
+  const [agentsRevision, setAgentsRevision] = useState(0);
+  const [persistInitialSelection, setPersistInitialSelection] = useState(false);
+  const [openDocumentRequest, setOpenDocumentRequest] = useState(0);
+  const openRequest = useRef(0);
   const [overviewCounts, setOverviewCounts] = useState('Saved files and local Agents');
   const [exampleAttempt, setExampleAttempt] = useState(0);
   const [setup, setSetup] = useState<SetupStatus>();
@@ -187,9 +193,20 @@ export default function App() {
   };
   const tabTone = remote || exampleReadOnly ? 'not-started' : stale || (run?.sourceCurrent === false && !!run.report) ? 'stale' : run?.state === 'running' ? 'running' : run?.report?.verdict === 'failed' ? 'failed' : run?.report?.verdict === 'passed' ? 'passed' : 'not-started';
   const copy = emptyCopy[page];
-  const openDesigner = (id = documentId) => {
-    if (exampleState === 'failed') { setExampleAttempt(value => value + 1); setExampleState('loading'); }
-    setDocumentId(id); setExampleOpen(true); setPage('Designer');
+  const openDesigner = (id?: string, create = false) => {
+    const request = ++openRequest.current;
+    setPage('Designer');
+    const open = (selected: string) => {
+      if (request !== openRequest.current) return;
+      const remount = exampleState === 'failed' && saveState === 'saved';
+      if (remount) { setExampleAttempt(value => value + 1); setExampleState('loading'); }
+      if (!exampleOpen || remount) setPersistInitialSelection(id !== undefined);
+      else if (id !== undefined) setOpenDocumentRequest(value => value + 1);
+      setDocumentId(selected); setExampleOpen(true);
+      if (create) setNewAgentRequest(value => value + 1);
+    };
+    if (id || exampleOpen) open(id ?? documentId);
+    else void selectedDocument().then(selected => open(selected ?? SAMPLE_DOCUMENT_ID));
   };
   const footer = [
     remote ? place.target ? `Cluster: ${place.target.context_name}` : 'Choose a cluster' : welcome ? 'Nothing is set up yet' : setup?.localVm === 'failed' || setup?.model === 'locked' && setup?.localVm === 'ready' ? hostDetail : setupLine,
@@ -210,7 +227,7 @@ export default function App() {
               aria-label={name} aria-describedby={`tab-status-${name}`}
               aria-current={page === name ? 'page' : undefined}
               onClick={() => {
-                if (name === 'Designer') openDesigner();
+                if (name === 'Designer' && !exampleOpen) openDesigner();
                 else setPage(name);
               }}>
               <span className={`icon-tile tile-${name.toLowerCase()}`}><PageIcon page={name} /></span>
@@ -226,7 +243,7 @@ export default function App() {
         {page === 'Designer' && !exampleOpen && <div className="page-heading">
           <h1 id="page-title">{page}</h1>
           {page === 'Designer' && <div className="heading-actions">
-            <ComingButton label="New agent" reason="Creating agents is coming" />
+            <Button type="button" kind="secondary" onClick={() => openDesigner(undefined, true)}>New agent</Button>
             <ComingButton label="Send to a cluster" reason="Open your agent before sending" />
           </div>}
         </div>}
@@ -234,10 +251,8 @@ export default function App() {
           <Setup place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
             onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)} onOpenAgent={() => openDesigner()} />
         </div>
-        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} documentId={documentId} remote={remote} catalogKey={!remote && !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup?.model !== 'locked' && model === 'connected' ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} actions={<>
-          <ComingButton label="New agent" reason="Creating agents is coming" />
-        </>} /></div>}
-        <Overview active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} onCounts={setOverviewCounts}
+        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={!remote && !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup?.model !== 'locked' && model === 'connected' ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
+        <Overview onNewAgent={() => openDesigner(undefined, true)} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} onCounts={setOverviewCounts}
           onOpenDocument={id => { if (remote) choosePlace({ kind: 'thisComputer' }); openDesigner(id); }}
           onOpenExample={() => { if (remote) choosePlace({ kind: 'thisComputer' }); openDesigner(SAMPLE_DOCUMENT_ID); }}
           onChooseWorkspace={() => setPage('Clusters')} />

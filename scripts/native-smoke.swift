@@ -341,7 +341,17 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
         "\(observation.boundingBox): \(observation.topCandidates(1).first?.string ?? "")"
     }.joined(separator: "\n")
     try recognized.write(toFile: "\(output)/\(name).ocr.txt", atomically: true, encoding: .utf8)
-    if name == "send-probe" || name == "cluster-probe" || name == "overview-probe" || name.hasPrefix("overview-fixture-") { return observations }
+    if name == "new-agent-probe" || name == "send-probe" || name == "cluster-probe" || name == "overview-probe" || name.hasPrefix("overview-fixture-") { return observations }
+    if name.hasPrefix("new-agent-") {
+        let expected = name == "new-agent-created" ? "native-helper" : "New agent"
+        let heading = observations.contains { observation in
+            let top = 1 - observation.boundingBox.maxY
+            return top > 0.10 && top < 0.25 && observation.topCandidates(1).first?.string == expected
+        }
+        require(heading, "Native creation screenshot is missing \(expected)")
+        print("PASS \(name): native owned-agent creation, no workspace or model")
+        return observations
+    }
     if name == "before-settings" || name == "designer-settings" {
         // These captures intentionally scroll the page heading out of view.
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
@@ -551,6 +561,51 @@ if initial.contains(where: { $0.topCandidates(1).first?.string == "Get started" 
     initial = try capture("places-empty", "Clusters")
 }
 try localPreflight("local-preflight")
+do {
+    clickTab("Designer", initial)
+    try capture("agent-before-creation", "Designer")
+    clickButton("New agent")
+    Thread.sleep(forTimeInterval: 0.3)
+    for character in "native-helper".utf16 {
+        var unit = character
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)!
+            event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
+            event.flags = []; event.post(tap: .cghidEventTap)
+        }
+    }
+    // Blur the identifier before submission so macOS text correction cannot hide in focus.
+    key(48)
+    let creationForm = try capture("new-agent-form", "Designer")
+    clickText("Create", in: creationForm)
+    let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Orka/agents/native-helper")
+    let agent = folder.appendingPathComponent("native-helper.agent.md")
+    let checks = folder.appendingPathComponent("native-helper.agent.test.md")
+    for _ in 0..<50 {
+        if FileManager.default.fileExists(atPath: checks.path) && nativeButtons("Create").isEmpty && nativeTextIsVisible("Instructions") { break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    if !FileManager.default.fileExists(atPath: agent.path) || !FileManager.default.fileExists(atPath: checks.path) {
+        let observed = try capture("new-agent-probe", "Designer")
+        let text = observed.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+        fail("Creation did not publish its pair; native screen: \(text)")
+    }
+    require(try String(contentsOf: agent, encoding: .utf8).contains("name: \"native-helper\"\n"), "Created agent metadata missing")
+    require(try String(contentsOf: checks, encoding: .utf8).contains("web_fetch"), "Created starter lost its tool assertion")
+    let created = try capture("new-agent-created", "Designer")
+    requireNoLocalWorkspace()
+    clickTab("Overview", created)
+    for _ in 0..<30 {
+        if !nativeButtons("Open web-reader").isEmpty { break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    clickButton("Open web-reader")
+    for _ in 0..<30 {
+        if nativeTextIsVisible("web-reader") { break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    try capture("agent-after-creation", "Designer")
+}
 do {
     // The owned form works before any workspace exists. Exercise its real writer,
     // not injected renderer data; editing remains owned during setup too.

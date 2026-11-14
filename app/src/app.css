@@ -115,6 +115,17 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .setup-availability { border-top: 1px solid var(--color-border); padding-top: 12px; margin-top: 12px; }
 .example-source { font-family: var(--font-mono); font-size: var(--size-small); line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 .designer-heading { align-items: flex-start; gap: 16px; }
+.agent-selector { max-width: 220px; }
+.agent-selector select { width: 100%; font-family: var(--font-mono); }
+.new-agent-form { display: grid; gap: var(--space-3); max-width: 520px; }
+.new-agent-form > label, .new-agent-form legend { font-weight: 600; }
+.new-agent-form > input { width: min(100%, 360px); font-family: var(--font-mono); }
+.new-agent-form p { margin: 0; }
+.new-agent-form fieldset { border: 0; padding: 0; margin: var(--space-2) 0 0; }
+.new-agent-form fieldset label { display: flex; align-items: center; gap: var(--space-2); padding-top: var(--space-2); }
+.new-agent-path { font-family: var(--font-mono); font-size: 0.92em; overflow-wrap: anywhere; }
+.new-agent-path ul { padding-left: var(--space-6); margin: var(--space-2) 0; }
+.new-agent-form .heading-actions { margin-top: var(--space-3); }
 .agent-heading-copy { min-width: 0; }
 .agent-name { font-family: var(--font-mono); font-variant-ligatures: none; }
 .agent-heading-copy h1, .agent-heading-copy p { overflow-wrap: anywhere; }

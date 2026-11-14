@@ -7,7 +7,7 @@ import { type Agent, type LiveAgents, type Observation, type Places, readAgents,
 import { type AgentCard, PlaceCards, RecordedAttempts, remoteCards, SourceGroups } from './places';
 import './overview.css';
 
-type Props = { active: boolean; runBusy: boolean; workspaceKey: string; onOpenDocument: (id: string) => void; onOpenExample: () => void; onChooseWorkspace: () => void; onCounts?: (label: string) => void };
+type Props = { onNewAgent?: () => void; active: boolean; runBusy: boolean; workspaceKey: string; onOpenDocument: (id: string) => void; onOpenExample: () => void; onChooseWorkspace: () => void; onCounts?: (label: string) => void };
 type CompleteAgents = LiveAgents & { state: 'complete'; installation: string; observedAt: number };
 const complete = (v?: LiveAgents): v is CompleteAgents => v?.state === 'complete' && v.installation !== null && v.observedAt !== null;
 const when = (ms: number) => <RelativeTime value={ms} />;
@@ -21,7 +21,7 @@ function associated(live: LiveAgents, agent: Agent): Observation | undefined {
   const o = live.observation;
   return o && o.installation === live.installation && o.namespace === agent.namespace && o.agentUid === agent.uid ? o : undefined;
 }
-export default function Overview({ active, runBusy, workspaceKey, onOpenDocument, onOpenExample, onChooseWorkspace, onCounts }: Props) {
+export default function Overview({ onNewAgent, active, runBusy, workspaceKey, onOpenDocument, onOpenExample, onChooseWorkspace, onCounts }: Props) {
   const [files, setFiles] = useState<SavedFiles>();
   const [live, setLive] = useState<LiveAgents>();
   const [last, setLast] = useState<CompleteAgents>();
@@ -104,7 +104,7 @@ export default function Overview({ active, runBusy, workspaceKey, onOpenDocument
       }) ?? [];
   const clusterCards = places ? remoteCards(places, saved, localCards, onOpenDocument) : [];
   return <section className="overview" aria-label="Agents by cluster" hidden={!active}>
-    <div className="page-heading"><h1 id={active ? 'page-title' : undefined}>Your agents</h1><div className="overview-actions"><fieldset className="overview-grouping"><legend className="sr-only">Group agents</legend><Button type="button" kind="secondary" size="small" aria-pressed={!byAgent} onClick={() => setByAgent(false)}>By cluster</Button><Button type="button" kind="secondary" size="small" aria-pressed={byAgent} onClick={() => setByAgent(true)}>By agent</Button></fieldset><Button type="button" kind="secondary" onClick={() => setRefresh(value => value + 1)}>Refresh</Button></div></div>
+    <div className="page-heading"><h1 id={active ? 'page-title' : undefined}>Your agents</h1><div className="overview-actions">{onNewAgent && <Button type="button" kind="primary" onClick={onNewAgent}>New agent</Button>}<fieldset className="overview-grouping"><legend className="sr-only">Group agents</legend><Button type="button" kind="secondary" size="small" aria-pressed={!byAgent} onClick={() => setByAgent(false)}>By cluster</Button><Button type="button" kind="secondary" size="small" aria-pressed={byAgent} onClick={() => setByAgent(true)}>By agent</Button></fieldset><Button type="button" kind="secondary" onClick={() => setRefresh(value => value + 1)}>Refresh</Button></div></div>
     {placeError && <p role="status">Could not read clusters</p>}
     {places?.historyState === 'unavailable' && <p role="alert">Saved Send summaries unavailable. Recorded checks cannot be confirmed.</p>}
     <div className={byAgent ? undefined : "overview-board"}><section className="overview-place-section" aria-label="This computer">

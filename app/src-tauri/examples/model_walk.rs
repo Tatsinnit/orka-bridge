@@ -173,6 +173,18 @@ fn main() {
                     json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "name":"web-reader", "agent":*content, "tests":tests,
                         "source":bridge_runtime_protocol::SnapshotId::of(content.as_bytes(), tests.as_bytes())})
                 }
+                "agents_list" => json!([{"id":bridge_engine::agent_folder::DocumentId::SAMPLE,
+                    "name":"web-reader", "path":null, "available":true}]),
+                "agent_selected" => json!(bridge_engine::agent_folder::DocumentId::SAMPLE),
+                "agent_select" => {
+                    if !matches!(invoke.message.payload(), tauri::ipc::InvokeBody::Json(args)
+                        if args["documentId"] == json!(bridge_engine::agent_folder::DocumentId::SAMPLE))
+                    {
+                        invoke.resolver.reject("Unknown fixture agent");
+                        return true;
+                    }
+                    json!(null)
+                }
                 // Catalog choices are synthetic and never execute a tool or model.
                 "workspace_catalog" => json!({
                     "defaultModel":"gpt-5.6-terra",

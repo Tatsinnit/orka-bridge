@@ -219,6 +219,53 @@ impl AgentFolder {
             lock: Mutex::new(()),
         })
     }
+    pub(crate) fn seed_created(&self, root: &Dir, model: Option<&str>) -> io::Result<()> {
+        // JSON string quoting is also YAML scalar quoting, including YAML keywords.
+        let name = serde_json::to_string(&self.name).map_err(|_| invalid())?;
+        let mut agent = include_str!("../example-agent/web-reader.agent.md").replacen(
+            "name: web-reader\n",
+            &format!("name: {name}\n"),
+            1,
+        );
+        if let Some(model) = model {
+            let scalar = serde_json::to_string(model).map_err(|_| invalid())?;
+            agent = agent.replacen("model: gpt-5.6-terra\n", &format!("model: {scalar}\n"), 1);
+        }
+        let tests = include_str!("../example-agent/web-reader.agent.test.md").replacen(
+            "# web-reader tests",
+            &format!("# {} tests", self.name),
+            1,
+        );
+        replace(root, MARKER, &self.owner)?;
+        replace(root, &self.agent, agent.as_bytes())?;
+        replace(root, &self.tests, tests.as_bytes())?;
+        Self::init_history(root)?;
+        git::commit(root, &self.pair(root)?, &self.agent, &self.tests)?;
+        sync(root)
+    }
+    fn init_history(root: &Dir) -> io::Result<()> {
+        let git = child(root, ".git")?;
+        child(&git, "objects")?;
+        child(&git, "refs")?;
+        let info = child(&git, "info")?;
+        replace(&info, "exclude", b"/.bridge-agent-folder\n")?;
+        replace(
+            &git,
+            "config",
+            b"[core]\nrepositoryformatversion = 0\nbare = false\n",
+        )?;
+        replace(&git, "HEAD", b"")
+    }
+    pub(crate) fn verify_created(&self, root: &Dir) -> io::Result<()> {
+        let mut marker = shared_marker(root)?;
+        let mut ownership = Vec::new();
+        (&mut marker).take(129).read_to_end(&mut ownership)?;
+        if ownership != self.owner {
+            return Err(invalid());
+        }
+        self.pair(root)?;
+        git::inspect(root)
+    }
     pub(crate) fn created_id(home: Option<PathBuf>, name: &str) -> Result<DocumentId> {
         // Constructing an owner does not grant authority: validate the native marker
         // and the bound pair/Git layout before the registry can publish its identity.
@@ -358,17 +405,7 @@ impl AgentFolder {
                     TESTS,
                     include_bytes!("../example-agent/web-reader.agent.test.md"),
                 )?;
-                let git = child(&root, ".git")?;
-                child(&git, "objects")?;
-                child(&git, "refs")?;
-                let info = child(&git, "info")?;
-                replace(&info, "exclude", b"/.bridge-agent-folder\n")?;
-                replace(
-                    &git,
-                    "config",
-                    b"[core]\nrepositoryformatversion = 0\nbare = false\n",
-                )?;
-                replace(&git, "HEAD", b"")?;
+                Self::init_history(&root)?;
                 sync(&root)?;
             } else {
                 marker.rewind()?;

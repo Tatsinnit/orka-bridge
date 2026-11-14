@@ -15,6 +15,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[path = "agents_creation.rs"]
+mod creation;
+use creation::Pending;
+
+#[cfg(test)]
+#[path = "agents_creation_tests.rs"]
+mod creation_tests;
+
 #[cfg(test)]
 mod reader_tests {
     use super::*;
@@ -55,24 +63,26 @@ pub struct AgentEntry {
     pub path: Option<String>,
     pub available: bool,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Storage {
     Bridge,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Registration {
     id: DocumentId,
     name: String,
     storage: Storage,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Registry {
     version: u32,
     selected: DocumentId,
     agents: Vec<Registration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending: Vec<Pending>,
 }
 impl Default for Registry {
     fn default() -> Self {
@@ -80,10 +90,18 @@ impl Default for Registry {
             version: 1,
             selected: DocumentId::SAMPLE,
             agents: Vec::new(),
+            pending: Vec::new(),
         }
     }
 }
 impl Registry {
+    fn save(&self, root: &Dir) -> Result<()> {
+        let bytes = serde_json::to_vec(self).map_err(|_| ERROR)?;
+        if bytes.len() > MAX_FILE {
+            return Err(ERROR);
+        }
+        replace(root, "registry.json", &bytes).map_err(|_| ERROR)
+    }
     fn load(root: Option<&Dir>) -> io::Result<Self> {
         let Some(root) = root else {
             return Ok(Self::default());
@@ -104,6 +122,10 @@ impl Registry {
                     || !names.insert(&entry.name)
             })
             || (value.selected != DocumentId::SAMPLE && !ids.contains(&value.selected))
+            || value
+                .pending
+                .iter()
+                .any(|entry| !entry.valid() || !ids.insert(entry.id) || !names.insert(&entry.name))
         {
             return Err(invalid());
         }
@@ -160,9 +182,24 @@ impl Agents {
         }
     }
     fn registry(&self) -> Result<Registry> {
-        Registry::load(self.root(false).map_err(|_| ERROR)?.as_ref()).map_err(|_| ERROR)
+        let registry =
+            Registry::load(self.root(false).map_err(|_| ERROR)?.as_ref()).map_err(|_| ERROR)?;
+        if registry.pending.is_empty() {
+            return Ok(registry);
+        }
+        // Recovery is best effort for readers: an unfinished operation must not
+        // make the last valid registration snapshot depend on write access.
+        self.locked(|registry, _| Ok(registry.clone()))
+            .or(Ok(registry))
     }
-    fn mutate<T>(&self, work: impl FnOnce(&mut Registry) -> Result<T>) -> Result<T> {
+    fn mutate<T>(&self, work: impl FnOnce(&mut Registry, &Dir) -> Result<T>) -> Result<T> {
+        self.locked(|registry, root| {
+            let result = work(registry, root)?;
+            registry.save(root)?;
+            Ok(result)
+        })
+    }
+    fn locked<T>(&self, work: impl FnOnce(&mut Registry, &Dir) -> Result<T>) -> Result<T> {
         // No document lock is held here. Other processes serialize on the same
         // regular file, and every writer reloads after acquiring that file lock.
         let _access = self.access.lock().map_err(|_| ERROR)?;
@@ -183,20 +220,14 @@ impl Agents {
         let lock = lock.into_std();
         lock.lock().map_err(|_| ERROR)?;
         let mut registry = Registry::load(Some(&root)).map_err(|_| ERROR)?;
-        let result = work(&mut registry)?;
-        let bytes = serde_json::to_vec(&registry).map_err(|_| ERROR)?;
-        if bytes.len() > MAX_FILE {
-            return Err(ERROR);
-        }
-        replace(&root, "registry.json", &bytes).map_err(|_| ERROR)?;
-        Ok(result)
+        self.reconcile(&mut registry, &root)?;
+        work(&mut registry, &root)
     }
     /// One registry snapshot and one inspection per owned folder; no selection writes.
     pub fn inspect_files<T>(
         &self,
         mut project: impl FnMut(InspectedFile) -> Option<T>,
     ) -> Result<Vec<T>> {
-        let _access = self.access.lock().map_err(|_| ERROR)?;
         let registry = self.registry()?;
         let mut files = Vec::new();
         // Project before reading the next pair so prompt/test bodies are not accumulated.
@@ -216,7 +247,6 @@ impl Agents {
         Ok(files)
     }
     pub fn list(&self) -> Result<Vec<AgentEntry>> {
-        let _access = self.access.lock().map_err(|_| ERROR)?;
         let registry = self.registry()?;
         let mut entries = vec![AgentEntry {
             id: DocumentId::SAMPLE,
@@ -239,8 +269,8 @@ impl Agents {
         if id == DocumentId::SAMPLE {
             return Ok(self.sample());
         }
-        let mut cache = self.access.lock().map_err(|_| ERROR)?;
         let registry = self.registry()?;
+        let mut cache = self.access.lock().map_err(|_| ERROR)?;
         let entry = registry
             .agents
             .iter()
@@ -256,11 +286,10 @@ impl Agents {
         Ok(folder)
     }
     pub fn selected(&self) -> Result<DocumentId> {
-        let _access = self.access.lock().map_err(|_| ERROR)?;
         Ok(self.registry()?.selected)
     }
     pub fn select(&self, id: DocumentId) -> Result<()> {
-        self.mutate(|registry| {
+        self.mutate(|registry, _| {
             if id != DocumentId::SAMPLE && !registry.agents.iter().any(|entry| entry.id == id) {
                 return Err("The agent is not registered.");
             }
@@ -273,8 +302,15 @@ impl Agents {
         if !valid_name(name) {
             return Err("The agent name is invalid.");
         }
-        self.mutate(|registry| {
+        self.mutate(|registry, _| {
             let id = AgentFolder::created_id(self.home.clone(), name)?;
+            if registry
+                .pending
+                .iter()
+                .any(|entry| entry.id == id || entry.name == name)
+            {
+                return Err("The agent has an unfinished creation. Choose another name.");
+            }
             if let Some(entry) = registry
                 .agents
                 .iter()

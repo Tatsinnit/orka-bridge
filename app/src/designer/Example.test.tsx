@@ -170,11 +170,12 @@ test('source-less replies keep an older verdict stale after undo to a newer save
   expect(screen.queryByText('1 of 1 passed')).toBeNull();
 });
 test('a failed Run request does not make an earlier verdict current after editing', async () => {
+  let attempted = false;
   vi.stubGlobal('isTauri', true);
   mockIPC((command, args) => {
     if (command === 'agent_open') return pair;
     if (command === 'agent_save') return { ...pair, agent: (args as { content: string }).content };
-    if (command === 'agent_run') return Promise.reject(new Error('IPC failure'));
+    if (command === 'agent_run') { attempted = true; return Promise.reject(new Error('IPC failure')); }
     return { ...idle, state: 'complete', report: { verdict: 'passed', cases: [{ id: 'reads-page', question: 'What did the page say?', phase: 'Succeeded', answer: 'Earlier answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] } };
   });
   const user = userEvent.setup(); render(<Example />);
@@ -182,8 +183,10 @@ test('a failed Run request does not make an earlier verdict current after editin
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New draft' } }); fireEvent.blur(screen.getByRole('textbox'));
   await screen.findByText('Saved');
   await user.click(screen.getByRole('button', { name: 'Run tests' }));
-  await screen.findByText('Run information is not supported by this build.');
+  // Status polling may replace the transient IPC error; the verdict must stay stale.
+  expect(attempted).toBe(true);
   expect(screen.getByText('Not run since your edit')).toBeTruthy();
+  expect(screen.queryByText('1 of 1 passed')).toBeNull();
 });
 test('an edit during a delayed Run reply keeps the earlier result stale', async () => {
   let finish!: (value: unknown) => void;

@@ -156,13 +156,15 @@ click("Continue", rows)
 rows = try capture("before-first-test", ["Connect the AI"])
 click("Connect the AI", rows)
 _ = try seek("Tests on the local cluster", -200)
-_ = try capture("local-first-test-result", ["Tests on the local cluster", "1 of 2 passed"])
+let firstResult = try capture("local-first-test-result", ["Tests on the local cluster", "1 of 2 passed"])
+require(!firstResult.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").contains("Your agent selection could not be saved"), "Fixture rejected its owned agent selection")
 click("Clusters", [])
 rows = try capture("local-first-test-failed", ["Local cluster", "Its test failed", "See what it answered"])
 func scroll(_ pixels: Int32) {
     let rect = window()!.1
-    CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: rect.maxX - 20, y: rect.midY), mouseButton: .left)?.post(tap: .cghidEventTap)
-    CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: pixels, wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+    let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: pixels, wheel2: 0, wheel3: 0)
+    event?.location = CGPoint(x: rect.maxX - 20, y: rect.midY)
+    event?.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.3)
 }
 func seek(_ label: String, _ pixels: Int32) throws -> [VNRecognizedTextObservation] {

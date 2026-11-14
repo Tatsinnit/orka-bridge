@@ -22,6 +22,7 @@ function native(holdSave = false, lostReplies = false) {
     if (command === 'setup_change_local') { selected = false; return status(); }
     if (command === 'setup_example') return { agent: pair.agent, tests: pair.tests };
     if (command === 'setup_connect_model') return { ready: true };
+    if (command === 'agent_select') return null;
     if (command === 'agent_open') { if (unreadableFiles) throw Error('Lost file read'); return args?.documentId === other ? { ...pair, documentId: other, name: 'other', agent: '---\nname: other\n---\nOther instructions.' } : { ...saved, documentId: sample, name: 'web-reader' }; }
     if (command === 'agent_save') { if (holdSave) return new Promise(() => {}); saved = { ...pair, agent: String(args?.content), source: { ...pair.source, agent: 'c'.repeat(64) } }; return { ...saved, documentId: sample, name: 'web-reader' }; }
     if (command === 'agent_run') { running = true; finished = false; if (lostReplies) throw Error('Lost run reply'); return { ...idle, state: 'running', canRun: false, busy: { documentId: sample, name: 'web-reader' } }; }

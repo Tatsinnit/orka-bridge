@@ -186,11 +186,7 @@ test('unbuilt controls are disabled with discoverable reasons', async () => {
   const user = userEvent.setup(); render(<App />);
   expect(screen.queryByRole('button', { name: /Search/ })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Designer' }));
-  for (const name of ['New agent']) {
-    const button = screen.getByRole('button', { name });
-    expect(button.hasAttribute('disabled')).toBe(true);
-    expect(button.getAttribute('title')).toMatch(/coming/i);
-  }
+  expect(screen.getByRole('button', { name: 'New agent' }).hasAttribute('disabled')).toBe(false);
   expect(screen.getByRole('button', { name: 'Send to a cluster' }).title).toMatch(/agent folder|Reopen your agent/);
   // Browser preview cannot read native selection, so the host is neither "This computer" nor "No cluster selected".
   expect(within(screen.getByRole('banner')).getByText('Status unavailable')).toBeTruthy();

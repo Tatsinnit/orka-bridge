@@ -1,6 +1,7 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, expect, test, vi } from 'vitest';
 import Example from './Example';
 const id = '9b2b93c4-375c-4815-9717-39852a96e411';
@@ -38,6 +39,20 @@ test('Chat replaces tests and editor without changing their evidence or draft', 
   expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value).toContain('Read a page.');
   await user.click(screen.getByRole('button', { name: 'Chat' }));
   expect((screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement).value).toBe('A question');
+});
+test('a failed external document selection restores the parent and keeps Chat usable for the displayed agent', async () => {
+  native(); const settled = vi.fn();
+  function Parent() {
+    const [documentId, setDocumentId] = useState(id);
+    return <><button onClick={() => setDocumentId('a7f34ba2-b9bd-4b55-b69d-f0a84a1bf528')}>Open other agent</button><Example documentId={documentId} onDocument={value => { settled(value); setDocumentId(value); }} /></>;
+  }
+  render(<Parent />); const user = await chat(); compose();
+  await user.click(screen.getByRole('button', { name: 'Open other agent' }));
+  await screen.findByText('Your agent selection could not be saved. Try choosing it again.');
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(false));
+  await user.click(screen.getByRole('button', { name: 'Send message' }));
+  expect(sent).toEqual([{ documentId: id, message: 'A question', saved: source }]);
+  expect(settled).toHaveBeenCalledExactlyOnceWith(id);
 });
 test('a pending autosave blocks Chat until its latest bytes are confirmed', async () => {
   let finish!: (value: unknown) => void; let content = '';

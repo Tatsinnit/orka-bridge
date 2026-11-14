@@ -125,7 +125,7 @@ export function Meet({ onRead, onName }: { onRead: () => void; onName?: (name: s
     {pair ? <>{info.description && <p className="meet-description">{info.description}</p>}
       <dl>{webReader && <><div><dt>What it can do</dt><dd><span className="workspace-tool">Read a web page <code>web_fetch</code></span></dd></div>
         <div><dt>How we'll check it</dt><dd>We'll ask for a checksum published on a web page. The check looks for the exact value in the answer.</dd></div></>}
-        <div><dt>Whose is it</dt><dd>Yours. After setup you can change its instructions, add checks, or start a new agent.</dd></div></dl>
+        <div><dt>Whose is it</dt><dd>Yours. You can start a new agent in Designer now. After setup, choose its model and tools and run its checks.</dd></div></dl>
       <Button type="button" kind="secondary" onClick={onRead}>Read its instructions</Button></>
       : <p className="muted">{failed ? 'The example could not be opened. Try opening Designer.' : "Opening the example's introduction…"}</p>}
   </section>;
