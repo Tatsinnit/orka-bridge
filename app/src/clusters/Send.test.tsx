@@ -1,6 +1,6 @@
 import { openLocalSetup } from '../setup/test-navigation';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import Example from '../designer/Example';
@@ -225,7 +225,7 @@ test('Stop shows retained receipts and remount observes without replay', async (
   const ipc = native(idle, running); const user = userEvent.setup(); const view = render(<Example remote place={place} />);
   await user.click(await screen.findByRole('button', { name: 'Stop' }));
   expect(await screen.findByText(/cluster may still be running checks/)).toBeTruthy();
-  await user.click(screen.getByText('Details'));
+  await user.click(within(screen.getByRole('region', { name: 'Send and cluster tests' })).getByText('Details'));
   expect(screen.getByRole('button', { name: 'Copy Agent' })).toBeTruthy();
   expect(screen.getAllByText('brid…ozen').length).toBeGreaterThan(0);
   view.unmount(); render(<Example remote place={place} />);
@@ -245,7 +245,7 @@ test('an unknown submission names its uncertain resources, not a pass, and waits
   const ipc = native(idle, { ...running, state: 'unknown', stage: 'submit', error: 'submit', pending: { kind: 'Task', name: 'bridge-task-uncertain' } });
   const user = userEvent.setup(); render(<Example remote place={place} />);
   expect(await screen.findByText('Result unknown')).toBeTruthy();
-  await user.click(screen.getByText('Details'));
+  await user.click(within(screen.getByRole('region', { name: 'Send and cluster tests' })).getByText('Details'));
   expect(screen.getByRole('button', { name: 'Copy Possibly created Task' })).toBeTruthy();
   expect(screen.getByText('brid…tain')).toBeTruthy();
   expect(ipc.mock.calls.some(([cmd]) => cmd === 'send_start')).toBe(false);

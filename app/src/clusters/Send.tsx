@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { SAMPLE_DOCUMENT_ID, type SourceId, sameSource } from '../designer/agent-api';
 import type { RunSnapshot } from '../designer/run-api';
 import type { SelectedPlace } from './api';
-import { type AttemptSummary, type SendCheck, type SendStatus, sendCall, sendErrors, sendHistory, sendPreflight } from './send-api';
+import { type AttemptSummary, type SendHistoryDetail, type SendCheck, type SendStatus, sendCall, sendErrors, sendHistory, sendHistoryDetail, sendPreflight } from './send-api';
 import './clusters.css';
 import { CardSection, Details, Elapsed, GeneratedValue, LongCard, type Status, StatusIcon, StatusPill } from '../components/DesignSystem';
 import { changedFiles, resultAnnouncement, resultLabel, TestProgress, TestResults } from '../components/TestResults';
@@ -18,6 +18,87 @@ export function SendEntry({ failingCheck, blocked, onProceed, onFix }: { failing
   </div>;
 }
 const words = { passed: 'pass', failed: 'fail', unknown: 'unknown' } as const;
+function SavedSend({ attempt, revision }: { attempt: AttemptSummary; revision: string }) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<SendHistoryDetail>();
+  const [checkedVerdict, setCheckedVerdict] = useState<AttemptSummary['verdict']>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const removeInvoker = useRef<HTMLButtonElement>(null);
+  const keepDetails = useRef<HTMLButtonElement>(null);
+  const savedDisclosure = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!confirmRemove) return;
+    keepDetails.current?.focus();
+    return () => { (removeInvoker.current ?? savedDisclosure.current)?.focus(); };
+  }, [confirmRemove]);
+  const operation = useRef(false);
+  const epoch = useRef(0);
+  useEffect(() => () => { epoch.current++; }, []);
+  useEffect(() => {
+    if (!open) { setDetail(undefined); return; }
+    if (operation.current) return;
+    let mounted = true;
+    const request = ++epoch.current;
+    void sendHistoryDetail('send_history_details', attempt.id).then(value => {
+      if (mounted && request === epoch.current) { setDetail(value); setError(undefined); }
+    }, (failure: Error) => { if (mounted && request === epoch.current) setError(failure.message); });
+    return () => { mounted = false; };
+  }, [open, attempt.id, revision]);
+  async function act(command: 'send_history_check' | 'send_history_remove') {
+    if (operation.current) return;
+    operation.current = true; setBusy(true);
+    const request = ++epoch.current;
+    try {
+      const value = await sendHistoryDetail(command, attempt.id);
+      if (request === epoch.current) {
+        setDetail(value); setError(undefined); setConfirmRemove(false);
+        if (command === 'send_history_check') setCheckedVerdict(value.interrupted ? 'unknown' : value.report?.verdict ?? 'unknown');
+      }
+    } catch (failure) { if (request === epoch.current) setError((failure as Error).message); }
+    finally { operation.current = false; if (request === epoch.current) setBusy(false); }
+  }
+  const verdict = detail?.interrupted ? 'unknown' : detail?.report?.verdict ?? checkedVerdict ?? attempt.verdict;
+  return <li>
+    <div className="send-history-heading"><strong>{attempt.targetDisplay}</strong><span>Saved tests: {verdict === 'running' ? 'unknown' : words[verdict]}</span></div>
+    <p>{attempt.plannedAgentName}</p><p>AI connection: {attempt.provider} · <time dateTime={new Date(attempt.time * 1000).toISOString()}>{new Date(attempt.time * 1000).toLocaleString()}</time></p>
+    <details onToggle={event => { setOpen(event.currentTarget.open); if (!event.currentTarget.open) setConfirmRemove(false); }}><summary ref={savedDisclosure}>Show saved details</summary>
+      {open && <>
+        {error && <p role="alert">{error}</p>}
+        {!detail && !error && <p role="status">Reading saved details…</p>}
+        {detail && <>
+          {detail.interrupted && <p role="status">Last seen running; current result unknown</p>}
+          {detail.detailState === 'legacy' && <p>This earlier Send has a summary only.</p>}
+          {detail.detailState === 'removed' && <p>Saved details removed from this computer.</p>}
+          {detail.detailState === 'omitted' && <p>Some details could not be saved.</p>}
+          {detail.report && <><p>Saved on this computer</p>{detail.capturedAt !== null && <p>Captured <time dateTime={new Date(detail.capturedAt * 1000).toISOString()}>{new Date(detail.capturedAt * 1000).toLocaleString()}</time></p>}
+            <TestResults report={detail.report} stale={false} /></>}
+          {detail.availability === 'missing' && <p role="status">No longer available from the cluster</p>}
+          {detail.availability === 'unavailable' && <p role="status">Cluster status unavailable. Reconnect this cluster in Clusters and try again. Saved answers are unchanged.</p>}
+          {detail.availability === 'available' && <p role="status">Cluster status checked. No tests were submitted.</p>}
+          {confirmRemove && <p role="alert">Remove saved details from this computer? Cluster data stays unchanged.</p>}
+          <div className="workspace-step-actions">
+            {confirmRemove ? <>
+              <button type="button" className="workspace-secondary send-history-remove" disabled={busy} onClick={() => { void act('send_history_remove'); }}>Remove local copy</button>
+              <button ref={keepDetails} type="button" className="workspace-secondary" disabled={busy} onClick={() => setConfirmRemove(false)}>Keep saved details</button>
+            </> : <>
+              {detail.canCheck && <button type="button" className="workspace-secondary" disabled={busy} onClick={() => { void act('send_history_check'); }}>Check cluster status</button>}
+              {detail.canRemove && <button ref={removeInvoker} type="button" className="workspace-secondary send-history-remove" disabled={busy} onClick={() => setConfirmRemove(true)}>Remove saved details</button>}
+            </>}
+          </div>
+          {busy && <p role="status">Updating saved details…</p>}
+        </>}
+      </>}
+      <Details hint="Saved identity"><dl className="cluster-details">
+        <div><dt>Agent UID</dt><dd>{attempt.agentUid ?? 'Not confirmed'}</dd></div>
+        <div><dt>Agent file hash</dt><dd>{attempt.source.agent}</dd></div>
+        <div><dt>Test file hash</dt><dd>{attempt.source.tests}</dd></div>
+        {detail?.model && <div><dt>Model</dt><dd>{detail.model}</dd></div>}
+      </dl></Details>
+    </details>
+  </li>;
+}
 export function SendHistory({ revision }: { revision: string }) {
   const [history, setHistory] = useState<AttemptSummary[]>();
   const [error, setError] = useState<string>();
@@ -32,16 +113,9 @@ export function SendHistory({ revision }: { revision: string }) {
   return <section className="send-history" aria-label="Past Sends">
     <h4>Past Sends</h4>
     <p>Earlier Sends and their test results. An interrupted Send may still be running on the cluster.</p>
+    <Details hint="Saved results and limits"><p>Up to 256 Sends, 64 MiB total and 4 MiB per Send. Old terminal details are evicted first. Interrupted Sends are not resumed. Checking their status never sends tests again. Removing saved details changes only this computer, not the cluster. Removed or evicted answers may not be recoverable.</p></Details>
     {error ? <><p role="alert">{error}</p><button type="button" className="workspace-secondary" onClick={() => setRetry(v => v + 1)}>Retry saved Sends</button></>
-      : history ? history.length ? <ol>{history.map(attempt => <li key={attempt.id}>
-        <div className="send-history-heading"><strong>{attempt.targetDisplay}</strong><span>Tests: {attempt.verdict === 'running' ? 'running' : words[attempt.verdict]}</span></div>
-        <p>{attempt.plannedAgentName}</p><p>AI connection: {attempt.provider} · <time dateTime={new Date(attempt.time * 1000).toISOString()}>{new Date(attempt.time * 1000).toLocaleString()}</time></p>
-        <details><summary>Show saved details</summary><dl className="cluster-details">
-          <div><dt>Agent UID</dt><dd>{attempt.agentUid ?? 'Not confirmed'}</dd></div>
-          <div><dt>Agent file hash</dt><dd>{attempt.source.agent}</dd></div>
-          <div><dt>Test file hash</dt><dd>{attempt.source.tests}</dd></div>
-        </dl></details>
-      </li>)}</ol> : <p>No saved Sends yet.</p> : <p role="status">Reading saved Sends…</p>}
+      : history ? history.length ? <ol>{history.map(attempt => <SavedSend key={attempt.id} attempt={attempt} revision={revision} />)}</ol> : <p>No saved Sends yet.</p> : <p role="status">Reading saved Sends…</p>}
   </section>;
 }
 export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, model, local, stale, blocked, visible, remote, onChooseCluster, onReloadSource }: {
@@ -169,7 +243,7 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
       {snapshot.source && <><GeneratedValue label="Agent file hash" value={snapshot.source.agent} /><GeneratedValue label="Test file hash" value={snapshot.source.tests} /></>}
       {snapshot.acknowledged.map(r => <GeneratedValue key={`${r.kind}-${r.uid}`} label={r.kind} value={r.name} />)}
       {snapshot.pending && <GeneratedValue label={`Possibly created ${snapshot.pending.kind}`} value={snapshot.pending.name} />}
-      <p>Sending requires permission to create an agent and run its tests. Detailed answers are kept only while Bridge is open. Small Send summaries remain on this computer. Stop ends watching and prevents further submissions; it does not cancel checks already sent.</p>
+      <p>Sending requires permission to create an agent and run its tests. Saved answers and test receipts remain in Past Sends on this computer, within its retention limits. Stop ends watching and prevents further submissions; it does not cancel checks already sent.</p>
     </Details>}
     </LongCard>
   </section><SendHistory revision={`${documentId}:${status?.busy?.documentId ?? ''}:${snapshot?.id ?? ''}:${snapshot?.state ?? ''}:${snapshot?.stage ?? ''}:${snapshot?.storageError ?? false}`} /></>;

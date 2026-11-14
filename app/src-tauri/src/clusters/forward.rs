@@ -120,6 +120,7 @@ pub struct OrkaStreamTransport {
     current: ClusterClient,
     creator: Client,
     binding: TargetBinding,
+    read_only: bool,
 }
 impl OrkaStreamTransport {
     pub fn peer(&self) -> &ForwardPeer {
@@ -138,6 +139,22 @@ impl RemoteAccess {
             .iter()
             .find(|p| p.id == provider)
             .ok_or(ClusterError::Unavailable)?;
+        self.open_transport(current, provider.name.clone(), false)
+            .await
+    }
+    /// Historical observation needs no current Provider and never permits a POST.
+    pub(crate) async fn read_transport(
+        &self,
+        current: &ClusterClient,
+    ) -> Result<OrkaStreamTransport, ClusterError> {
+        self.open_transport(current, String::new(), true).await
+    }
+    async fn open_transport(
+        &self,
+        current: &ClusterClient,
+        provider: String,
+        read_only: bool,
+    ) -> Result<OrkaStreamTransport, ClusterError> {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         timeout_at(deadline, current.revalidate(self))
             .await
@@ -151,7 +168,8 @@ impl RemoteAccess {
         Ok(OrkaStreamTransport {
             connection,
             namespace: self.binding.watched_namespace.clone(),
-            provider: provider.name.clone(),
+            provider,
+            read_only,
             bearer: self.bearer.clone(),
             creator_bearer: self.creator_bearer.clone(),
             current: current.clone(),
@@ -183,6 +201,9 @@ impl RunTransport for OrkaStreamTransport {
         Box::pin(async move {
             let deadline = deadline.min(Instant::now() + REQUEST_TIMEOUT);
             if body.is_some() {
+                if self.read_only {
+                    return Err(ErrorKind::Configuration);
+                }
                 let validation = timeout_at(
                     deadline,
                     self.current
@@ -394,6 +415,9 @@ impl Connection {
                 }
             }
             fully_read = true;
+            if status == 404 && body.is_none() {
+                return Err(ErrorKind::NotFound);
+            }
             if status != if body.is_some() { 201 } else { 200 } {
                 return Err(ErrorKind::Response);
             }
@@ -407,7 +431,9 @@ impl Connection {
         .unwrap_or(Err(ErrorKind::Deadline));
         // Missing optional evidence or a rejected, fully consumed JSON reply
         // must not poison a healthy lease. Never reuse an incomplete response.
-        if result.is_err() && !(fully_read && result == Err(ErrorKind::Response)) {
+        if result.is_err()
+            && !(fully_read && matches!(result, Err(ErrorKind::Response | ErrorKind::NotFound)))
+        {
             self.close().await;
         }
         result

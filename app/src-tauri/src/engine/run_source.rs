@@ -22,14 +22,14 @@ pub struct ParsedAgent {
     declared_tools: Vec<DeclaredTool>,
     soul: Option<Soul>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunCase {
     pub id: String,
     input: String,
     assertions: Vec<Assertion>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum Assertion {
     #[serde(rename = "contains")]
@@ -363,7 +363,8 @@ impl RunCase {
                     kind: match assertion {
                         Assertion::Contains { .. } => "contains",
                         Assertion::ToolCalled { .. } => "toolCalled",
-                    },
+                    }
+                    .into(),
                     expected: match assertion {
                         Assertion::Contains { value, .. } => value.clone(),
                         Assertion::ToolCalled { tool, .. } => tool.clone(),

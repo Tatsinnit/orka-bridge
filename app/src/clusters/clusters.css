@@ -50,10 +50,11 @@
 .send-history { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--color-border); }
 .send-history > p { max-width: 65ch; color: var(--color-text-secondary); }
 .send-history ol { list-style: none; padding: 0; margin: 18px 0 0; }
-.send-history li { padding: 16px 0; border-top: 1px solid var(--color-border); overflow-wrap: anywhere; }
+.send-history > ol > li { padding: 16px 0; border-top: 1px solid var(--color-border); overflow-wrap: anywhere; }
 .send-history-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 18px; }
 .send-history li p { margin: 6px 0; color: var(--color-text-secondary); }
 .send-history li details { margin-top: 10px; }
+.send-history .send-history-remove:not(:disabled) { color: var(--color-status-failed); }
 @media (max-width: 700px) {
   .place-row { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
   .place-row > .pill, .place-row > button { grid-column: 2; justify-self: start; }

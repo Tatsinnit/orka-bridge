@@ -147,6 +147,111 @@ fn soul_parser_checks_decoded_bytes_sources_and_references() {
     assert!(ParsedPair::parse(duplicate.as_bytes(), TESTS.as_bytes()).is_err());
 }
 
+#[tokio::test]
+async fn durable_checkpoints_bracket_each_post_and_failure_bars_next_mutation() {
+    for fail_at in [0, 1, 2, 3, usize::MAX] {
+        let fixture = Fixture::start(Behavior::default()).await;
+        let runner = fixture.runner();
+        let pair = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let mut order = Vec::new();
+        let result = runner
+            .submit_checkpointed(runner.prepare(pair).unwrap(), stop, &mut |event| {
+                match event {
+                    RunCheckpoint::Before(r) => order.push(format!("before:{}", r.kind)),
+                    RunCheckpoint::Acknowledged(r) => {
+                        assert!(r.uid.is_some());
+                        order.push(format!("ack:{}", r.kind));
+                    }
+                    _ => panic!("unexpected case during submission"),
+                }
+                if order.len() - 1 == fail_at {
+                    Err(ErrorKind::Storage)
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+        let posts = fixture
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method.starts_with("POST"))
+            .count();
+        assert_eq!(
+            posts,
+            match fail_at {
+                0 => 0,
+                1 | 2 => 1,
+                _ => 2,
+            }
+        );
+        assert_eq!(
+            order,
+            ["before:Agent", "ack:Agent", "before:Task", "ack:Task"]
+                .into_iter()
+                .take((fail_at.saturating_add(1)).min(4))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        if fail_at != usize::MAX {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Storage);
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovery_reads_only_gets_uses_captured_rules_and_preserves_answer_when_missing() {
+    let fixture = Fixture::start(Behavior::default()).await;
+    let runner = fixture.runner();
+    let pair = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
+    let cases = pair.cases().to_vec();
+    let (_tx, stop) = tokio::sync::watch::channel(false);
+    let mut resources = Vec::new();
+    let handle = runner
+        .submit_checkpointed(runner.prepare(pair).unwrap(), stop.clone(), &mut |event| {
+            if let RunCheckpoint::Acknowledged(r) = event {
+                resources.push(r)
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut saved = Vec::new();
+    let report = runner
+        .observe_checkpointed(&handle, stop, &mut |event| {
+            if let RunCheckpoint::Case(_, r) = event {
+                saved.push(r)
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+    let before = fixture.requests.lock().unwrap().len();
+    let read = runner
+        .recover(&mut resources, &cases, Some(report.clone()))
+        .await;
+    assert_eq!(read.availability, "available");
+    assert_eq!(read.report.unwrap().verdict, Verdict::Passed);
+    assert!(resources
+        .iter()
+        .filter(|r| r.kind == "Task")
+        .all(|r| r.terminal));
+    assert!(fixture.requests.lock().unwrap()[before..]
+        .iter()
+        .all(|(m, _)| m.starts_with("GET")));
+    // Same name is not the acknowledged Task. Existing answer remains readable.
+    resources.iter_mut().find(|r| r.kind == "Task").unwrap().uid = Some("replaced".into());
+    let read = runner.recover(&mut resources, &cases, Some(report)).await;
+    assert_eq!(read.availability, "missing");
+    assert_eq!(
+        read.report.unwrap().cases[0].answer.as_deref(),
+        Some("secret-expected")
+    );
+}
+
 #[derive(Clone, Copy)]
 struct Behavior {
     phase: &'static str,

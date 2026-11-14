@@ -502,7 +502,7 @@ async fn ipc_waiter_loss_keeps_native_owner() {
         report.cases[0]
             .assertions
             .iter()
-            .map(|a| a.kind)
+            .map(|a| a.kind.as_str())
             .collect::<Vec<_>>(),
         ["contains", "toolCalled"]
     );

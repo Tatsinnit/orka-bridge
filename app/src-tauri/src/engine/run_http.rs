@@ -194,6 +194,7 @@ impl Http {
             match response.status().as_u16() {
                 401 => return Err(ErrorKind::Authentication),
                 403 => return Err(ErrorKind::Permission),
+                404 if body.is_none() => return Err(ErrorKind::NotFound),
                 status if status != if body.is_some() { 201 } else { 200 } => {
                     return Err(ErrorKind::Response)
                 }

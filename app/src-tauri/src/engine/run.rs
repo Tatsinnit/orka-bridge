@@ -6,6 +6,16 @@ pub use source::{Assertion, DeclaredTool, ParsedAgent, ParsedPair, RunCase, Tool
 mod http;
 use bridge_runtime_protocol::{SnapshotId, Uuid};
 pub use http::{NativeRunTarget, RunFuture, RunLimits, RunTransport};
+#[path = "run_saved.rs"]
+mod saved;
+pub use saved::{Recovery, SavedResource};
+
+pub enum RunCheckpoint {
+    Before(SavedResource),
+    Acknowledged(SavedResource),
+    Case(usize, CaseReport),
+}
+type Checkpoint<'a> = dyn FnMut(RunCheckpoint) -> Result<(), ErrorKind> + Send + 'a;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::fmt;
@@ -22,22 +32,24 @@ pub enum ErrorKind {
     Response,
     Identity,
     Stopped,
+    Storage,
+    NotFound,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Verdict {
     Passed,
     Failed,
     Unknown,
 }
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
 pub struct AssertionReport {
     pub id: String,
-    pub kind: &'static str,
+    pub kind: String,
     pub expected: String,
     pub verdict: Verdict,
 }
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaseReport {
     pub id: String,
@@ -49,7 +61,7 @@ pub struct CaseReport {
     pub assertions: Vec<AssertionReport>,
     pub verdict: Verdict,
 }
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
 pub struct RunReport {
     pub cases: Vec<CaseReport>,
     pub verdict: Verdict,
@@ -340,7 +352,16 @@ impl<'a> NativeRunner<'a> {
     pub async fn submit_prepared(
         &self,
         prepared: PreparedRun,
+        stop: watch::Receiver<bool>,
+    ) -> Result<RunHandle, RunError> {
+        self.submit_checkpointed(prepared, stop, &mut |_| Ok(()))
+            .await
+    }
+    pub async fn submit_checkpointed(
+        &self,
+        prepared: PreparedRun,
         mut stop: watch::Receiver<bool>,
+        checkpoint: &mut Checkpoint<'_>,
     ) -> Result<RunHandle, RunError> {
         let PreparedRun {
             mut handle,
@@ -348,7 +369,7 @@ impl<'a> NativeRunner<'a> {
         } = prepared;
         let mut pending = None;
         let result = self
-            .submit_inner(&mut handle, &creates, &mut pending, &mut stop)
+            .submit_inner(&mut handle, &creates, &mut pending, &mut stop, checkpoint)
             .await;
         if result == Err(ErrorKind::Stopped) {
             self.close().await;
@@ -368,6 +389,7 @@ impl<'a> NativeRunner<'a> {
         creates: &[Value],
         pending: &mut Option<PendingMutation>,
         stop: &mut watch::Receiver<bool>,
+        checkpoint: &mut Checkpoint<'_>,
     ) -> Result<(), ErrorKind> {
         if handle.target != self.id {
             return Err(ErrorKind::Configuration);
@@ -381,6 +403,12 @@ impl<'a> NativeRunner<'a> {
                 ("tasks", "Task")
             };
             let name = body["name"].as_str().unwrap();
+            checkpoint(RunCheckpoint::Before(SavedResource::planned(
+                kind,
+                name,
+                self.http.namespace(),
+                &body["spec"],
+            )))?;
             let request = self.http.request(path, None, Some(body), deadline);
             let value = stoppable(stop, async {
                 // Do not label a request uncertain when Stop prevented its poll.
@@ -393,12 +421,14 @@ impl<'a> NativeRunner<'a> {
             .await?;
             let resource =
                 ResourceId::acknowledge(&value, &body["spec"], name, self.http.namespace(), kind)?;
+            let receipt = SavedResource::acknowledged(&resource);
             if index == 0 {
                 handle.agent = Some(resource);
             } else {
                 handle.tasks.push(resource);
             }
             *pending = None;
+            checkpoint(RunCheckpoint::Acknowledged(receipt))?;
         }
         // Also report Stop during the final synchronous response, with its receipt.
         check_stop(stop)
@@ -412,9 +442,18 @@ impl<'a> NativeRunner<'a> {
     pub async fn observe_stoppable(
         &self,
         handle: &RunHandle,
-        mut stop: watch::Receiver<bool>,
+        stop: watch::Receiver<bool>,
     ) -> Result<RunReport, RunError> {
-        let result = self.observe_inner(handle, &mut stop).await;
+        self.observe_checkpointed(handle, stop, &mut |_| Ok(()))
+            .await
+    }
+    pub async fn observe_checkpointed(
+        &self,
+        handle: &RunHandle,
+        mut stop: watch::Receiver<bool>,
+        checkpoint: &mut Checkpoint<'_>,
+    ) -> Result<RunReport, RunError> {
+        let result = self.observe_inner(handle, &mut stop, checkpoint).await;
         if matches!(result, Err(ErrorKind::Stopped)) {
             self.close().await;
         }
@@ -439,6 +478,7 @@ impl<'a> NativeRunner<'a> {
         &self,
         handle: &RunHandle,
         stop: &mut watch::Receiver<bool>,
+        checkpoint: &mut Checkpoint<'_>,
     ) -> Result<RunReport, ErrorKind> {
         if handle.target != self.id {
             return Err(ErrorKind::Configuration);
@@ -464,8 +504,11 @@ impl<'a> NativeRunner<'a> {
                         .map(str::to_owned);
                     // Event recording is best effort. Any untrusted/unavailable drain
                     // loses tool proof, never turns missing evidence into a failure.
-                    let tools = optional_evidence(self.tools(task, agent, deadline, stop).await)?
-                        .unwrap_or_default();
+                    let tools = optional_evidence(
+                        self.tools(&task.name, &task.namespace, &agent.name, deadline, stop)
+                            .await,
+                    )?
+                    .unwrap_or_default();
                     self.checked(task, deadline, stop).await?;
                     self.checked(agent, deadline, stop).await?;
                     let assertions = case.evaluate(answer.as_deref(), &tools);
@@ -484,6 +527,10 @@ impl<'a> NativeRunner<'a> {
                             assertions,
                             verdict,
                         });
+                        checkpoint(RunCheckpoint::Case(
+                            cases.len() - 1,
+                            cases.last().unwrap().clone(),
+                        ))?;
                         break;
                     }
                 } else if !matches!(
@@ -506,21 +553,22 @@ impl<'a> NativeRunner<'a> {
     }
     async fn tools(
         &self,
-        task: &ResourceId,
-        agent: &ResourceId,
+        task: &str,
+        namespace: &str,
+        agent: &str,
         deadline: Instant,
         stop: &mut watch::Receiver<bool>,
     ) -> Result<Vec<String>, ErrorKind> {
         let mut after = 0;
         let mut tools = Vec::new();
         for _ in 0..16 {
-            let path = format!("{}/events", task.path());
+            let path = format!("tasks/{task}/events");
             let value =
                 stoppable(stop, self.http.request(&path, Some(after), None, deadline)).await?;
             let page: EventPage = serde_json::from_value(value).map_err(|_| ErrorKind::Response)?;
-            if page.namespace != task.namespace
+            if page.namespace != namespace
                 || page.stream_type != "task"
-                || page.stream_id != task.name
+                || page.stream_id != task
                 || page.after_seq != after
                 || page.latest_seq < after
                 || page.events.len() > 1000
@@ -530,17 +578,17 @@ impl<'a> NativeRunner<'a> {
             for event in page.events {
                 if event.seq != after + 1
                     || event.seq > page.latest_seq
-                    || event.namespace != task.namespace
+                    || event.namespace != namespace
                     || event.stream_type != "task"
-                    || event.stream_id != task.name
+                    || event.stream_id != task
                     || event
                         .task_name
                         .as_ref()
-                        .is_some_and(|s| !s.is_empty() && s != &task.name)
+                        .is_some_and(|s| !s.is_empty() && s != task)
                     || event
                         .agent_name
                         .as_ref()
-                        .is_some_and(|s| !s.is_empty() && s != &agent.name)
+                        .is_some_and(|s| !s.is_empty() && s != agent)
                 {
                     return Err(ErrorKind::Identity);
                 }

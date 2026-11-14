@@ -91,6 +91,507 @@ async fn document_send_binds_preview_admission_stop_and_session_results() {
     s.owner.shutdown().await;
 }
 
+#[tokio::test]
+async fn history_recovery_is_get_only_offline_preserving_and_serialized() {
+    let s = setup().await;
+    let started = s.start().await;
+    let send = id(&started);
+    let done = s.finish(&send).await;
+    assert_eq!(done["state"], "complete", "{done}");
+    let saved = s.owner.history_details(&send).unwrap();
+    assert_eq!(saved.detail_state, "saved");
+    assert!(!saved.interrupted);
+    assert!(saved.can_remove && saved.can_check);
+    let before = s.api.wire.posts();
+    // Historical reads are independent of today's edited source bytes.
+    std::fs::write(
+        s.agent_path().with_file_name("web-reader.agent.test.md"),
+        TESTS.replace("expected answer", "changed expectation"),
+    )
+    .unwrap();
+    let checked = s.owner.history_check(&send).await.unwrap();
+    assert_eq!(checked.availability.as_deref(), Some("available"));
+    assert_eq!(
+        checked.report.unwrap().verdict,
+        bridge_engine::engine::run::Verdict::Passed
+    );
+    assert_eq!(s.api.wire.posts(), before);
+    s.idle_forwards().await;
+    // The current selection/configuration cannot silently confer authority.
+    s.fresh.lock().unwrap().clusters[0]
+        .cluster
+        .as_mut()
+        .unwrap()
+        .server = Some("https://different.invalid".into());
+    let checked = s.owner.history_check(&send).await.unwrap();
+    assert_eq!(checked.availability.as_deref(), Some("unavailable"));
+    assert!(checked.report.unwrap().cases[0].answer.is_some());
+    s.idle_forwards().await;
+    let removed = s.owner.history_remove(&send).await.unwrap();
+    assert_eq!(removed.detail_state, "removed");
+    assert!(removed.report.is_none());
+    assert_eq!(s.api.wire.posts(), before);
+    assert_eq!(s.owner.history().unwrap().len(), 1);
+}
+
+/// Wait for the real reader thread without letting paused Tokio time auto-advance.
+async fn reader_started(entered: &mut tokio::sync::oneshot::Receiver<()>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match entered.try_recv() {
+            Ok(()) => return,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                assert!(std::time::Instant::now() < deadline, "reader did not start");
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("reader dropped its entry signal: {error}"),
+        }
+    }
+}
+
+fn block_next_read(
+    s: &Setup,
+    release: std::sync::mpsc::Receiver<()>,
+) -> tokio::sync::oneshot::Receiver<()> {
+    let (entered, started) = tokio::sync::oneshot::channel();
+    *s.on_read.lock().unwrap() = Some(Box::new(move || {
+        let _ = entered.send(());
+        // Dropping the sender also releases this read, including on test failure.
+        let _ = release.recv();
+    }));
+    started
+}
+
+#[tokio::test]
+async fn history_blocked_reader_times_out_releases_gate_and_keeps_shared_limit() {
+    let s = setup().await;
+    let started = s.start().await;
+    let send = id(&started);
+    assert_eq!(s.finish(&send).await["state"], "complete");
+    let posts = s.api.wire.posts();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let mut entered = block_next_read(&s, blocked);
+    tokio::time::pause();
+    let check = tokio::spawn({
+        let owner = s.owner.clone();
+        let send = send.clone();
+        async move { owner.history_check(&send).await }
+    });
+    reader_started(&mut entered).await;
+    tokio::time::advance(Duration::from_secs(10)).await;
+    // Real time also bounds RED: Tokio does not auto-advance past blocking-pool work.
+    tokio::time::resume();
+    let checked = tokio::time::timeout(Duration::from_secs(1), check)
+        .await
+        .expect("history must release its gate after the configuration read budget")
+        .unwrap()
+        .unwrap();
+    assert_eq!(checked.availability.as_deref(), Some("unavailable"));
+    assert_eq!(checked.report.unwrap().verdict, Verdict::Passed);
+
+    let extra_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = extra_reads.clone();
+    *s.on_read.lock().unwrap() = Some(Box::new(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+    }));
+    let checked = tokio::time::timeout(Duration::from_secs(1), s.owner.history_check(&send))
+        .await
+        .expect("another history check must not wait on the stuck read")
+        .unwrap();
+    assert_eq!(checked.availability.as_deref(), Some("unavailable"));
+    let preview = tokio::time::timeout(
+        Duration::from_secs(1),
+        s.owner.preflight(&s.target, &s.provider),
+    )
+    .await
+    .expect("preflight must share the outstanding read limit");
+    assert!(!preview.can_send);
+    let next = tokio::time::timeout(Duration::from_secs(1), s.start())
+        .await
+        .expect("history must not hold Send admission");
+    let done = s.finish(&id(&next)).await;
+    assert_eq!(done["error"], "access", "{done}");
+    let removed = tokio::time::timeout(Duration::from_secs(1), s.owner.history_remove(&send))
+        .await
+        .expect("history must not hold local removal")
+        .unwrap();
+    assert_eq!(removed.detail_state, "removed");
+    tokio::time::timeout(Duration::from_secs(1), s.owner.shutdown())
+        .await
+        .expect("shutdown must not wait on a stalled filesystem reader");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), s.session.reload())
+            .await
+            .expect("reload must share the outstanding read limit")
+            .is_err()
+    );
+    assert_eq!(extra_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(s.api.wire.posts(), posts);
+    drop(release);
+    // The limit opens only when the old read exits; its late result is discarded.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while s.session.reload().await.is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a completed reader must release the shared limit");
+    assert_eq!(extra_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        s.owner.history_details(&send).unwrap().detail_state,
+        "removed"
+    );
+}
+
+#[test]
+fn history_blocked_live_reader_stop_does_not_hold_runtime_shutdown() {
+    let (release, blocked) = std::sync::mpsc::channel();
+    let (closed, closing) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let s = setup().await;
+            let mut entered = block_next_read(&s, blocked);
+            let started = s.start().await;
+            reader_started(&mut entered).await;
+            let stopped = tokio::time::timeout(Duration::from_secs(1), s.owner.stop(&id(&started)))
+                .await
+                .expect("Stop must not wait for the filesystem read");
+            assert_eq!(serde_json::to_value(stopped).unwrap()["stage"], "stopped");
+            assert_eq!(s.api.wire.posts(), 0);
+            s.owner.shutdown().await;
+            s.session.shutdown().await;
+        });
+        drop(runtime);
+        closed.send(()).unwrap();
+    });
+    let result = closing.recv_timeout(Duration::from_secs(5));
+    // Always release the read before asserting/joining, even on RED or a worker panic.
+    drop(release);
+    let joined = worker.join();
+    assert!(
+        result.is_ok(),
+        "a stopped reader held Tokio runtime shutdown"
+    );
+    joined.unwrap();
+}
+
+#[tokio::test]
+async fn history_retains_cached_text_without_verifying_a_null_result() {
+    let s = setup().await;
+    let started = s.start().await;
+    let send = id(&started);
+    assert_eq!(s.finish(&send).await["report"]["verdict"], "passed");
+    let posts = s.api.wire.posts();
+    *s.api.wire.mode.lock().unwrap() = "empty-result";
+    let checked = s.owner.history_check(&send).await.unwrap();
+    let report = checked.report.unwrap();
+    assert_eq!(report.cases[0].answer.as_deref(), Some("expected answer"));
+    assert_eq!(
+        report.verdict,
+        Verdict::Unknown,
+        "cached text is not a freshly verified answer"
+    );
+    assert_eq!(
+        s.owner.history().unwrap()[0].verdict,
+        bridge_engine::send_summary::AttemptVerdict::Unknown
+    );
+    assert_eq!(s.api.wire.posts(), posts);
+}
+
+#[tokio::test]
+async fn history_tool_only_checks_use_fresh_events_when_result_is_missing() {
+    let s = setup().await;
+    std::fs::write(
+        s.agent_path().with_file_name("web-reader.agent.test.md"),
+        TESTS.replace(
+            "  - id: answer\n    type: contains\n    value: expected answer\n",
+            "",
+        ),
+    )
+    .unwrap();
+    let started = s.start().await;
+    let send = id(&started);
+    assert_eq!(s.finish(&send).await["report"]["verdict"], "passed");
+    let posts = s.api.wire.posts();
+    *s.api.wire.mode.lock().unwrap() = "result-404";
+    let report = s.owner.history_check(&send).await.unwrap().report.unwrap();
+    assert_eq!(report.cases[0].completed_tools, ["web_fetch"]);
+    assert_eq!(report.cases[0].verdict, Verdict::Passed);
+    assert_eq!(
+        report.verdict,
+        Verdict::Passed,
+        "tool-only checks do not require answer text"
+    );
+    *s.api.wire.mode.lock().unwrap() = "events-404";
+    assert_eq!(
+        s.owner
+            .history_check(&send)
+            .await
+            .unwrap()
+            .report
+            .unwrap()
+            .verdict,
+        Verdict::Unknown,
+        "cached tool names cannot become fresh proof"
+    );
+    assert_eq!(s.api.wire.posts(), posts);
+}
+
+#[tokio::test]
+async fn history_keeps_a_fresh_assertion_failure_when_optional_events_are_missing() {
+    let s = setup().await;
+    *s.api.wire.mode.lock().unwrap() = "wrong-result";
+    let started = s.start().await;
+    let send = id(&started);
+    assert_eq!(s.finish(&send).await["report"]["verdict"], "failed");
+    let posts = s.api.wire.posts();
+    *s.api.wire.mode.lock().unwrap() = "wrong-result-events-missing";
+    let checked = s.owner.history_check(&send).await.unwrap();
+    assert_eq!(checked.availability.as_deref(), Some("missing"));
+    let report = checked.report.unwrap();
+    assert_eq!(report.cases[0].verdict, Verdict::Failed);
+    assert_eq!(
+        report.verdict,
+        Verdict::Failed,
+        "fresh failing answer evidence is decisive"
+    );
+    assert_eq!(
+        s.owner.history().unwrap()[0].verdict,
+        bridge_engine::send_summary::AttemptVerdict::Failed
+    );
+    *s.api.wire.mode.lock().unwrap() = "result-403";
+    assert_eq!(
+        s.owner
+            .history_check(&send)
+            .await
+            .unwrap()
+            .report
+            .unwrap()
+            .verdict,
+        Verdict::Unknown,
+        "cached-only failure must not become freshly verified"
+    );
+    assert_eq!(s.api.wire.posts(), posts);
+}
+
+#[tokio::test]
+async fn history_records_terminal_phase_and_tools_without_answer_text() {
+    for (mode, tool_only) in [("failed-empty", false), ("empty-result", true)] {
+        let s = setup().await;
+        if tool_only {
+            std::fs::write(
+                s.agent_path().with_file_name("web-reader.agent.test.md"),
+                TESTS.replace(
+                    "  - id: answer\n    type: contains\n    value: expected answer\n",
+                    "",
+                ),
+            )
+            .unwrap();
+        }
+        *s.api.wire.mode.lock().unwrap() = "running";
+        let started = s.start().await;
+        until(|| s.view(None)["stage"] == "observe").await;
+        s.owner.stop(&id(&started)).await;
+        let root = s.home.path().join("app-local");
+        let send = id(&started);
+        let mut detail: bridge_engine::send_summary::AttemptDetails = serde_json::from_slice(
+            &std::fs::read(root.join(format!("send-history-v1/{send}.json"))).unwrap(),
+        )
+        .unwrap();
+        detail.captured_at = 1;
+        bridge_engine::send_summary::SummaryStore::new(Some(root))
+            .checkpoint(s.owner.history().unwrap()[0].clone(), detail)
+            .unwrap();
+        *s.api.wire.mode.lock().unwrap() = mode;
+        let view = s.owner.history_check(&send).await.unwrap();
+        assert!(
+            view.report.is_some(),
+            "{mode}: availability {:?}, calls {:?}",
+            view.availability,
+            s.api
+                .wire
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(p, _)| p)
+                .collect::<Vec<_>>()
+        );
+        let report = view.report.unwrap();
+        assert_eq!(
+            report.cases[0].phase,
+            if tool_only { "Succeeded" } else { "Failed" }
+        );
+        assert!(report.cases[0].answer.is_none());
+        assert_eq!(report.cases[0].completed_tools, ["web_fetch"]);
+        assert_eq!(
+            report.cases[0].verdict,
+            if tool_only {
+                Verdict::Passed
+            } else {
+                Verdict::Failed
+            }
+        );
+        assert_eq!(
+            report.verdict,
+            if tool_only {
+                Verdict::Passed
+            } else {
+                Verdict::Failed
+            }
+        );
+        assert!(
+            view.captured_at.unwrap() > 1,
+            "new phase and tool evidence needs its own capture time"
+        );
+        assert!(!view.interrupted);
+    }
+}
+
+#[tokio::test]
+async fn history_preserves_capture_time_when_only_cached_answers_remain() {
+    use bridge_engine::send_summary::{AttemptDetails, SummaryStore};
+    let s = setup().await;
+    let started = s.start().await;
+    let send = id(&started);
+    s.finish(&send).await;
+    let root = s.home.path().join("app-local");
+    let mut detail: AttemptDetails = serde_json::from_slice(
+        &std::fs::read(root.join(format!("send-history-v1/{send}.json"))).unwrap(),
+    )
+    .unwrap();
+    detail.captured_at = 1;
+    SummaryStore::new(Some(root))
+        .checkpoint(s.owner.history().unwrap()[0].clone(), detail)
+        .unwrap();
+    *s.api.wire.mode.lock().unwrap() = "result-404";
+    let checked = s.owner.history_check(&send).await.unwrap();
+    assert_eq!(checked.captured_at, Some(1));
+    assert_eq!(
+        checked.report.unwrap().cases[0].answer.as_deref(),
+        Some("expected answer")
+    );
+}
+
+#[tokio::test]
+async fn history_shutdown_waits_for_read_cleanup_and_rejects_later_checks() {
+    let s = setup().await;
+    let started = s.start().await;
+    let send = id(&started);
+    s.finish(&send).await;
+    let before = s.api.wire.calls.lock().unwrap().len();
+    *s.api.wire.mode.lock().unwrap() = "hold-history";
+    let owner = s.owner.clone();
+    let check_id = send.clone();
+    let check = tokio::spawn(async move { owner.history_check(&check_id).await });
+    until(|| s.api.wire.calls.lock().unwrap().len() > before).await;
+    let mut closing = Box::pin(s.owner.shutdown());
+    let pending =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(closing.as_mut().poll(cx).is_pending()))
+            .await;
+    *s.api.wire.mode.lock().unwrap() = "";
+    check.await.unwrap().unwrap();
+    if pending {
+        closing.await;
+    }
+    assert!(pending, "shutdown must await the historical read owner");
+    s.idle_forwards().await;
+    let calls = s.api.wire.calls.lock().unwrap().len();
+    assert!(s.owner.history_check(&send).await.is_err());
+    assert_eq!(s.api.wire.calls.lock().unwrap().len(), calls);
+}
+
+#[tokio::test]
+async fn storage_failure_after_agent_ack_keeps_remote_uncertainty_and_bars_tasks() {
+    let s = setup().await;
+    let root = s.home.path().join("app-local/send-history-v1");
+    *s.api.wire.after_post.lock().unwrap() = Some(Box::new(move || {
+        std::fs::create_dir(root.join("saving")).unwrap();
+    }));
+    let view = s.finish(&id(&s.start().await)).await;
+    assert_eq!(view["state"], "unknown");
+    assert_eq!(
+        view["error"], "submit",
+        "remote creation must not be labelled nothing sent: {view}"
+    );
+    assert_eq!(view["storageError"], true);
+    assert_eq!(view["acknowledged"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        s.api.wire.posts(),
+        1,
+        "no Task may follow a failed durable acknowledgement"
+    );
+}
+
+#[tokio::test]
+async fn omitted_answer_cache_does_not_stop_observing_the_remaining_tests() {
+    let s = setup().await;
+    let block = &TESTS[TESTS.find("```yaml agent-test").unwrap()..];
+    let cases: String = (0..6)
+        .map(|i| block.replace("id: fetch\n", &format!("id: fetch-{i}\n")))
+        .collect();
+    std::fs::write(
+        s.agent_path().with_file_name("web-reader.agent.test.md"),
+        format!("---\nschemaVersion: 1\n---\n{cases}"),
+    )
+    .unwrap();
+    *s.api.wire.mode.lock().unwrap() = "large-result";
+    let started = s.start().await;
+    let send = id(&started);
+    let view = s.finish(&send).await;
+    assert_eq!(
+        view["state"], "complete",
+        "reduced cache is not a storage failure: {view}"
+    );
+    assert_eq!(view["report"]["cases"].as_array().unwrap().len(), 6);
+    assert_eq!(view["report"]["verdict"], "passed");
+    assert_eq!(view["storageError"], false);
+    assert_eq!(s.api.wire.posts(), 7);
+    let saved = s.owner.history_details(&send).unwrap();
+    assert_eq!(saved.detail_state, "omitted");
+    assert!(!saved.interrupted);
+    let cached = saved.report.unwrap();
+    assert_eq!(cached.cases.len(), 6);
+    assert!(cached
+        .cases
+        .iter()
+        .all(|c| c.answer.is_none() && c.phase == "Succeeded"));
+}
+
+#[tokio::test]
+async fn history_preserves_answers_on_404_denial_and_agent_revision_change() {
+    let s = setup().await;
+    let started = s.start().await;
+    let send = id(&started);
+    s.finish(&send).await;
+    let before = s.api.wire.posts();
+    for (mode, availability) in [
+        ("agent-replaced", "missing"),
+        ("agent-generation", "missing"),
+        ("result-404", "missing"),
+        ("task-404", "missing"),
+        ("result-403", "unavailable"),
+        ("events-404", "missing"),
+    ] {
+        *s.api.wire.mode.lock().unwrap() = mode;
+        let view = s.owner.history_check(&send).await.unwrap();
+        assert_eq!(view.availability.as_deref(), Some(availability), "{mode}");
+        let report = view.report.unwrap();
+        assert_eq!(
+            report.cases[0].answer.as_deref(),
+            Some("expected answer"),
+            "{mode}"
+        );
+        assert_ne!(report.verdict, Verdict::Passed, "{mode}");
+        s.idle_forwards().await;
+    }
+    assert_eq!(s.api.wire.posts(), before);
+}
+
 #[path = "cluster_preflight.rs"]
 mod preflight;
 
@@ -649,10 +1150,11 @@ async fn send_start_future_is_send_for_desktop_dispatch() {
 #[tokio::test]
 async fn reload_during_send_keeps_its_frozen_target_and_requires_use_again() {
     let s = setup().await;
-    // Reload lands while this attempt rereads configuration for its own admission.
+    // Reload invalidates selection, but cannot start a second configuration read
+    // inside this attempt's reader. The already-admitted Send keeps frozen access.
     let (session, handle) = (s.session.clone(), tokio::runtime::Handle::current());
     *s.on_read.lock().unwrap() = Some(Box::new(move || {
-        handle.block_on(session.reload()).unwrap();
+        assert!(handle.block_on(session.reload()).is_err());
     }));
     let first = s.start().await;
     let done = s.finish(&id(&first)).await;

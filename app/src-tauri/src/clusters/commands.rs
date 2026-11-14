@@ -70,34 +70,7 @@ impl Session {
         let client = match self.client.take() {
             Some(client) => client,
             None => {
-                if owner.5.swap(true, Ordering::SeqCst) {
-                    return Err(UNKNOWN_CONFIGURATION);
-                }
-                let reader = owner.1.clone();
-                let running = owner.5.clone();
-                let (reply, read) = tokio::sync::oneshot::channel();
-                // A stuck file read cannot be cancelled. Admit at most one, outside
-                // Tokio's blocking pool so it cannot hold up runtime shutdown.
-                if std::thread::Builder::new()
-                    .name("bridge-kubeconfig".into())
-                    .spawn(move || {
-                        let result =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader()))
-                                .unwrap_or(Err(ClusterError::Unavailable));
-                        running.store(false, Ordering::SeqCst);
-                        let _ = reply.send(result);
-                    })
-                    .is_err()
-                {
-                    owner.5.store(false, Ordering::SeqCst);
-                    return Err(UNKNOWN_CONFIGURATION);
-                }
-                let kubeconfig = tokio::time::timeout(READ_LIMIT, read)
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .and_then(Result::ok)
-                    .ok_or(UNKNOWN_CONFIGURATION)?;
+                let kubeconfig = owner.read_configuration(owner.1.clone()).await?;
                 ClusterClient::new(kubeconfig, owner.3.clone()).with_exec_owner(owner.2.clone())
             }
         };
@@ -136,6 +109,39 @@ fn read_kubeconfig() -> Result<Kubeconfig, ClusterError> {
     Kubeconfig::read().map_err(|_| ClusterError::Unavailable)
 }
 impl ClusterSession {
+    /// All configuration reads share one slot, including reads abandoned by Stop or timeout.
+    pub(crate) async fn read_configuration(
+        &self,
+        reader: KubeconfigReader,
+    ) -> Result<Kubeconfig, ClusterFailure> {
+        if self.5.swap(true, Ordering::SeqCst) {
+            return Err(UNKNOWN_CONFIGURATION);
+        }
+        let running = self.5.clone();
+        let (reply, read) = tokio::sync::oneshot::channel();
+        // A stuck file read cannot be cancelled. Admit at most one, outside
+        // Tokio's blocking pool so it cannot hold up runtime shutdown.
+        if std::thread::Builder::new()
+            .name("bridge-kubeconfig".into())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader()))
+                    .unwrap_or(Err(ClusterError::Unavailable));
+                running.store(false, Ordering::SeqCst);
+                let _ = reply.send(result);
+            })
+            .is_err()
+        {
+            self.5.store(false, Ordering::SeqCst);
+            return Err(UNKNOWN_CONFIGURATION);
+        }
+        // A late completion only releases the slot; it cannot publish configuration.
+        tokio::time::timeout(READ_LIMIT, read)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(Result::ok)
+            .ok_or(UNKNOWN_CONFIGURATION)
+    }
     pub fn new(client: ClusterClient) -> Self {
         Self::with_reader(client, Arc::new(read_kubeconfig))
     }
@@ -184,6 +190,16 @@ impl ClusterSession {
             .as_ref()
             .and_then(|(id, access)| (id.0.to_string() == target).then(|| access.clone()));
         (access, self.1.clone())
+    }
+    pub(crate) fn history_access(&self) -> SendAccess {
+        (
+            self.4
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(_, access)| access.clone()),
+            self.1.clone(),
+        )
     }
     pub async fn contexts(&self) -> Result<Vec<ContextView>, ClusterFailure> {
         let mut session = self.0.lock().await;

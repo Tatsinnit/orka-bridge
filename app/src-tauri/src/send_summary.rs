@@ -1,8 +1,11 @@
-//! Small local Send records, never execution handles or recovery instructions.
+//! Local Send summaries (v1-compatible projection) and private bounded evidence.
+#[path = "send_details.rs"]
+mod details;
 use crate::agent_folder::{invalid, read, replace, sync};
 use bridge_runtime_protocol::{SnapshotId, Uuid};
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
+pub use details::{AttemptDetails, DetailView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -127,40 +130,7 @@ impl SummaryStore {
         commit: impl FnOnce(&Dir, &[u8]) -> io::Result<()>,
     ) -> io::Result<()> {
         let _lock = self.lock.lock().map_err(|_| invalid())?;
-        summary.validate().map_err(Self::as_io)?;
-        let root = self.root(true)?.ok_or_else(invalid)?;
-        let mut ledger = Self::read_ledger(Some(&root)).map_err(Self::as_io)?;
-        // A prior failed save may already have published its terminal bytes.
-        // Retain that attempt as unknown before replacing its durable intent.
-        if root.symlink_metadata(PENDING).is_ok() {
-            replace(
-                &root,
-                FILE_NAME,
-                &serde_json::to_vec(&ledger).map_err(|_| invalid())?,
-            )?;
-        }
-        let id = summary.id.clone();
-        upsert(&mut ledger.attempts, summary);
-        let bytes = loop {
-            let bytes = serde_json::to_vec(&ledger).map_err(|_| invalid())?;
-            if bytes.len() as u64 <= MAX_BYTES {
-                break bytes;
-            }
-            // Bound bytes as well as count; long display names must not fill the
-            // store permanently. Always keep the newest attempt.
-            if ledger.attempts.len() <= 1 {
-                return Err(invalid());
-            }
-            ledger.attempts.remove(0);
-        };
-        // The intent is durable before terminal bytes can become visible. A
-        // rename followed by a failed flush must not expose a saved pass.
-        replace(&root, PENDING, id.as_bytes())?;
-        commit(&root, &bytes)?;
-        root.remove_file(PENDING)?;
-        // Removal is cleanup, not the commit point: the ledger is already
-        // flushed. A crash may restore the intent, conservatively showing unknown.
-        Ok(())
+        self.publish(summary, None, commit)
     }
     pub fn finish(&self, summary: AttemptSummary) -> io::Result<()> {
         self.begin(summary)
@@ -289,14 +259,6 @@ fn create_app_root(path: &Path) -> io::Result<()> {
         parent,
         cap_std::ambient_authority(),
     )?)
-}
-
-fn upsert(attempts: &mut Vec<AttemptSummary>, summary: AttemptSummary) {
-    attempts.retain(|attempt| attempt.id != summary.id);
-    attempts.push(summary);
-    if attempts.len() > MAX_ATTEMPTS {
-        attempts.drain(..attempts.len() - MAX_ATTEMPTS);
-    }
 }
 
 #[cfg(test)]

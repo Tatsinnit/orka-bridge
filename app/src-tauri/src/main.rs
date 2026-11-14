@@ -329,12 +329,40 @@ fn send_status(document_id: DocumentId, state: tauri::State<'_, Arc<SendOwner>>)
     state.status_document(document_id)
 }
 #[tauri::command]
-fn send_history(
+async fn send_history(
     state: tauri::State<'_, Arc<SendOwner>>,
 ) -> Result<Vec<bridge_engine::send_summary::AttemptSummary>, &'static str> {
-    state.history().map_err(|_| {
-        "Saved Send summaries could not be read. They are unavailable, not passing results."
-    })
+    let owner = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || owner.history())
+        .await
+        .map_err(|_| "Saved Send summaries could not be read.")?
+        .map_err(|_| {
+            "Saved Send summaries could not be read. They are unavailable, not passing results."
+        })
+}
+#[tauri::command]
+async fn send_history_details(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    let owner = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || owner.history_details(&send_id))
+        .await
+        .map_err(|_| "storage")?
+}
+#[tauri::command]
+async fn send_history_remove(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    state.history_remove(&send_id).await
+}
+#[tauri::command]
+async fn send_history_check(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    state.inner().history_check(&send_id).await
 }
 #[tauri::command]
 async fn send_stop(
@@ -449,6 +477,9 @@ fn main() {
             send_start,
             send_status,
             send_history,
+            send_history_details,
+            send_history_remove,
+            send_history_check,
             send_stop
         ])
         .build(tauri::generate_context!())

@@ -88,6 +88,35 @@ export async function sendHistory(): Promise<AttemptSummary[]> {
   }
   throw Error('Saved Send summaries could not be read. They are unavailable, not passing results.');
 }
+export type SendHistoryDetail = {
+  id: string; documentId: string | null; model: string | null; capturedAt: number | null;
+  report: RunSnapshot['report']; interrupted: boolean; canCheck: boolean; canRemove: boolean;
+  detailState: 'saved' | 'legacy' | 'omitted' | 'removed';
+  availability: 'available' | 'missing' | 'unavailable' | null;
+};
+function isHistoryDetail(value: unknown): value is SendHistoryDetail {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).sort().join(',') === 'availability,canCheck,canRemove,capturedAt,detailState,documentId,id,interrupted,model,report'
+    && uuid(row.id) && (row.documentId === null || isDocumentId(row.documentId)) && text(row.model)
+    && (row.capturedAt === null || typeof row.capturedAt === 'number' && Number.isSafeInteger(row.capturedAt) && row.capturedAt >= 0 && row.capturedAt <= 253402300799)
+    && ['interrupted', 'canCheck', 'canRemove'].every(key => typeof row[key] === 'boolean')
+    && ['saved', 'legacy', 'omitted', 'removed'].includes(row.detailState as string)
+    && (row.availability === null || ['available', 'missing', 'unavailable'].includes(row.availability as string))
+    && isRunSnapshot({ state: 'unknown', canRun: false, report: row.report, acknowledged: [], pending: null, error: null });
+}
+export async function sendHistoryDetail(command: 'send_history_details' | 'send_history_check' | 'send_history_remove', sendId: string): Promise<SendHistoryDetail> {
+  if (isTauri() && uuid(sendId)) {
+    try {
+      const value: unknown = await invoke(command, { sendId });
+      if (isHistoryDetail(value) && value.id === sendId) return value;
+    } catch { /* Neither stored content nor native diagnostics is an error message. */ }
+  }
+  throw Error(command === 'send_history_check'
+    ? 'Cluster status could not be checked. Reconnect this cluster in Clusters and try again. Saved answers are unchanged.'
+    : command === 'send_history_remove' ? 'Saved details could not be removed. Nothing on the cluster was changed.'
+      : 'Saved details could not be read. The summary is still available.');
+}
 export type SendStatus = { documentId: string; view: SendView | null; busy: DocumentRef | null };
 export async function sendCall(command: 'send_start' | 'send_status' | 'send_stop', args: Record<string, unknown> = {}): Promise<SendStatus> {
   if (!isTauri()) throw Error('Send is available only in the desktop app.');
