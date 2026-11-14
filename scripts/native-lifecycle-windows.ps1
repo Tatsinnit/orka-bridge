@@ -145,8 +145,10 @@ function Save-BrowserDiagnostics([string]$Name) {
         $browsers = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | ForEach-Object {
             # Keep only process/profile metadata, never the full command line or environment.
             $command = [string]$_.CommandLine
+            $process = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue
             [pscustomobject]@{
                 pid = $_.ProcessId; parent = $_.ParentProcessId; created = $_.CreationDate
+                cpuSeconds = $(if ($process) { $process.TotalProcessorTime.TotalSeconds })
                 executable = $_.ExecutablePath
                 profile = [regex]::Match($command, '(?:"--user-data-dir=(?<path>[^"]+)"|--user-data-dir="(?<path>[^"]+)"|--user-data-dir=(?<path>\S+))').Groups['path'].Value
                 type = [regex]::Match($command, '--type=(\S+)').Groups[1].Value
@@ -159,8 +161,17 @@ function Save-BrowserDiagnostics([string]$Name) {
         })
         $classes = @()
         if ($script:hwnd -and $script:hwnd -ne [IntPtr]::Zero) { $classes = @([NativeWalk]::ChildClasses($script:hwnd)) }
+        $startupMarkers = @()
+        if ($script:startupLog -and (Test-Path $script:startupLog)) {
+            $stream = [IO.File]::Open($script:startupLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            $reader = [IO.StreamReader]::new($stream)
+            try { $startupMarkers = @($reader.ReadToEnd() -split '\r?\n' | Where-Object { $_ -like 'bridge-startup:*' }) }
+            finally { $reader.Dispose() }
+        }
         [pscustomobject]@{
             captured = [DateTime]::UtcNow; hostPid = $(if ($script:app) { $script:app.Id } else { $null })
+            hostCpuSeconds = $(if ($script:app -and !$script:app.HasExited) { $script:app.TotalProcessorTime.TotalSeconds })
+            startupMarkers = $startupMarkers
             childClasses = @($classes); browsers = $browsers; installed = $versions
         } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $script:themeOutput "browser-$Name.json")
     } catch { Write-Warning "Browser diagnostics unavailable: $_" }
@@ -171,6 +182,7 @@ function Start-Bridge {
     $script:desktop = $null
     $script:hwnd = [IntPtr]::Zero
     $script:app = $null
+    $script:startupLog = $null
     Save-BrowserDiagnostics 'before-launch'
     $script:startupLog = Join-Path $script:themeOutput "app-$([Guid]::NewGuid().ToString('N')).err.log"
     $script:app = Start-Process $Executable -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $script:themeOutput "app-$([Guid]::NewGuid().ToString('N')).out.log") -RedirectStandardError $script:startupLog
@@ -365,6 +377,7 @@ try {
         "PASS $theme`: native Close/hide, tray menu/Open, same PID $script:originalPid/window $script:hwnd, File view/edited text retained, hidden/minimized second launches, menu stop. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof. OS popup theme is captured as drawn, not forced by product hooks." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
     }
 } catch {
+    $failure = $_
     if ($script:themeOutput) {
         Save-BrowserDiagnostics 'failure'
         try {
@@ -373,8 +386,16 @@ try {
             @("Root Name=$($script:window.Current.Name); PID=$($script:window.Current.ProcessId); HWND=$($script:window.Current.NativeWindowHandle); Class=$($script:window.Current.ClassName); Descendants=$($all.Count)"; $all | Select-Object -First 100 | ForEach-Object { "Name=$($_.Current.Name); Type=$($_.Current.ControlType.ProgrammaticName); Enabled=$($_.Current.IsEnabled); Offscreen=$($_.Current.IsOffscreen)" }) | Set-Content (Join-Path $script:themeOutput 'failure-ui.txt')
         } catch { Write-Warning $_ }
         try { Capture 'failure' $true } catch { Write-Warning $_ }
+        if (!$script:window -and $script:app -and !$script:app.HasExited) {
+            # The walk has already failed. Observe that same process, without
+            # retrying startup or accepting late readiness, before cleanup.
+            Start-Sleep -Seconds 5
+            Save-BrowserDiagnostics 'failure-after-5s'
+            Start-Sleep -Seconds 15
+            Save-BrowserDiagnostics 'failure-after-20s'
+        }
     }
-    throw
+    throw $failure
 } finally {
     # Force cleanup only on test failure; it is not evidence that the stop route worked.
     if ($script:app -and !$script:app.HasExited) { Stop-Process -Id $script:app.Id -Force -ErrorAction SilentlyContinue }

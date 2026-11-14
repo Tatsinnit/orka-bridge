@@ -62,11 +62,15 @@ jobs:
             artifact: windows-x64
             suite: bundle
             rust-cache: app-windows-2022-bundle-rust-1.98.1
-          # Rust checks and GUI walks run in parallel, not against one 30m budget.
+          # Keep cold Mac debug/helper checks separate from release checks too.
           - os: macos-15
-            artifact: macos-arm64
-            suite: checks
-            rust-cache: app-macos-15-rust-1.98.1
+            artifact: macos-arm64-debug-checks
+            suite: debug-checks
+            rust-cache: app-macos-15-debug-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-release-checks
+            suite: release-checks
+            rust-cache: app-macos-15-release-rust-1.98.1
           # Each GUI theme has its own existing 30m job budget.
           - os: macos-15
             artifact: macos-arm64-light
@@ -113,22 +117,22 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Clean Intel Mac shell resource check
-        if: runner.os == 'macOS' && matrix.suite == 'checks'
+        if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
         run: |
           test ! -e src-tauri/gen/apple-helper/BridgeVM
           rustup target add x86_64-apple-darwin --toolchain 1.98.1
           cargo +1.98.1 check --manifest-path src-tauri/Cargo.toml --locked --target x86_64-apple-darwin --features custom-protocol
       - name: Apple helper build and tests
-        if: runner.os == 'macOS' && matrix.suite == 'checks'
+        if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
         run: |
           bash ../scripts/build-vm-helper-macos.sh
           bash ../scripts/test-vm-helper-macos.sh
           cargo +1.98.1 test --manifest-path ../runtime/Cargo.toml --locked -p bridge-runtime-protocol --test runtime_core --test windows_backend --test agents
       - name: Mac deferred termination (no VM or host logout)
-        if: runner.os == 'macOS' && matrix.suite == 'checks'
+        if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
         run: cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --test native_termination --features custom-protocol
       - name: Debug Rust checks
-        if: matrix.suite == 'checks' || matrix.suite == 'debug-checks'
+        if: matrix.suite == 'debug-checks'
         run: |
           cargo +1.98.1 fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --test engine
@@ -136,7 +140,7 @@ jobs:
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --bin orka-bridge --features custom-protocol
           cargo +1.98.1 clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
       - name: Release Rust checks
-        if: matrix.suite == 'checks' || matrix.suite == 'release-checks'
+        if: matrix.suite == 'release-checks'
         run: |
           cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
           cargo +1.98.1 clippy --release --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
