@@ -75,7 +75,8 @@ test.each(['submit', 'observe', null])('uncertain %s is not labelled failed or n
   vi.stubGlobal('isTauri', true);
   mockIPC(() => ({ ...idle, state: 'unknown', error }));
   const { container } = render(<Run />);
-  expect(await screen.findByText('Result unknown')).toBeTruthy();
+  expect((await screen.findByText('Result unknown')).closest('.pill')).toBeNull();
+  expect(container.querySelector('.pill.status-stale')?.textContent).toBe('Stale');
   expect(container.querySelector('.pill.status-failed')).toBeNull();
 });
 test('an older pass is a stale pill and never a green result', async () => {

@@ -154,7 +154,8 @@ test.each([
   const { container } = render(<Send place={place} source={source} stale={false} visible remote />);
   if (state === 'running') await screen.findByText('Reading your saved files');
   await screen.findByText(label, { exact: true });
-  expect(container.querySelector('.pill.status-stale')).toBeNull();
+  expect(container.querySelector(`.pill.status-${state === 'running' ? 'running' : 'stale'}`)).toBeTruthy();
+  if (state !== 'running') expect(screen.getByText(label).closest('.pill')).toBeNull();
 });
 test('pending destination checks are blue running, not waiting on the creator', async () => {
   vi.stubGlobal('isTauri', true);

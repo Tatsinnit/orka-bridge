@@ -92,12 +92,12 @@ test.each(['passed', 'failed', 'unreadable', 'edited'] as const)('Setup retains 
   expect(card.queryByText('Its test failed', { selector: 'p' })?.textContent).toBe(state === 'failed' ? 'Its test failed' : undefined);
   expect(screen.queryByText('Setting up, step 5 of 5')).toBeNull();
   if (state === 'failed') {
-    expect(card.getByText('Its test failed', { selector: '.pill' }).className).toContain('status-failed');
+    expect(card.getByText('Failed', { selector: '.pill' }).className).toContain('status-failed');
     expect(within(screen.getByRole('navigation')).getByText('Its test failed')).toBeTruthy();
     expect(within(screen.getByRole('contentinfo')).getByText('Its test failed')).toBeTruthy();
     expect(document.querySelector('.host-chip .live-dot')?.className).toContain('bad');
     await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
-    expect(within(screen.getByRole('region', { name: 'This computer' })).getByText('Its test failed').className).toContain('status-failed');
+    expect(within(screen.getByRole('region', { name: 'This computer' })).getByText('Failed', { selector: '.pill' }).className).toContain('status-failed');
     await openLocalSetup(user);
   }
   if (state === 'passed' || state === 'failed') {
@@ -213,12 +213,12 @@ test('a requested document switch does not admit the pending test while the boun
   await new Promise(resolve => setTimeout(resolve, 550));
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(0);
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe('pending');
-  expect(screen.getByText('Step 5 of 5').className).toContain('status-needs-you');
+  expect(screen.getByText('Step 5 of 5').previousElementSibling?.className).toContain('status-stale');
   expect(screen.getByRole('button', { name: 'Stop the local cluster' })).toBeTruthy();
   // A subsequently observed report ends the first-test step without turning unsaved edits into a pass.
   finish();
   await waitFor(() => expect(screen.queryByText('Step 5 of 5')).toBeNull(), { timeout: 2000 });
-  expect(within(screen.getByRole('region', { name: 'Local cluster setup' })).getByText('Tests need running').className).toContain('status-needs-you');
+  expect(within(screen.getByRole('region', { name: 'Local cluster setup' })).getByText('Tests need running').previousElementSibling?.className).toContain('status-stale');
 });
 
 test.each([false, true])('Overview refreshes after the automatic test releases native admission without mounting Designer (lost replies: %s)', async lostReplies => {

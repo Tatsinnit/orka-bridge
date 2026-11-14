@@ -29,10 +29,10 @@ beforeEach(() => localStorage.setItem('bridge.welcomeSeen.v1', '1'));
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 
 test.each([
-  ['stale', undefined, 'Run it again', 'Tests need running', 'needs-you', undefined],
-  ['stale', 1, 'Run it again', 'Tests need running', 'needs-you', undefined],
-  ['unknown', undefined, 'Check again', 'Test result unknown', 'not-started', undefined],
-  ['unknown', 1, 'Check again', 'Test result unknown', 'not-started', undefined],
+  ['stale', undefined, 'Run it again', 'Tests need running', 'stale', undefined],
+  ['stale', 1, 'Run it again', 'Tests need running', 'stale', undefined],
+  ['unknown', undefined, 'Check again', 'Test result unknown', 'stale', undefined],
+  ['unknown', 1, 'Check again', 'Test result unknown', 'stale', undefined],
   ['running', undefined, undefined, 'Running test', 'running', undefined],
   ['passed', 0, 'See what it answered', 'Local cluster ready', 'passed', undefined],
   ['failed', undefined, 'Check again', 'Its test failed', 'failed', undefined],
@@ -46,7 +46,9 @@ test.each([
     onCancel={() => {}} onRestart={() => {}} onChange={() => {}} />);
   const region = screen.getByRole('region', { name: 'Local cluster setup' });
   expect(within(region).queryByText('Step 5 of 5')).toBeNull();
-  expect(within(region).getByText(badge, { selector: '.pill' }).className).toContain(`status-${tone}`);
+  expect(within(region).getByText(badge, { selector: '.status-description' })).toBeTruthy();
+  expect(region.querySelector('.pill')?.className).toContain(`status-${tone}`);
+  expect(region.querySelector('.pill')?.textContent).not.toContain(badge);
   const result = within(region).queryByRole('button', { name: 'See what it answered' });
   expect(!!result).toBe(count !== undefined);
   if (result && (firstCheck === 'stale' || firstCheck === 'unknown')) expect(result.className).toBe('button button-secondary');
@@ -316,9 +318,11 @@ test('a delayed Stop cannot strand subsequent Continue actions', async () => {
   await user.click(await screen.findByRole('button', { name: 'Stop the local cluster' }));
   expect(within(screen.getByRole('navigation')).getByText('Stopping the local cluster')).toBeTruthy();
   expect(within(screen.getByRole('contentinfo')).getByText('Stopping the local cluster')).toBeTruthy();
-  expect(within(screen.getByRole('region', { name: 'Local cluster setup' })).getByText('Stopping the local cluster').className).toContain('status-running');
+  expect(within(screen.getByRole('region', { name: 'Local cluster setup' })).getByText('Stopping the local cluster').previousElementSibling?.className).toContain('status-running');
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
-  expect(within(screen.getByRole('region', { name: 'This computer' })).getAllByText('Stopping the local cluster').some(node => node.className.includes('status-running'))).toBe(true);
+  const row = screen.getByRole('region', { name: 'This computer' });
+  expect(within(row).getByText('Stopping the local cluster').closest('.pill')).toBeNull();
+  expect(row.querySelector('.pill.status-running')).toBeTruthy();
   await openLocalSetup(user);
   selected = null; change({ selected: null, localVm: 'cancelled', model: 'locked' });
   await screen.findByRole('heading', { name: 'Set up this computer' });
@@ -365,7 +369,8 @@ test('an unreadable status makes the card unavailable instead of keeping the las
   expect(card().getByText('Step 1 of 5')).toBeTruthy();
   unreadable();
   await waitFor(() => expect(within(screen.getByRole('contentinfo')).getAllByText('Local cluster unavailable').length).toBeGreaterThan(0), { timeout: 3000 });
-  expect(card().getByText('Unavailable', { selector: '.pill' })).toBeTruthy();
+  expect(card().getByText('Unavailable', { selector: '.status-description' })).toBeTruthy();
+  expect(card().getByText('Needs you', { selector: '.pill' })).toBeTruthy();
   expect(card().queryByText('Step 1 of 5')).toBeNull();
   expect(screen.queryByRole('progressbar')).toBeNull();
   expect(screen.queryByText(/Installing, 1.1 GiB/)).toBeNull();

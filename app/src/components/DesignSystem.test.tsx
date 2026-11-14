@@ -6,7 +6,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('shared foundation', () => {
   it.each(['passed', 'failed', 'running', 'stale', 'needs-you', 'not-started'] as const)('names %s without relying on colour', state => {
     const { container } = render(<StatusPill state={state} />);
-    expect(screen.getByText({ 'needs-you': 'Needs you', 'not-started': 'Not started', passed: 'Passed', failed: 'Failed', running: 'Running', stale: 'Not run since your edit' }[state])).toBeTruthy();
+    expect(screen.getByText({ 'needs-you': 'Needs you', 'not-started': 'Not started', passed: 'Passed', failed: 'Failed', running: 'Running', stale: 'Stale' }[state])).toBeTruthy();
     expect(container.querySelector('svg[aria-hidden="true"]')).toBeTruthy();
   });
   it('labels elapsed observation time without claiming a run start time', () => {

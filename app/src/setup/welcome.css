@@ -21,8 +21,6 @@
 
 
 .workspace-option-detail { grid-column: 2 / 4; color: var(--color-text-secondary); display: grid; gap: 8px; }
-.workspace-disclosure { display: inline-flex; align-items: center; gap: 4px; justify-self: start; background: none; padding: 0; border: 0; color: var(--color-text-secondary); font-weight: 500; font-size: var(--size-body); }
-.workspace-disclosure:hover { color: var(--color-text); }
 .workspace-choice-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .workspace-coming { position: relative; }
 .workspace-tip { display: none; position: absolute; z-index: 1; bottom: calc(100% + 6px); left: 0; background: var(--color-action); color: var(--color-page); border-radius: var(--radius-control); padding: 4px 8px; font-size: var(--size-small); white-space: nowrap; }

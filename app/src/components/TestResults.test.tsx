@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -19,6 +20,25 @@ test('failed tests lead and open next to their frozen question, with a plain rea
   expect(rows[0].querySelector('details')?.open).toBe(false);
   expect(resultLabel(report)).toBe('1 of 2 passed');
 });
+test('test-row grid styles never apply to nested Details labels in either breakpoint', () => {
+  const { container } = render(<TestResults report={report} stale={false} />);
+  const style = document.createElement('style');
+  style.textContent = readFileSync('src/components/test-results.css', 'utf8');
+  document.head.append(style);
+  try {
+    const rules = (list: CSSRuleList): CSSStyleRule[] => Array.from(list).flatMap(rule =>
+      'selectorText' in rule ? [rule as CSSStyleRule] : 'cssRules' in rule ? rules((rule as CSSGroupingRule).cssRules) : []);
+    const grids = rules(style.sheet!.cssRules).filter(rule => rule.style.display === 'grid' || rule.style.getPropertyValue('grid-template-columns'));
+    expect(grids.length).toBeGreaterThan(0);
+    const heading = container.querySelector('.test-result > summary > .disclosure-label')!;
+    const nested = container.querySelector('.test-answer .card-details > summary > .disclosure-label')!;
+    for (const rule of grids) {
+      expect(heading.matches(rule.selectorText)).toBe(true);
+      expect(nested.matches(rule.selectorText)).toBe(false);
+    }
+  } finally { style.remove(); }
+});
+
 test('long expected values stay in Details rather than overwhelming the failure reason', async () => {
   const expected = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
   const { container } = render(<TestResults report={{ verdict: 'failed', cases: [{ ...failed, assertions: [{ ...failed.assertions[0], expected }] }] }} stale={false} />);
@@ -45,7 +65,9 @@ test('stale rows have no passing icons or current verdict words', () => {
 });
 test('unknown tool evidence is not a fabricated failure', () => {
   const unknown = { ...failed, verdict: 'unknown' as const, completedTools: [], answer: null, assertions: [{ id: 'fetch', kind: 'toolCalled' as const, expected: 'web_fetch', verdict: 'unknown' as const }] };
-  render(<TestResults report={{ verdict: 'unknown', cases: [unknown] }} stale={false} />);
+  const { container } = render(<TestResults report={{ verdict: 'unknown', cases: [unknown] }} stale={false} />);
+  expect(container.querySelector('.test-result summary .status-stale')).toBeTruthy();
+  expect(container.querySelector('.test-result summary .status-not-started')).toBeNull();
   expect(screen.getByText('No answer was observed.')).toBeTruthy();
   expect(screen.getByText('A call to web_fetch was not observed; this result is unknown.')).toBeTruthy();
 });

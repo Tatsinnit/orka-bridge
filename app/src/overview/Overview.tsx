@@ -1,3 +1,4 @@
+import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
 import { useEffect, useRef, useState } from 'react';
 import { CardSection, Details, GeneratedValue, LongCard, StatusPill, type Status } from '../components/DesignSystem';
@@ -88,10 +89,10 @@ export default function Overview({ onNewAgent, active, runBusy, workspaceKey, on
         const also = o && places?.historyState === 'complete' ? [...new Set(places.places.filter(p => p.agents.some(a => a.record && sameSource(a.record.source, o.source) === true)).map(p => `${p.context} · ${p.namespace} · ${p.service}`))] : [];
         const sourceUnavailable = !!o && !file?.source;
         const stale = !!o && (sourceUnavailable || sameSource(file?.source ?? undefined, o.source) !== true);
-        const state: Status = stale ? 'stale' : o?.state === 'running' ? 'running' : o?.state === 'complete' && o.report?.verdict !== 'unknown' ? o.report?.verdict ?? 'not-started' : 'not-started';
+        const state: Status = stale ? 'stale' : o?.state === 'running' ? 'running' : o?.state === 'unknown' || o?.report?.verdict === 'unknown' ? 'stale' : o?.state === 'complete' ? o.report?.verdict ?? 'not-started' : 'not-started';
         const check = sourceUnavailable ? 'Current saved version unavailable' : stale ? 'Checks not run since your change' : o?.state === 'running' ? 'Running checks' : o?.state === 'complete' && o.report && o.report.verdict !== 'unknown' ? `Checks ${o.report.verdict} in this session` : o ? 'Check result unknown' : 'Not tested by Bridge in this session';
         return { key: `${observed.installation}/${agent.namespace}/${agent.uid}`, source: o?.source, place: 'This computer', node: <LongCard key={`${observed.installation}/${agent.namespace}/${agent.uid}`} title={file?.summary?.name || file?.name || agent.name}
-          status={<StatusPill state={state}>agent</StatusPill>}
+          status={<StatusPill state={state} />}
           action={file?.state === 'readable' ? <Button type="button" kind="secondary" size="small" aria-label={`Open ${file.name}`} onClick={() => onOpenDocument(file.documentId)}>Open</Button> : undefined}
           summary={file?.summary?.description ?? 'No linked agent file'}>
           <CardSection title="Checks"><p>{check}</p><p>{o ? <>Last test: {when(o.observedAt)}</> : 'Last run: unavailable'}</p></CardSection>
@@ -99,7 +100,7 @@ export default function Overview({ onNewAgent, active, runBusy, workspaceKey, on
           {!!also.length && <p className="muted">Also found on {also.join('; ')}</p>}
           <CardSection title="Cluster settings"><p>Model and tools have not been checked.</p></CardSection>
           {file?.state === 'readable' ? <Details hint="Cluster details">{identity(agent, observed.installation, observed.observedAt)}</Details>
-            : <details className="card-details"><summary>Open</summary><p>No linked agent file is available to edit.</p>{identity(agent, observed.installation, observed.observedAt)}</details>}
+            : <Disclosure className="card-details" label="Open"><p>No linked agent file is available to edit.</p>{identity(agent, observed.installation, observed.observedAt)}</Disclosure>}
         </LongCard> };
       }) ?? [];
   const clusterCards = places ? remoteCards(places, saved, localCards, onOpenDocument) : [];

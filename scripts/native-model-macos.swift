@@ -132,7 +132,7 @@ click("Connect the AI", rows)
 rows = try capture("before-connect", ["Connect the AI"])
 require(enabledButton("Remove sign-in") == nil, "Remove must be absent before the first sign-in attempt")
 click("Connect the AI", rows)
-rows = try capture("local-completed", ["Local cluster", "Local cluster running", "Stop the local cluster", "Completed setup steps"])
+rows = try capture("local-completed", ["Local cluster", "Local cluster ready", "Stop the local cluster", "Completed setup steps"])
 require(!rows.contains { ($0.topCandidates(1).first?.string ?? "").range(of: "Step [0-9]+ of 5", options: .regularExpression) != nil },
         "Completed local page must not keep a setup counter")
 click("Remove sign-in", rows)
@@ -328,6 +328,10 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
     }
     Thread.sleep(forTimeInterval: 0.3)
     require(enabledButton("Close picker") == nil, "Outside click did not dismiss picker")
+    _ = try seek("More settings", -150)
+    click("More settings", [])
+    _ = try capture("local-disclosure-settings-\(size)", ["More settings", "Description"])
+    click("More settings", [])
 }
 scroll(4000)
 // Match the fixture's known Instructions value, not a label plus a guessed

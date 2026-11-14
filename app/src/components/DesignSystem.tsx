@@ -1,9 +1,10 @@
+import { Disclosure } from './Disclosure';
 import { Button, CopyIcon } from './Button';
 import { type ReactNode, useEffect, useState } from 'react';
 import './design-system.css';
 
 export type Status = 'passed' | 'failed' | 'running' | 'stale' | 'needs-you' | 'not-started';
-const labels: Record<Status, string> = { passed: 'Passed', failed: 'Failed', running: 'Running', stale: 'Not run since your edit', 'needs-you': 'Needs you', 'not-started': 'Not started' };
+const labels: Record<Status, string> = { passed: 'Passed', failed: 'Failed', running: 'Running', stale: 'Stale', 'needs-you': 'Needs you', 'not-started': 'Not started' };
 export function StatusIcon({ state }: { state: Status }) {
   return <svg className={`icon status-icon status-${state}`} viewBox="0 0 24 24" aria-hidden="true">
     <circle cx="12" cy="12" r="9" strokeDasharray={state === 'stale' ? '2 3' : undefined} />
@@ -39,7 +40,7 @@ export function GeneratedValue({ label, value }: { label: string; value: string 
   return <div className="generated-value"><span>{label}</span><code title={value}>{short === value ? value : <><span className="sr-only">{value}</span><span aria-hidden="true">{short}</span></>}</code><Button type="button" kind="icon" aria-label={`Copy ${label}`} title={`Copy ${label}`} onClick={() => { void copy(); }}><CopyIcon /></Button><span role="status">{feedback?.value === value ? feedback.text : ''}</span></div>;
 }
 export function Details({ children, hint }: { children: ReactNode; hint?: string }) {
-  return <details className="card-details"><summary><span className="section-label">Details</span>{hint && <span className="muted">{hint}</span>}</summary><div>{children}</div></details>;
+  return <Disclosure className="card-details" label="Details" hint={hint}><div>{children}</div></Disclosure>;
 }
 export function CardSection({ title, children }: { title: string; children: ReactNode }) {
   return <section className="card-section" aria-label={title}><h4 className="section-label">{title}</h4>{children}</section>;

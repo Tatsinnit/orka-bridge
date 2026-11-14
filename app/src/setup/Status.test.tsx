@@ -15,12 +15,12 @@ afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.c
 test('a failed test is red in the shared presentation and local page, never Ready', () => {
   expect(setupView(ready, { model: 'connected', check: 'failed' })).toMatchObject({ done: true, tone: 'bad', line: 'Its test failed' });
   render(<SetupProgress {...actions} status={ready} modelState="connected" firstCheck="failed" firstTestResult={{ failed: 1 }} />);
-  expect(screen.getByText('Its test failed', { selector: '.pill' }).className).toContain('status-failed');
+  expect(screen.getByText('Failed', { selector: '.pill' }).className).toContain('status-failed');
   expect(screen.queryByText('Ready')).toBeNull();
 });
 
 test('returning connected/no-evidence is finished without claiming tests passed; pending first test is not', () => {
-  expect(setupView(ready, { model: 'connected' })).toMatchObject({ done: true, line: 'Local cluster running', tone: 'wait' });
+  expect(setupView(ready, { model: 'connected' })).toMatchObject({ done: true, line: 'Local cluster ready', tone: 'ready' });
   expect(setupView(ready, { model: 'connected', initialAutomatic: true })).toMatchObject({ done: false, step: 5 });
 });
 

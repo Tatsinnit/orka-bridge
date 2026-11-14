@@ -1,3 +1,4 @@
+import { Disclosure } from '../components/Disclosure';
 import { useEffect, useRef, useState } from 'react';
 import { type AccessView, type ClusterFailure, type ContextView, connectCluster, contexts, discover, failedCheck, reloadContexts, reconnectCluster, forgetCluster, clusterPlaces, type SelectedPlace, type TargetView } from './api';
 import { clusterDetails, clusterRecovery } from './recovery';
@@ -249,9 +250,9 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
           <p className="muted">An existing account in {target.watched_namespace}. Bridge does not create accounts or permissions.</p></>}
         <Button type="button" kind="primary" disabled={busy || (needsAccount && !account.trim())} onClick={() => { void confirm(); }}>{error?.operation === 'Use cluster' ? 'Check again' : 'Use this cluster'}</Button>
       </>}
-      <button type="button" className="workspace-disclosure" aria-expanded={details} aria-controls="cluster-details" onClick={() => setDetails(v => !v)}>{details ? 'Hide details' : 'Show details'}</button>
+      <Disclosure label={details ? 'Hide details' : 'Show details'} open={details} controls="cluster-details" onOpenChange={setDetails}>
       {details && <dl id="cluster-details" className="cluster-details"><div><dt>Context</dt><dd>{target.context_name}</dd></div><div><dt>Service</dt><dd>{target.service_namespace} / {target.service_name}</dd></div><div><dt>Watched namespace</dt><dd>{target.watched_namespace}</dd></div><div><dt>Orka image</dt><dd>{target.image}</dd></div>
-        {access?.providers.map(p => <div key={p.id}><dt>Provider</dt><dd>{p.name} <span className="muted">{p.ready ? 'Ready' : 'Not ready'}</span></dd></div>)}</dl>}
+        {access?.providers.map(p => <div key={p.id}><dt>Provider</dt><dd>{p.name} <span className="muted">{p.ready ? 'Ready' : 'Not ready'}</span></dd></div>)}</dl>}</Disclosure>
     </>}
     <Button type="button" kind="secondary" disabled={reloading || removing} onClick={() => { void reload(); }}>{reloading ? 'Reloading kubeconfig…' : 'Reload kubeconfig'}</Button>
     <p className="muted">After reloading kubeconfig, choose a context and check access again.</p>

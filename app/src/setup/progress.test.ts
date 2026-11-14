@@ -17,9 +17,18 @@ test('one derivation maps native and model state to the five setup steps', () =>
   expect(step(status('ready'), { model: 'idle' })).toBe('Connect the AI');
   expect(step(status('ready'), { model: 'queued' })).toBe('AI queued');
   expect(step(status('ready'), { model: 'connecting' })).toBe('Connecting the AI…');
-  expect(step(status('ready'), { model: 'connected' })).toBe('Local cluster running');
+  expect(step(status('ready'), { model: 'connected' })).toBe('Local cluster ready');
   expect(step(status('ready'), { model: 'connected', check: 'running', initialAutomatic: true })).toBe('Run your first agent');
   expect(setupView(status('ready'), { model: 'connected' }).step).toBe(5);
+});
+
+test('status icons follow active work and uncertain evidence without changing setup actions', () => {
+  expect(setupView(undefined, { checking: true }).status).toBe('running');
+  expect(setupView(undefined).status).toBe('needs-you');
+  for (const check of ['stale', 'unknown'] as const) {
+    expect(setupView(status('ready'), { model: 'connected', check })).toMatchObject({ status: 'stale', tone: 'stale', done: true, step: 5, action: 'Manage' });
+  }
+  expect(setupView(status('ready'), { model: 'connected' })).toMatchObject({ status: 'passed', line: 'Local cluster ready', done: true, action: 'Manage' });
 });
 
 test('the place choice shows no step count', () => {
@@ -40,7 +49,7 @@ test('host selection is native: local only when selected, never inferred while c
 test('test uncertainty and manual runs do not reopen completed workspace setup', () => {
   const done = (check?: CheckStepState) => setupView(status('ready'), { model: 'connected', check });
   for (const check of ['passed', 'failed', 'stale', 'unknown', 'running'] as const) expect(done(check)).toMatchObject({ done: true });
-  expect(done()).toMatchObject({ done: true, line: 'Local cluster running' });
+  expect(done()).toMatchObject({ done: true, line: 'Local cluster ready' });
   expect(setupView(status('ready'), { model: 'connected', check: 'running', initialAutomatic: true })).toMatchObject({ done: false, step: 5 });
 });
 
@@ -117,9 +126,9 @@ test('tone: running work is busy blue, waiting for the creator is needs-you, rea
   for (const state of ['preparing', 'installing', 'starting'] as const) expect(setupView(status(state)).tone).toBe('busy');
   // Waiting on the creator is amber, not ready; waiting on the machine is neutral.
   expect(tone({ model: 'idle' })).toBe('needs-you');
-  expect(tone({ model: 'connected' })).toBe('wait');
-  expect(tone({ model: 'connected', check: 'stale' })).toBe('needs-you');
-  expect(tone({ model: 'connected', check: 'unknown' })).toBe('wait');
+  expect(tone({ model: 'connected' })).toBe('ready');
+  expect(tone({ model: 'connected', check: 'stale' })).toBe('stale');
+  expect(tone({ model: 'connected', check: 'unknown' })).toBe('stale');
   expect(tone({ model: 'queued' })).toBe('wait');
   expect(tone({ model: 'idle' }, status('ready', { model: 'locked' }))).toBe('wait');
   expect(tone({}, status('cancelled'))).toBe('wait');

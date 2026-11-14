@@ -127,7 +127,9 @@ func mouse(_ type: CGEventType, _ point: CGPoint) {
     CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
 }
 func clickText(_ label: String, in observations: [VNRecognizedTextObservation]) {
-    guard let target = observations.first(where: { $0.topCandidates(1).first?.string == label }) else {
+    // Vision can include the SVG chevron in a disclosure label.
+    let pattern = #"^\W*"# + NSRegularExpression.escapedPattern(for: label) + #"$"#
+    guard let target = observations.first(where: { $0.topCandidates(1).first?.string.range(of: pattern, options: .regularExpression) != nil }) else {
         // Preserve the label's actual pointer action when small dark text is
         // unreadable to Vision; require one exact, fully visible native label.
         let labels = nativeElements().filter {
@@ -1125,7 +1127,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     func recordShot(_ name: String, _ checks: String) throws -> String {
         try overviewShot("overview-probe", [checks])
         let anchor = visibleTextBounds(checks)[0]
-        guard let disclosure = visibleTextBounds("Cluster details").filter({ $0.minY > anchor.minY }).min(by: { $0.minY < $1.minY }) else {
+        guard let disclosure = visibleButtons("Details Cluster details").filter({ $0.minY > anchor.minY }).min(by: { $0.minY < $1.minY }) else {
             fail("Cluster details disclosure not visible below \(checks)")
         }
         let point = CGPoint(x: disclosure.midX, y: disclosure.midY)
@@ -1135,7 +1137,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         // Bring its place row into view before checking the scoped identity.
         try overviewShot("overview-probe", [checks, "fixture-cluster · agents"])
         guard let currentAnchor = visibleTextBounds(checks).first,
-            let identity = visibleTextBounds("Cluster details").filter({ $0.minY > currentAnchor.minY }).min(by: { $0.minY < $1.minY }) else {
+            let identity = visibleButtons("Details Cluster details").filter({ $0.minY > currentAnchor.minY }).min(by: { $0.minY < $1.minY }) else {
             fail("Selected identity moved out of view below \(checks)")
         }
         // Earlier cards can retain open identities. Scope the UID to the
@@ -1232,12 +1234,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     clickText("Refresh", in: try capture("overview-probe", "Overview"))
     Thread.sleep(forTimeInterval: 1)
     try overviewShot("overview-fixture-multiple-places-by-place", ["fixture-secondary", "3 agents", "Checks passed here"], heading: "fixture-secondary")
-    let attempt = "fixture-secondary · agents · Checks unknown"
-    try overviewShot("overview-probe", [attempt])
-    guard let attemptBounds = nativeTextBounds(attempt).first else { fail("Recorded attempt disclosure is not visible") }
-    let attemptPoint = CGPoint(x: attemptBounds.midX, y: attemptBounds.midY)
-    mouse(.leftMouseDown, attemptPoint); mouse(.leftMouseUp, attemptPoint)
-    Thread.sleep(forTimeInterval: 0.5)
+    try overviewShot("overview-probe", ["Earlier Sends"])
+    clickButton("fixture-secondary · agents Checks unknown")
     try overviewShot("overview-fixture-unknown-attempt", ["Agent creation not confirmed", "Checks unknown", "Planned name: bridge-run-"])
     scrollMain(12000)
     clickText("By agent", in: try capture("overview-probe", "Overview"))
@@ -1247,11 +1245,11 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     scrollMain(12000)
     clickText("Refresh", in: try capture("overview-probe", "Overview"))
     Thread.sleep(forTimeInterval: 1)
-    try overviewShot("overview-fixture-offline-by-agent", ["fixture-secondary · agents", "Recorded checks passed; observation stale", "agent · stale"])
+    try overviewShot("overview-fixture-offline-by-agent", ["fixture-secondary · agents", "Recorded checks passed; observation stale", "Stale"])
     scrollMain(12000)
     clickText("By cluster", in: try capture("overview-probe", "Overview"))
-    try overviewShot("overview-fixture-offline-by-place", ["fixture-secondary", "Earlier cluster check", "Last seen", "agent · stale"], heading: "fixture-secondary")
-    try overviewShot("overview-fixture-offline-record-by-place", ["Recorded checks passed; observation stale", "agent · stale"])
+    try overviewShot("overview-fixture-offline-by-place", ["fixture-secondary", "Earlier cluster check", "Last seen", "Stale"], heading: "fixture-secondary")
+    try overviewShot("overview-fixture-offline-record-by-place", ["Recorded checks passed; observation stale", "Stale"])
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false])
     // Keep the existing preflight-only cards out of the focused Overview walk.
     // These identities still exercise the same blocked states without a Send.

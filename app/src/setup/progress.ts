@@ -16,7 +16,7 @@ const transferShare = 0.7;
 const startupShare = 0.28;
 
 // busy = the app is working (blue); needs-you = the creator's move (amber); ready = finished (green).
-export type Tone = 'wait' | 'busy' | 'needs-you' | 'ready' | 'bad';
+export type Tone = 'wait' | 'busy' | 'needs-you' | 'ready' | 'bad' | 'stale';
 export type SetupView = { place: 'checking' | 'unavailable' | 'none' | 'local'; step: number; done: boolean; line: string; detail: string; tone: Tone; status: Status; action: string };
 
 export const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? '' : 's'}`;
@@ -33,12 +33,12 @@ export function failedStep(status: SetupStatus): 1 | 2 {
 export function setupView(status: SetupStatus | undefined, { checking = false, stopping = false, model = 'idle', check, initialAutomatic = false }: { checking?: boolean; stopping?: boolean; model?: ModelState; check?: CheckStepState; initialAutomatic?: boolean } = {}): SetupView {
   const view = (place: SetupView['place'], step: number, line: string, detail: string, tone: Tone, done = false): SetupView => ({
     place, step, done, line, detail, tone,
-    status: ({ busy: 'running', 'needs-you': 'needs-you', wait: 'not-started', ready: 'passed', bad: 'failed' } as const)[tone],
+    status: ({ busy: 'running', 'needs-you': 'needs-you', wait: 'not-started', ready: 'passed', bad: 'failed', stale: 'stale' } as const)[tone],
     action: done ? 'Manage' : step === 4 ? 'Connect the AI' : place === 'local' ? 'Continue setup' : 'Set up',
   });
-  if (!status) return checking ? view('checking', 0, 'Checking the local cluster…', 'Checking the local cluster…', 'wait') : view('unavailable', 0, 'Local cluster unavailable', 'Local cluster unavailable', 'wait');
+  if (!status) return checking ? view('checking', 0, 'Checking the local cluster…', 'Checking the local cluster…', 'busy') : view('unavailable', 0, 'Local cluster unavailable', 'Local cluster unavailable', 'needs-you');
   const place = status.selected === 'localVm' ? 'local' : 'none';
-  if (status.localVm === 'notIntegrated') return view(place, 0, 'Local cluster unavailable', 'Local cluster unavailable', 'wait');
+  if (status.localVm === 'notIntegrated') return view(place, 0, 'Local cluster unavailable', 'Local cluster unavailable', 'needs-you');
   if (place === 'none') return view(place, 0, 'Choose where agents run', 'Choose where agents run', 'wait');
   if (stopping) return view(place, status.localVm === 'ready' ? 5 : 0, 'Stopping the local cluster', 'Stopping the local cluster', 'busy', status.localVm === 'ready');
   switch (status.localVm) {
@@ -60,9 +60,9 @@ export function setupView(status: SetupStatus | undefined, { checking = false, s
       }
       // Test evidence can need attention after setup; only the initial automatic run is a setup stage.
       const done = !initialAutomatic;
-      const tone = check === 'failed' ? 'bad' : check === 'passed' ? 'ready' : check === 'running' ? 'busy' : initialAutomatic || check === 'stale' ? 'needs-you' : 'wait';
-      const line = !done ? 'Run your first agent' : check ? { passed: 'Local cluster ready', failed: 'Its test failed', running: 'Running test', stale: 'Tests need running', unknown: 'Test result unknown' }[check] : 'Local cluster running';
-      return view(place, 5, line, 'AI connected', tone, done);
+      const tone = check === 'failed' ? 'bad' : check === 'passed' ? 'ready' : check === 'running' ? 'busy' : check === 'stale' || check === 'unknown' ? 'stale' : initialAutomatic ? 'needs-you' : 'wait';
+      const line = !done ? 'Run your first agent' : check ? { passed: 'Local cluster ready', failed: 'Its test failed', running: 'Running test', stale: 'Tests need running', unknown: 'Test result unknown' }[check] : 'Local cluster ready';
+      return view(place, 5, line, 'AI connected', check || !done ? tone : 'ready', done);
     }
     default: return view(place, 1, 'Getting the local cluster ready', 'Getting the local cluster ready', 'busy');
   }

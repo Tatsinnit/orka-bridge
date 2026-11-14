@@ -27,6 +27,7 @@
 .live-dot.busy { background: var(--color-status-running); }
 .live-dot.needs-you { background: var(--color-status-pending); }
 .live-dot.bad { background: var(--color-status-failed); }
+.live-dot.stale { background: var(--color-text-secondary); }
 .coming-control { position: relative; display: inline-flex; border-radius: var(--radius-control); }
 .control-tip { display: none; position: absolute; z-index: 2; top: calc(100% + 8px); right: 0; width: max-content; max-width: 240px; padding: var(--space-2); border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-card); color: var(--color-text); font: var(--type-body); box-shadow: 0 2px 6px rgb(0 0 0 / .12); }
 .coming-control:hover .control-tip, .coming-control:focus-visible .control-tip { display: block; }

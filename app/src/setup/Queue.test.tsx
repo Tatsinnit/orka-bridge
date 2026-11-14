@@ -69,7 +69,7 @@ test('a choice during transfer connects exactly once at readiness, with no secon
   expect(connects()).toBe(1);
   await observe(ipc);
   expect(connects()).toBe(1);
-  expect(within(screen.getByRole('contentinfo')).getByText('Local cluster running')).toBeTruthy();
+  expect(within(screen.getByRole('contentinfo')).getByText('Local cluster ready')).toBeTruthy();
   expect(screen.getAllByRole('button').filter(button => button.hasAttribute('disabled') && /connect|queued|removing/i.test(button.textContent ?? ''))).toEqual([]);
 });
 
@@ -112,7 +112,7 @@ test('the hidden Setup keeps polling and finishes an already-submitted intent fr
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   sim.localVm = 'ready'; sim.model = 'available';
   await waitFor(() => expect(connects()).toBe(1), wait);
-  await within(screen.getByRole('contentinfo')).findByText('Local cluster running', {}, wait);
+  await within(screen.getByRole('contentinfo')).findByText('Local cluster ready', {}, wait);
   await settle(); expect(connects()).toBe(1);
 });
 
@@ -236,21 +236,22 @@ test('the single host dot is busy blue while connecting or removing, amber when 
   const dots = () => [...document.querySelectorAll('.live-dot')].map(dot => dot.className.replace('live-dot', '').trim());
   await screen.findByRole('button', { name: 'Connect the AI' });
   expect(dots()).toEqual(['needs-you']);
-  expect(screen.getByText('Step 4 of 5').className).toContain('status-needs-you');
+  expect(screen.getByText('Step 4 of 5').previousElementSibling?.className).toContain('status-needs-you');
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
   await screen.findAllByText('Connecting the AI…');
   expect(dots()).toEqual(['busy']);
-  expect(screen.getByText('Step 4 of 5').className).toContain('status-running');
+  expect(screen.getByText('Step 4 of 5').previousElementSibling?.className).toContain('status-running');
   expect(within(screen.getByRole('contentinfo')).getByText('Connecting the AI…')).toBeTruthy();
   expect(within(screen.getByRole('navigation')).getByText('Connecting the AI…')).toBeTruthy();
 });
 
-test('removing the sign-in is busy blue and a connected model with no test evidence is neutral, not green', async () => {
+test('removing the sign-in is busy blue and a usable cluster with no test evidence is Ready, without claiming tests passed', async () => {
   native('ready', { model: 'available', remove: 'hang' }); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   const dots = () => [...document.querySelectorAll('.live-dot')].map(dot => dot.className.replace('live-dot', '').trim());
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await screen.findByText('Connected', { selector: '.model-state .pill' });
-  expect(dots()).toEqual(['wait']);
+  expect(dots()).toEqual(['ready']);
+  expect(screen.queryByText('Passed', { selector: '.setup-progress .pill' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Remove sign-in' }));
   await user.click(within(screen.getByRole('group', { name: 'Remove sign-in confirmation' })).getByRole('button', { name: 'Remove sign-in' }));
   await screen.findByText('Removing sign-in…');

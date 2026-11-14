@@ -1,3 +1,4 @@
+import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
 import { useEffect, useRef, useState } from 'react';
 import { type ChatCommand, type ChatSnapshot, chatCall, chatErrors } from './chat-api';
@@ -107,7 +108,7 @@ export default function Chat({ documentId, blocked }: { documentId: string; bloc
           <h4>Agent</h4>{turn.phase === 'Failed' && <p>This turn failed.</p>}{turn.phase === 'Cancelled' && <p>The cluster reported this turn cancelled; worker termination is unconfirmed.</p>}{turn.answer !== null ? <p className="reading">{turn.answer}</p> : <p className="muted">{turn.phase === 'Failed' ? 'The turn failed without an answer.' : 'No answer observed yet.'}</p>}
           {turn.stopUnconfirmed ? <p className="chat-notice">{states.stopUnconfirmed}</p> : turn.terminationUnconfirmed && <p className="chat-notice">{states.stopRequested}</p>}
           {!turn.contextRetained && <p className="muted">This turn is not confirmed in later context.</p>}
-          {!!turn.tools.length && <details className="card-details"><summary>Tool activity</summary><ul className="chat-tools">{turn.tools.map((tool, t) => <li key={t}><code>{tool.name}</code> · {tool.phase}</li>)}</ul></details>}
+          {!!turn.tools.length && <Disclosure className="card-details" label="Tool activity"><ul className="chat-tools">{turn.tools.map((tool, t) => <li key={t}><code>{tool.name}</code> · {tool.phase}</li>)}</ul></Disclosure>}
         </article>)}
       </section>)}
     </section>
@@ -130,10 +131,10 @@ export default function Chat({ documentId, blocked }: { documentId: string; bloc
         {snapshot && snapshot.state !== 'contextUnavailable' && !snapshot.busy && (!snapshot.canSend || pending.current?.uncertain) && <Button type="button" kind="secondary" disabled={!!command} onClick={() => { void act('agent_chat_reconnect'); }}>Reconnect</Button>}
       </div>
     </form>
-    <details className="card-details"><summary>About this conversation</summary>
+    <Disclosure className="card-details" label="About this conversation">
       <p>Orka remembers the latest 50 messages, not unlimited history. Each turn starts a new worker. Tool activity is separate from remembered questions and final answers; an interrupted turn is remembered only when confirmed.</p>
       <p>Conversation history is kept in memory and lost when you quit Bridge. Agents, Sessions and transcripts remain in the local cluster; New conversation does not delete them.</p>
       <p>Stop is best-effort. A tool call may still finish, a later turn may overlap with it, and earlier effects are not undone. A long or externally changed history may need a local cluster restart before continuing.</p>
-    </details>
+    </Disclosure>
   </section>;
 }

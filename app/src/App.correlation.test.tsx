@@ -91,9 +91,9 @@ test.each(['unavailable', 'other', 'sample'] as const)('setup keeps %s Run evide
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  if (kind === 'sample') await user.click(screen.getByText('Completed setup steps', { selector: 'summary' }));
+  if (kind === 'sample') await user.click(screen.getByRole('button', { name: 'Completed setup steps' }));
   await waitFor(() => expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')?.textContent)
     .toContain({ unavailable: 'Result unknown', other: 'Needs you', sample: 'Its test passed' }[kind]));
   const navigation = within(screen.getByRole('navigation'));
-  expect(navigation.getByText({ unavailable: 'Test result unknown', other: 'Local cluster running', sample: 'Local cluster ready' }[kind])).toBeTruthy();
+  expect(navigation.getByText({ unavailable: 'Test result unknown', other: 'Local cluster ready', sample: 'Local cluster ready' }[kind])).toBeTruthy();
 });

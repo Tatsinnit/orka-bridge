@@ -226,7 +226,7 @@ test('model acknowledgment and observed check counts survive navigation', async 
   vi.stubGlobal('isTauri', true);
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  expect(await within(screen.getByRole('contentinfo')).findByText('Local cluster running')).toBeTruthy();
+  expect(await within(screen.getByRole('contentinfo')).findByText('Local cluster ready')).toBeTruthy();
   expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('AI connected');
   expect(document.querySelector('.host-chip')?.textContent).toBe('This computer: AI connected');
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
@@ -362,7 +362,7 @@ test('a transient setup read failure does not invalidate an admitted model conne
   await act(async () => { finishConnect({ ready: true }); });
   expect(within(screen.getByRole('region', { name: 'Connect the AI' })).getByText('Connected')).toBeTruthy();
   fail = false;
-  expect(await within(screen.getByRole('contentinfo')).findByText('Local cluster running', {}, { timeout: 2000 })).toBeTruthy();
+  expect(await within(screen.getByRole('contentinfo')).findByText('Local cluster ready', {}, { timeout: 2000 })).toBeTruthy();
   expect(within(screen.getByRole('region', { name: 'Connect the AI' })).getByText('Connected')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Model connected' })).toBeNull();
 });

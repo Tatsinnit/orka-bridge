@@ -1,3 +1,4 @@
+import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
 import { useEffect, useState } from 'react';
 import { agentInfo } from '../designer/agent-api';
@@ -34,9 +35,9 @@ function stepRows({ status, stopping, error, modelState = 'idle', firstCheck, in
     : modelState === 'connecting' ? ['running', 'Connecting'] : modelState === 'removing' ? ['running', 'Removing sign-in']
     : modelState === 'queued' ? ['not-started', 'Queued']
     : status.localVm === 'ready' ? status.model === 'locked' ? ['not-started', 'Unavailable'] : ['needs-you', 'Needs you']
-    : canQueueModel(status) ? ['needs-you', 'Pick any time'] : ['not-started', 'Waiting'];
+    : canQueueModel(status) ? ['not-started', 'Pick any time'] : ['not-started', 'Waiting'];
   // A kept result belongs to an earlier workspace until this one is ready with its model connected.
-  const test: [Status, string] = firstCheck && status.localVm === 'ready' && connected ? [{ running: 'running', passed: 'passed', failed: 'failed', unknown: 'not-started', stale: 'stale' }[firstCheck] as Status,
+  const test: [Status, string] = firstCheck && status.localVm === 'ready' && connected ? [{ running: 'running', passed: 'passed', failed: 'failed', unknown: 'stale', stale: 'stale' }[firstCheck] as Status,
     { running: 'Running', passed: 'Its test passed', failed: 'Its test failed', unknown: 'Result unknown', stale: 'Needs running' }[firstCheck]]
     : connected ? ['needs-you', 'Needs you'] : ['not-started', 'Waiting'];
   const names = [status.preflightFailure ? 'Check this computer' : 'Install the local cluster', 'Start the local cluster', 'Cluster ready', 'Connect the AI', 'Run your first agent'];
@@ -58,11 +59,11 @@ export function SetupProgress(props: Props) {
     : status.localVm === 'closing' ? 'Stopping the local cluster…'
     : status.localVm === 'notIntegrated' ? 'Local cluster setup is not included in this build. Nothing will be downloaded or started.'
     : copying ? 'Installing the local cluster…' : 'Checking the cluster download…';
-  const pill: [Status, string] = error ? ['not-started', 'Unavailable'] : [view.status, !view.done && view.step > 0 && !paused ? `Step ${view.step} of ${setupSteps}` : view.line];
+  const pill: Status = error ? 'needs-you' : view.status;
   // The failed step owns its recovery card; do not render an otherwise empty summary above it.
   if (failed) return null;
   return <section className="card workspace-steps setup-progress" aria-label="Local cluster setup">
-    <div className="steps-head"><h2>{view.done ? 'Local cluster' : 'Setting up on this computer'}</h2><StatusPill state={pill[0]}>{pill[1]}</StatusPill></div>
+    <div className="steps-head"><h2>{view.done ? 'Local cluster' : 'Setting up on this computer'}</h2><StatusPill state={pill}>{pill === 'passed' ? 'Ready' : undefined}</StatusPill><span className="status-description">{error ? 'Unavailable' : !view.done && view.step > 0 && !paused ? `Step ${view.step} of ${setupSteps}` : view.line}</span></div>
     <p className="step-place"><span>Cluster</span><b>Local cluster</b></p>
     {!failed && <p role="status">{stateLine}</p>}
     {ready && !error && props.modelState === 'connected' && props.firstCheck === 'failed' && !!props.firstTestResult?.failed && <p>Its test failed</p>}
@@ -70,14 +71,14 @@ export function SetupProgress(props: Props) {
       aria-valuenow={infra.value === null ? undefined : Math.round(infra.value * 100)} className={`infra-bar${infra.value === null ? ' indeterminate' : ''}`}>
       <span style={infra.value === null ? undefined : { width: `${Math.round(infra.value * 100)}%` }} /></div>
       {infra.text && <p className="muted">{infra.text}</p>}{infra.estimate && <p className="muted">{infra.estimate}</p>}</>}
-    {!failed && !error && <><button type="button" className="workspace-disclosure" aria-expanded={details} aria-controls="workspace-progress-details" onClick={() => setDetails(value => !value)}>{details ? 'Hide details' : 'Show details'}</button>
+    {!failed && !error && <><Disclosure label={details ? 'Hide details' : 'Show details'} open={details} controls="workspace-progress-details" onOpenChange={setDetails}>
       {details && <div id="workspace-progress-details" className="workspace-progress-details">
         <dl><div><dt>Checking cluster files</dt><dd>{status.localVm === 'preparing' || progress?.phase === 'verifying' ? 'In progress' : ready || copying || status.localVm === 'starting' ? 'Checked' : 'Waiting'}</dd></div>
           <div><dt>Installing cluster files</dt><dd>{ready || status.localVm === 'starting' ? 'Installed' : copying ? 'In progress' : 'Waiting'}</dd></div>
           <div><dt>Starting the local cluster</dt><dd>{ready ? 'Ready' : status.localVm === 'starting' ? 'In progress' : 'Waiting'}</dd></div></dl>
         {progress && <p className="muted">{Math.floor(progress.elapsedMs / 1000)} seconds in this file step.</p>}
         {status.localVmError && <pre tabIndex={0}>{ready ? modelDetails(status.localVmError) : status.localVmError}</pre>}
-      </div>}</>}
+      </div>}</Disclosure></>}
     <div className="workspace-step-actions">
       {['preparing', 'installing', 'starting'].includes(status.localVm) && <><Button type="button" kind="secondary" disabled={busy || !!error} onClick={onCancel}>Cancel</Button><span className="muted">Cancel pauses setup. Your downloaded files are kept.</span></>}
       {status.localVm === 'notIntegrated' && onCluster && <Button type="button" kind="quiet" disabled={busy} onClick={onCluster}>Use a cluster you already have instead</Button>}
@@ -108,7 +109,7 @@ export function SetupSteps(props: Pick<Props, 'status' | 'busy' | 'stopping' | '
     </ol>;
   return <div className="card setup-history">
     {visible.length > 0 && list(visible)}
-    {completed.length > 0 && <details><summary>Completed setup steps</summary>{list(completed, 'Completed setup steps')}</details>}
+    {completed.length > 0 && <Disclosure label="Completed setup steps">{list(completed, 'Completed setup steps')}</Disclosure>}
     {failed && <p className="muted">The remaining setup steps will continue after this is fixed.</p>}
   </div>;
 }

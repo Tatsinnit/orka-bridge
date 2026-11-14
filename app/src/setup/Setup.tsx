@@ -1,3 +1,4 @@
+import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Model, { type ModelState } from './Model';
@@ -201,10 +202,8 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
               <div><dt>Data disk, up to</dt><dd>{requirements ? formatSize(requirements.stateDiskBytes) : requirements === undefined ? 'Reading…' : 'Not available yet'}</dd></div>
             </dl>
             {view === 'local' && !error && status && requirements && status.localVm !== 'notIntegrated' && <Preflight requiredMemoryBytes={requirements.memoryBytes} onBlocked={setPreflightBlocked} onUncertain={setPreflightUncertain} />}
-            <button className="workspace-disclosure" type="button" aria-expanded={inside} aria-controls="workspace-inside" onClick={() => setInside(value => !value)}>
-              <svg className="icon" viewBox="0 0 24 24" aria-hidden="true"><path d={inside ? 'm6 15 6-6 6 6' : 'm6 9 6 6 6-6'} /></svg>What's inside
-            </button>
-            <p id="workspace-inside" hidden={!inside}>The local cluster includes Orka and the tools your agents use. Bridge checks the download before starting it.</p>
+            <Disclosure label="What's inside" open={inside} controls="workspace-inside" onOpenChange={setInside}>
+            <p id="workspace-inside" hidden={!inside}>The local cluster includes Orka and the tools your agents use. Bridge checks the download before starting it.</p></Disclosure>
           </section>
           <div className="workspace-choice-footer"><span className="muted">Set up on this computer</span>
             <Button type="button" kind={preflightUncertain ? 'secondary' : 'primary'} aria-describedby={requirements ? 'preflight-reason' : undefined} disabled={busy || !status || !!error || (status.localVm !== 'notIntegrated' && requirements !== null && preflightBlocked)} onClick={() => { void chooseLocal(); }}>Continue</Button>

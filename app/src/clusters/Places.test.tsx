@@ -52,11 +52,33 @@ test('Places passively lists this computer and retained identities with truthful
   expect(within(row('team-dev')).getByText('Selected for Designer')).toBeTruthy();
   expect(within(row('team-dev')).getByRole('button', { name: 'Manage' })).toBeTruthy();
   expect(within(row('team-dev')).queryByRole('button', { name: 'Connect' })).toBeNull();
-  expect(within(row('team-dev')).getByText(/^Last checked /)).toBeTruthy();
+  expect(within(row('team-dev')).getByText(/^Last checked /).closest('.pill')).toBeNull();
+  expect(row('team-dev').querySelector('.pill.status-stale')).toBeTruthy();
+  expect(within(row('team-dev')).getByText('Selected for Designer').closest('.pill')).toBeNull();
+  expect(row('team-other').querySelector('.pill.status-not-started')?.textContent).toBe('Not checked');
   expect(within(row('team-other')).getByText('Not checked yet')).toBeTruthy();
   expect(within(row('team-other')).queryByText(/0 agents/)).toBeNull();
   expect(document.body.textContent).not.toMatch(/Observation stale|Not observed yet|kept while Bridge/);
   expect(ipc.mock.calls.map(([c]) => c).every(c => ['setup_status', 'setup_requirements', 'cluster_places'].includes(c))).toBe(true);
+});
+
+test('a remembered access check stays historical rather than becoming never checked without inventory', async () => {
+  const { sim } = native();
+  sim.snapshot.places = [{ ...primary, observedAt: null, checkedAt: 1700000000000 }];
+  render(<Host />);
+  const remote = await screen.findByRole('region', { name: 'team-dev' });
+  expect(within(remote).getByText(/^Last checked /).closest('.pill')).toBeNull();
+  expect(remote.querySelector('.pill.status-stale')?.textContent).toBe('Stale');
+  expect(within(remote).queryByText('Not checked')).toBeNull();
+});
+
+test('a build without local VM integration explains unavailability rather than advertising unused setup', async () => {
+  const { sim } = native(); sim.status = { ...sim.status, selected: null, localVm: 'notIntegrated' };
+  render(<Host />);
+  const local = await screen.findByRole('region', { name: 'This computer' });
+  await within(local).findByText('Local cluster unavailable');
+  expect(within(local).queryByText('The local cluster runs here')).toBeNull();
+  expect(local.querySelector('.pill.status-needs-you')).toBeTruthy();
 });
 
 test('an unreadable workspace status stays unknown while retained places remain readable', async () => {
@@ -179,8 +201,8 @@ test.each([['closed', 'Local cluster stopped'], ['cancelled', 'Setup paused'], [
   const user = userEvent.setup(); render(<Host />);
   await user.click(await screen.findByRole('button', { name: 'Back to clusters' }));
   const local = row('This computer');
-  const pill = within(local).getByText(label, { selector: '.pill' });
-  expect(pill.className).toContain('status-not-started');
+  expect(within(local).getByText(label).closest('.pill')).toBeNull();
+  expect(local.querySelector('.pill')?.className).toContain('status-not-started');
   expect(within(local).queryByText('Setup in progress')).toBeNull();
   expect(within(local).getByRole('button', { name: 'Continue setup' })).toBeTruthy();
 });
@@ -221,11 +243,11 @@ test('Back preserves a queued local Model and its one eventual connection while 
   expect(observe).toHaveBeenLastCalledWith({ kind: 'thisComputer' });
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
-  expect(within(row('This computer')).getByText('Getting the local cluster ready', { selector: '.pill' })).toBeTruthy();
+  expect(within(row('This computer')).getByText('Getting the local cluster ready', { selector: 'p' })).toBeTruthy();
   expect(observe).toHaveBeenCalledTimes(1);
   sim.status = { ...sim.status, localVm: 'ready', model: 'available' };
   await act(async () => window.dispatchEvent(new Event('focus')));
-  await within(row('This computer')).findByText('Local cluster running');
+  await within(row('This computer')).findByText('Local cluster ready');
   await user.click(within(row('This computer')).getByRole('button', { name: 'Manage' }));
   expect(within(screen.getByRole('region', { name: 'Connect the AI' })).getByText('Connected')).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_connect_model')).toHaveLength(1);

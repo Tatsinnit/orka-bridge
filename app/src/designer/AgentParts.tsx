@@ -1,3 +1,4 @@
+import { Disclosure } from '../components/Disclosure';
 import { type ReactNode, type Ref, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { CatalogTool, WorkspaceCatalogReply } from '../catalog';
 import { Button, CloseIcon } from '../components/Button';
@@ -134,8 +135,7 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
       </div>
       {!listed && models && form.model && <p className="muted">{knownModel ? 'This model is not offered for chat by the connected AI. Choose another model to use it here.' : 'This model is saved in your file but is not listed by the connected AI. It may not run here. Choose a listed model or check your AI connection.'}</p>}
     </div>
-    <details className="agent-settings">
-      <summary>More settings</summary>
+    <Disclosure className="agent-settings" label="More settings">
       <div className="agent-part">
         <label htmlFor={`${id}-description`}>Description</label>
         <textarea id={`${id}-description`} placeholder="A short summary to help you recognise this agent." className="field description-editor" readOnly={readOnly || !form.descriptionEditable} value={form.description ?? ''}
@@ -146,12 +146,12 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
         {form.soul?.configMapRef ? <>
           <h3>Shared personality</h3>
           <p className="muted">Tone and style, separate from the task in Instructions. This file refers to personality text stored on the cluster. Bridge cannot show that text here.</p>
-          <details><summary>Shared text settings</summary><p className="muted">The ConfigMap supplies the text at run time. The digest checks that it is the expected version.</p>
+          <Disclosure label="Shared text settings"><p className="muted">The ConfigMap supplies the text at run time. The digest checks that it is the expected version.</p>
           {(['name', 'key', 'digest'] as const).map(field => <label className="soul-reference-field" key={field}>
             {field === 'name' ? 'ConfigMap name' : field === 'key' ? 'ConfigMap key' : 'Expected digest'}
             <input className="field" readOnly={readOnly || !form.soulEditable} value={field === 'digest' ? form.soul?.digest ?? '' : form.soul!.configMapRef![field]}
               onChange={event => change(changeSoulReference(source, field, event.target.value))} />
-          </label>)}</details>
+          </label>)}</Disclosure>
         </> : <>
           <label htmlFor={`${id}-soul`}>Personality</label>
           <p className="muted" id={`${id}-soul-hint`}>Tone and style to keep across tasks. Put the task itself in Instructions.</p>
@@ -163,6 +163,6 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
         </>}
       </div>
       <div className="agent-part"><h3>File</h3><FileLocation path={path} documentId={documentId} /></div>
-    </details>
+    </Disclosure>
   </div>;
 }
