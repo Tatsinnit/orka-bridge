@@ -69,6 +69,7 @@ pub enum EngineActionWire {
     ListAgents { context: String, namespace: String },
     Orka { request: OrkaRequest },
     OrkaChat { request: ChatRequest },
+    RunWorker { name: String, uid: String },
     WorkspaceCatalog {},
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -249,6 +250,11 @@ pub fn validate_hello(hello: &StageHello, stage: Stage, nonce: Uuid) -> Result<(
     Ok(())
 }
 pub fn validate_action(action: &EngineActionWire) -> Result<(), ProtocolError> {
+    if let EngineActionWire::RunWorker { name, uid } = action {
+        if !valid_run_worker(name, uid) {
+            return Err(ProtocolError::Invalid);
+        }
+    }
     if let EngineActionWire::Orka { request } = action {
         request.validate()?;
     }

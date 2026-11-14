@@ -17,6 +17,20 @@ pub struct OrkaRequest {
     pub after: Option<u64>,
     pub body: Option<Value>,
 }
+/// UID-fenced Task status and count of worker pods not yet Succeeded/Failed.
+/// Cancellation proof requires both `finished` and `pods == 0`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunWorkerReply {
+    pub finished: bool,
+    pub pods: u64,
+}
+pub fn valid_run_worker(name: &str, uid: &str) -> bool {
+    generated(name, "bridge-task-") && valid_run_uid(uid)
+}
+fn valid_run_uid(uid: &str) -> bool {
+    !uid.is_empty() && uid.len() <= 64
+}
 /// Exact HTTP status and bounded JSON body (`null` when absent or not JSON).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -33,7 +47,7 @@ pub(super) fn generated(name: &str, prefix: &str) -> bool {
     })
 }
 impl OrkaRequest {
-    /// Returns whether this is a create (POST); everything else is a GET.
+    /// Returns whether this is a POST (create or cancel); everything else is a GET.
     pub fn validate(&self) -> Result<bool, ProtocolError> {
         if self.path.len() > 64 {
             return Err(ProtocolError::Invalid);
@@ -46,6 +60,23 @@ impl OrkaRequest {
                 (false, false)
             }
             ["tasks", name, "events"] if generated(name, "bridge-task-") => (false, true),
+            ["tasks", name, "cancel"] if generated(name, "bridge-task-") => {
+                if self.after.is_some() {
+                    return Err(ProtocolError::Invalid);
+                }
+                return match &self.body {
+                    Some(Value::Object(body))
+                        if body.len() == 1
+                            && body
+                                .get("uid")
+                                .and_then(Value::as_str)
+                                .is_some_and(valid_run_uid) =>
+                    {
+                        Ok(true)
+                    }
+                    _ => Err(ProtocolError::Invalid),
+                };
+            }
             _ => return Err(ProtocolError::Invalid),
         };
         if self.after.is_some() != events {

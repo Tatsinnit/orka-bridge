@@ -161,11 +161,13 @@ pub fn authoring_allowed(host_channel: bool, request: &RequestBody) -> bool {
             RequestBody::Execute {
                 action: EngineActionWire::Orka { .. }
                     | EngineActionWire::OrkaChat { .. }
+                    | EngineActionWire::RunWorker { .. }
                     | EngineActionWire::WorkspaceCatalog {},
                 ..
             } | RequestBody::Engine(
                 EngineActionWire::Orka { .. }
                     | EngineActionWire::OrkaChat { .. }
+                    | EngineActionWire::RunWorker { .. }
                     | EngineActionWire::WorkspaceCatalog {}
             )
         )

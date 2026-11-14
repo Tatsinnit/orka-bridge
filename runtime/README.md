@@ -44,6 +44,39 @@ The kmx actions remain read-only: no file execution flags, Task/package lookup
 or cancellation is inferred from incomplete upstream machine-output work. Native
 Orka requests use their separate guest-owned transport.
 
+## Native Run cancellation observations
+
+The physical host channel accepts Run `orka` requests to
+`tasks/bridge-task-<32 lowercase hex>/cancel`. This is a POST with exactly
+`{"uid":"<acknowledged Task UID>"}` (nonempty, at most 64 bytes), no event cursor.
+HTTP status and JSON are preserved, including 200, 409 and denials; the guest
+never retries the request. Run still cannot DELETE resources.
+
+The typed `runWorker` action accepts only a generated Run Task `name` and its
+acknowledged `uid`. It reads that Task, refuses a missing or mismatched UID,
+then lists pods labelled `job-name=<status.jobName>` in `orka-system`. Both reads
+use the fixed guest kubeconfig and impersonate `bridge-native-run`. No bearer
+is minted for this observation, and no caller-selected namespace, selector,
+command, pod spec or log is exposed. Only `{finished: bool, pods: number}` is
+returned and persisted. `finished` means the Task is Succeeded, Failed or
+Cancelled. `pods` counts every pod except those in Succeeded or Failed,
+including terminating pods in other phases. Completed pods may remain for
+results. Cancellation proof requires **both** `finished` and `pods == 0`.
+An absent Job name gives zero pods; a nonterminal Task still gives
+`finished: false`, as before scheduling or during a Pending retry. This
+observation is for native Run's AI Tasks, which disable retries and do not use
+autonomous iterations; it does not track workers from earlier Job attempts.
+Failed or incomplete reads are not zero counts. Neither operation is available
+through the local guest socket.
+
+Run's Role adds namespace-wide `update` on `core.orka.ai` `tasks/cancel` and
+`list` on core `pods`; validated guest requests restrict reachable Run names.
+Chat's Role is unchanged. This requires a rebuilt guest image, Orka with the
+cancel API, and a fresh local cluster. Identity setup never rewrites an existing
+Role: a new guest encountering the old Role refuses all Run calls rather than
+expanding its permissions. These guest operations alone add no host cancellation
+loop or UI, and do not update an installed image.
+
 ## Native Chat transport
 
 The physical host channel also accepts the separate `orkaChat` action. Its request

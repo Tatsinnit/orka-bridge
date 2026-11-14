@@ -285,6 +285,10 @@ fn projection(action: &EngineActionWire, bytes: &[u8]) -> io::Result<Vec<u8>> {
             }
             Ok(bytes)
         }
+        EngineActionWire::RunWorker { .. } => {
+            let reply: RunWorkerReply = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+            serde_json::to_vec(&reply).map_err(|_| invalid())
+        }
         EngineActionWire::WorkspaceCatalog {} => {
             let catalog: WorkspaceCatalog = serde_json::from_slice(bytes).map_err(|_| invalid())?;
             if !catalog.valid() {
@@ -349,6 +353,7 @@ impl Runner for GuestRunner {
         match action {
             EngineActionWire::Orka { request } => self.orka.execute(request),
             EngineActionWire::OrkaChat { request } => self.chat.execute_chat(request),
+            EngineActionWire::RunWorker { name, uid } => self.orka.run_worker(name, uid),
             EngineActionWire::WorkspaceCatalog {} => {
                 let provider = self.catalog_provider.take().ok_or_else(invalid)?;
                 Ok(EngineResult {
@@ -381,6 +386,7 @@ pub fn argv(action: &EngineActionWire) -> io::Result<Vec<String>> {
         .collect(),
         EngineActionWire::Orka { .. }
         | EngineActionWire::OrkaChat { .. }
+        | EngineActionWire::RunWorker { .. }
         | EngineActionWire::WorkspaceCatalog {} => return Err(invalid()),
     })
 }
@@ -587,6 +593,24 @@ mod driver_tests {
         }
     }
 
+    #[test]
+    fn worker_result_projection_refuses_pod_details_or_invalid_counts() {
+        let action: EngineActionWire =
+            serde_json::from_value(serde_json::json!({"type":"runWorker",
+            "name":"bridge-task-0123456789abcdef0123456789abcdef","uid":"ack-uid"}))
+            .unwrap();
+        assert_eq!(
+            projection(&action, br#"{"finished":true,"pods":0}"#).unwrap(),
+            br#"{"finished":true,"pods":0}"#
+        );
+        for raw in [
+            br#"{"finished":true,"pods":0,"items":[{"spec":{"secret":"private"}}]}"#.as_slice(),
+            br#"{"finished":true,"pods":-1}"#,
+            br#"{"pods":0}"#,
+        ] {
+            assert!(projection(&action, raw).is_err());
+        }
+    }
     #[test]
     fn drains_both_pipes_and_preserves_nonzero_exit() {
         let output = collect(

@@ -13,6 +13,8 @@ use std::{
 
 #[path = "catalog.rs"]
 mod catalog;
+#[path = "run_worker.rs"]
+mod run_worker;
 
 const IDENTITY: &str = "bridge-native-run";
 const CHAT_IDENTITY: &str = "bridge-native-chat";
@@ -48,6 +50,12 @@ fn manifests(identity: &str) -> [(&'static str, Value); 3] {
     );
     if identity == IDENTITY {
         rules.push(json!({"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]}));
+        // Namespace-wide permissions; only validated Run names are reachable
+        // through the physical host channel. Pod data stays inside the guest.
+        rules.push(
+            json!({"apiGroups":["core.orka.ai"],"resources":["tasks/cancel"],"verbs":["update"]}),
+        );
+        rules.push(json!({"apiGroups":[""],"resources":["pods"],"verbs":["list"]}));
     }
     [
         (
@@ -457,6 +465,7 @@ impl Orka {
 mod tests {
     use super::*;
     include!("orka_chat_tests.rs");
+    include!("orka_run_worker_tests.rs");
     use serde_json::{json, Value};
     use std::{
         collections::VecDeque,
@@ -696,7 +705,9 @@ esac
                 json!({"apiVersion":"rbac.authorization.k8s.io/v1","kind":"Role","metadata":meta,"rules":[
                     {"apiGroups":["core.orka.ai"],"resources":["agents","tasks"],"verbs":["create","get"]},
                     {"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]},
-                    {"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]}]}),
+                    {"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]},
+                    {"apiGroups":["core.orka.ai"],"resources":["tasks/cancel"],"verbs":["update"]},
+                    {"apiGroups":[""],"resources":["pods"],"verbs":["list"]}]}),
                 json!({"apiVersion":"rbac.authorization.k8s.io/v1","kind":"RoleBinding","metadata":meta,
                     "roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"Role","name":"bridge-native-run"},
                     "subjects":[{"kind":"ServiceAccount","name":"bridge-native-run","namespace":"orka-system"}]}),
@@ -758,6 +769,14 @@ esac
         assert!(!dir.path().join("created").exists());
 
         let mismatches = [
+            // An old Run Role is not upgraded in place, even for an ordinary read.
+            (
+                1,
+                json!({"rules":[
+                {"apiGroups":["core.orka.ai"],"resources":["agents","tasks"],"verbs":["create","get"]},
+                {"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]},
+                {"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]}]}),
+            ),
             (0, json!({"secrets":[{"name":"x"}]})),
             (0, json!({"automountServiceAccountToken":true})),
             (

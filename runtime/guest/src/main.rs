@@ -1362,6 +1362,24 @@ mod tests {
             ),
             (4, RequestBody::Engine(EngineActionWire::Orka { request })),
             (
+                7,
+                RequestBody::Execute {
+                    operation: Uuid::new_v4(),
+                    action: EngineActionWire::RunWorker {
+                        name: "bridge-task-0123456789abcdef0123456789abcdef".into(),
+                        uid: "ack-uid".into(),
+                    },
+                    snapshot: None,
+                },
+            ),
+            (
+                8,
+                RequestBody::Engine(EngineActionWire::RunWorker {
+                    name: "bridge-task-0123456789abcdef0123456789abcdef".into(),
+                    uid: "ack-uid".into(),
+                }),
+            ),
+            (
                 5,
                 RequestBody::Execute {
                     operation: Uuid::new_v4(),
