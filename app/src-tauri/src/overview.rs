@@ -14,11 +14,11 @@ use crate::{
     runtime::{client::VmClient, types::RuntimeError},
 };
 use bridge_runtime_protocol::{SnapshotId, Uuid};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalRunObservation {
     pub installation: Uuid,
     pub document_id: DocumentId,
@@ -30,9 +30,25 @@ pub struct LocalRunObservation {
     pub state: RunState,
     pub report: Option<ReportSummary>,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReportSummary {
     pub verdict: Verdict,
+    pub passed: usize,
+    pub total: usize,
+}
+impl From<&crate::engine::run::RunReport> for ReportSummary {
+    fn from(report: &crate::engine::run::RunReport) -> Self {
+        Self {
+            verdict: report.verdict,
+            passed: report
+                .cases
+                .iter()
+                .filter(|case| case.verdict == Verdict::Passed)
+                .count(),
+            total: report.cases.len(),
+        }
+    }
 }
 pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
@@ -46,6 +62,8 @@ pub struct SavedFiles {
     pub state: &'static str,
     pub files: Vec<SavedFile>,
     pub run_active: bool,
+    pub history_state: &'static str,
+    pub run_agents: Vec<crate::local_results::RunAgent>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +74,7 @@ pub struct SavedFile {
     pub source: Option<SnapshotId>,
     pub summary: Option<DeclaredSummary>,
     pub reason: Option<&'static str>,
+    pub local_result: Option<LocalRunObservation>,
 }
 #[derive(Serialize)]
 pub struct DeclaredSummary {
@@ -76,6 +95,7 @@ fn summarize(inspection: InspectedFile) -> Option<SavedFile> {
         source: None,
         summary: None,
         reason: Some("The saved file is unreadable."),
+        local_result: None,
     };
     if let Ok(Some(pair)) = pair {
         file.state = "readable";
@@ -101,13 +121,34 @@ pub fn saved_files(agents: &Agents, run_active: bool) -> SavedFiles {
             state: "complete",
             files,
             run_active,
+            history_state: "unavailable",
+            run_agents: Vec::new(),
         },
         Err(_) => SavedFiles {
             state: "unavailable",
             files: Vec::new(),
             run_active,
+            history_state: "unavailable",
+            run_agents: Vec::new(),
         },
     }
+}
+
+/// Saved local results do not depend on a running VM or live Agent listing.
+pub fn saved_files_with_history(agents: &Agents, run: &ExampleRun) -> SavedFiles {
+    let mut files = saved_files(agents, run.is_active());
+    if let Ok(history) = run.local_results() {
+        files.history_state = "complete";
+        files.run_agents = history.run_agents;
+        for file in &mut files.files {
+            file.local_result = history
+                .results
+                .iter()
+                .find(|row| row.document_id == file.document_id)
+                .cloned();
+        }
+    }
+    files
 }
 
 // The pinned Mac source lacks the state-disk list route. Do not probe by executing it.
@@ -278,6 +319,8 @@ mod tests {
             state: RunState::Complete,
             report: Some(ReportSummary {
                 verdict: Verdict::Passed,
+                passed: 1,
+                total: 1,
             }),
         };
         assert!(project(

@@ -19,7 +19,7 @@ use std::{
 };
 use tokio::{sync::watch, time::Instant};
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RunState {
     Idle,
@@ -79,7 +79,13 @@ struct State {
     observation: Option<LocalRunObservation>,
     recorded_current: bool,
 }
-pub struct ExampleRun(Mutex<State>, tokio::runtime::Handle, bool, Arc<AgentFolder>);
+pub struct ExampleRun(
+    Mutex<State>,
+    tokio::runtime::Handle,
+    bool,
+    Arc<AgentFolder>,
+    crate::local_results::LocalResults,
+);
 impl ExampleRun {
     /// The native shell supplies its runtime; a blocking IPC thread need not enter it.
     pub fn new(
@@ -87,12 +93,24 @@ impl ExampleRun {
         model_image_available: bool,
         folder: Arc<AgentFolder>,
     ) -> Arc<Self> {
+        Self::with_history_root(runtime, model_image_available, folder, None)
+    }
+    pub fn with_history_root(
+        runtime: tokio::runtime::Handle,
+        model_image_available: bool,
+        folder: Arc<AgentFolder>,
+        app_local_data: Option<std::path::PathBuf>,
+    ) -> Arc<Self> {
         Arc::new(Self(
             Mutex::default(),
             runtime,
             model_image_available,
             folder,
+            crate::local_results::LocalResults::new(app_local_data),
         ))
+    }
+    pub fn local_results(&self) -> std::io::Result<crate::local_results::LocalResultsSnapshot> {
+        self.4.list()
     }
     pub fn is_active(&self) -> bool {
         self.0.lock().unwrap().active.is_some()
@@ -249,6 +267,15 @@ impl ExampleRun {
         let snapshot = state.snapshots.get_mut(&id).unwrap();
         snapshot.state = RunState::Unknown;
         snapshot.error = Some(message);
+        let observation = state
+            .recorded_current
+            .then(|| state.observation.clone())
+            .flatten();
+        drop(state);
+        if let Some(observation) = observation {
+            // Storage failure affects history availability, never local test admission.
+            let _ = self.4.record(observation);
+        }
     }
     async fn execute(
         &self,
@@ -349,15 +376,18 @@ impl ExampleRun {
                 agent_uid: agent.uid.clone(),
                 observed_at: crate::overview::now(),
                 state: phase,
-                report: report
-                    .as_ref()
-                    .map(|r| ReportSummary { verdict: r.verdict }),
+                report: report.as_ref().map(ReportSummary::from),
             });
         }
         let snapshot = state.snapshots.get_mut(&id).unwrap();
         snapshot.acknowledged = receipts(handle);
         snapshot.pending = pending;
         snapshot.report = report;
+        let observation = handle.agent().and_then(|_| state.observation.clone());
+        drop(state);
+        if let Some(observation) = observation {
+            let _ = self.4.record(observation);
+        }
     }
 }
 /// Acknowledged identities only, shared by local Run and remote Send.

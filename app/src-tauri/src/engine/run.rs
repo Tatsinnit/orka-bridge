@@ -23,7 +23,7 @@ pub enum ErrorKind {
     Identity,
     Stopped,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Verdict {
     Passed,

@@ -117,7 +117,13 @@ async fn documents_keep_results_and_share_admission_not_hash_ownership() {
     let b = created_agent::created(home.path(), "beta", &agent, &pair.tests);
     let aid = a.document_id();
     let bid = b.document_id();
-    let run = ExampleRun::new(tokio::runtime::Handle::current(), true, sample.clone());
+    let history_root = Some(home.path().join("local-data"));
+    let run = ExampleRun::with_history_root(
+        tokio::runtime::Handle::current(),
+        true,
+        sample.clone(),
+        history_root.clone(),
+    );
     assert_eq!(run.start_document(vm.clone(), a).state, RunState::Running);
     let foreign = run.start_document(vm.clone(), b);
     assert_eq!(foreign.document_id, bid);
@@ -164,7 +170,34 @@ async fn documents_keep_results_and_share_admission_not_hash_ownership() {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     assert_eq!(run.overview_observation().unwrap().document_id, bid);
-    let fresh = ExampleRun::new(tokio::runtime::Handle::current(), true, sample);
+    let fresh = ExampleRun::with_history_root(
+        tokio::runtime::Handle::current(),
+        true,
+        sample,
+        history_root,
+    );
+    let history = fresh.local_results().unwrap();
+    assert_eq!(history.results.len(), 2);
+    assert_eq!(history.run_agents.len(), 2);
+    assert!(history.results.iter().all(|r| r
+        .report
+        .as_ref()
+        .is_some_and(|s| s.passed == 1 && s.total == 1)));
+    let agents = bridge_engine::agents::Agents::new(
+        Some(home.path().into()),
+        Some(home.path().join("fixture-data")),
+    );
+    let files = bridge_engine::overview::saved_files_with_history(&agents, &fresh);
+    assert_eq!(files.history_state, "complete");
+    assert_eq!(files.run_agents.len(), 2);
+    assert_eq!(
+        files
+            .files
+            .iter()
+            .filter(|f| f.local_result.is_some())
+            .count(),
+        2
+    );
     assert!(fresh.status_document(&vm, aid).report.is_none());
     assert!(fresh.overview_observation().is_none());
     #[cfg(not(target_os = "macos"))]
@@ -194,16 +227,24 @@ fn owner_folder_for_test(home: &std::path::Path, name: &str) -> Arc<AgentFolder>
 async fn session_failure_after_report_updates_only_current_observation_to_unknown() {
     let (vm, _, _) = fixture_with_outcome(false, false, true).await;
     let home = tempfile::tempdir().unwrap();
-    let run = ExampleRun::new(
+    let history_root = Some(home.path().join("local-data"));
+    let run = ExampleRun::with_history_root(
         tokio::runtime::Handle::current(),
         true,
         Arc::new(AgentFolder::new(Some(home.path().into()))),
+        history_root.clone(),
     );
     run.start(vm.clone());
     assert_eq!(finished(&run, &vm).await.state, RunState::Unknown);
     let observed = run.overview_observation().unwrap();
     assert_eq!(observed.state, RunState::Unknown);
     assert!(observed.report.is_none());
+    let saved = bridge_engine::local_results::LocalResults::new(history_root)
+        .list()
+        .unwrap();
+    assert_eq!(saved.results[0].state, RunState::Unknown);
+    assert!(saved.results[0].report.is_none());
+    assert_eq!(saved.run_agents.len(), 1);
     vm.shutdown().await.unwrap();
 }
 
@@ -268,12 +309,8 @@ impl Write for Channel {
                     json!({"result":ANSWER})
                 } else if request.path.ends_with("/events") {
                     let name = request.path.split('/').nth(1).unwrap();
-                    let agent = self
-                        .objects
-                        .values()
-                        .find(|o| o["kind"] == "Agent")
-                        .unwrap()["metadata"]["name"]
-                        .clone();
+                    let agent =
+                        self.objects[&format!("tasks/{name}")]["spec"]["agentRef"]["name"].clone();
                     let after = request.after.unwrap();
                     let events = if self.missing_tools {
                         vec![]
@@ -537,7 +574,13 @@ async fn uncertain_task_write_keeps_agent_and_pending_task_without_retry() {
     let (vm, posts, _) = fixture(false, true).await;
     let home = tempfile::tempdir().unwrap();
     let folder = Arc::new(AgentFolder::new(Some(home.path().into())));
-    let run = ExampleRun::new(tokio::runtime::Handle::current(), true, folder);
+    let history_root = Some(home.path().join("local-data"));
+    let run = ExampleRun::with_history_root(
+        tokio::runtime::Handle::current(),
+        true,
+        folder,
+        history_root.clone(),
+    );
     run.start(vm.clone());
     let result = finished(&run, &vm).await;
     assert_eq!(result.state, RunState::Unknown);
@@ -567,6 +610,13 @@ async fn uncertain_task_write_keeps_agent_and_pending_task_without_retry() {
     assert_eq!(retained.agent_uid, observation.agent_uid);
     assert_eq!(retained.source, observation.source);
     assert_ne!(retained.source, changed);
+    let saved = bridge_engine::local_results::LocalResults::new(history_root)
+        .list()
+        .unwrap();
+    assert_eq!(saved.results[0].agent_uid, observation.agent_uid);
+    assert_eq!(saved.results[0].source, observation.source);
+    assert_eq!(saved.results[0].state, RunState::Unknown);
+    assert_eq!(saved.run_agents.len(), 1);
     assert!(!run.is_active());
     assert_eq!(posts.lock().unwrap().len(), 2);
     vm.shutdown().await.unwrap();
@@ -622,7 +672,13 @@ async fn preparation_refusal_keeps_previous_resource_receipts() {
     let home = tempfile::tempdir().unwrap();
     let folder = Arc::new(AgentFolder::new(Some(home.path().into())));
     let agent = folder.open().unwrap().agent;
-    let run = ExampleRun::new(tokio::runtime::Handle::current(), true, folder.clone());
+    let history_root = Some(home.path().join("local-data"));
+    let run = ExampleRun::with_history_root(
+        tokio::runtime::Handle::current(),
+        true,
+        folder.clone(),
+        history_root.clone(),
+    );
     run.start(vm.clone());
     let completed = finished(&run, &vm).await;
     assert_eq!(completed.state, RunState::Complete);
@@ -633,6 +689,12 @@ async fn preparation_refusal_keeps_previous_resource_receipts() {
     run.start(vm.clone());
     let refused = finished(&run, &vm).await;
     assert_eq!(refused.error, Some("submit"));
+    let saved = bridge_engine::local_results::LocalResults::new(history_root)
+        .list()
+        .unwrap();
+    assert_eq!(saved.results[0].state, RunState::Complete);
+    assert_eq!(saved.results[0].report.as_ref().unwrap().passed, 1);
+    assert_eq!(saved.run_agents.len(), 1);
     assert_eq!(
         refused
             .acknowledged
