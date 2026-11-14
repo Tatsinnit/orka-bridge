@@ -223,6 +223,7 @@ mod credential_tests {
             RequestBody::ModelConnect {
                 generation: id,
                 selection: ModelSelection {
+                    vendor: None,
                     provider: "copilot".into(),
                     model: "gpt-4.1".into(),
                 },
@@ -233,6 +234,7 @@ mod credential_tests {
                     id,
                     generation: id,
                     selection: ModelSelection {
+                        vendor: None,
                         provider: "copilot".into(),
                         model: "gpt-4.1".into(),
                     },

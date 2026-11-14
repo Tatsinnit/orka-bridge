@@ -223,6 +223,7 @@ impl VmClient {
             return Err(invalid());
         }
         let state = self.credential_call(RequestBody::CredentialPublish {
+            profile: CREDENTIAL_PROFILE,
             expected_generation: expected,
             token: token.clone(),
         })?;

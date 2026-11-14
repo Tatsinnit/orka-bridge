@@ -232,6 +232,7 @@ impl Write for Channel {
                     id: r.boot_nonce,
                     generation: r.boot_nonce,
                     selection: ModelSelection {
+                        vendor: None,
                         provider: guest.provider.clone(),
                         model: "gpt-5.6-terra".into(),
                     },

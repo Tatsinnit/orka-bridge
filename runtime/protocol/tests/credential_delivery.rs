@@ -15,6 +15,38 @@ fn private_credential_capability_is_a_nonsecret_wire_operation() {
 }
 
 #[test]
+fn credential_profiles_preserve_legacy_requests_and_reject_unknown_profiles() {
+    for profile in [1, 2, 0, 3] {
+        let value = serde_json::json!({"type":"request","body":{
+            "version":VERSION,"bootNonce":Uuid::new_v4(),"requestId":3,
+            "body":{"op":"credentialPublish","body":{
+                "profile":profile,"expected_generation":null,"token":[120]}}
+        }});
+        let frame: Frame = serde_json::from_value(value).unwrap();
+        assert_eq!(frame.validate().is_ok(), matches!(profile, 1 | 2));
+        if profile == 1 {
+            let wire = serde_json::to_value(frame).unwrap();
+            assert!(wire["body"]["body"]["body"].get("profile").is_none());
+        }
+    }
+    let old = serde_json::json!({"op":"credentialPublish","body":{
+        "expected_generation":null,"token":[120]}});
+    let decoded: RequestBody = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), old);
+    let frame = Frame::Result(WireResult {
+        version: VERSION,
+        boot_nonce: Uuid::new_v4(),
+        request_id: 3,
+        body: ResultBody::CredentialState(CredentialState {
+            profile: 2,
+            generation: Some(Uuid::new_v4()),
+            installed: true,
+        }),
+    });
+    frame.validate().unwrap();
+}
+
+#[test]
 fn payload_bounds_redaction_and_ack_shape_are_explicit() {
     for raw in [
         vec![],
@@ -31,6 +63,7 @@ fn payload_bounds_redaction_and_ack_shape_are_explicit() {
         boot_nonce: Uuid::new_v4(),
         request_id: 4,
         body: RequestBody::CredentialPublish {
+            profile: CREDENTIAL_PROFILE,
             expected_generation: None,
             token: token.clone(),
         },

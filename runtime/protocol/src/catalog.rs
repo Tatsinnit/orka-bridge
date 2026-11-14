@@ -51,6 +51,7 @@ impl WorkspaceCatalog {
                 items.len() <= MAX_CATALOG_ITEMS
                     && items.iter().all(|m| {
                         ModelSelection {
+                            vendor: None,
                             provider: "copilot".into(),
                             model: m.id.clone(),
                         }

@@ -13,6 +13,7 @@ fn models(value: &Value) -> io::Result<Vec<CatalogModel>> {
         .map(|row| {
             let id = row["id"].as_str().ok_or_else(failed)?.to_owned();
             if !(ModelSelection {
+                vendor: None,
                 provider: "copilot".into(),
                 model: id.clone(),
             })
@@ -142,6 +143,7 @@ impl Orka {
     pub(super) fn catalog_until(&mut self, provider: &str, deadline: Instant) -> WorkspaceCatalog {
         let models = (|| {
             if !(ModelSelection {
+                vendor: None,
                 provider: provider.into(),
                 model: "catalog".into(),
             })

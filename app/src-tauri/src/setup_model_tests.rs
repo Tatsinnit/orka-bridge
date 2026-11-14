@@ -199,7 +199,11 @@ fn invalid_selection_refuses_before_actual_wire_or_os_load() {
         assert!(setup
             .connect_model(
                 install,
-                ModelSelection { provider, model },
+                ModelSelection {
+                    vendor: None,
+                    provider,
+                    model
+                },
                 &mut client,
                 &vault
             )
@@ -357,6 +361,7 @@ fn associated() -> (tempfile::TempDir, SetupStore, Uuid, FakeVault) {
 }
 fn selection() -> ModelSelection {
     ModelSelection {
+        vendor: None,
         provider: "copilot".into(),
         model: "gpt-5.6-terra".into(),
     }
@@ -781,6 +786,7 @@ fn pending_known_failure_disconnects_and_clears_before_a_fresh_connect() {
             (
                 7,
                 RequestBody::CredentialPublish {
+                    profile: CREDENTIAL_PROFILE,
                     expected_generation,
                     token,
                 },
@@ -846,6 +852,7 @@ fn pending_after_acknowledged_clear_reconciles_before_reloading_sign_in() {
             (
                 4,
                 RequestBody::CredentialPublish {
+                    profile: CREDENTIAL_PROFILE,
                     expected_generation,
                     token,
                 },
@@ -1101,6 +1108,7 @@ fn lost_delivery_ack_is_one_publication_and_durable_pending_even_with_fresh_clie
             Some(ResultBody::CredentialState(credential(None, false)))
         }
         RequestBody::CredentialPublish {
+            profile: CREDENTIAL_PROFILE,
             token,
             expected_generation,
         } => {

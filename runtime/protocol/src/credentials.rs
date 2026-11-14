@@ -3,6 +3,16 @@ use crate::{ProtocolError, Uuid};
 use serde::{Deserialize, Deserializer, Serialize};
 pub const MAX_CREDENTIAL: usize = 16 * 1024;
 pub const CREDENTIAL_PROFILE: u16 = 1;
+pub const MODEL_API_KEY_PROFILE: u16 = 2;
+pub fn default_credential_profile() -> u16 {
+    CREDENTIAL_PROFILE
+}
+pub fn is_copilot_profile(profile: &u16) -> bool {
+    *profile == CREDENTIAL_PROFILE
+}
+pub fn valid_credential_profile(profile: u16) -> bool {
+    matches!(profile, CREDENTIAL_PROFILE | MODEL_API_KEY_PROFILE)
+}
 
 #[derive(Clone, PartialEq, Serialize)]
 pub struct CredentialPayload(Vec<u8>);
@@ -40,7 +50,7 @@ pub struct CredentialState {
 }
 impl CredentialState {
     pub(crate) fn valid(&self) -> bool {
-        self.profile == CREDENTIAL_PROFILE
+        valid_credential_profile(self.profile)
             && !self.generation.is_some_and(|id| id.is_nil())
             && (!self.installed || self.generation.is_some())
     }

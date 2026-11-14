@@ -217,6 +217,7 @@ impl SetupStore {
         self.connect_model(
             installation,
             ModelSelection {
+                vendor: None,
                 provider: "copilot".into(),
                 model: "gpt-5.6-terra".into(),
             },
@@ -526,6 +527,7 @@ mod catalog_binding_tests {
                 id: Uuid::from_u128(3),
                 generation: Uuid::from_u128(4),
                 selection: ModelSelection {
+                    vendor: None,
                     provider: "copilot".into(),
                     model: "m".into(),
                 },
@@ -780,6 +782,7 @@ mod tests {
         let connection = ModelConnection {
             id: Uuid::new_v4(),
             selection: ModelSelection {
+                vendor: None,
                 provider: "copilot".into(),
                 model: "gpt-5.6-terra".into(),
             },
@@ -942,6 +945,7 @@ mod tests {
         let connection = ModelConnection {
             id: Uuid::new_v4(),
             selection: ModelSelection {
+                vendor: None,
                 provider: "copilot".into(),
                 model: "gpt-5.6-terra".into(),
             },

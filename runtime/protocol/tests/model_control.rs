@@ -1,8 +1,48 @@
 use bridge_runtime_protocol::*;
 #[test]
+fn vendor_is_explicit_closed_and_retained_in_connection_identity() {
+    let old = serde_json::json!({"provider":"workspace-model","model":"gpt-4.1"});
+    let legacy: ModelSelection = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(legacy).unwrap(), old);
+    for vendor in ["openai", "anthropic"] {
+        let value =
+            serde_json::json!({"provider":"workspace-model","model":"default","vendor":vendor});
+        let selection: ModelSelection = serde_json::from_value(value.clone()).unwrap();
+        assert!(selection.valid());
+        assert_eq!(serde_json::to_value(selection).unwrap(), value);
+    }
+    for vendor in ["", "copilot", "azure-openai", "OPENAI", "../other"] {
+        assert!(serde_json::from_value::<ModelSelection>(serde_json::json!({
+            "provider":"workspace-model","model":"default","vendor":vendor
+        }))
+        .is_err());
+    }
+    for (code, message) in [
+        (
+            "credential_rejected",
+            "The model company rejected the credential.",
+        ),
+        (
+            "provider_unreachable",
+            "The workspace could not reach the model company.",
+        ),
+        (
+            "model_unavailable",
+            "The selected model is not advertised for this credential.",
+        ),
+    ] {
+        let error: ModelErrorCode = serde_json::from_value(serde_json::json!(code)).unwrap();
+        assert_eq!(serde_json::to_value(error).unwrap(), code);
+        let stderr: ModelStderr = serde_json::from_value(serde_json::json!(message)).unwrap();
+        assert_eq!(serde_json::to_value(stderr).unwrap(), message);
+    }
+}
+
+#[test]
 fn native_model_selection_rejects_kmx_preflight_errors_before_delivery() {
     for provider in ["", "UPPER", "with.dot", "-start", "end-", &"x".repeat(46)] {
         assert!(!ModelSelection {
+            vendor: None,
             provider: provider.into(),
             model: "gpt-4.1".into()
         }
@@ -17,12 +57,14 @@ fn native_model_selection_rejects_kmx_preflight_errors_before_delivery() {
         &"x".repeat(257),
     ] {
         assert!(!ModelSelection {
+            vendor: None,
             provider: "copilot".into(),
             model: model.into()
         }
         .valid());
     }
     assert!(ModelSelection {
+        vendor: None,
         provider: "copilot-1".into(),
         model: "gpt-4.1".into()
     }
@@ -42,6 +84,7 @@ fn retained_disconnect_validates_all_nonsecret_connection_fields() {
         id: Uuid::new_v4(),
         generation: Uuid::new_v4(),
         selection: ModelSelection {
+            vendor: None,
             provider: "copilot".into(),
             model: "gpt-4.1".into(),
         },

@@ -332,7 +332,10 @@ fn control(
             RequestBody::CredentialPublish {
                 expected_generation,
                 token,
-            } => serving.2.publish(*expected_generation, token.as_bytes()),
+                profile,
+            } => serving
+                .2
+                .publish(*profile, *expected_generation, token.as_bytes()),
             RequestBody::CredentialClear {
                 expected_generation,
             } => serving.2.clear(*expected_generation),
@@ -403,7 +406,7 @@ fn private_result<R: model::Runner>(
     match run() {
         Ok(s) => {
             let credential = CredentialState {
-                profile: CREDENTIAL_PROFILE,
+                profile: s.profile,
                 generation: s.generation,
                 installed: s.installed,
             };
@@ -689,6 +692,7 @@ mod tests {
     }
     fn metadata() -> io::Result<bridge_guest::credentials::State> {
         Ok(bridge_guest::credentials::State {
+            profile: CREDENTIAL_PROFILE,
             generation: Some(Uuid::from_u128(5)),
             installed: true,
         })
@@ -707,11 +711,39 @@ mod tests {
         }
     }
     #[test]
+    fn private_dispatch_returns_api_key_profile_without_local_authority() {
+        let request = RequestBody::CredentialPublish {
+            profile: MODEL_API_KEY_PROFILE,
+            expected_generation: None,
+            token: CredentialPayload::new(b"synthetic-key").unwrap(),
+        };
+        assert_eq!(
+            service::credential_request(false, &request, || panic!("local credential callback")),
+            Some(ResultBody::Error {
+                code: ErrorCode::Unavailable
+            })
+        );
+        let mut lifecycle = model::ModelLifecycle::new(ModelRunner);
+        let result = private_result(&mut lifecycle, &request, || {
+            Ok(bridge_guest::credentials::State {
+                profile: MODEL_API_KEY_PROFILE,
+                generation: Some(Uuid::from_u128(5)),
+                installed: true,
+            })
+        });
+        let ResultBody::CredentialState(state) = result else {
+            panic!("credential reply")
+        };
+        assert_eq!(state.profile, 2);
+        assert!(state.installed);
+    }
+    #[test]
     fn private_dispatch_connect_status_disconnect_preserves_one_lifecycle() {
         let mut lifecycle = model::ModelLifecycle::new(ModelRunner);
         let connect = RequestBody::ModelConnect {
             generation: Uuid::from_u128(5),
             selection: ModelSelection {
+                vendor: None,
                 provider: "copilot".into(),
                 model: "gpt-4.1".into(),
             },
@@ -744,6 +776,7 @@ mod tests {
         let connect = RequestBody::ModelConnect {
             generation: Uuid::from_u128(5),
             selection: ModelSelection {
+                vendor: None,
                 provider: "copilot".into(),
                 model: "gpt-4.1".into(),
             },
@@ -772,6 +805,7 @@ mod tests {
         );
         for request in [
             RequestBody::CredentialPublish {
+                profile: CREDENTIAL_PROFILE,
                 expected_generation: Some(Uuid::from_u128(5)),
                 token: CredentialPayload::new(b"synthetic").unwrap(),
             },
@@ -814,6 +848,7 @@ mod tests {
         let connect = RequestBody::ModelConnect {
             generation: Uuid::from_u128(5),
             selection: ModelSelection {
+                vendor: None,
                 provider: "copilot".into(),
                 model: "gpt-4.1".into(),
             },
@@ -831,6 +866,7 @@ mod tests {
         ));
         for request in [
             RequestBody::CredentialPublish {
+                profile: CREDENTIAL_PROFILE,
                 expected_generation: Some(Uuid::from_u128(5)),
                 token: CredentialPayload::new(b"synthetic").unwrap(),
             },
@@ -875,6 +911,7 @@ mod tests {
         };
         let reply = private_result(&mut idle, &clear, || {
             Ok(bridge_guest::credentials::State {
+                profile: CREDENTIAL_PROFILE,
                 generation: Some(Uuid::from_u128(5)),
                 installed: false,
             })

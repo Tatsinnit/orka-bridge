@@ -98,6 +98,11 @@ pub enum RequestBody {
     },
     CredentialStatus {},
     CredentialPublish {
+        #[serde(
+            default = "default_credential_profile",
+            skip_serializing_if = "is_copilot_profile"
+        )]
+        profile: u16,
         expected_generation: Option<Uuid>,
         token: CredentialPayload,
     },
@@ -312,9 +317,12 @@ impl Frame {
                         return Err(ProtocolError::Invalid)
                     }
                     RequestBody::CredentialPublish {
+                        profile,
                         expected_generation,
                         ..
-                    } if expected_generation.is_some_and(|id| id.is_nil()) => {
+                    } if !valid_credential_profile(*profile)
+                        || expected_generation.is_some_and(|id| id.is_nil()) =>
+                    {
                         return Err(ProtocolError::Invalid)
                     }
                     RequestBody::CredentialClear {

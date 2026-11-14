@@ -44,6 +44,35 @@ The kmx actions remain read-only: no file execution flags, Task/package lookup
 or cancellation is inferred from incomplete upstream machine-output work. Native
 Orka requests use their separate guest-owned transport.
 
+## Model credentials and connections
+
+Only the physical host channel can publish credentials or connect a model. A
+`credentialPublish` request may specify `profile: 2` for a model API key; an
+omitted profile means the existing Copilot profile 1. Profile 1 is omitted when
+serialized, preserving older Copilot requests. Other profiles are invalid.
+The checked tmpfs endpoints are `copilot-github-token` (1) and `model-api-key`
+(2), both root:65532, mode 0640, single-link regular files. No credential is
+passed in command arguments or persisted with operation results.
+
+A model selection keeps the Kubernetes `provider` name and model ID. An absent
+`vendor` selects Copilot; `vendor: "openai"` or `"anthropic"` selects the key
+route. Connect requires the corresponding installed credential profile. The
+guest supplies kmx's route/vendor flags and checks both in its connection reply,
+including partial failures and disconnect. Only closed diagnostic codes and
+safe stderr messages cross back, never upstream response bodies.
+
+There is one installed credential at a time. Disconnect the owned connection
+before clearing or replacing its credential, then explicitly clear before
+switching profiles. A cleared endpoint stays empty and inode-checked while the
+other profile is used. A guest-process restart refuses either existing endpoint,
+even when empty, rather than adopting it; a VM boot recreates the memory-only
+folder. Retained cleanup uses the full saved `ModelConnection`, including
+`selection.vendor`, before any new credential is installed.
+
+Using the key route requires a rebuilt guest image with kmx supporting
+`model connect --route key --vendor openai|anthropic`. This protocol support does
+not add a host key-entry flow, change the catalog or update installed images.
+
 ## Native Run cancellation observations
 
 The physical host channel accepts Run `orka` requests to

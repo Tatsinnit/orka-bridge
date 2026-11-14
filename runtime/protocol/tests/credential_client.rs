@@ -76,6 +76,7 @@ fn negotiated_delivery_and_clear_have_only_metadata_acknowledgements() {
         reply(&mut io, &r, state(None, false));
         let r = receive(&mut io);
         let RequestBody::CredentialPublish {
+            profile: CREDENTIAL_PROFILE,
             token,
             expected_generation,
         } = &r.body

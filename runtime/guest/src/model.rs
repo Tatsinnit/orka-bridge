@@ -142,14 +142,26 @@ fn argv(command: &ModelCommand, cluster: &str) -> Vec<String> {
         ModelCommand::Connect {
             generation,
             selection,
-        } => args.extend([
-            "connect".into(),
-            "--namespace=orka-system".into(),
-            "--route=copilot".into(),
-            format!("--provider={}", selection.provider),
-            format!("--model={}", selection.model),
-            format!("--credential-generation={generation}"),
-        ]),
+        } => {
+            args.extend([
+                "connect".into(),
+                "--namespace=orka-system".into(),
+                format!(
+                    "--route={}",
+                    if selection.vendor.is_some() {
+                        "key"
+                    } else {
+                        "copilot"
+                    }
+                ),
+                format!("--provider={}", selection.provider),
+                format!("--model={}", selection.model),
+                format!("--credential-generation={generation}"),
+            ]);
+            if let Some(vendor) = selection.vendor {
+                args.push(format!("--vendor={}", vendor.as_str()));
+            }
+        }
         ModelCommand::Disconnect { connection } => args.extend([
             "disconnect".into(),
             "--namespace=orka-system".into(),
@@ -232,6 +244,7 @@ impl<R: Runner> ModelLifecycle<R> {
                         && same_attempt))
                     && self.retained.as_ref().is_none_or(|(_, done)| *done)
                     && credential.installed
+                    && credential.profile == selection.credential_profile()
                     && credential.generation == Some(*generation)
                     && selection.valid()
                 {
@@ -347,7 +360,11 @@ fn parse_reply(command: &ModelCommand, exit: i32, bytes: &[u8]) -> Outcome {
                     if !row["connection"].is_null() {
                         let c = &row["connection"];
                         let id = canonical_uuid(&c["id"])?;
-                        if c["route"] != "copilot"
+                        let identity_matches = match selection.vendor {
+                            Some(vendor) => c["route"] == "key" && c["vendor"] == vendor.as_str(),
+                            None => c["route"] == "copilot" && c.get("vendor").is_none(),
+                        };
+                        if !identity_matches
                             || c["provider"] != selection.provider
                             || c["model"] != selection.model
                             || c["credentialGeneration"] != generation.to_string()
@@ -412,6 +429,7 @@ mod tests {
     }
     fn selection() -> ModelSelection {
         ModelSelection {
+            vendor: None,
             provider: "copilot".into(),
             model: "gpt-4.1".into(),
         }
@@ -456,6 +474,170 @@ mod tests {
         ModelCommand::Connect {
             generation: id(1),
             selection: selection(),
+        }
+    }
+    fn key_command(vendor: ModelVendor) -> ModelCommand {
+        ModelCommand::Connect {
+            generation: id(1),
+            selection: ModelSelection {
+                vendor: Some(vendor),
+                provider: "workspace-model".into(),
+                model: "gpt-4.1".into(),
+            },
+        }
+    }
+    fn key_reply(vendor: ModelVendor) -> String {
+        READY
+            .replace(
+                r#""route":"copilot""#,
+                &format!(r#""route":"key","vendor":"{}""#, vendor.as_str()),
+            )
+            .replace(r#""provider":"copilot""#, r#""provider":"workspace-model""#)
+    }
+    #[test]
+    fn key_routes_bind_vendor_profile_and_reply_identity_through_disconnect() {
+        for vendor in [ModelVendor::Openai, ModelVendor::Anthropic] {
+            let command = key_command(vendor);
+            let args = argv(&command, "bridge-owned");
+            assert_eq!(args[0], "--context=kind-bridge-owned");
+            for want in [
+                "--container-engine=docker",
+                "--namespace=orka-system",
+                "--route=key",
+                "--provider=workspace-model",
+                "--model=gpt-4.1",
+                "-o=jsonl",
+            ] {
+                assert!(args.iter().any(|a| a == want), "{want}");
+            }
+            assert!(args.contains(&format!("--vendor={}", vendor.as_str())));
+            assert!(!args.iter().any(|a| a.contains("synthetic-key")));
+            let reply = key_reply(vendor);
+            let outcome = parse_reply(&command, 0, reply.as_bytes());
+            assert!(outcome.success);
+            let retained = outcome.connection.clone().unwrap();
+            assert_eq!(retained.selection.vendor, Some(vendor));
+            let disconnect = ModelCommand::Disconnect {
+                connection: retained.clone(),
+            };
+            let stopped = reply
+                .replace(
+                    "cluster.orka.model.connect",
+                    "cluster.orka.model.disconnect",
+                )
+                .replace("model_ready", "gateway_stopped");
+            assert!(parse_reply(&disconnect, 0, stopped.as_bytes()).success);
+            for bad in [
+                reply.replace(r#""route":"key""#, r#""route":"copilot""#),
+                reply.replace(&format!(r#","vendor":"{}""#, vendor.as_str()), ""),
+                reply.replace(
+                    &format!(r#""vendor":"{}""#, vendor.as_str()),
+                    r#""vendor":"other""#,
+                ),
+            ] {
+                let out = parse_reply(&command, 0, bad.as_bytes());
+                assert!(!out.success);
+                assert!(out.connection.is_none());
+                let bad_stop = bad
+                    .replace(
+                        "cluster.orka.model.connect",
+                        "cluster.orka.model.disconnect",
+                    )
+                    .replace("model_ready", "gateway_stopped");
+                assert!(!parse_reply(&disconnect, 0, bad_stop.as_bytes()).success);
+            }
+            let ModelCommand::Connect { selection, .. } = command else {
+                unreachable!()
+            };
+            let request = RequestBody::ModelConnect {
+                generation: id(1),
+                selection,
+            };
+            let mut m = lifecycle(vec![outcome]);
+            m.handle(credential(), &request);
+            assert!(
+                m.runner.calls.is_empty(),
+                "key must not consume Copilot credential"
+            );
+            let key_credential = CredentialState {
+                profile: 2,
+                ..credential()
+            };
+            m.handle(key_credential.clone(), &connect());
+            assert!(
+                m.runner.calls.is_empty(),
+                "Copilot must not consume key credential"
+            );
+            let Some(ResultBody::ModelState(s)) = m.handle(key_credential, &request) else {
+                panic!("state")
+            };
+            assert_eq!(s.phase, ModelPhase::Ready);
+            let mut reboot = lifecycle(vec![parse_reply(&disconnect, 0, stopped.as_bytes())]);
+            assert_eq!(
+                reboot.handle(
+                    pristine(),
+                    &RequestBody::ModelDisconnectRetained {
+                        connection: retained
+                    }
+                ),
+                Some(ResultBody::Ready {})
+            );
+        }
+        for vendor in ["", "openai"] {
+            let bad = READY.replace(
+                r#""route":"copilot""#,
+                &format!(r#""route":"copilot","vendor":"{vendor}""#),
+            );
+            assert!(!parse_reply(&command(), 0, bad.as_bytes()).success);
+        }
+    }
+    #[test]
+    fn key_failures_keep_safe_codes_and_stderr_without_vendor_output() {
+        for vendor in [ModelVendor::Openai, ModelVendor::Anthropic] {
+            for (code, message) in [
+                (
+                    "credential_rejected",
+                    "The model company rejected the credential.",
+                ),
+                (
+                    "provider_unreachable",
+                    "The workspace could not reach the model company.",
+                ),
+                (
+                    "model_unavailable",
+                    "The selected model is not advertised for this credential.",
+                ),
+            ] {
+                let reply = key_reply(vendor).replace(r#""outcome":"complete""#, &format!(r#""error":{{"code":"{code}","stage":"gateway","message":"synthetic-private-output"}},"outcome":"failed""#)).replace(r#""exitCode":0""#, r#""exitCode":1""#);
+                for stderr in [message, "synthetic-private-output"] {
+                    let out = collected_reply(
+                        &key_command(vendor),
+                        crate::engine::Collected {
+                            stdout: reply.as_bytes().to_vec(),
+                            stderr: format!("{stderr}\n").into_bytes(),
+                            elapsed_ms: 1,
+                            exit_code: Some(1),
+                            error: None,
+                        },
+                    );
+                    assert!(!out.success);
+                    assert!(
+                        out.connection.is_some(),
+                        "partial failure retains checked identity"
+                    );
+                    let diagnostic = serde_json::to_value(out.diagnostic.unwrap()).unwrap();
+                    assert_eq!(diagnostic["errorCode"], code);
+                    assert_eq!(
+                        diagnostic["stderr"],
+                        if stderr == message {
+                            message
+                        } else {
+                            "Stderr withheld."
+                        }
+                    );
+                    assert!(!diagnostic.to_string().contains("synthetic-private-output"));
+                }
+            }
         }
     }
     fn retained_request() -> RequestBody {
@@ -638,6 +820,7 @@ mod tests {
                 RequestBody::ModelConnect {
                     generation: id(1),
                     selection: ModelSelection {
+                        vendor: None,
                         provider: "".into(),
                         model: "x".into(),
                     },
@@ -648,6 +831,7 @@ mod tests {
                 RequestBody::ModelConnect {
                     generation: id(1),
                     selection: ModelSelection {
+                        vendor: None,
                         provider: "x".into(),
                         model: "x\0".into(),
                     },
@@ -658,6 +842,7 @@ mod tests {
                 RequestBody::ModelConnect {
                     generation: id(1),
                     selection: ModelSelection {
+                        vendor: None,
                         provider: "x".into(),
                         model: "x".repeat(4097),
                     },
@@ -935,6 +1120,7 @@ mod tests {
                 ..selection()
             },
             ModelSelection {
+                vendor: None,
                 provider: "other".into(),
                 ..selection()
             },
