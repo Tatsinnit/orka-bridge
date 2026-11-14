@@ -52,6 +52,10 @@ fn install_image(journal: &Journal, verified: &fixture_runtime::image_types::Ver
 }
 #[test]
 fn buffered_boot_handoff_preserves_ready2_read_ahead_for_the_client() {
+    buffered_handoff(false);
+    buffered_handoff(true);
+}
+fn buffered_handoff(cleanup: bool) {
     use std::io::{Read, Write};
     struct Channel {
         bytes: std::io::Cursor<Vec<u8>>,
@@ -85,6 +89,7 @@ fn buffered_boot_handoff_preserves_ready2_read_ahead_for_the_client() {
                 version: VERSION,
                 stage,
                 guest_nonce: guest,
+                run_cleanup: cleanup && stage == Stage::Serve,
                 accepted_boot_nonce: if stage == Stage::Serve {
                     Some(nonce)
                 } else {
@@ -129,6 +134,8 @@ fn buffered_boot_handoff_preserves_ready2_read_ahead_for_the_client() {
         serde_json::to_value(client.readiness().unwrap()).unwrap(),
         serde_json::json!({"phase": "cluster-ready", "service": "starting"})
     );
+    let error = client.cleanup_run_agent("old-uid").unwrap_err();
+    assert_eq!(error.kind() == std::io::ErrorKind::Unsupported, !cleanup);
     let frames: Vec<Frame> = writes
         .lock()
         .unwrap()
@@ -608,6 +615,7 @@ fn hello(stage: Stage, nonce: Uuid, guest: u128) -> StageHello {
         version: VERSION,
         stage,
         guest_nonce: Uuid::from_u128(guest),
+        run_cleanup: false,
         accepted_boot_nonce: if stage == Stage::Serve {
             Some(nonce)
         } else {

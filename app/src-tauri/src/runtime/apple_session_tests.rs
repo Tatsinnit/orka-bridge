@@ -34,6 +34,7 @@ def guest():
     nonce=b['body']['bootNonce']
     ready={{'type':'result','body':{{'version':1,'bootNonce':nonce,'requestId':1,'body':{{'op':'ready','body':{{}}}}}}}}
     hello={{'type':'hello','body':{{'version':1,'stage':'serve','guestNonce':'22222222-2222-4222-8222-222222222222','acceptedBootNonce':nonce}}}}
+    if '{mode}'=='cleanup': hello['body']['runCleanup']=True
     if '{mode}'=='bad': ready['body']['bootNonce']='33333333-3333-4333-8333-333333333333'
     # One write pins the no-read-ahead boundary between Ready and next Hello.
     g.sendall(json.dumps(ready).encode()+b'\n'+json.dumps(hello).encode()+b'\n')
@@ -45,6 +46,20 @@ def guest():
     if '{mode}'=='engine':
         f.readline()
         open(c['installationPath']+'/request-seen','x').close()
+    if '{mode}' in ['good','cleanup']:
+        while True:
+            line=f.readline()
+            if not line: return
+            request=json.loads(line)['body']
+            body=request['body']
+            if body['op']=='execute':
+                assert '{mode}'=='cleanup'
+                assert body['body']['action']['type']=='cleanupRunAgent'
+                result={{'op':'error','body':{{'code':'invalidRequest'}}}}
+            else:
+                assert body['op']=='readiness'
+                result={{'op':'infrastructure','body':{{'phase':'cluster-ready','service':'starting'}}}}
+            send({{'type':'result','body':{{'version':1,'bootNonce':nonce,'requestId':request['requestId'],'body':result}}}})
 threading.Thread(target=guest,daemon=True).start()
 "#
     );
@@ -61,6 +76,28 @@ fn coalesced_early_ready_and_serve_hello_publish_only_after_correlated_ready() {
     session.resume().unwrap();
     session.stop().unwrap();
     assert!(session.transport().is_none());
+}
+#[test]
+fn apple_serving_hello_gates_cleanup_without_probing_legacy_guests() {
+    for mode in ["good", "cleanup"] {
+        let (_t, journal, image) = installation();
+        let resources = resource(&serving_peer(mode));
+        let mut session =
+            AppleVmSession::launch(resources.path().to_path_buf(), journal, image, 1).unwrap();
+        session
+            .transport()
+            .unwrap()
+            .borrow_client(|client| {
+                let error = client.cleanup_run_agent("old-uid").unwrap_err();
+                assert_eq!(
+                    error.kind() == std::io::ErrorKind::Unsupported,
+                    mode == "good"
+                );
+                assert!(client.readiness().is_ok());
+            })
+            .unwrap();
+        session.stop().unwrap();
+    }
 }
 #[test]
 fn failed_public_pause_or_resume_never_republishes_transport() {
@@ -145,6 +182,7 @@ fn early_send_failure_after_boot_request_is_not_restored_to_new() {
         version: VERSION,
         stage: Stage::Early,
         guest_nonce: Uuid::new_v4(),
+        run_cleanup: false,
         accepted_boot_nonce: None,
     };
     let request = worker.boot_request(&hello, 1).unwrap();

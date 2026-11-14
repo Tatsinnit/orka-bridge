@@ -285,6 +285,10 @@ fn projection(action: &EngineActionWire, bytes: &[u8]) -> io::Result<Vec<u8>> {
             }
             Ok(bytes)
         }
+        EngineActionWire::CleanupRunAgent { .. } => {
+            let reply: CleanupRunReply = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+            serde_json::to_vec(&reply).map_err(|_| invalid())
+        }
         EngineActionWire::RunWorker { .. } => {
             let reply: RunWorkerReply = serde_json::from_slice(bytes).map_err(|_| invalid())?;
             serde_json::to_vec(&reply).map_err(|_| invalid())
@@ -354,6 +358,7 @@ impl Runner for GuestRunner {
             EngineActionWire::Orka { request } => self.orka.execute(request),
             EngineActionWire::OrkaChat { request } => self.chat.execute_chat(request),
             EngineActionWire::RunWorker { name, uid } => self.orka.run_worker(name, uid),
+            EngineActionWire::CleanupRunAgent { uid } => self.orka.cleanup_run_agent(uid),
             EngineActionWire::WorkspaceCatalog {} => {
                 let provider = self.catalog_provider.take().ok_or_else(invalid)?;
                 Ok(EngineResult {
@@ -387,6 +392,7 @@ pub fn argv(action: &EngineActionWire) -> io::Result<Vec<String>> {
         EngineActionWire::Orka { .. }
         | EngineActionWire::OrkaChat { .. }
         | EngineActionWire::RunWorker { .. }
+        | EngineActionWire::CleanupRunAgent { .. }
         | EngineActionWire::WorkspaceCatalog {} => return Err(invalid()),
     })
 }
@@ -607,6 +613,23 @@ mod driver_tests {
             br#"{"finished":true,"pods":0,"items":[{"spec":{"secret":"private"}}]}"#.as_slice(),
             br#"{"finished":true,"pods":-1}"#,
             br#"{"pods":0}"#,
+        ] {
+            assert!(projection(&action, raw).is_err());
+        }
+    }
+    #[test]
+    fn cleanup_projection_retains_only_typed_removed_boolean() {
+        let action: EngineActionWire = serde_json::from_value(
+            serde_json::json!({"type":"cleanupRunAgent","uid":"recorded-uid"}),
+        )
+        .unwrap();
+        for raw in [br#"{"removed":true}"#.as_slice(), br#"{"removed":false}"#] {
+            assert_eq!(projection(&action, raw).unwrap(), raw);
+        }
+        for raw in [
+            br#"{}"#.as_slice(),
+            br#"{"removed":1}"#,
+            br#"{"removed":true,"items":[]}"#,
         ] {
             assert!(projection(&action, raw).is_err());
         }

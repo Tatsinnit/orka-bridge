@@ -73,6 +73,49 @@ impl LocalResults {
         }
         Ok(Self::load(self.root(false)?.as_ref())?.snapshot)
     }
+    pub(crate) fn cleanup_candidates(&self, installation: Uuid) -> io::Result<Vec<RunAgent>> {
+        let snapshot = self.list()?;
+        Ok(snapshot
+            .run_agents
+            .into_iter()
+            .filter(|owner| {
+                owner.installation == installation
+                    && owner.namespace == bridge_runtime_protocol::ORKA_NAMESPACE
+                    && !snapshot
+                        .results
+                        .iter()
+                        .any(|row| RunAgent::from(row) == *owner)
+            })
+            .collect())
+    }
+    /// Called only after the guest confirms this UID absent. Recheck references
+    /// under the storage lock, so a retained result always wins.
+    pub(crate) fn forget_removed(&self, owner: &RunAgent) -> io::Result<bool> {
+        let failed = self.lock.lock().map_err(|_| invalid())?;
+        if *failed {
+            return Err(invalid());
+        }
+        let Some(root) = self.root(false)? else {
+            return Ok(false);
+        };
+        let mut ledger = Self::load(Some(&root))?;
+        if ledger
+            .snapshot
+            .results
+            .iter()
+            .any(|row| RunAgent::from(row) == *owner)
+            || !ledger.snapshot.run_agents.contains(owner)
+        {
+            return Ok(false);
+        }
+        ledger.snapshot.run_agents.retain(|row| row != owner);
+        replace(&root, HISTORY, &serde_json::to_vec(&ledger)?)?;
+        if root.symlink_metadata(SAVING).is_ok() {
+            root.remove_file(SAVING)?;
+        }
+        sync(&root)?;
+        Ok(true)
+    }
     pub fn record(&self, observation: LocalRunObservation) -> io::Result<()> {
         self.save(observation, |dir, bytes| replace(dir, HISTORY, bytes))
     }
@@ -96,7 +139,8 @@ impl LocalResults {
             pending.report = None;
             upsert(&mut ledger.snapshot, observation);
             let bytes = serde_json::to_vec(&ledger)?;
-            // Never silently evict an identity: Overview needs every acknowledged UID.
+            // Never evict an identity for capacity: only confirmed-absent,
+            // unreferenced Agents may be forgotten by cleanup.
             if bytes.len() > MAX_BYTES {
                 // Later saves cannot reconstruct this acknowledged run's lost UID.
                 replace(&root, INCOMPLETE, b"capacity\n")?;
@@ -217,6 +261,47 @@ mod tests {
     use super::*;
     use crate::agent_folder::DocumentId;
     use serde_json::json;
+    #[test]
+    fn cleanup_requires_unreferenced_ownership_and_forget_preserves_results() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Some(temp.path().into());
+        let store = LocalResults::new(path.clone());
+        let installation = Uuid::new_v4();
+        let mut row: LocalRunObservation = serde_json::from_value(json!({
+            "installation": installation, "documentId": DocumentId::SAMPLE,
+            "source": bridge_runtime_protocol::SnapshotId::of(b"a", b"b"),
+            "namespace": "orka-system", "agentName": "display-only", "agentUid": "old",
+            "observedAt": 1, "state": "complete", "report": {"verdict":"passed", "passed":1, "total":1}
+        })).unwrap();
+        store.record(row.clone()).unwrap();
+        let old = RunAgent::from(&row);
+        assert!(store.cleanup_candidates(installation).unwrap().is_empty());
+        assert!(!store.forget_removed(&old).unwrap(), "retained result wins");
+        row.agent_uid = "current".into();
+        store.record(row.clone()).unwrap();
+        // Same UID on another installation or namespace is not cleanup authority.
+        row.document_id = DocumentId(Uuid::new_v4());
+        row.installation = Uuid::new_v4();
+        store.record(row.clone()).unwrap();
+        row.installation = installation;
+        row.namespace = "other".into();
+        store.record(row.clone()).unwrap();
+        let candidates = store.cleanup_candidates(installation).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0] == old);
+        let before = serde_json::to_value(store.list().unwrap().results).unwrap();
+        assert!(store.forget_removed(&old).unwrap());
+        let reopened = LocalResults::new(path);
+        assert!(reopened
+            .cleanup_candidates(installation)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            serde_json::to_value(reopened.list().unwrap().results).unwrap(),
+            before
+        );
+        assert!(!reopened.list().unwrap().run_agents.contains(&old));
+    }
     #[test]
     fn capacity_rejection_stays_unavailable_after_restart_and_later_record() {
         let temp = tempfile::tempdir().unwrap();

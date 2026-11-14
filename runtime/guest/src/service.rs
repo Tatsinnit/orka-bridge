@@ -29,6 +29,7 @@ impl Session {
                 stage,
                 guest_nonce: Uuid::new_v4(),
                 accepted_boot_nonce: saved.as_ref().map(|b| b.boot_nonce),
+                run_cleanup: stage == Stage::Serve,
             },
             saved,
             bytes: Vec::new(),
@@ -162,12 +163,14 @@ pub fn authoring_allowed(host_channel: bool, request: &RequestBody) -> bool {
                 action: EngineActionWire::Orka { .. }
                     | EngineActionWire::OrkaChat { .. }
                     | EngineActionWire::RunWorker { .. }
+                    | EngineActionWire::CleanupRunAgent { .. }
                     | EngineActionWire::WorkspaceCatalog {},
                 ..
             } | RequestBody::Engine(
                 EngineActionWire::Orka { .. }
                     | EngineActionWire::OrkaChat { .. }
                     | EngineActionWire::RunWorker { .. }
+                    | EngineActionWire::CleanupRunAgent { .. }
                     | EngineActionWire::WorkspaceCatalog {}
             )
         )

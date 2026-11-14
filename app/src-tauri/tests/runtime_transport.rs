@@ -130,6 +130,58 @@ fn validated_guest_errors_do_not_destroy_the_channel() {
         .unwrap();
 }
 #[test]
+fn legacy_hello_cleanup_is_no_io_and_leaves_channel_usable() {
+    struct Legacy(std::io::Cursor<Vec<u8>>);
+    impl Read for Legacy {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            self.0.read(b)
+        }
+    }
+    impl Write for Legacy {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            let Frame::Request(request) = serde_json::from_slice(b)? else {
+                panic!()
+            };
+            assert!(matches!(request.body, RequestBody::Readiness {}));
+            assert_eq!(
+                request.request_id, 3,
+                "cleanup must not even consume a request ID"
+            );
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let nonce = Uuid::new_v4();
+    let hello: StageHello = serde_json::from_value(serde_json::json!({
+        "version": VERSION, "stage": "serve", "guestNonce": Uuid::new_v4(),
+        "acceptedBootNonce": nonce
+    }))
+    .unwrap();
+    let reply = encode(&Frame::Result(WireResult {
+        version: VERSION,
+        boot_nonce: nonce,
+        request_id: 3,
+        body: ResultBody::Infrastructure(InfrastructureState {
+            phase: Some(BootstrapPhase::ClusterReady),
+            service: InfrastructureService::Starting,
+        }),
+    }))
+    .unwrap();
+    let mut client = VmClient::established_with_hello(
+        Box::new(Legacy(std::io::Cursor::new(reply))),
+        nonce,
+        &hello,
+    )
+    .unwrap();
+    assert_eq!(
+        client.cleanup_run_agent("old-uid").unwrap_err().kind(),
+        io::ErrorKind::Unsupported
+    );
+    assert!(client.readiness().is_ok());
+}
+#[test]
 fn large_result_uses_buffered_channel_reads() {
     use std::sync::{
         atomic::{AtomicUsize, Ordering},

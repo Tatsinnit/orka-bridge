@@ -14,6 +14,7 @@ pub struct VmClient {
     channel: Option<BufReader<Box<dyn GuestChannel>>>,
     nonce: Uuid,
     next: u64,
+    run_cleanup: bool,
 }
 fn invalid() -> io::Error {
     io::Error::from(io::ErrorKind::InvalidData)
@@ -27,7 +28,41 @@ impl VmClient {
             channel: Some(BufReader::new(channel)),
             nonce,
             next: 3,
+            run_cleanup: false,
         })
+    }
+    /// Capabilities come from the validated serving hello, never a probe that
+    /// could poison an older strict guest's sole channel.
+    pub fn established_with_hello(
+        channel: Box<dyn GuestChannel>,
+        nonce: Uuid,
+        hello: &StageHello,
+    ) -> io::Result<Self> {
+        validate_hello(hello, Stage::Serve, nonce).map_err(|_| invalid())?;
+        let mut client = Self::established(channel, nonce)?;
+        client.run_cleanup = hello.run_cleanup;
+        Ok(client)
+    }
+    pub fn cleanup_run_agent(&mut self, uid: &str) -> io::Result<CleanupRunReply> {
+        if !self.run_cleanup {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        let action = EngineActionWire::CleanupRunAgent { uid: uid.into() };
+        validate_action(&action).map_err(|_| invalid())?;
+        let operation = Uuid::new_v4();
+        match self.call(RequestBody::Execute {
+            operation,
+            action,
+            snapshot: None,
+        })? {
+            ResultBody::Operation { operation: id, .. } if id == operation => {}
+            _ => return Err(invalid()),
+        }
+        let result = self.result(operation)?;
+        if result.exit != 0 {
+            return Err(invalid());
+        }
+        serde_json::from_slice(&result.stdout).map_err(|_| invalid())
     }
     fn call(&mut self, body: RequestBody) -> io::Result<ResultBody> {
         let id = self.next;

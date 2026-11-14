@@ -657,6 +657,7 @@ mod retry_custody_tests {
                                 version: VERSION,
                                 stage: Stage::Early,
                                 guest_nonce: Uuid::new_v4(),
+                                run_cleanup: false,
                                 accepted_boot_nonce: None,
                             },
                             0,

@@ -61,6 +61,8 @@ pub struct StageHello {
     pub stage: Stage,
     pub guest_nonce: Uuid,
     pub accepted_boot_nonce: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run_cleanup: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
@@ -70,6 +72,7 @@ pub enum EngineActionWire {
     Orka { request: OrkaRequest },
     OrkaChat { request: ChatRequest },
     RunWorker { name: String, uid: String },
+    CleanupRunAgent { uid: String },
     WorkspaceCatalog {},
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -236,7 +239,7 @@ pub fn validate_hello(hello: &StageHello, stage: Stage, nonce: Uuid) -> Result<(
     if hello.version != VERSION {
         return Err(ProtocolError::Version);
     }
-    if hello.stage != stage {
+    if hello.stage != stage || (stage == Stage::Early && hello.run_cleanup) {
         return Err(ProtocolError::Stage);
     }
     if hello.guest_nonce.is_nil()
@@ -250,6 +253,11 @@ pub fn validate_hello(hello: &StageHello, stage: Stage, nonce: Uuid) -> Result<(
     Ok(())
 }
 pub fn validate_action(action: &EngineActionWire) -> Result<(), ProtocolError> {
+    if let EngineActionWire::CleanupRunAgent { uid } = action {
+        if !orka::valid_run_uid(uid) {
+            return Err(ProtocolError::Invalid);
+        }
+    }
     if let EngineActionWire::RunWorker { name, uid } = action {
         if !valid_run_worker(name, uid) {
             return Err(ProtocolError::Invalid);
@@ -353,7 +361,10 @@ impl Frame {
                     {
                         return Err(ProtocolError::Invalid)
                     }
-                    RequestBody::Execute { action, .. } => validate_action(action)?,
+                    RequestBody::Execute { action, .. }
+                    | RequestBody::Engine(action @ EngineActionWire::CleanupRunAgent { .. }) => {
+                        validate_action(action)?;
+                    }
                     RequestBody::Chunk { data } => chunk(data)?,
                     RequestBody::Engine(EngineActionWire::ListAgents { context, namespace }) => {
                         if context.trim().is_empty() || namespace.trim().is_empty() {

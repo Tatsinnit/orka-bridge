@@ -210,11 +210,19 @@ fn early_serve_partial_frame() {
     let bytes = encode(&request(b.clone(), 1)).unwrap();
     let mut early = Session::early();
     assert_eq!(early.hello().accepted_boot_nonce, None);
+    assert!(serde_json::to_value(early.hello())
+        .unwrap()
+        .get("runCleanup")
+        .is_none());
     for byte in &bytes[..10] {
         assert!(early.push(*byte).unwrap().is_none());
     }
     let mut serve = Session::serve(Some(b.clone())).unwrap();
     assert_eq!(serve.hello().accepted_boot_nonce, Some(b.boot_nonce));
+    assert_eq!(
+        serde_json::to_value(serve.hello()).unwrap()["runCleanup"],
+        true
+    );
     assert_ne!(serve.hello().guest_nonce, early.hello().guest_nonce);
     let mut existing = b;
     existing.state_creation = StateCreation::Existing;

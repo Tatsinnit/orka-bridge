@@ -1351,6 +1351,26 @@ mod tests {
         let operation = Uuid::new_v4();
         for (id, body) in [
             (
+                9,
+                RequestBody::Execute {
+                    operation: Uuid::new_v4(),
+                    action: serde_json::from_value(
+                        serde_json::json!({"type":"cleanupRunAgent","uid":"recorded-uid"}),
+                    )
+                    .unwrap(),
+                    snapshot: None,
+                },
+            ),
+            (
+                10,
+                RequestBody::Engine(
+                    serde_json::from_value(
+                        serde_json::json!({"type":"cleanupRunAgent","uid":"recorded-uid"}),
+                    )
+                    .unwrap(),
+                ),
+            ),
+            (
                 3,
                 RequestBody::Execute {
                     operation,

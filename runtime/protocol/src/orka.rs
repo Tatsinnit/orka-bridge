@@ -25,10 +25,16 @@ pub struct RunWorkerReply {
     pub finished: bool,
     pub pods: u64,
 }
+/// True only after a complete observation confirms the recorded Agent UID absent.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CleanupRunReply {
+    pub removed: bool,
+}
 pub fn valid_run_worker(name: &str, uid: &str) -> bool {
     generated(name, "bridge-task-") && valid_run_uid(uid)
 }
-fn valid_run_uid(uid: &str) -> bool {
+pub(super) fn valid_run_uid(uid: &str) -> bool {
     !uid.is_empty() && uid.len() <= 64
 }
 /// Exact HTTP status and bounded JSON body (`null` when absent or not JSON).

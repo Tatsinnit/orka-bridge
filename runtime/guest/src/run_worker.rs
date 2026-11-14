@@ -5,14 +5,14 @@ use std::{io, time::Instant};
 
 const AS_RUN: &str = "--as=system:serviceaccount:orka-system:bridge-native-run";
 
-fn optional_text<'a>(value: &'a Value, key: &str) -> io::Result<&'a str> {
+pub(super) fn optional_text<'a>(value: &'a Value, key: &str) -> io::Result<&'a str> {
     match value.get(key) {
         None | Some(Value::Null) => Ok(""),
         Some(Value::String(s)) => Ok(s),
         _ => Err(failed()),
     }
 }
-fn job_label(name: &str) -> bool {
+pub(super) fn job_label(name: &str) -> bool {
     let edge = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
     !name.is_empty()
         && name.len() <= 63

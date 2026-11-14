@@ -78,6 +78,7 @@ struct State {
     active: Option<DocumentRef>,
     observation: Option<LocalRunObservation>,
     recorded_current: bool,
+    cleanup_cursor: usize,
 }
 pub struct ExampleRun(
     Mutex<State>,
@@ -241,7 +242,10 @@ impl ExampleRun {
                             worker.fail(id, "session");
                             return;
                         }
-                        runtime.block_on(worker.execute(id, installation, client, observing, pair))
+                        runtime.block_on(worker.execute(id, installation, client, observing, pair));
+                        // Observation is over, but admission and the original client
+                        // are still held. Retained results keep their own Agents.
+                        worker.cleanup(installation, client);
                     })
                     .await
                     .is_err()
@@ -255,6 +259,33 @@ impl ExampleRun {
             owner.0.lock().unwrap().active = None;
         });
         self.status_document(&vm, id)
+    }
+    fn cleanup(&self, installation: Uuid, client: &mut VmClient) {
+        let Ok(mut candidates) = self.4.cleanup_candidates(installation) else {
+            return;
+        };
+        if candidates.is_empty() {
+            return;
+        }
+        // Finalizers and unfinished remote work may block an Agent indefinitely.
+        // Continue beyond them on later sweeps rather than starving the backlog.
+        let offset = self.0.lock().unwrap().cleanup_cursor % candidates.len();
+        candidates.rotate_left(offset);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        for (index, owner) in candidates.into_iter().take(8).enumerate() {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            self.0.lock().unwrap().cleanup_cursor = offset + index + 1;
+            match client.cleanup_run_agent(&owner.agent_uid) {
+                Ok(reply) if reply.removed => {
+                    let _ = self.4.forget_removed(&owner);
+                }
+                Ok(_) => (),
+                // No retry on an uncertain mutation or an unsupported peer.
+                Err(_) => break,
+            }
+        }
     }
     fn fail(&self, id: DocumentId, message: &'static str) {
         let mut state = self.0.lock().unwrap();

@@ -77,6 +77,49 @@ Role: a new guest encountering the old Role refuses all Run calls rather than
 expanding its permissions. These guest operations alone add no host cancellation
 loop or UI, and do not update an installed image.
 
+## Local test Agent cleanup
+
+The serving Hello advertises optional `runCleanup: true`; Early never does.
+Omission means unsupported. The native host must not send the new action to an
+older guest: unknown actions can close that guest's strict control channel.
+Use a rebuilt guest image with the matching app. Older apps reject the new guest's
+Hello field and fail boot. This does not update image pins or installed images:
+cleanup remains inactive in shipped builds until a compatible guest is pinned.
+
+After a local Run returns, the native host sweeps superseded recorded UIDs while
+still holding authoring admission and its client. Every retained result keeps its
+Agent; Tasks and answers remain. A rotating cursor tries at most eight candidates,
+starting calls for up to five seconds per sweep. An in-flight guest check has its
+own five-second budget, so this is not a hard five-second host limit.
+
+The physical-host-only `cleanupRunAgent` action accepts only a recorded Agent
+`uid` (nonempty, at most 64 bytes), not a name or namespace. The native caller
+must first exclude every Agent needed by retained results or unfinished work.
+Within one five-second budget, including lazy identity setup, the guest resolves
+that UID from a complete Agent list in `orka-system`, requires a generated
+`bridge-run-<32 lowercase hex>` name, and checks all Tasks referring to that name
+and effective namespace. A matching Task must be Succeeded, Failed or Cancelled,
+have a valid `status.jobName`, and have no live pods under the existing
+`job-name=<jobName>` selector. Missing associations, unknown phases, malformed or
+partial lists and command failures never establish inactivity. An Agent with
+no Tasks can be reclaimed, including creation interrupted before Task submission.
+
+Cleanup uses a separate, lazily verified `bridge-native-run-cleanup` identity:
+Agent get/list/delete, Task get/list, and core pod list only. Existing Run/Chat
+manifests and generic Run's prohibition on DELETE are unchanged. No token or
+port-forward is created. Kubernetes raw DELETE carries `DeleteOptions` with the
+recorded UID precondition and `propagationPolicy: Orphan`, so a name replacement
+is fenced and Tasks, results, events and completed pods are preserved. Cleanup
+never deletes Tasks. Only typed `{removed: bool}` reaches operation storage;
+`true` requires a complete list confirming that UID absent, including a bounded
+post-delete observation. Already-absent UIDs also return true. A finalizer can
+leave `removed: false`; failures return an error, never a successful absence.
+Mutations are not retried or replayed. A later sweep must observe again.
+
+Each complete namespace list must fit the existing 1 MiB guest output bound.
+Larger retained Task histories skip cleanup; pagination is not implemented.
+Tasks and answers are never discarded to make a cleanup observation fit.
+
 ## Native Chat transport
 
 The physical host channel also accepts the separate `orkaChat` action. Its request

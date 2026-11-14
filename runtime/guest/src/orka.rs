@@ -13,11 +13,14 @@ use std::{
 
 #[path = "catalog.rs"]
 mod catalog;
+#[path = "run_cleanup.rs"]
+mod run_cleanup;
 #[path = "run_worker.rs"]
 mod run_worker;
 
 const IDENTITY: &str = "bridge-native-run";
 const CHAT_IDENTITY: &str = "bridge-native-chat";
+const CLEANUP_IDENTITY: &str = "bridge-native-run-cleanup";
 const OWNER: &str = "bridge-guest";
 /// Renew well before the ten-minute expiry so no request is sent with a stale token.
 const RENEW_AFTER: Duration = Duration::from_secs(8 * 60);
@@ -32,7 +35,13 @@ fn manifests(identity: &str) -> [(&'static str, Value); 3] {
     let metadata = json!({"name":identity,"namespace":ORKA_NAMESPACE,
         "labels":{"app.kubernetes.io/managed-by":OWNER}});
     let rbac = "rbac.authorization.k8s.io";
-    let mut rules = if identity == CHAT_IDENTITY {
+    let mut rules = if identity == CLEANUP_IDENTITY {
+        vec![
+            json!({"apiGroups":["core.orka.ai"],"resources":["agents"],"verbs":["get","list","delete"]}),
+            json!({"apiGroups":["core.orka.ai"],"resources":["tasks"],"verbs":["get","list"]}),
+            json!({"apiGroups":[""],"resources":["pods"],"verbs":["list"]}),
+        ]
+    } else if identity == CHAT_IDENTITY {
         // RBAC grants Task deletion namespace-wide. ChatRequest validation and
         // the physical-only channel restrict its use to generated Chat Tasks.
         vec![
@@ -45,9 +54,11 @@ fn manifests(identity: &str) -> [(&'static str, Value); 3] {
             json!({"apiGroups":["core.orka.ai"],"resources":["agents","tasks"],"verbs":["create","get"]}),
         ]
     };
-    rules.push(
-        json!({"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]}),
-    );
+    if identity != CLEANUP_IDENTITY {
+        rules.push(
+            json!({"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]}),
+        );
+    }
     if identity == IDENTITY {
         rules.push(json!({"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]}));
         // Namespace-wide permissions; only validated Run names are reachable
@@ -466,6 +477,7 @@ mod tests {
     use super::*;
     include!("orka_chat_tests.rs");
     include!("orka_run_worker_tests.rs");
+    include!("orka_cleanup_tests.rs");
     use serde_json::{json, Value};
     use std::{
         collections::VecDeque,

@@ -7,6 +7,8 @@ use bridge_runtime_protocol::*;
 fn local_socket_cannot_read_the_workspace_catalog_or_reach_orka() {
     for action in [
         EngineActionWire::WorkspaceCatalog {},
+        serde_json::from_value(serde_json::json!({"type":"cleanupRunAgent","uid":"recorded-uid"}))
+            .unwrap(),
         EngineActionWire::OrkaChat {
             request: ChatRequest {
                 method: ChatMethod::Delete,

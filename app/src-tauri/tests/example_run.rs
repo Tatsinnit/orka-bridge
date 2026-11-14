@@ -248,6 +248,111 @@ async fn session_failure_after_report_updates_only_current_observation_to_unknow
     vm.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn sweep_removes_only_superseded_agents_and_keeps_reports_even_when_cleanup_is_busy() {
+    for removed in [false, true] {
+        let (vm, posts, _) = fixture_with_cleanup(false, false, false, Some(removed)).await;
+        let home = tempfile::tempdir().unwrap();
+        let sample = Arc::new(AgentFolder::new(Some(home.path().into())));
+        let pair = sample.open().unwrap();
+        let other = created_agent::created(home.path(), "other", &pair.agent, &pair.tests);
+        let run = ExampleRun::with_history_root(
+            tokio::runtime::Handle::current(),
+            true,
+            sample.clone(),
+            Some(home.path().join("data")),
+        );
+        run.start(vm.clone());
+        let first = finished(&run, &vm).await;
+        let old_uid = first.acknowledged[0].uid.clone();
+        assert_eq!(
+            first.report.unwrap().cases[0].answer.as_deref(),
+            Some(ANSWER)
+        );
+        run.start_document(vm.clone(), other.clone());
+        for _ in 0..500 {
+            if !run.is_active() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(!run.is_active(), "other document's run must finish");
+        run.start(vm.clone());
+        let latest = finished(&run, &vm).await;
+        assert_eq!(latest.state, RunState::Complete);
+        assert_eq!(
+            latest.report.unwrap().cases[0].answer.as_deref(),
+            Some(ANSWER)
+        );
+        assert_eq!(
+            run.status_document(&vm, other.document_id())
+                .report
+                .unwrap()
+                .cases[0]
+                .answer
+                .as_deref(),
+            Some(ANSWER)
+        );
+        let writes = posts.lock().unwrap().clone();
+        let cleanups: Vec<_> = writes
+            .iter()
+            .filter_map(|v| v["cleanupUid"].as_str())
+            .collect();
+        assert_eq!(cleanups, [old_uid.as_str()]);
+        let history = run.local_results().unwrap();
+        assert_eq!(history.results.len(), 2);
+        assert_eq!(history.run_agents.len(), if removed { 2 } else { 3 });
+        assert!(history
+            .results
+            .iter()
+            .all(|r| r.report.as_ref().unwrap().passed == 1));
+        assert!(vm
+            .with_client(|_, client| client.model_status())
+            .await
+            .unwrap()
+            .is_ok());
+        vm.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn blocked_cleanup_candidates_do_not_starve_later_recorded_agents() {
+    let (vm, posts, _) = fixture_with_cleanup(false, false, false, Some(false)).await;
+    let home = tempfile::tempdir().unwrap();
+    let root = Some(home.path().join("data"));
+    let installation = vm.with_client(|id, _| id).await.unwrap();
+    let history = bridge_engine::local_results::LocalResults::new(root.clone());
+    for index in 0..10 {
+        history.record(serde_json::from_value(json!({
+            "installation": installation, "documentId": bridge_engine::agent_folder::DocumentId::SAMPLE,
+            "source": SnapshotId::of(b"a", b"b"), "namespace": "orka-system",
+            "agentName": "display-only", "agentUid": format!("queued-{index}"),
+            "observedAt": 1, "state": "unknown", "report": null
+        })).unwrap()).unwrap();
+    }
+    let run = ExampleRun::with_history_root(
+        tokio::runtime::Handle::current(),
+        true,
+        Arc::new(AgentFolder::new(Some(home.path().into()))),
+        root,
+    );
+    run.start(vm.clone());
+    assert_eq!(finished(&run, &vm).await.state, RunState::Complete);
+    assert!(!posts
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|v| v["cleanupUid"] == "queued-8"));
+    run.start(vm.clone());
+    assert_eq!(finished(&run, &vm).await.state, RunState::Complete);
+    assert!(posts
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|v| v["cleanupUid"] == "queued-8"));
+    vm.shutdown().await.unwrap();
+}
+
 const ANSWER: &str = "cf699c56340dc775230fde4ef84237d27563ea6ef52164c7d078072b586c3918";
 struct Channel {
     input: std::io::Cursor<Vec<u8>>,
@@ -256,6 +361,7 @@ struct Channel {
     missing_tools: bool,
     posts: Arc<Mutex<Vec<Value>>>,
     lost_task: bool,
+    cleanup_reply: Option<bool>,
 }
 impl Write for Channel {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -355,6 +461,31 @@ impl Write for Channel {
                     },
                 }
             }
+            RequestBody::Execute {
+                operation,
+                action: EngineActionWire::CleanupRunAgent { uid },
+                snapshot,
+            } => {
+                assert!(snapshot.is_none());
+                let removed = self
+                    .cleanup_reply
+                    .expect("legacy guest must never be probed");
+                self.posts.lock().unwrap().push(json!({"cleanupUid":uid}));
+                if removed {
+                    self.objects
+                        .retain(|_, o| o["kind"] != "Agent" || o["metadata"]["uid"] != uid);
+                }
+                self.output = serde_json::to_vec(&CleanupRunReply { removed })?;
+                ResultBody::Operation {
+                    operation,
+                    info: OperationInfo {
+                        state: OperationState::Completed,
+                        exit: Some(0),
+                        bytes: self.output.len(),
+                        has_diagnostics: false,
+                    },
+                }
+            }
             RequestBody::Status { operation } => ResultBody::Operation {
                 operation,
                 info: OperationInfo {
@@ -439,10 +570,18 @@ async fn fixture_with_outcome(
     lost_task: bool,
     closed_after_work: bool,
 ) -> (Arc<LocalVm>, Arc<Mutex<Vec<Value>>>, Arc<AtomicBool>) {
+    fixture_with_cleanup(missing_tools, lost_task, closed_after_work, None).await
+}
+async fn fixture_with_cleanup(
+    missing_tools: bool,
+    lost_task: bool,
+    closed_after_work: bool,
+    cleanup_reply: Option<bool>,
+) -> (Arc<LocalVm>, Arc<Mutex<Vec<Value>>>, Arc<AtomicBool>) {
     let id = Uuid::new_v4();
     let posts = Arc::new(Mutex::new(Vec::new()));
     let stopped = Arc::new(AtomicBool::new(false));
-    let client = VmClient::established(
+    let client = VmClient::established_with_hello(
         Box::new(Channel {
             input: std::io::Cursor::new(Vec::new()),
             objects: HashMap::new(),
@@ -450,8 +589,16 @@ async fn fixture_with_outcome(
             missing_tools,
             posts: posts.clone(),
             lost_task,
+            cleanup_reply,
         }),
         id,
+        &StageHello {
+            version: VERSION,
+            stage: Stage::Serve,
+            guest_nonce: Uuid::new_v4(),
+            accepted_boot_nonce: Some(id),
+            run_cleanup: cleanup_reply.is_some(),
+        },
     )
     .unwrap();
     let vm = LocalVm::new(Arc::new(Factory(Mutex::new(Some(Session(
