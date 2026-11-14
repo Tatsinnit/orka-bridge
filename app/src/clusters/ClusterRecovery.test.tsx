@@ -92,6 +92,7 @@ test('first failed check has one cause/action, safe copied labels and visible cl
   expect((await screen.findByRole('alert')).textContent).toContain('Reading AI connections');
   expect(screen.getByRole('alert').textContent).toContain('Access was denied');
   expect(screen.getByRole('alert').textContent).toContain('agent files are kept');
+  expect(screen.getByRole('alert').compareDocumentPosition(screen.getByRole('button', { name: 'Check again' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Copy details for help' }));
   expect(copy).toHaveBeenCalledWith('Bridge cluster connection\nOperation: Use cluster\nCheck: providers\nResult: permissionDenied');
   copy.mockRejectedValue('SECRET /private/path');

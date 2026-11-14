@@ -38,6 +38,7 @@ pub struct AccessView {
 pub struct ClusterPlaceSnapshot {
     pub places: Vec<crate::overview_places::Place>,
     pub selected_key: Option<String>,
+    pub persistence_state: &'static str,
 }
 impl From<AccessOutcome> for AccessView {
     fn from(outcome: AccessOutcome) -> Self {
@@ -109,6 +110,20 @@ fn read_kubeconfig() -> Result<Kubeconfig, ClusterError> {
     Kubeconfig::read().map_err(|_| ClusterError::Unavailable)
 }
 impl ClusterSession {
+    /// Desktop-only persistence. Other constructors deliberately remain memory-only.
+    pub fn with_storage(app_local_data: Option<std::path::PathBuf>) -> Self {
+        Self(
+            Arc::default(),
+            Arc::new(read_kubeconfig),
+            ExecOwner::default(),
+            Arc::new(PodOrkaRead),
+            Arc::default(),
+            Arc::default(),
+            Arc::new(crate::overview_places::Inventory::with_storage(
+                app_local_data,
+            )),
+        )
+    }
     /// All configuration reads share one slot, including reads abandoned by Stop or timeout.
     pub(crate) async fn read_configuration(
         &self,
@@ -167,6 +182,9 @@ impl ClusterSession {
     pub async fn overview(&self) -> Vec<crate::overview_places::Place> {
         self.6.refresh().await
     }
+    pub async fn overview_one(&self, key: &str) -> Vec<crate::overview_places::Place> {
+        self.6.refresh_one(key).await
+    }
     /// A display-only snapshot: never reads kubeconfig, refreshes inventory or renews access.
     pub fn places(&self) -> ClusterPlaceSnapshot {
         // Do not hold the admission lock while reading the independent inventory.
@@ -178,6 +196,7 @@ impl ClusterSession {
             .map(|(_, access)| access.binding().clone());
         ClusterPlaceSnapshot {
             places: self.6.snapshot(),
+            persistence_state: self.6.persistence_state(),
             selected_key: binding.map(|binding| crate::overview_places::Place::new(binding).key),
         }
     }
@@ -233,6 +252,53 @@ impl ClusterSession {
             .find(|c| c.id.0.to_string() == context_id)
             .ok_or(UNKNOWN_CONFIGURATION)?;
         client.discover(context.id).await
+    }
+    /// Resolve saved identity against freshly read configuration and fresh discovery only.
+    pub async fn reconnect(&self, key: &str) -> Result<TargetView, ClusterFailure> {
+        let mut session = self.0.lock().await;
+        let saved = self.6.get(key).ok_or(UNKNOWN_CONFIGURATION)?;
+        *self.4.lock().unwrap() = None;
+        *session = Session::default();
+        let client = session.client(self).await?;
+        let contexts: Vec<_> = client
+            .contexts()
+            .map_err(|_| UNKNOWN_CONFIGURATION)?
+            .into_iter()
+            .filter(|c| c.name == saved.context)
+            .collect();
+        if contexts.len() != 1 {
+            return Err(UNKNOWN_CONFIGURATION);
+        }
+        let targets = client.discover(contexts[0].id).await?;
+        let mut matches = targets.into_iter().filter(|t| {
+            client
+                .target_binding(t.id)
+                .is_some_and(|b| saved.matches(b))
+        });
+        let rejected = ClusterFailure {
+            check: Check::Compatibility,
+            result: CheckResult::IdentityRejected,
+        };
+        let target = matches.next().ok_or(rejected)?;
+        if matches.next().is_some() {
+            return Err(rejected);
+        }
+        Ok(target)
+    }
+    /// Serialize behind Use. Already-admitted Sends retain their independent frozen Arc.
+    pub async fn forget(&self, key: &str) -> Result<(), &'static str> {
+        let mut session = self.0.lock().await;
+        self.6.forget(key)?;
+        if let Some(client) = session.client.as_mut() {
+            client.forget_targets(key);
+        }
+        let mut access = self.4.lock().unwrap();
+        if access.as_ref().is_some_and(|(_, a)| {
+            crate::overview_places::Place::new(a.binding().clone()).key == key
+        }) {
+            *access = None;
+        }
+        Ok(())
     }
     pub async fn use_target(&self, target_id: &str, sa_name: Option<String>) -> AccessView {
         let mut session = self.0.lock().await;

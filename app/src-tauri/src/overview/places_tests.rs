@@ -52,14 +52,14 @@ fn recorded_target_and_uid_only_never_name_or_unacknowledged() {
     assert_eq!(result.unobserved.len(), 1);
     assert!(result.unobserved[0].agent_uid.is_none());
     let mut other = place();
-    other.binding.deployment_uid = "replacement".into();
+    other.identity.deployment_uid = "replacement".into();
     assert!(
         project(vec![other], Some(vec![summary.clone()])).places[0].agents[0]
             .record
             .is_none()
     );
     let mut other = place();
-    other.binding.context_name = "other".into();
+    other.identity.context_name = "other".into();
     assert!(
         project(vec![other], Some(vec![summary])).places[0].agents[0]
             .record
@@ -109,4 +109,174 @@ fn place_key_ignores_ephemeral_handles_and_image_but_not_installation_or_namespa
     assert_eq!(Place::new(a.clone()).key, Place::new(b.clone()).key);
     b.watched_namespace = "different".into();
     assert_ne!(Place::new(a).key, Place::new(b).key);
+}
+
+fn stored() -> metadata::Remembered {
+    metadata::Remembered {
+        identity: metadata::Identity::from(&binding()),
+        observed_at: 123,
+    }
+}
+#[tokio::test]
+async fn metadata_roundtrip_is_allowlisted_stale_passive_and_removal_survives_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, items) = metadata::Store::load(Some(dir.path().into()));
+    assert!(items.is_empty());
+    store.save(&[stored()]).unwrap();
+    let bytes = std::fs::read(dir.path().join("clusters-v1.json")).unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"version":1,"places":[{
+        "identity":{"contextName":"team","serviceName":"orka","serviceNamespace":"control",
+        "serviceUid":"service","deploymentNamespace":"control","deploymentUid":"deployment","watchedNamespace":"agents"},
+        "observedAt":123}]})
+    );
+    let inventory = Inventory::with_storage(Some(dir.path().into()));
+    assert!(inventory
+        .state
+        .lock()
+        .unwrap()
+        .entries
+        .values()
+        .all(|e| e.access.is_none()));
+    let session = ClusterSession::with_storage(Some(dir.path().into()));
+    let snapshot = session.places();
+    assert_eq!(snapshot.persistence_state, "complete");
+    assert!(snapshot.selected_key.is_none());
+    assert_eq!(snapshot.places[0].key, Place::new(binding()).key);
+    assert_eq!(snapshot.places[0].observed_at, None);
+    assert_eq!(
+        serde_json::to_value(&snapshot.places[0]).unwrap()["checkedAt"],
+        123
+    );
+    assert!(snapshot.places[0].stale);
+    assert!(snapshot.places[0].agents.is_empty());
+    assert!(session.overview().await[0].stale);
+    session.shutdown().await;
+    assert_eq!(
+        std::fs::read(dir.path().join("clusters-v1.json")).unwrap(),
+        bytes
+    );
+    session.forget(&snapshot.places[0].key).await.unwrap();
+    let restored = ClusterSession::with_storage(Some(dir.path().into()));
+    assert!(restored.places().places.is_empty());
+    assert_eq!(restored.places().persistence_state, "complete");
+}
+#[test]
+fn metadata_corrupt_unknown_oversized_and_symlink_are_sticky_and_never_overwritten() {
+    let good = serde_json::json!({"version":1,"places":[]}).to_string();
+    for bytes in [
+        b"corrupt".to_vec(),
+        good.replace("\"version\":1", "\"version\":2").into_bytes(),
+        good.replace("\"version\":1", "\"version\":1,\"credentials\":{}")
+            .into_bytes(),
+        vec![b' '; 1024 * 1024 + 1],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("clusters-v1.json");
+        std::fs::write(&file, &bytes).unwrap();
+        let (mut store, items) = metadata::Store::load(Some(dir.path().into()));
+        assert!(items.is_empty());
+        assert_eq!(store.state(), "unavailable");
+        assert!(store.save(&[stored()]).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    }
+    #[cfg(unix)]
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original");
+        std::fs::write(&original, &good).unwrap();
+        std::os::unix::fs::symlink(&original, dir.path().join("clusters-v1.json")).unwrap();
+        let (mut store, _) = metadata::Store::load(Some(dir.path().into()));
+        assert_eq!(store.state(), "unavailable");
+        assert!(store.save(&[stored()]).is_err());
+        assert_eq!(std::fs::read_to_string(&original).unwrap(), good);
+        assert!(dir.path().join("clusters-v1.json").is_symlink());
+    }
+}
+#[tokio::test]
+async fn metadata_write_failure_latches_and_forget_cannot_claim_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut store, _) = metadata::Store::load(Some(dir.path().into()));
+    store.save(&[stored()]).unwrap();
+    let session = ClusterSession::with_storage(Some(dir.path().into()));
+    let key = session.places().places[0].key.clone();
+    let file = dir.path().join("clusters-v1.json");
+    std::fs::rename(&file, dir.path().join("prior")).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    assert!(session.forget(&key).await.is_err());
+    assert_eq!(session.places().places.len(), 1);
+    assert_eq!(session.places().persistence_state, "unavailable");
+    std::fs::remove_dir(&file).unwrap();
+    std::fs::rename(dir.path().join("prior"), &file).unwrap();
+    let bytes = std::fs::read(&file).unwrap();
+    assert!(session.forget(&key).await.is_err());
+    assert_eq!(std::fs::read(&file).unwrap(), bytes);
+}
+
+#[test]
+fn metadata_rejects_out_of_contract_text_times_counts_and_nested_unknown_fields() {
+    assert_eq!(
+        ClusterSession::with_storage(None)
+            .places()
+            .persistence_state,
+        "unavailable"
+    );
+    assert_eq!(
+        ClusterSession::default().places().persistence_state,
+        "complete"
+    );
+    let base = serde_json::json!({"version":1,"places":[stored()]});
+    let mut invalid = Vec::new();
+    for field in [
+        "contextName",
+        "serviceName",
+        "serviceNamespace",
+        "deploymentNamespace",
+    ] {
+        for value in [
+            "x".repeat(2049),
+            "control\u{7f}".into(),
+            "control\n".into(),
+            String::new(),
+        ] {
+            let mut item = base.clone();
+            item["places"][0]["identity"][field] = value.into();
+            invalid.push(item);
+        }
+    }
+    for field in ["serviceUid", "deploymentUid"] {
+        let mut item = base.clone();
+        item["places"][0]["identity"][field] = "x".repeat(4097).into();
+        invalid.push(item);
+    }
+    for field in ["serverAddress", "contextId", "providers"] {
+        let mut item = base.clone();
+        item["places"][0]["identity"][field] = "unexpected".into();
+        invalid.push(item);
+    }
+    let mut future = base.clone();
+    future["places"][0]["observedAt"] = serde_json::json!(8_640_000_000_000_001_u64);
+    invalid.push(future);
+    let mut crowded = base.clone();
+    crowded["places"] = serde_json::json!((0..1025)
+        .map(|i| {
+            let mut p = serde_json::to_value(stored()).unwrap();
+            p["identity"]["serviceUid"] = format!("service-{i}").into();
+            p
+        })
+        .collect::<Vec<_>>());
+    invalid.push(crowded);
+    for value in invalid {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("clusters-v1.json");
+        let bytes = value.to_string().into_bytes();
+        std::fs::write(&file, &bytes).unwrap();
+        let (mut store, items) = metadata::Store::load(Some(dir.path().into()));
+        assert_eq!(store.state(), "unavailable", "{value}");
+        assert!(items.is_empty());
+        assert!(store.save(&[stored()]).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    }
 }

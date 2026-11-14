@@ -49,6 +49,8 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
   // Navigation is not destination selection. Standalone callers retain the same contract.
   const [ownPlace, setOwnPlace] = useState<SelectedPlace>({ kind: 'thisComputer' });
   const currentPlace = place ?? ownPlace;
+  const currentPlaceRef = useRef(currentPlace);
+  useEffect(() => { currentPlaceRef.current = currentPlace; }, [currentPlace]);
   const cluster = currentPlace.kind === 'cluster';
   const [panel, setPanel] = useState<'places' | 'local' | 'cluster'>();
   const view = panel ?? (status?.selected === 'localVm' && status.localVm !== 'ready' ? 'local' : 'places');
@@ -56,9 +58,10 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
     if (!panel && status?.selected === 'localVm' && status.localVm !== 'ready') setPanel('local');
   }, [panel, status?.selected, status?.localVm]);
   useEffect(() => { onLocalView?.(view === 'local'); }, [view, onLocalView]);
-  const [entry, setEntry] = useState<{ revision: number; current?: SelectedPlace; intent?: string }>();
+  const [entry, setEntry] = useState<{ revision: number; current?: SelectedPlace; remembered?: Place }>();
   const [snapshot, setSnapshot] = useState<ClusterPlaceSnapshot>();
   const [snapshotUnavailable, setSnapshotUnavailable] = useState(false);
+  const snapshotEpoch = useRef(0);
   const [requirements, setRequirements] = useState<WorkspaceRequirements | null>();
   const [preflightBlocked, setPreflightBlocked] = useState(true);
   const [preflightUncertain, setPreflightUncertain] = useState(false);
@@ -71,14 +74,14 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
   const readSnapshot = active && !welcome && (seen || !!error || !!status);
   useEffect(() => {
     if (!readSnapshot) return;
-    let live = true;
+    const request = ++snapshotEpoch.current;
     setSnapshot(value => value && { ...value, selectedKey: null });
     void clusterPlaces().then(value => {
-      if (!live) return;
+      if (request !== snapshotEpoch.current) return;
       setSnapshotUnavailable(!value);
       setSnapshot(previous => value ?? (previous && { ...previous, selectedKey: null }));
     });
-    return () => { live = false; };
+    return () => { snapshotEpoch.current++; };
   }, [readSnapshot, view, currentPlace]);
   useEffect(() => {
     if (focusChoice.current && active) heading.current?.focus();
@@ -130,12 +133,19 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
   function chooseCluster(item?: Place, selected = false) {
     retireFirstTest();
     start(); setPanel('cluster');
-    setEntry(previous => ({ revision: (previous?.revision ?? 0) + 1, current: selected ? currentPlace : undefined, intent: item?.context }));
+    setEntry(previous => ({ revision: (previous?.revision ?? 0) + 1, current: selected ? currentPlace : undefined, remembered: item }));
   }
   function chooseComputer() { publishPlace({ kind: 'thisComputer' }); }
   function openExample() { chooseComputer(); onOpenExample(); }
   function back() { focusChoice.current = true; setPanel('places'); }
   function openLocal() { focusChoice.current = true; setPanel('local'); }
+  function removed(key: string, targetId: string | undefined, navigate: boolean) {
+    const current = currentPlaceRef.current;
+    if (targetId && current.kind === 'cluster' && current.target?.id === targetId) publishPlace({ kind: 'cluster' });
+    snapshotEpoch.current++;
+    setSnapshot(value => value && { ...value, places: value.places.filter(p => p.key !== key), selectedKey: value.selectedKey === key ? null : value.selectedKey });
+    if (navigate) back();
+  }
   async function chooseLocal(action: 'start' | 'cancel' | 'change' = 'start') {
     if (mutation.current || !status || (action !== 'cancel' && busy)) return;
     if (action === 'start' && status.selected === 'localVm' && !['cancelled', 'closed', 'failed'].includes(status.localVm)) return;
@@ -171,8 +181,8 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
   return <div className="places-workspace">
     {view !== 'places' && <Button type="button" kind="quiet" className="places-back" onClick={back}>Back to clusters</Button>}
     <div className="workspace-heading places-heading">
-      <h1 ref={heading} tabIndex={-1} id={titleId}>{view === 'places' ? 'Clusters' : view === 'cluster' ? entry?.current ? 'Manage your cluster' : entry?.intent ? 'Connect a cluster' : 'Add a cluster' : selected ? presentation.done ? 'Local cluster' : status?.localVm === 'ready' ? modelState === 'connected' ? 'Run your first agent' : 'Connect the AI' : status?.localVm === 'failed' ? status.preflightFailure ? 'Check this computer' : workspaceRecovery(status.workspaceFailure).heading : 'Getting the local cluster ready' : 'Set up this computer'}</h1>
-      {view === 'places' && <Button type="button" kind="primary" onClick={() => chooseCluster()}>Add a cluster</Button>}
+      <h1 ref={heading} tabIndex={-1} id={titleId}>{view === 'places' ? 'Clusters' : view === 'cluster' ? entry?.current ? 'Manage your cluster' : entry?.remembered ? 'Connect a cluster' : 'Add a cluster' : selected ? presentation.done ? 'Local cluster' : status?.localVm === 'ready' ? modelState === 'connected' ? 'Run your first agent' : 'Connect the AI' : status?.localVm === 'failed' ? status.preflightFailure ? 'Check this computer' : workspaceRecovery(status.workspaceFailure).heading : 'Getting the local cluster ready' : 'Set up this computer'}</h1>
+      {view === 'places' && <Button type="button" kind={!snapshotUnavailable && snapshot?.persistenceState === 'complete' && snapshot.places.length === 0 ? 'secondary' : 'primary'} onClick={() => chooseCluster()}>Add a cluster</Button>}
       {view === 'places' && <p className="muted">Choose where agents run</p>}
       {view === 'local' && selected && !['ready', 'failed', 'notIntegrated'].includes(status?.localVm ?? '') && <p className="muted">Meanwhile, meet the agent you'll test first.</p>}
       {view === 'local' && selected && status?.localVm === 'ready' && !presentation.done && !firstCheck && <p className="muted">On first setup, Bridge runs the bundled agent after you connect the AI, then opens its answer in Designer.</p>}
@@ -207,7 +217,7 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
         {selected && status && status.localVm !== 'ready' && status.localVm !== 'failed' && <Meet onRead={openExample} onName={onExampleName} />}
       </div>
     </div>
-    {entry && <ClusterCard active={active && view === 'cluster'} entry={entry} selection={currentPlace} onPlace={publishPlace} onOpenAgent={onOpenAgent ?? onOpenExample} />}
+    {entry && <ClusterCard active={active && view === 'cluster'} entry={entry} selection={currentPlace} onPlace={publishPlace} onOpenAgent={onOpenAgent ?? onOpenExample} onDone={back} onRemoved={removed} />}
     {error && <div role="alert"><p>{error}</p>
       <Button type="button" kind="secondary" className="action-spaced" disabled={busy}
         onClick={() => { setBusy(true); setError(undefined); setCheck(value => value + 1); }}>Check again</Button>

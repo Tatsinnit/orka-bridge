@@ -380,6 +380,11 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
             require(accountName && text.contains("existing account in agents"), "Conditional name-only access prompt missing: \(text)")
         } else {
             require(text.contains("Orka identity") && text.contains("Access was denied") && !accountName, "Denial incorrectly offered identity substitution: \(text)")
+            guard let explanation = nativeTextBounds("Access was denied").first,
+                let retry = nativeButtons("Check again").compactMap({ nativeBounds($0) }).first else {
+                fail("Access error or its retry action is missing")
+            }
+            require(explanation.maxY <= retry.minY, "Access error must appear above Check again")
         }
         print("PASS \(name): native fixture access state, no real credentials")
         return observations
@@ -394,7 +399,7 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         require(text.contains("Past Sends") && text.contains("Saved tests: pass") && text.contains("Saved tests: unknown"), "Newest saved results missing after restart: \(text)")
         require(text.contains("bridge-run-") && text.contains("fixture-secondary"), "Saved destination or planned Agent missing: \(text)")
-        print("PASS send-history-restarted: saved summaries after app restart; no reconnect or Send")
+        print("PASS send-history-restarted: saved summaries after app restart; no new Send")
         return observations
     }
     if name == "send-history-passed" {
@@ -417,7 +422,8 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
     }
     if name.hasPrefix("cluster-access") {
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(text.contains("Access confirmed") && text.contains("Open your agent"), "Fixture access not confirmed: \(text)")
+        require(text.contains("Access confirmed") && text.contains("Open your agent") && !nativeButtons("Done").isEmpty,
+                "Fixture access must finish with Done and an optional agent handoff: \(text)")
         return observations
     }
     if name.hasPrefix("cluster-card") {
@@ -431,8 +437,15 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
         print("PASS \(name): native discovery card; no Use or Send")
         return observations
     }
-    if name.hasPrefix("cluster-add") || name == "cluster-connect-blank" {
-        // Add and a row's Connect open a blank context choice. Add keeps the Designer destination,
+    if name.hasPrefix("cluster-connect-known") {
+        require(nativeTextIsVisible("Cluster found") && !nativeButtons("Use this cluster").isEmpty,
+                "Remembered Connect did not discover its known context without choosing again")
+        require(!nativeStrings().contains { $0.contains("choose its context to check it again") },
+                "Remembered Connect still asks for its context")
+        return observations
+    }
+    if name.hasPrefix("cluster-add") {
+        // Add opens a blank context choice and keeps the Designer destination,
         // so only a confirmation inside the page body would make this entry non-blank.
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         let bodyConfirmed = nativeTextBounds("Access confirmed").contains { bodyBounds().intersects($0) }
@@ -449,10 +462,18 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
             require(text.contains("kubectl context") || nativeTextIsVisible("kubectl context"), "Change context did not reveal the context choice: \(text)")
         } else {
             require(!nativeButtons("Open your agent").isEmpty && !nativeButtons("Change context").isEmpty
-                && !nativeButtons("Check access again").isEmpty && nativeStrings().contains { $0 == "AI connection" },
-                "Manage lost the existing AI connection, Open your agent, Change context or Check access again controls")
+                && !nativeButtons("Check access again").isEmpty && nativeStrings().contains { $0 == "AI connection" }
+                && nativeStrings().contains { $0.contains("Agents on this cluster") }
+                && nativeStrings().contains { $0.contains("runtime-reader") }
+                && nativeStrings().contains { $0.contains("Last checked") } && !nativeButtons("Remove").isEmpty,
+                "Manage lost the cluster summary, agents, last check, AI connection or actions")
         }
         print("PASS \(name): native Manage for the selected cluster")
+        return observations
+    }
+    if name == "cluster-remove-confirmation" {
+        require(nativeButtons("Remove cluster").count == 1 && nativeButtons("Keep cluster").count == 1,
+                "Remove needs an explicit confirmation and a way to keep the cluster")
         return observations
     }
     if page == "Clusters" {
@@ -536,13 +557,13 @@ func requirePlaceCards() {
     // Counted over the whole page; cards can be below the fold. The historical primary only Connects,
     // the selected secondary only Manages, and local still needs Set up.
     let strings = nativeStrings()
-    for expected in ["fixture-cluster", "fixture-secondary", "Last checked", "Not checked yet", "Selected for Designer"] {
+    for expected in ["fixture-cluster", "fixture-secondary", "Last checked", "Selected for Designer"] {
         require(strings.contains { $0.contains(expected) }, "Places is missing \(expected)")
     }
     require(!strings.contains { $0.contains("No other clusters added yet") } && nativeButtons("Connect").count == 1
         && nativeButtons("Manage").count == 1 && nativeButtons("Set up").count == 1 && nativeButtons("Add a cluster").count == 1,
         "expected one Connect, Manage, Set up and Add a cluster")
-    print("PASS: Places shows Last checked, Not checked yet and Selected for Designer with one action per card")
+    print("PASS: Places shows last-check times and current selection with one action per card")
 }
 func localPreflight(_ name: String) throws {
     clickButton("Set up")
@@ -862,6 +883,9 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         scrollMain(1000)
     }
     func setContent(_ width: CGFloat, _ height: CGFloat) {
+        guard let nativeWindow = nativeElements().first(where: { attribute($0, "AXRole") as? String == "AXWindow" }) else {
+            fail("Cannot find the current native window")
+        }
         let frame = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.titled, .closable, .miniaturizable, .resizable])
         var size = frame.size
@@ -1154,14 +1178,20 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     Thread.sleep(forTimeInterval: 1)
     scrollMain(-400)
     try capture("cluster-access-wide", "Clusters")
-    // Back leaves the confirmed destination alone: the primary has a historical check, the selected secondary none.
-    clickButton("Back to clusters")
+    // Done leaves the confirmed destination selected and returns to the list.
+    clickButton("Done")
     try capture("places-populated", "Clusters")
-    // Connect on the non-selected row opens a blank choice and never reconnects or refreshes.
+    // Connect on the non-selected row checks its known context without a chooser.
     clickButton("Connect")
     Thread.sleep(forTimeInterval: 1)
-    try capture("cluster-connect-blank", "Clusters")
-    clickButton("Back to clusters")
+    try capture("cluster-connect-known", "Clusters")
+    clickButton("Use this cluster")
+    clickButton("Done")
+    // Reconnect the secondary the same way, keeping the later Send walk on it.
+    clickButton("Connect")
+    Thread.sleep(forTimeInterval: 1)
+    clickButton("Use this cluster")
+    clickButton("Done")
     clickButton("Manage") // keeps the selected cluster's agent handoff
     Thread.sleep(forTimeInterval: 0.5)
     try capture("cluster-manage", "Clusters")
@@ -1195,7 +1225,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": true])
     clickTab("Overview", noReceipt)
     Thread.sleep(forTimeInterval: 1)
-    try overviewShot("overview-fixture-first-read-unavailable", ["Earlier cluster check", "Agents not checked yet. Refresh or check access in Clusters."], heading: "fixture-secondary")
+    // Manage already observed the cluster's agents; an offline refresh keeps that earlier check.
+    try overviewShot("overview-fixture-first-read-unavailable", ["Earlier cluster check", "Last seen", "runtime-reader"], heading: "fixture-secondary")
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false])
     scrollMain(12000)
     clickText("Refresh", in: try capture("overview-probe", "Overview"))
@@ -1238,7 +1269,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         let checked = try capturePreflight(name, expected)
         clickTab("Clusters", checked)
     }
-    // Reopen without reconnecting or sending again. Saved evidence survives;
+    // Reopen without a Send. Cluster metadata and saved Send evidence survive;
     // live handles and cluster authority do not.
     app.terminate()
     for _ in 0..<30 {
@@ -1252,8 +1283,57 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     // Use the same observed page readiness as the initial launch.
     waitForWorkspaceRenderer()
     let restarted = try capture("cluster-place-reopened", "Clusters")
-    // Places are session-only: a restart keeps saved Send summaries but not retained cluster rows.
-    require(nativeTextIsVisible("No other clusters added yet"), "Places must start empty after restart; no cluster authority is restored")
+    // Remembered metadata survives, but neither selection nor live access does.
+    let remembered = nativeButtons("Connect").count
+    require(remembered == 4 && nativeButtons("Manage").isEmpty
+        && nativeStrings().contains { $0.contains("fixture-cluster") }
+        && nativeStrings().contains { $0.contains("fixture-secondary") }
+        && nativeStrings().contains { $0.contains("Last checked") }
+        && !nativeTextIsVisible("No other clusters added yet"),
+        "Restart must retain four checked cluster identities, disconnected")
+    // Focus and pointer-click the first retained row. Fresh native discovery, not
+    // a persisted target/provider handle, supplies its Use action.
+    guard let firstConnect = nativeButtons("Connect").first else { fail("Remembered Connect missing") }
+    require(AXUIElementSetAttributeValue(firstConnect, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
+            "Cannot focus remembered Connect")
+    Thread.sleep(forTimeInterval: 0.3)
+    guard let connectBounds = nativeBounds(firstConnect), bodyBounds().contains(connectBounds) else {
+        fail("Remembered Connect did not scroll into view")
+    }
+    let connectPoint = CGPoint(x: connectBounds.midX, y: connectBounds.midY)
+    mouse(.leftMouseDown, connectPoint); mouse(.leftMouseUp, connectPoint)
+    Thread.sleep(forTimeInterval: 1)
+    try capture("cluster-connect-known-restarted", "Clusters")
+    clickButton("Use this cluster")
+    clickButton("Done")
+    clickButton("Manage")
+    setContent(1280, 800)
+    scrollMain(12000)
+    try capture("cluster-manage-restarted-wide", "Clusters")
+    setContent(540, 900)
+    scrollMain(12000)
+    try capture("cluster-manage-restarted-compact", "Clusters")
+    clickButton("Remove")
+    try capture("cluster-remove-confirmation", "Clusters")
+    clickButton("Keep cluster")
+    require(nativeButtons("Remove cluster").isEmpty, "Cancelling Remove did not keep the cluster")
+    clickButton("Remove")
+    clickButton("Remove cluster")
+    try capture("cluster-removed", "Clusters")
+    require(nativeButtons("Connect").count == remembered - 1 && nativeButtons("Manage").isEmpty,
+            "Remove must forget only the selected cluster and clear its selection")
+    app.terminate()
+    for _ in 0..<30 {
+        if app.isTerminated { break }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+    }
+    require(app.isTerminated, "Bridge did not quit after forgetting a cluster")
+    app = try launch()
+    app.activate(options: [])
+    waitForWorkspaceRenderer()
+    try capture("cluster-removal-reopened", "Clusters")
+    require(nativeButtons("Connect").count == remembered - 1 && nativeButtons("Manage").isEmpty,
+            "Removed cluster returned after restart")
     clickTab("Designer", restarted)
     Thread.sleep(forTimeInterval: 1)
     scrollMain(3000)

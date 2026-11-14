@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type AttemptSummary, isSummary } from '../clusters/send-api';
 import { isDocumentId, isSourceId, type SourceId } from '../designer/agent-api';
 export type RemoteAgent = Agent & { agentType: string | null; model: string | null; tools: string[] | null; record: AttemptSummary | null };
-export type Place = { key: string; context: string; service: string; namespace: string; stale: boolean; observedAt: number | null; agents: RemoteAgent[] };
+export type Place = { key: string; context: string; service: string; namespace: string; stale: boolean; observedAt: number | null; checkedAt?: number | null; agents: RemoteAgent[] };
 export type Places = { places: Place[]; historyState: 'complete' | 'unavailable'; unobserved: AttemptSummary[] };
 export type SavedFile = { documentId: string; name: string; state: 'readable' | 'unreadable'; source: SourceId | null; summary: { name: string | null; description: string | null; model: string; tools: string[] } | null; reason: string | null };
 export type SavedFiles = { state: 'complete' | 'unavailable'; files: SavedFile[]; runActive: boolean };
@@ -33,7 +33,7 @@ export function isPlaces(v: unknown): v is Places {
   const keys = new Set<string>();
   return v.places.every(p => {
     if (!object(p) || !text(p.key) || keys.has(p.key) || !text(p.context) || !text(p.service) || !text(p.namespace) || typeof p.stale !== 'boolean'
-      || !(p.observedAt === null && p.stale || time(p.observedAt)) || !Array.isArray(p.agents)) return false;
+      || !(p.observedAt === null && p.stale || time(p.observedAt)) || !(p.checkedAt === undefined || p.checkedAt === null || time(p.checkedAt)) || !Array.isArray(p.agents)) return false;
     keys.add(p.key);
     const uids = new Set<string>();
     return p.agents.every(a => {
@@ -43,8 +43,8 @@ export function isPlaces(v: unknown): v is Places {
     });
   });
 }
-export async function readPlaces(): Promise<Places | undefined> {
-  if (isTauri()) { try { const v: unknown = await invoke('overview_places'); if (isPlaces(v)) return v; } catch { /* No native diagnostics reach Overview. */ } }
+export async function readPlaces(key?: string): Promise<Places | undefined> {
+  if (isTauri()) { try { const v: unknown = await invoke('overview_places', key === undefined ? {} : { key }); if (isPlaces(v)) return v; } catch { /* No native diagnostics reach Overview. */ } }
 }
 export const unavailableFiles: SavedFiles = { state: 'unavailable', files: [], runActive: false };
 export const unavailableAgents: LiveAgents = { state: 'unavailable', installation: null, agents: [], observedAt: null, observation: null, runActive: false, reason: 'read' };

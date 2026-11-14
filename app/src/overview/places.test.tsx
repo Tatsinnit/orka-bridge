@@ -96,7 +96,7 @@ test('offline last-seen cards never present a current green pass and recover onl
 });
 
 test('a place with no successful observation never contributes an invented zero Agent total', async () => {
-  ipc({ ...places, places: [{ ...second, observedAt: null, stale: true, agents: [] }] });
+  ipc({ ...places, places: [{ ...second, checkedAt: 1234567890000, observedAt: null, stale: true, agents: [] }] });
   const counts = vi.fn(); render(<Overview {...props} onCounts={counts} />);
   expect(await screen.findByText('Agents not checked yet. Refresh or check access in Clusters.')).toBeTruthy();
   await waitFor(() => expect(counts).toHaveBeenLastCalledWith(expect.stringContaining('Cluster agent count unavailable')));

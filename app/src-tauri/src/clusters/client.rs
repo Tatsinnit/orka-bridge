@@ -24,6 +24,10 @@ use std::{
 };
 use tokio::time::{timeout_at, Instant};
 
+#[cfg(test)]
+#[path = "inventory_tests.rs"]
+mod inventory_tests;
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// One discovery or Use, from taking the session lock, including every Provider page.
 const OPERATION_LIMIT: Duration = Duration::from_secs(30);
@@ -85,6 +89,10 @@ impl ClusterClient {
     }
     pub(crate) fn target_binding(&self, id: TargetId) -> Option<&TargetBinding> {
         self.targets.get(&id)
+    }
+    pub(crate) fn forget_targets(&mut self, key: &str) {
+        self.targets
+            .retain(|_, binding| crate::overview_places::Place::new(binding.clone()).key != key);
     }
     pub fn contexts(&self) -> Result<Vec<ContextView>, ClusterError> {
         Ok(self.contexts.clone())

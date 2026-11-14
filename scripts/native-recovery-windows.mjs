@@ -113,7 +113,7 @@ try {
           if (command === 'cluster_use') return failure ? { status: 'unavailable', providers: [], failure } : { status: 'connected', providers: [provider], failure: null };
           if (command === 'cluster_reload') return ${JSON.stringify(name)} === 'cluster-reload-pending' ? new Promise(() => {}) : [{ ...context, id: '00000000-0000-4000-8000-000000000004', name: 'corrected-context' }];
           if (command === 'setup_requirements') return null;
-          if (command === 'cluster_places') return { places: [], selectedKey: null };
+          if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
           if (command === 'engine_call') throw { kind: 'unavailable' };
           throw Error('Unmocked fixture command: ' + command);
         } };
@@ -186,7 +186,7 @@ try {
         if (command === 'setup_status') return { selected: 'localVm', localVm: ${JSON.stringify(localVm)}, model: ${JSON.stringify(localVm === 'ready' ? 'available' : 'locked')}, modelSupported: ${JSON.stringify(modelSupported)}, workspaceProgress: ${JSON.stringify(progress)}, localVmError: null };
         if (command === 'setup_example') return pair;
         if (command === 'setup_requirements') return null;
-        if (command === 'cluster_places') return { places: [], selectedKey: null };
+        if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
         if (command === 'engine_call') throw { kind: 'unavailable' };
         throw Error('Unmocked fixture command: ' + command);
       } };
@@ -283,10 +283,10 @@ try {
         // Known and missing size facts: fixture IPC, not the native catalog.
         if (command === 'setup_requirements') return name === 'local-preflight' ? ${JSON.stringify({ memoryBytes: 4 * GiB, imageBytes: Math.round(2.8 * GiB), stateDiskBytes: 20 * GiB })} : null;
         if (command === 'setup_preflight') return { platform: 'windows', virtualization: 'ready', memory: 'ready', installedMemoryBytes: ${16 * GiB}, requiredMemoryBytes: ${4 * GiB} };
-        if (command === 'cluster_places') return name === 'places-populated' ? { selectedKey: null, places: [
+        if (command === 'cluster_places') return name === 'places-populated' ? { selectedKey: null, persistenceState: 'complete', places: [
           { key: 'fixture-a', context: 'fixture-cluster', service: 'control / orka', namespace: 'agents', stale: false, observedAt: Date.now() - 600000, agents: [] },
           { key: 'fixture-b', context: 'fixture-secondary', service: 'control / orka', namespace: 'agents', stale: true, observedAt: null, agents: [] }] }
-          : { places: [], selectedKey: null };
+          : { places: [], selectedKey: null, persistenceState: 'complete' };
         if (command === 'setup_example') return pair;
         if (command === 'setup_connect_model') {
           if (name === 'ai-connecting') return new Promise(() => {});

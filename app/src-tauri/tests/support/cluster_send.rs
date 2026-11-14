@@ -1186,6 +1186,23 @@ async fn reload_immediately_after_running_admission_keeps_its_access() {
 }
 
 #[tokio::test]
+async fn forget_after_running_admission_preserves_frozen_send_but_revokes_next_admission() {
+    let s = setup().await;
+    let key = s.session.places().places[0].key.clone();
+    let started = s.start().await;
+    assert_eq!(started["state"], "running");
+    s.session.forget(&key).await.unwrap();
+    let done = s.finish(&id(&started)).await;
+    assert_eq!(done["report"]["verdict"], "passed", "{done}");
+    assert_eq!(s.agent_posts().len(), 1);
+    s.idle_forwards().await;
+    assert!(s.session.places().places.is_empty());
+    let next = s.start().await;
+    assert_eq!(s.finish(&id(&next)).await["error"], "access");
+    assert_eq!(s.agent_posts().len(), 1);
+}
+
+#[tokio::test]
 async fn admission_does_not_wait_for_discovery_lock() {
     let s = setup().await;
     let (release, gate) = std::sync::mpsc::channel();

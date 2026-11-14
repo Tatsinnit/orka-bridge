@@ -194,7 +194,7 @@ fn main() {
                         {"kind":"builtin", "name":"file_read", "description":"Read a file"}
                     ]}
                 }),
-                "cluster_places" => json!({"places":[], "selectedKey":null}),
+                "cluster_places" => json!({"places":[], "selectedKey":null, "persistenceState":"complete"}),
                 "send_history" => json!([]),
                 "send_status" => json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "view":null, "busy":null}),
                 command @ ("agent_chat_status" | "agent_chat_send" | "agent_chat_reconnect" | "agent_chat_stop" | "agent_chat_new") => {

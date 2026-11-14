@@ -1,4 +1,6 @@
-//! Session-only inventories of explicitly confirmed places. No credentials in replies.
+//! Explicitly confirmed places. Only display/identity metadata survives a restart.
+mod metadata;
+use metadata::{Identity, Remembered, Store};
 #[cfg(test)]
 #[path = "places_tests.rs"]
 mod tests;
@@ -33,32 +35,30 @@ pub struct Place {
     pub namespace: String,
     pub stale: bool,
     pub observed_at: Option<u64>,
+    pub checked_at: Option<u64>,
     pub agents: Vec<RemoteAgent>,
     #[serde(skip)]
-    pub(crate) binding: TargetBinding,
+    identity: Identity,
 }
 impl Place {
     pub(crate) fn new(binding: TargetBinding) -> Self {
-        // Opaque selection IDs and mutable image settings are not place identity.
-        let key = serde_json::to_string(&(
-            &binding.context_name,
-            &binding.service_namespace,
-            &binding.service_uid,
-            &binding.deployment_namespace,
-            &binding.deployment_uid,
-            &binding.watched_namespace,
-        ))
-        .unwrap();
+        Self::from_identity(Identity::from(&binding), None)
+    }
+    fn from_identity(identity: Identity, checked_at: Option<u64>) -> Self {
         Self {
-            key,
-            context: binding.context_name.clone(),
-            service: format!("{}/{}", binding.service_namespace, binding.service_name),
-            namespace: binding.watched_namespace.clone(),
+            key: identity.key(),
+            context: identity.context_name.clone(),
+            service: format!("{}/{}", identity.service_namespace, identity.service_name),
+            namespace: identity.watched_namespace.clone(),
             stale: true,
             observed_at: None,
+            checked_at,
             agents: Vec::new(),
-            binding,
+            identity,
         }
+    }
+    pub(crate) fn matches(&self, binding: &TargetBinding) -> bool {
+        self.identity == Identity::from(binding)
     }
 }
 #[derive(Serialize)]
@@ -97,37 +97,129 @@ struct Entry {
     generation: u64,
 }
 #[derive(Default)]
+struct State {
+    entries: BTreeMap<String, Entry>,
+    // Never reset on removal: a late read must not match a remove/re-add generation.
+    generation: u64,
+    store: Store,
+}
+impl State {
+    fn next_generation(&mut self) -> u64 {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("inventory generation exhausted");
+        self.generation
+    }
+    fn start_read(&mut self, key: &str) -> Option<(u64, Arc<RemoteAccess>)> {
+        let generation = self.next_generation();
+        let entry = self.entries.get_mut(key)?;
+        entry.view.stale = true;
+        let access = entry.access.clone()?;
+        // Both Overview and Manage share one latest-request-wins revision per entry.
+        entry.generation = generation;
+        Some((generation, access))
+    }
+    fn save(&mut self, excluding: Option<&str>) -> Result<(), &'static str> {
+        let places: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(key, _)| excluding != Some(key.as_str()))
+            .map(|(_, e)| Remembered {
+                identity: e.view.identity.clone(),
+                observed_at: e.view.checked_at.unwrap(),
+            })
+            .collect();
+        // Keep the lock across replacement so older snapshots cannot win a write race.
+        self.store.save(&places)
+    }
+}
+#[derive(Default)]
 pub(crate) struct Inventory {
-    entries: Mutex<BTreeMap<String, Entry>>,
+    state: Mutex<State>,
     refreshing: tokio::sync::Mutex<()>,
 }
 impl Inventory {
+    pub(crate) fn with_storage(root: Option<std::path::PathBuf>) -> Self {
+        let (store, places) = Store::load(root);
+        let mut state = State {
+            store,
+            ..State::default()
+        };
+        for saved in places {
+            let view = Place::from_identity(saved.identity, Some(saved.observed_at));
+            let generation = state.next_generation();
+            state.entries.insert(
+                view.key.clone(),
+                Entry {
+                    view,
+                    generation,
+                    access: None,
+                },
+            );
+        }
+        Self {
+            state: Mutex::new(state),
+            refreshing: tokio::sync::Mutex::new(()),
+        }
+    }
+    pub(crate) fn persistence_state(&self) -> &'static str {
+        self.state.lock().unwrap().store.state()
+    }
+    pub(crate) fn get(&self, key: &str) -> Option<Place> {
+        self.state
+            .lock()
+            .unwrap()
+            .entries
+            .get(key)
+            .map(|e| e.view.clone())
+    }
+    pub(crate) fn forget(&self, key: &str) -> Result<(), &'static str> {
+        let mut state = self.state.lock().unwrap();
+        if !state.entries.contains_key(key) {
+            return Err("Cluster unavailable");
+        }
+        state.save(Some(key))?;
+        state.entries.remove(key);
+        Ok(())
+    }
     pub(crate) fn remember(&self, access: Arc<RemoteAccess>) {
-        let view = Place::new(access.binding().clone());
-        let mut entries = self.entries.lock().unwrap();
-        let entry = entries.entry(view.key.clone()).or_insert(Entry {
-            view,
-            access: None,
-            generation: 0,
-        });
-        entry.generation += 1;
-        entry.view.stale = true;
-        entry.access = Some(access);
+        let mut view = Place::new(access.binding().clone());
+        view.checked_at = Some(crate::overview::now());
+        let mut state = self.state.lock().unwrap();
+        let generation = state.next_generation();
+        if let Some(prior) = state.entries.get(&view.key) {
+            view.agents = prior.view.agents.clone();
+            view.observed_at = prior.view.observed_at;
+        }
+        state.entries.insert(
+            view.key.clone(),
+            Entry {
+                view,
+                access: Some(access),
+                generation,
+            },
+        );
+        // Live access is still usable if remembering fails; the snapshot reports unavailable.
+        let _ = state.save(None);
     }
     pub(crate) fn invalidate(&self, binding: Option<&TargetBinding>) {
         let key = binding.map(|b| Place::new(b.clone()).key);
-        for (id, entry) in self.entries.lock().unwrap().iter_mut() {
+        let mut state = self.state.lock().unwrap();
+        let generation = state.next_generation();
+        for (id, entry) in state.entries.iter_mut() {
             if key.as_ref().is_none_or(|key| key == id) {
-                entry.generation += 1;
+                entry.generation = generation;
                 entry.access = None;
                 entry.view.stale = true;
             }
         }
     }
     pub(crate) fn snapshot(&self) -> Vec<Place> {
-        self.entries
+        self.state
             .lock()
             .unwrap()
+            .entries
             .values()
             .map(|e| e.view.clone())
             .collect()
@@ -138,30 +230,45 @@ impl Inventory {
             let _refresh = self.refreshing.lock().await;
             return self.snapshot();
         };
-        let reads: Vec<_> = self
-            .entries
-            .lock()
-            .unwrap()
-            .iter_mut()
-            .filter_map(|(key, e)| {
-                e.view.stale = true;
-                e.access.clone().map(|a| (key.clone(), e.generation, a))
-            })
-            .collect();
+        let reads: Vec<_> = {
+            let mut state = self.state.lock().unwrap();
+            let keys: Vec<_> = state.entries.keys().cloned().collect();
+            keys.into_iter()
+                .filter_map(|key| {
+                    state
+                        .start_read(&key)
+                        .map(|(generation, access)| (key, generation, access))
+                })
+                .collect()
+        };
         for (key, generation, access) in reads {
-            let result = access.inventory().await;
-            if let Some(entry) = self.entries.lock().unwrap().get_mut(&key) {
-                // Reload/re-Use while a read was in flight revokes that response.
-                if entry.generation == generation {
-                    if let Ok(agents) = result {
-                        entry.view.agents = agents;
-                        entry.view.observed_at = Some(crate::overview::now());
-                        entry.view.stale = false;
-                    }
+            self.refresh_entry(&key, generation, access).await;
+        }
+        self.snapshot()
+    }
+    pub(crate) async fn refresh_one(&self, key: &str) -> Vec<Place> {
+        // A selected cluster must not queue behind unrelated Overview inventory reads.
+        let read = self.state.lock().unwrap().start_read(key);
+        if let Some((generation, access)) = read {
+            self.refresh_entry(key, generation, access).await;
+        }
+        self.get(key).into_iter().collect()
+    }
+    async fn refresh_entry(&self, key: &str, generation: u64, access: Arc<RemoteAccess>) {
+        let result = access.inventory().await;
+        let mut state = self.state.lock().unwrap();
+        if let Some(entry) = state.entries.get_mut(key) {
+            // Reload/re-Use while a read was in flight revokes that response.
+            if entry.generation == generation {
+                if let Ok(agents) = result {
+                    entry.view.agents = agents;
+                    entry.view.observed_at = Some(crate::overview::now());
+                    entry.view.checked_at = entry.view.observed_at;
+                    entry.view.stale = false;
+                    let _ = state.save(None);
                 }
             }
         }
-        self.snapshot()
     }
 }
 pub(crate) fn project(mut places: Vec<Place>, history: Option<Vec<AttemptSummary>>) -> Places {
@@ -174,7 +281,7 @@ pub(crate) fn project(mut places: Vec<Place>, history: Option<Vec<AttemptSummary
     };
     let mut matched = HashSet::new();
     for place in &mut places {
-        let b = &place.binding;
+        let b = &place.identity;
         for agent in &mut place.agents {
             // History is newest first. A name is never an association key.
             if let Some(record) = history.iter().find(|r| {
@@ -203,4 +310,11 @@ pub(crate) fn project(mut places: Vec<Place>, history: Option<Vec<AttemptSummary
 }
 pub async fn list(session: &ClusterSession, history: Option<Vec<AttemptSummary>>) -> Places {
     project(session.overview().await, history)
+}
+pub async fn list_one(
+    session: &ClusterSession,
+    history: Option<Vec<AttemptSummary>>,
+    key: &str,
+) -> Places {
+    project(session.overview_one(key).await, history)
 }

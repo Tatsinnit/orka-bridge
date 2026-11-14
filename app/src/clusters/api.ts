@@ -33,18 +33,22 @@ async function call<T>(command: string, args: Record<string, unknown>, valid: (v
   }
   throw new ClusterRequestError({ check, result: 'unknown' });
 }
-export type ClusterPlaceSnapshot = { places: Place[]; selectedKey: string | null };
+export type ClusterPlaceSnapshot = { places: Place[]; selectedKey: string | null; persistenceState: 'complete' | 'unavailable' };
 // Unlike Overview's refresh, this reads only the native session's retained views.
 export async function clusterPlaces(): Promise<ClusterPlaceSnapshot | undefined> {
   if (!isTauri()) return;
   try {
     const value: unknown = await invoke('cluster_places', {});
-    if (!object(value) || !keys(value, ['places', 'selectedKey'])) return;
+    if (!object(value) || !keys(value, ['places', 'selectedKey', 'persistenceState']) || (value.persistenceState !== 'complete' && value.persistenceState !== 'unavailable')) return;
     const retained = { places: value.places, historyState: 'complete', unobserved: [] };
     if (isPlaces(retained) && (value.selectedKey === null || typeof value.selectedKey === 'string' && retained.places.some(p => p.key === value.selectedKey))) {
-      return { places: retained.places, selectedKey: value.selectedKey };
+      return { places: retained.places, selectedKey: value.selectedKey, persistenceState: value.persistenceState };
     }
   } catch { /* Passive observation never exports native diagnostics or renews access. */ }
+}
+export const reconnectCluster = (key: string): Promise<TargetView> => call('cluster_reconnect', { key }, target, 'configuration');
+export async function forgetCluster(key: string): Promise<void> {
+  await call('cluster_forget', { key }, (v): v is null => v === null, 'configuration');
 }
 export const contexts = () => call('cluster_contexts', {}, (v): v is ContextView[] => list(v, context), 'configuration');
 export const reloadContexts = () => call('cluster_reload', {}, (v): v is ContextView[] => list(v, context), 'configuration');

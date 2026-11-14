@@ -108,7 +108,7 @@ test.each([null, 'attempted'])('a lost selection reply preserves durable intent 
   let intentAtSelection: string | null = null;
   const ipc = vi.fn((command: string) => {
     if (command === 'setup_status') return { selected: selected ? 'localVm' : null, localVm: !selected ? 'idle' : ++reads === 1 ? 'starting' : 'ready', model: selected && reads > 1 ? 'available' : 'locked' };
-    if (command === 'cluster_places') return { places: [], selectedKey: null };
+    if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
     if (command === 'setup_requirements') return null;
     if (command === 'setup_select_local') {
       intentAtSelection = localStorage.getItem('bridge.firstTest.v1'); selected = true;

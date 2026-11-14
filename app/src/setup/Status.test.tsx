@@ -51,7 +51,7 @@ test('unfinished local row, shell and card agree; finished local page owns Stop 
     if (command === 'setup_requirements') return null;
     if (command === 'setup_connect_model') return { ready: true };
     if (command === 'setup_change_local') { selected = null; return { selected, localVm: 'cancelled', model: 'locked' }; }
-    if (command === 'cluster_places') return { selectedKey: null, places: [] };
+    if (command === 'cluster_places') return { selectedKey: null, places: [], persistenceState: 'complete' };
     if (command === 'cluster_contexts') return [];
     throw Error('Unexpected ' + command);
   });

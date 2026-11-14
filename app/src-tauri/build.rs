@@ -40,6 +40,8 @@ fn main() {
             "agent_save",
             "agent_reveal",
             "cluster_places",
+            "cluster_reconnect",
+            "cluster_forget",
             "cluster_contexts",
             "cluster_reload",
             "cluster_discover",

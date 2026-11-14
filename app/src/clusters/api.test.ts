@@ -1,25 +1,53 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, expect, test, vi } from 'vitest';
-import { contexts, discover, connectCluster, reloadContexts, clusterPlaces } from './api';
+import { contexts, discover, connectCluster, reloadContexts, clusterPlaces, reconnectCluster, forgetCluster } from './api';
 
 afterEach(() => { clearMocks(); vi.unstubAllGlobals(); });
 const id = '00000000-0000-4000-8000-000000000001';
 const place = { key: 'full-installation-key', context: 'team', service: 'control/orka', namespace: 'agents', stale: true, observedAt: null, agents: [] };
 test('places reads only the passive native snapshot and preserves unobserved facts', async () => {
   vi.stubGlobal('isTauri', true);
-  const value = { places: [place], selectedKey: place.key };
+  const value = { places: [place], selectedKey: place.key, persistenceState: 'complete' };
   const ipc = vi.fn(() => value); mockIPC(ipc);
   await expect(clusterPlaces()).resolves.toEqual(value);
   expect(ipc).toHaveBeenCalledExactlyOnceWith('cluster_places', {});
 });
 test.each([
   null,
-  { places: [place], selectedKey: 'same-name-not-same-installation' },
-  { places: [{ ...place, observedAt: null, stale: false }], selectedKey: null },
-  { places: [place], selectedKey: null, token: 'SECRET_MARKER' },
+  { places: [place], selectedKey: 'same-name-not-same-installation', persistenceState: 'complete' },
+  { places: [{ ...place, observedAt: null, stale: false }], selectedKey: null, persistenceState: 'complete' },
+  { places: [place], selectedKey: null, persistenceState: 'complete', token: 'SECRET_MARKER' },
+  { places: [place], selectedKey: null },
+  { places: [place], selectedKey: null, persistenceState: 'invented' },
 ])('invalid places snapshot is not projected: %j', async value => {
   vi.stubGlobal('isTauri', true); mockIPC(() => value);
   await expect(clusterPlaces()).resolves.toBeUndefined();
+});
+test('unavailable persistence is preserved, not treated as an empty saved list', async () => {
+  vi.stubGlobal('isTauri', true);
+  const value = { places: [place], selectedKey: null, persistenceState: 'unavailable' };
+  mockIPC(() => value); await expect(clusterPlaces()).resolves.toEqual(value);
+});
+test('remembered reconnect uses only the native key and validates fresh target handles', async () => {
+  vi.stubGlobal('isTauri', true);
+  const value = { id, context_id: id, context_name: 'team', service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'image:v1' };
+  const ipc = vi.fn(() => value); mockIPC(ipc);
+  await expect(reconnectCluster(place.key)).resolves.toEqual(value);
+  expect(ipc).toHaveBeenCalledWith('cluster_reconnect', { key: place.key });
+  mockIPC(() => ({ ...value, id: 'saved-name', token: 'SECRET_MARKER' }));
+  await expect(reconnectCluster(place.key)).rejects.toMatchObject({ failure: { check: 'configuration', result: 'unknown' } });
+  mockIPC(() => Promise.reject({ check: 'orkaIdentity', result: 'identityRejected' }));
+  await expect(reconnectCluster(place.key)).rejects.toMatchObject({ failure: { check: 'orkaIdentity', result: 'identityRejected' } });
+});
+test('forget accepts only native void success and never exports rejection diagnostics', async () => {
+  vi.stubGlobal('isTauri', true); const ipc = vi.fn(() => null); mockIPC(ipc);
+  await expect(forgetCluster(place.key)).resolves.toBeUndefined();
+  expect(ipc).toHaveBeenCalledWith('cluster_forget', { key: place.key });
+  for (const value of [false, {}, { token: 'SECRET_MARKER' }]) {
+    mockIPC(() => value); await expect(forgetCluster(place.key)).rejects.toThrow('Cluster information could not be read');
+  }
+  mockIPC(() => Promise.reject('SECRET_MARKER'));
+  await expect(forgetCluster(place.key)).rejects.toThrow('Cluster information could not be read');
 });
 test('a passive snapshot error or browser preview does not export private diagnostics', async () => {
   vi.stubGlobal('isTauri', true); const ipc = vi.fn(() => Promise.reject({ message: 'SECRET_MARKER' })); mockIPC(ipc);
