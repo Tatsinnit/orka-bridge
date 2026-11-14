@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useEffect, useRef, useState } from 'react';
 import { StatusPill } from '../components/DesignSystem';
 import { connectModel, removeModel, type ModelFailure } from './modelState';
@@ -114,32 +115,32 @@ export default function Model({ enabled, queueable = false, paused = false, away
           {confirmRemoval ? <div role="group" aria-label="Remove sign-in confirmation">
             <p>Disconnect the AI and remove Bridge’s saved sign-in? GitHub CLI stays signed in.</p>
             <div className="workspace-step-actions">
-              <button ref={cancelRemoval} type="button" className="workspace-primary" onClick={() => {
+              <Button ref={cancelRemoval} type="button" kind="primary" onClick={() => {
                 refocus.current = document.activeElement === cancelRemoval.current ? 'remove' : undefined;
                 setConfirmRemoval(false);
-              }}>Cancel</button>
-              <button ref={removal} type="button" className="workspace-secondary" disabled={!enabled || paused || !!busy} onClick={() => {
+              }}>Cancel</Button>
+              <Button ref={removal} type="button" kind="secondary" className="button-danger" disabled={!enabled || paused || !!busy} onClick={() => {
                 refocus.current = document.activeElement === removal.current ? 'remove' : undefined;
                 void perform('remove');
-              }}>Remove sign-in</button>
+              }}>Remove sign-in</Button>
             </div>
           </div> : <>
-          {cliUnavailable && <button type="button" className="workspace-secondary" onClick={() => { void help('githubCliInstall'); }}>Install GitHub CLI</button>}
-          {(cliUnavailable || signInCheck) && <button type="button" className="workspace-secondary" onClick={() => { void help('githubSignIn'); }}>Sign-in help</button>}
+          {cliUnavailable && <Button type="button" kind="secondary" onClick={() => { void help('githubCliInstall'); }}>Install GitHub CLI</Button>}
+          {(cliUnavailable || signInCheck) && <Button type="button" kind="secondary" onClick={() => { void help('githubSignIn'); }}>Sign-in help</Button>}
           {queued || busy || ready ? <div ref={status} role={ready ? 'status' : undefined} tabIndex={-1} className="model-state">
             <StatusPill state={ready ? 'passed' : queued ? 'not-started' : 'running'}>{busy === 'remove' ? 'Removing sign-in…' : ready ? 'Connected' : queued ? 'Queued' : 'Connecting the AI…'}</StatusPill>
             {queued && <><span className="muted">Connects when the local cluster is ready.</span>
-              <button type="button" className="workspace-link" onClick={() => setQueued(false)}>Cancel queued connection</button></>}
+              <Button type="button" kind="quiet" onClick={() => setQueued(false)}>Cancel queued connection</Button></>}
           </div>
-          : !removalFailed && <button key="model-connect" ref={retry} type="button" className={primary ? 'workspace-primary' : 'workspace-secondary'} disabled={(!enabled && !queueable) || paused || !!busy} onClick={choose}>
+          : !removalFailed && <Button key="model-connect" ref={retry} type="button" kind={primary ? 'primary' : 'secondary'} disabled={(!enabled && !queueable) || paused || !!busy} onClick={choose}>
             {error && failedAction === 'connect' ? 'Check again' : 'Connect the AI'}
-          </button>}
-          {hasSignIn && busy !== 'remove' && <button ref={removal} type="button" className={removalFailed ? 'workspace-primary' : 'workspace-link'} disabled={!enabled || paused || !!busy}
+          </Button>}
+          {hasSignIn && busy !== 'remove' && <Button ref={removal} type="button" kind={removalFailed ? 'primary' : 'quiet'} className={removalFailed ? undefined : 'button-danger'} disabled={!enabled || paused || !!busy}
             onClick={() => {
               refocus.current = document.activeElement === removal.current ? 'remove' : undefined;
               if (removalFailed) void perform('remove'); else setConfirmRemoval(true);
-            }}>{removalFailed ? 'Retry removal' : 'Remove sign-in'}</button>}
-          {error && <button type="button" className="workspace-secondary" onClick={() => { void copy(); }}>Copy details for help</button>}
+            }}>{removalFailed ? 'Retry removal' : 'Remove sign-in'}</Button>}
+          {error && <Button type="button" kind="secondary" onClick={() => { void copy(); }}>Copy details for help</Button>}
           </>}
         </div>
       </div>

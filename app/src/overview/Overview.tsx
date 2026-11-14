@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useEffect, useRef, useState } from 'react';
 import { CardSection, Details, GeneratedValue, LongCard, StatusPill, type Status } from '../components/DesignSystem';
 import { RelativeTime } from '../components/RelativeTime';
@@ -91,7 +92,7 @@ export default function Overview({ active, runBusy, workspaceKey, onOpenDocument
         const check = sourceUnavailable ? 'Current saved version unavailable' : stale ? 'Checks not run since your change' : o?.state === 'running' ? 'Running checks' : o?.state === 'complete' && o.report && o.report.verdict !== 'unknown' ? `Checks ${o.report.verdict} in this session` : o ? 'Check result unknown' : 'Not tested by Bridge in this session';
         return { key: `${observed.installation}/${agent.namespace}/${agent.uid}`, source: o?.source, place: 'This computer', node: <LongCard key={`${observed.installation}/${agent.namespace}/${agent.uid}`} title={file?.summary?.name || file?.name || agent.name}
           status={<StatusPill state={state}>agent</StatusPill>}
-          action={file?.state === 'readable' ? <button type="button" className="workspace-secondary" aria-label={`Open ${file.name}`} onClick={() => onOpenDocument(file.documentId)}>Open</button> : undefined}
+          action={file?.state === 'readable' ? <Button type="button" kind="secondary" size="small" aria-label={`Open ${file.name}`} onClick={() => onOpenDocument(file.documentId)}>Open</Button> : undefined}
           summary={file?.summary?.description ?? 'No linked agent file'}>
           <CardSection title="Checks"><p>{check}</p><p>{o ? <>Last test: {when(o.observedAt)}</> : 'Last run: unavailable'}</p></CardSection>
           {file && <CardSection title="Saved settings">{declarations(file)}</CardSection>}
@@ -103,7 +104,7 @@ export default function Overview({ active, runBusy, workspaceKey, onOpenDocument
       }) ?? [];
   const clusterCards = places ? remoteCards(places, saved, localCards, onOpenDocument) : [];
   return <section className="overview" aria-label="Agents by cluster" hidden={!active}>
-    <div className="page-heading"><h1 id={active ? 'page-title' : undefined}>Your agents</h1><div className="overview-actions"><fieldset className="overview-grouping"><legend className="sr-only">Group agents</legend><button type="button" className="workspace-secondary" aria-pressed={!byAgent} onClick={() => setByAgent(false)}>By cluster</button><button type="button" className="workspace-secondary" aria-pressed={byAgent} onClick={() => setByAgent(true)}>By agent</button></fieldset><button type="button" className="workspace-secondary" onClick={() => setRefresh(value => value + 1)}>Refresh</button></div></div>
+    <div className="page-heading"><h1 id={active ? 'page-title' : undefined}>Your agents</h1><div className="overview-actions"><fieldset className="overview-grouping"><legend className="sr-only">Group agents</legend><Button type="button" kind="secondary" size="small" aria-pressed={!byAgent} onClick={() => setByAgent(false)}>By cluster</Button><Button type="button" kind="secondary" size="small" aria-pressed={byAgent} onClick={() => setByAgent(true)}>By agent</Button></fieldset><Button type="button" kind="secondary" onClick={() => setRefresh(value => value + 1)}>Refresh</Button></div></div>
     {placeError && <p role="status">Could not read clusters</p>}
     {places?.historyState === 'unavailable' && <p role="alert">Saved Send summaries unavailable. Recorded checks cannot be confirmed.</p>}
     <div className={byAgent ? undefined : "overview-board"}><section className="overview-place-section" aria-label="This computer">
@@ -111,13 +112,13 @@ export default function Overview({ active, runBusy, workspaceKey, onOpenDocument
     <p className="muted overview-counts">{counts}</p>
     {pending && !observed && <p>The local cluster is running tests</p>}
     {observed && (live?.state !== 'complete' || pending) && <p className="muted">Last seen {when(observed.observedAt)}</p>}
-    {live?.state === 'unavailable' && live.reason === 'stopped' && <button type="button" className="workspace-link" onClick={onChooseWorkspace}>Open Clusters</button>}
+    {live?.state === 'unavailable' && live.reason === 'stopped' && <Button type="button" kind="quiet" onClick={onChooseWorkspace}>Open Clusters</Button>}
     {files?.state === 'unavailable' && <p role="alert">Could not read saved files</p>}
     {files?.state === 'complete' && !saved.length && !allEmpty && <p>No saved agent files</p>}
-    {allEmpty && <div className="card overview-empty"><h3>No agents on this computer yet</h3><button type="button" className="workspace-primary" onClick={onOpenExample}>Open example</button></div>}
+    {allEmpty && <div className="card overview-empty"><h3>No agents on this computer yet</h3><Button type="button" kind="primary" onClick={onOpenExample}>Open example</Button></div>}
     <div className="overview-cards">
       {visibleFiles.map(file => <LongCard key={file.documentId} title={file.summary?.name || file.name} status={<span className="muted">Saved file</span>}
-        action={file.state === 'readable' ? <button type="button" className="workspace-secondary" aria-label={`Open ${file.name}`} onClick={() => onOpenDocument(file.documentId)}>Open</button> : undefined}
+        action={file.state === 'readable' ? <Button type="button" kind="secondary" size="small" aria-label={`Open ${file.name}`} onClick={() => onOpenDocument(file.documentId)}>Open</Button> : undefined}
         summary={file.summary?.description ?? (file.state === 'unreadable' ? 'Saved files unavailable' : 'Agent definition on this computer')}>
         <CardSection title="Saved settings">{declarations(file)}</CardSection>
         <CardSection title="Checks"><p>Check result unavailable for this saved version</p></CardSection>

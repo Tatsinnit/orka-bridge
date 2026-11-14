@@ -122,6 +122,8 @@ func click(_ label: String, _ rows: [VNRecognizedTextObservation]) {
     }
     Thread.sleep(forTimeInterval: 1)
 }
+// A native frame can appear before WebKit has painted the controls.
+waitForButton("Connect the AI")
 // A running VM is not completed setup: its local row offers the current AI action.
 var rows = try capture("local-places-wide", ["Choose where agents run", "This computer", "Connect the AI"])
 require(enabledButton("Connect the AI") != nil && enabledButton("Manage") == nil && enabledButton("Set up") == nil,
@@ -233,7 +235,7 @@ func nativeResultTextIsVisible(_ expected: String) -> Bool {
     nativeElements().contains { element in
         guard attribute(element, "AXRole") as? String == "AXStaticText",
             let text = attribute(element, "AXValue") as? String,
-            (expected == "Observed for" ? text.hasPrefix("Observed for ") : text.hasPrefix("The answer did not include") && text.contains(expected)),
+            (text == expected || (expected == "Observed for" ? text.hasPrefix("Observed for ") : text.hasPrefix("The answer did not include") && text.contains(expected))),
             let bounds = nativeBounds(element) else { return false }
         return window()!.1.contains(bounds)
     }
@@ -289,6 +291,43 @@ func fillMessage(_ text: String) {
     if actual != text { _ = try? capture("chat-input-failed", []) }
     require(actual == text, "Native keystrokes did not fill Chat Message: expected \(text.debugDescription), got \(String(describing: actual))")
 }
+// Controls use the compiled frontend with a synthetic catalog, not real tools.
+for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
+    localSize(CGFloat(width), CGFloat(height))
+    scroll(4000)
+    _ = try seek("Instructions and settings", -150)
+    _ = try capture("local-controls-agent-\(size)", ["Instructions and settings"])
+    _ = try seek("Add a tool", -150)
+    waitForButton("Add a tool")
+    _ = try capture("local-controls-fields-\(size)", ["Add a tool", "It thinks with"])
+    click("Add a tool", [])
+    let search = nativeElements().filter { element in
+        ["AXTextField", "AXSearchField"].contains(attribute(element, "AXRole") as? String ?? "")
+            && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == "Find a tool" }
+    }
+    require(search.count == 1, "Expected the labeled picker search field")
+    require(nativeBounds(search[0]).map { abs($0.height - 32) < 2 } == true, "Picker search must be 32px high")
+    _ = try capture("local-controls-picker-\(size)", ["Find a tool", "Read a file"])
+    guard let close = enabledButton("Close picker"), let bounds = nativeBounds(close) else {
+        fatalError("Labeled picker X missing")
+    }
+    require(abs(bounds.width - 26) < 2 && abs(bounds.height - 26) < 2, "Picker X must be 26px square")
+    click("Close picker", [])
+    require(enabledButton("Close picker") == nil, "X did not dismiss picker")
+    require(attribute(enabledButton("Add a tool")!, "AXFocused") as? Bool == true, "X did not return focus")
+    click("Add a tool", [])
+    for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap) }
+    Thread.sleep(forTimeInterval: 0.3)
+    require(enabledButton("Close picker") == nil, "Escape did not dismiss picker")
+    click("Add a tool", [])
+    let outside = CGPoint(x: window()!.1.minX + 5, y: window()!.1.minY + 90)
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: outside, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+    require(enabledButton("Close picker") == nil, "Outside click did not dismiss picker")
+}
+scroll(4000)
 // Match the fixture's known Instructions value, not a label plus a guessed
 // offset which can land outside the editor after responsive reflow.
 let editors = nativeElements().filter {
@@ -390,3 +429,10 @@ _ = try capture("local-remove-confirmation-compact", ["saved sign-in?", "Cancel"
 click("Cancel", [])
 click("Back to clusters", [])
 _ = try capture("local-places-compact", ["Choose where agents run", "This computer"])
+// Keep the third top-level page reviewable at both control sizes too.
+click("Overview", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
+    localSize(CGFloat(width), CGFloat(height))
+    scroll(4000)
+    _ = try capture("local-controls-overview-\(size)", ["Your agents", "Refresh"])
+}

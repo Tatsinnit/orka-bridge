@@ -49,13 +49,13 @@ test.each([
   expect(within(region).getByText(badge, { selector: '.pill' }).className).toContain(`status-${tone}`);
   const result = within(region).queryByRole('button', { name: 'See what it answered' });
   expect(!!result).toBe(count !== undefined);
-  if (result && (firstCheck === 'stale' || firstCheck === 'unknown')) expect(result.className).toBe('workspace-secondary');
+  if (result && (firstCheck === 'stale' || firstCheck === 'unknown')) expect(result.className).toBe('button button-secondary');
   expect(within(region).queryByText('Its test failed', { selector: 'p' })?.textContent).toBe(summary);
   if (summary) expect(within(region).getByRole('status').compareDocumentPosition(within(region).getByText(summary, { selector: 'p' })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   if (primary) {
     const button = within(region).getByRole('button', { name: primary });
-    expect(button.className).toBe('workspace-primary');
-  } else expect(region.querySelector('.workspace-primary')).toBeNull();
+    expect(button.className).toBe('button button-primary');
+  } else expect(region.querySelector('.button-primary')).toBeNull();
 });
 
 test('five steps show native transfer bytes and ETA in one bar, with expandable details', async () => {

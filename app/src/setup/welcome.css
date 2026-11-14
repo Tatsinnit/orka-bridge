@@ -9,9 +9,6 @@
 .welcome-journey b { font-size: var(--size-reading); line-height: 1.33333; }
 .welcome-journey span { color: var(--color-text-secondary); }
 .journey-number { font: var(--type-small); font-family: var(--font-mono); }
-.workspace-primary { min-height: 38px; padding: 0 16px; border: 1px solid var(--color-action); border-radius: var(--radius-control); background: var(--color-action); color: var(--color-action-text); font-size: var(--size-body); font-weight: 500; }
-.workspace-primary:not(:disabled):hover { background: var(--color-action-hover); }
-.workspace-primary:disabled { cursor: not-allowed; background: var(--color-hover); color: var(--color-text-secondary); border-color: var(--color-border-strong); }
 .workspace-heading { display: grid; gap: 8px; margin-bottom: 16px; }
 .workspace-heading h1 { font: var(--type-title); }
 .workspace-heading p { font: var(--type-body); }
@@ -27,8 +24,6 @@
 .workspace-disclosure { display: inline-flex; align-items: center; gap: 4px; justify-self: start; background: none; padding: 0; border: 0; color: var(--color-text-secondary); font-weight: 500; font-size: var(--size-body); }
 .workspace-disclosure:hover { color: var(--color-text); }
 .workspace-choice-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.workspace-link { text-decoration: underline; text-underline-offset: 3px; font-weight: 500; border: 0; padding: 0; background: none; }
-.workspace-link:disabled { color: var(--color-text-secondary); cursor: not-allowed; }
 .workspace-coming { position: relative; }
 .workspace-tip { display: none; position: absolute; z-index: 1; bottom: calc(100% + 6px); left: 0; background: var(--color-action); color: var(--color-page); border-radius: var(--radius-control); padding: 4px 8px; font-size: var(--size-small); white-space: nowrap; }
 .workspace-coming:hover > .workspace-tip, .workspace-coming:focus-visible > .workspace-tip { display: block; }

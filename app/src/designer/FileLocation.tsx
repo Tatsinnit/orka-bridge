@@ -1,3 +1,4 @@
+import { Button, CopyIcon } from '../components/Button';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useState } from 'react';
 
@@ -17,8 +18,8 @@ export default function FileLocation({ path, documentId }: { path?: string; docu
     } catch { setFeedback({ path: filePath, text: 'Could not show the folder. Copy the path to open it yourself.' }); }
   }
   return <div className="file-location">{path ? <code className="agent-path">{path}</code> : <p className="muted">The file path is unavailable.</p>}<div className="agent-tool-row">
-    {path && <button type="button" className="part-button" aria-label="Copy file path" onClick={() => { void copy(); }}>Copy file path</button>}
-    <button type="button" className="part-button" onClick={() => { void reveal(); }}>Show in folder</button>
+    {path && <Button type="button" kind="icon" aria-label="Copy file path" title="Copy file path" onClick={() => { void copy(); }}><CopyIcon /></Button>}
+    <Button type="button" kind="secondary" onClick={() => { void reveal(); }}>Show in folder</Button>
     <span className="muted" role="status">{feedback && feedback.path === path ? feedback.text : ''}</span>
   </div></div>;
 }

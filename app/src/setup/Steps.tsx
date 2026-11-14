@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useEffect, useState } from 'react';
 import { agentInfo } from '../designer/agent-api';
 import { type ExamplePair, loadExample, type SetupStatus } from './state';
@@ -78,15 +79,15 @@ export function SetupProgress(props: Props) {
         {status.localVmError && <pre tabIndex={0}>{ready ? modelDetails(status.localVmError) : status.localVmError}</pre>}
       </div>}</>}
     <div className="workspace-step-actions">
-      {['preparing', 'installing', 'starting'].includes(status.localVm) && <><button type="button" className="workspace-secondary" disabled={busy || !!error} onClick={onCancel}>Cancel</button><span className="muted">Cancel pauses setup. Your downloaded files are kept.</span></>}
-      {status.localVm === 'notIntegrated' && onCluster && <button type="button" className="workspace-link" disabled={busy} onClick={onCluster}>Use a cluster you already have instead</button>}
-      {paused && <button type="button" className="workspace-primary" disabled={busy || !!error} onClick={onRestart}>Start again</button>}
-      {ready && <><button type="button" className="workspace-link" disabled={busy || !!error} onClick={onOpenExample}>Read its instructions</button>{props.modelState === 'connected' && <>
-        {props.firstCheck === 'stale' ? <button type="button" className="workspace-primary" disabled={busy || !!error} onClick={onOpenExample}>Run it again</button>
-          : (props.firstCheck === 'unknown' || ((props.firstCheck === 'passed' || props.firstCheck === 'failed') && !props.firstTestResult)) ? <button type="button" className="workspace-primary" disabled={busy || !!error || !props.onCheckFirstTest} onClick={props.onCheckFirstTest}>Check again</button>
-          : !props.firstCheck && <button type="button" className="workspace-primary" disabled={busy || !!error} onClick={onOpenExample}>Open your first agent</button>}
-        {props.firstTestResult && <button type="button" className={props.firstCheck === 'stale' || props.firstCheck === 'unknown' || props.firstCheck === 'running' ? 'workspace-secondary' : 'workspace-primary'} disabled={busy || !!error} onClick={onOpenExample}>See what it answered</button>}
-      </>}<button type="button" className="workspace-link" disabled={busy || !!error} onClick={event => onChange(event.currentTarget)}>Stop the local cluster</button></>}
+      {['preparing', 'installing', 'starting'].includes(status.localVm) && <><Button type="button" kind="secondary" disabled={busy || !!error} onClick={onCancel}>Cancel</Button><span className="muted">Cancel pauses setup. Your downloaded files are kept.</span></>}
+      {status.localVm === 'notIntegrated' && onCluster && <Button type="button" kind="quiet" disabled={busy} onClick={onCluster}>Use a cluster you already have instead</Button>}
+      {paused && <Button type="button" kind="primary" disabled={busy || !!error} onClick={onRestart}>Start again</Button>}
+      {ready && <><Button type="button" kind="quiet" disabled={busy || !!error} onClick={onOpenExample}>Read its instructions</Button>{props.modelState === 'connected' && <>
+        {props.firstCheck === 'stale' ? <Button type="button" kind="primary" disabled={busy || !!error} onClick={onOpenExample}>Run it again</Button>
+          : (props.firstCheck === 'unknown' || ((props.firstCheck === 'passed' || props.firstCheck === 'failed') && !props.firstTestResult)) ? <Button type="button" kind="primary" disabled={busy || !!error || !props.onCheckFirstTest} onClick={props.onCheckFirstTest}>Check again</Button>
+          : !props.firstCheck && <Button type="button" kind="primary" disabled={busy || !!error} onClick={onOpenExample}>Open your first agent</Button>}
+        {props.firstTestResult && <Button type="button" kind={props.firstCheck === 'stale' || props.firstCheck === 'unknown' || props.firstCheck === 'running' ? 'secondary' : 'primary'} disabled={busy || !!error} onClick={onOpenExample}>See what it answered</Button>}
+      </>}<Button type="button" kind="quiet" disabled={busy || !!error} onClick={event => onChange(event.currentTarget)}>Stop the local cluster</Button></>}
     </div>
   </section>;
 }
@@ -125,7 +126,7 @@ export function Meet({ onRead, onName }: { onRead: () => void; onName?: (name: s
       <dl>{webReader && <><div><dt>What it can do</dt><dd><span className="workspace-tool">Read a web page <code>web_fetch</code></span></dd></div>
         <div><dt>How we'll check it</dt><dd>We'll ask for a checksum published on a web page. The check looks for the exact value in the answer.</dd></div></>}
         <div><dt>Whose is it</dt><dd>Yours. After setup you can change its instructions, add checks, or start a new agent.</dd></div></dl>
-      <button type="button" className="workspace-secondary" onClick={onRead}>Read its instructions</button></>
+      <Button type="button" kind="secondary" onClick={onRead}>Read its instructions</Button></>
       : <p className="muted">{failed ? 'The example could not be opened. Try opening Designer.' : "Opening the example's introduction…"}</p>}
   </section>;
 }

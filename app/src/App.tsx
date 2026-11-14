@@ -1,3 +1,4 @@
+import { Button } from './components/Button';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import mark from './assets/orka-mark.svg';
 import Setup from './setup/Setup';
@@ -49,7 +50,7 @@ function PageIcon({ page }: { page: Page }) {
 function ComingButton({ label, reason }: { label: string; reason: string }) {
   // The wrapper makes the disabled control's reason reachable with the keyboard.
   return <span className="coming-control" tabIndex={0} role="group" aria-label={`${label}: ${reason}`} title={reason}>
-    <button type="button" className="shell-button" disabled title={reason}>{label}</button>
+    <Button type="button" kind="secondary" disabled title={reason}>{label}</Button>
     <span className="control-tip" aria-hidden="true">{reason}</span>
   </span>;
 }

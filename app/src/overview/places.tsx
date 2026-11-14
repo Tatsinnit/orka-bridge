@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import type { ReactNode } from 'react';
 import type { AttemptSummary } from '../clusters/send-api';
 import { CardSection, Details, GeneratedValue, LongCard, type Status, StatusPill } from '../components/DesignSystem';
@@ -25,7 +26,7 @@ function RemoteCard({ agent, place, historyState, files, also, onOpen }: { agent
   const identity = <dl className="overview-identity"><div><dt>Name</dt><dd>{agent.name}</dd></div><div><dt>UID</dt><dd>{agent.uid}</dd></div><div><dt>Cluster</dt><dd>{label(place)}</dd></div><div><dt>Service</dt><dd>{place.service}</dd></div></dl>;
   return <LongCard title={file?.summary?.name || file?.name || agent.name} status={<StatusPill state={state}>agent{place.stale ? ' · stale' : ''}</StatusPill>}
     summary={file?.summary?.description ?? 'Agent without a linked file'}
-    action={file ? <button type="button" className="workspace-secondary" aria-label={`Open ${file.name}`} onClick={() => onOpen(file.documentId)}>Open</button> : undefined}>
+    action={file ? <Button type="button" kind="secondary" size="small" aria-label={`Open ${file.name}`} onClick={() => onOpen(file.documentId)}>Open</Button> : undefined}>
     <CardSection title="Checks"><p>{checks}</p><p>{record ? <>Last tests: {when(record.time * 1000)}</> : 'Last run: unavailable'}</p></CardSection>
     <CardSection title="Cluster settings"><p>Model on cluster: {agent.model || 'unavailable'}</p><p>Tools on cluster: {agent.tools ? agent.tools.length ? agent.tools.join(', ') : 'None' : 'unavailable'}</p></CardSection>
     {!!also.length && <p className="muted">Also found on {also.join('; ')}</p>}

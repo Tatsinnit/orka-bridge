@@ -39,14 +39,10 @@
 .step-failed .workspace-failure[role="alert"] { color: var(--color-text); }
 .workspace-failure .failure-summary { color: var(--color-status-failed); font-weight: 600; }
 .workspace-failure .workspace-step-actions { margin: 12px 0; gap: 8px; }
-.workspace-failure .workspace-step-actions button { padding: 8px 8px; font-size: var(--size-body); }
 .workspace-fallback { display: block; width: fit-content; max-width: 100%; margin-top: 12px; }
 .workspace-fallback .workspace-tip { pointer-events: none; white-space: normal; max-width: 100%; }
 .workspace-failure > [role="status"]:empty { display: none; }
 .workspace-failure > [role="status"] { margin: 12px 0 0; }
-.workspace-secondary { border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-chrome); padding: 8px 12px; }
-.workspace-secondary:not(:disabled):hover { background: var(--color-hover); }
-.workspace-secondary:disabled { color: var(--color-text-secondary); cursor: not-allowed; }
 .workspace-meet { padding: 24px; }
 .workspace-kicker { color: var(--color-text-secondary); font-size: var(--size-body); }
 .workspace-meet h2 { margin: 8px 0; font: var(--type-card); }

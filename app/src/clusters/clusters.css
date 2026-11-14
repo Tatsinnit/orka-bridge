@@ -23,8 +23,7 @@
 .cluster-card h3 { margin: 8px 0 0; }
 .cluster-card[hidden], .workspace-option[hidden] { display: none; }
 .cluster-card > label { font-weight: 500; }
-.cluster-card select, .cluster-card input { width: 100%; min-width: 0; min-height: 38px; padding: 8px 8px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-page); color: var(--color-text); font: inherit; }
-.cluster-card select:disabled, .cluster-card input:disabled { color: var(--color-text-secondary); }
+.cluster-card .field { width: 100%; }
 .cluster-card > button, .cluster-card > .coming-control { justify-self: start; }
 .cluster-card p { max-width: 65ch; }
 .cluster-found { display: grid; gap: 4px; }

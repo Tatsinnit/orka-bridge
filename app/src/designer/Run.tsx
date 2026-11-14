@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useEffect, useRef, useState } from 'react';
 import { CardSection, Details, GeneratedValue, LongCard, StatusPill, type Status } from '../components/DesignSystem';
 import { changedFiles, resultAnnouncement, resultLabel, TestProgress, TestResults } from '../components/TestResults';
@@ -39,7 +40,7 @@ export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, block
   const stage = { capture: 'Reading your saved files', model: 'Checking the local model', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', done: 'Tests finished' };
   return <section className="example-run" aria-label="Tests on the local cluster">
     <LongCard title="Tests on the local cluster" status={<StatusPill state={state}>{outdated || running ? undefined : uncertain ? 'Result unknown' : resultLabel(snapshot?.report)}</StatusPill>} summary={<>On this computer{snapshot?.model && <> · <code>{snapshot.model}</code></>}.{snapshot?.modelConnected === false && ' Connect the AI in Clusters first.'}</>}
-      action={!running && <button type="button" className="setup-button" disabled={blocked || !snapshot?.canRun} title={blocked ? 'Save your changes before running the test' : !snapshot?.canRun ? 'Start the local cluster and connect the AI in Clusters first' : undefined} onClick={() => { void start(); }}>Run tests</button>}>
+      action={!running && <Button type="button" kind="primary" disabled={blocked || !snapshot?.canRun} title={blocked ? 'Save your changes before running the test' : !snapshot?.canRun ? 'Start the local cluster and connect the AI in Clusters first' : undefined} onClick={() => { void start(); }}>Run tests</Button>}>
       <p className="sr-only test-announcement" role="status" aria-live="polite" aria-atomic="true">{!running && !outdated ? uncertain ? 'Test result unknown.' : resultAnnouncement(snapshot?.report) : undefined}</p>
       <CardSection title="What happened">
         {snapshot?.busy && snapshot.busy.documentId !== documentId && <p role="status">{snapshot.busy.name} is running a test.</p>}

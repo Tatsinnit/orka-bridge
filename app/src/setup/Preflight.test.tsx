@@ -77,8 +77,8 @@ test.each([null, { ...ready, extra: 'SECRET_MARKER' }, { ...ready, requiredMemor
   expect(await screen.findAllByText(/Couldn't check/)).toHaveLength(2);
   await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false));
   expect(document.body.textContent).not.toContain('SECRET_MARKER');
-  expect(screen.getByRole('button', { name: 'Check again' }).className).toBe('workspace-primary');
-  expect(screen.getByRole('button', { name: 'Continue' }).className).toBe('workspace-secondary');
+  expect(screen.getByRole('button', { name: 'Check again' }).className).toBe('button button-primary');
+  expect(screen.getByRole('button', { name: 'Continue' }).className).toBe('button button-secondary');
 });
 
 test('Mac unsupported virtualization explains platform support without Windows help', async () => {

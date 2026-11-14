@@ -89,6 +89,19 @@ test('keyboard picker adds and removes built-ins, keeping original bytes and foc
   await waitFor(() => expect(writes.at(-1)).toBe(agent));
   await user.click(add); await user.keyboard('{Escape}'); expect(document.activeElement).toBe(add);
 });
+test('picker closes with a labeled X and returns focus without saving', async () => {
+  const writes = native(); const user = userEvent.setup(); render(<Example catalogKey={1} />);
+  const add = await screen.findByRole('button', { name: 'Add a tool' });
+  await waitFor(() => expect(add.matches(':disabled')).toBe(false));
+  await user.click(add);
+  const close = screen.getByRole('button', { name: 'Close picker' });
+  expect(close.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+  expect(close.textContent).toBe('');
+  await user.click(close);
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(document.activeElement).toBe(add);
+  expect(writes).toEqual([]);
+});
 test('catalog unavailable preserves model while soul remains editable without catalog', async () => {
   native(); const user = userEvent.setup(); render(<Example />);
   await screen.findByRole('textbox', { name: 'Instructions' });

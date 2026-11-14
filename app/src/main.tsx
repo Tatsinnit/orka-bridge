@@ -4,6 +4,7 @@ import '@fontsource-variable/inter';
 import '@fontsource-variable/jetbrains-mono';
 import './app.css';
 import './shell.css';
+import './components/controls.css';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(

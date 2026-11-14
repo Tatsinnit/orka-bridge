@@ -63,12 +63,12 @@ test('unfinished local row, shell and card agree; finished local page owns Stop 
   expect(within(screen.getByRole('navigation')).getByText('Connect the AI')).toBeTruthy();
   expect(screen.getByText('Step 4 of 5')).toBeTruthy();
   expect(within(screen.getByRole('contentinfo')).getByText('Connect the AI')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Connect the AI' }).className).toBe('workspace-primary');
+  expect(screen.getByRole('button', { name: 'Connect the AI' }).className).toBe('button button-primary');
   expect(screen.queryByRole('button', { name: 'Change where agents run' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(await screen.findByRole('heading', { name: 'Local cluster', level: 1 })).toBeTruthy();
   expect(screen.queryByText(/Step 5 of 5/)).toBeNull();
-  expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('workspace-link');
+  expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('button button-quiet');
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();

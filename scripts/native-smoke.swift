@@ -947,7 +947,12 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try clickSendControl("Details", scrolling: -350)
     let details = try capturePreflight("send-result-details", "Planned Agent")
     let detailsText = details.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-    require(detailsText.contains("Planned Agent") && detailsText.contains("Copy"), "Short Agent identity and Copy are not visible in native Send details")
+    require(detailsText.contains("Planned Agent"), "Short Agent identity missing in native Send details")
+    require(nativeElements().contains { element in
+        attribute(element, "AXRole") as? String == "AXButton"
+            && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == "Copy Planned Agent" }
+            && nativeBounds(element).map { window()!.1.contains($0) } == true
+    }, "Labeled Copy icon missing from native Send details")
     try clickSendControl("Details", scrolling: 350)
     // Observe the passing revision before the result walk changes its test file.
     try resultSize(1220, 900)

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { Button } from '../components/Button';
+import { StatusIcon } from '../components/DesignSystem';
 import { type AccessView, type ClusterFailure, type ContextView, connectCluster, contexts, discover, failedCheck, reloadContexts, type SelectedPlace, type TargetView } from './api';
 import { clusterDetails, clusterRecovery } from './recovery';
-import { StatusIcon } from '../components/DesignSystem';
 import './clusters.css';
 
 type Failure = { failure: ClusterFailure; operation: 'Read kubeconfig' | 'Reload kubeconfig' | 'Discover Orka' | 'Use cluster' };
@@ -142,16 +143,16 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
     {!connected || changingContext ? <>
       {entry?.intent && !contextId && <p className="cluster-intent">Connect {entry.intent}: choose its context to check it again.</p>}
       <label htmlFor="cluster-context">kubectl context</label>
-      <select id="cluster-context" value={contextId} disabled={busy} onChange={event => { setChangingContext(false); void check(event.target.value); }}>
+      <select className="field" id="cluster-context" value={contextId} disabled={busy} onChange={event => { setChangingContext(false); void check(event.target.value); }}>
         <option value="">Choose a context</option>{choices.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
       <p className="muted">Choose the context for the cluster you want to use.</p>
-    </> : <button type="button" className="workspace-link" onClick={() => setChangingContext(value => !value)}>Change context</button>}
+    </> : <Button type="button" kind="quiet" onClick={() => setChangingContext(value => !value)}>Change context</Button>}
     {!busy && !error && !choices.length && !connected && <p>No kubectl contexts were found. Add your existing context to kubeconfig, then press Reload kubeconfig.</p>}
     {busy && <p role="status">{reloading ? 'Reload pending. Waiting for any current cluster check, then reading kubeconfig…' : !choices.length ? 'Reading kubectl contexts…' : targets ? 'Confirming access…' : 'Checking the cluster…'}</p>}
     {!busy && targets?.length === 0 && <p role="status">No cluster with Orka was found using this context.</p>}
     {!connected && targets && targets.length > 1 && <><label htmlFor="cluster-installation">Orka installation</label>
-      <select id="cluster-installation" disabled={busy} value={targetId} onChange={e => { setTargetId(e.target.value); setAccess(undefined); setProviderId(''); providerName.current = ''; setAccount(''); setNeedsAccount(false); setError(undefined); setNotice(''); onPlace({ kind: 'cluster' }); }}>
+      <select className="field" id="cluster-installation" disabled={busy} value={targetId} onChange={e => { setTargetId(e.target.value); setAccess(undefined); setProviderId(''); providerName.current = ''; setAccount(''); setNeedsAccount(false); setError(undefined); setNotice(''); onPlace({ kind: 'cluster' }); }}>
         <option value="">Choose an installation</option>{targets.map(t => <option key={t.id} value={t.id}>{t.service_namespace} / {t.service_name} · {t.watched_namespace}</option>)}
       </select></>}
     {target && <>
@@ -159,18 +160,18 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
         <div className="cluster-result"><h2><code>{target.context_name}</code></h2><p><code>{target.watched_namespace}</code> · <code>{target.service_namespace} / {target.service_name}</code></p></div>
         <ul className="cluster-checks"><li><StatusIcon state="passed" /><b>Cluster found</b></li><li><StatusIcon state="passed" /><b role="status">Access confirmed</b></li></ul>
         <h3>AI connection</h3><label className="sr-only" htmlFor="send-provider">AI connection</label>
-        <select ref={providerField} id="send-provider" value={providerId} onChange={event => { const next = event.target.value; setProviderId(next); providerName.current = access.providers.find(p => p.id === next)?.name ?? ''; onPlace({ kind: 'cluster', target, providers: access.providers, providerId: next }); }}>
+        <select className="field" ref={providerField} id="send-provider" value={providerId} onChange={event => { const next = event.target.value; setProviderId(next); providerName.current = access.providers.find(p => p.id === next)?.name ?? ''; onPlace({ kind: 'cluster', target, providers: access.providers, providerId: next }); }}>
           <option value="">Choose an AI connection</option>{access.providers.map(p => <option key={p.id} value={p.id}>{p.name} · {p.ready ? 'Ready' : 'Not ready'}</option>)}
         </select><p className="muted">Send checks whether this AI connection supports your agent's model.</p>
-        <button type="button" className="workspace-primary" disabled={!providerId} title={!providerId ? 'Choose an AI connection first' : undefined} onClick={onOpenAgent}>Open your agent</button>
-        <button type="button" className="workspace-secondary" disabled={busy} onClick={() => { void confirm(); }}>Check access again</button>
+        <Button type="button" kind="primary" disabled={!providerId} title={!providerId ? 'Choose an AI connection first' : undefined} onClick={onOpenAgent}>Open your agent</Button>
+        <Button type="button" kind="secondary" disabled={busy} onClick={() => { void confirm(); }}>Check access again</Button>
       </> : <>
         <div className="cluster-found"><b>Cluster found</b><span><code>{target.watched_namespace}</code> · <code>{target.service_namespace} / {target.service_name}</code></span></div>
         {!error && <p className="muted">Check that you can access this cluster.</p>}
         {needsAccount && <><p>This cluster needs an existing service account. Ask your cluster administrator for its name.</p>
-          <label htmlFor="cluster-account">ServiceAccount name</label><input ref={accountField} id="cluster-account" autoComplete="off" spellCheck={false} disabled={busy} value={account} onChange={e => setAccount(e.target.value)} />
+          <label htmlFor="cluster-account">ServiceAccount name</label><input className="field" ref={accountField} id="cluster-account" autoComplete="off" spellCheck={false} disabled={busy} value={account} onChange={e => setAccount(e.target.value)} />
           <p className="muted">An existing account in {target.watched_namespace}. Bridge does not create accounts or permissions.</p></>}
-        <button type="button" className="workspace-primary" disabled={busy || (needsAccount && !account.trim())} onClick={() => { void confirm(); }}>{error?.operation === 'Use cluster' ? 'Check again' : 'Use this cluster'}</button>
+        <Button type="button" kind="primary" disabled={busy || (needsAccount && !account.trim())} onClick={() => { void confirm(); }}>{error?.operation === 'Use cluster' ? 'Check again' : 'Use this cluster'}</Button>
       </>}
       <button type="button" className="workspace-disclosure" aria-expanded={details} aria-controls="cluster-details" onClick={() => setDetails(v => !v)}>{details ? 'Hide details' : 'Show details'}</button>
       {details && <dl id="cluster-details" className="cluster-details"><div><dt>Context</dt><dd>{target.context_name}</dd></div><div><dt>Service</dt><dd>{target.service_namespace} / {target.service_name}</dd></div><div><dt>Watched namespace</dt><dd>{target.watched_namespace}</dd></div><div><dt>Orka image</dt><dd>{target.image}</dd></div>
@@ -180,11 +181,11 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
       <p className="failure-summary">{recovery.cause}</p><p>{recovery.next}</p>
       <p>Your local cluster and agent files are kept. Connection checks do not create an Agent or run checks.</p>
       <div className="workspace-step-actions">
-        {error.operation === 'Discover Orka' && <button type="button" className="workspace-primary" disabled={busy} onClick={() => { void check(contextId); }}>Check again</button>}
-        <button type="button" className="workspace-secondary" onClick={() => { void copy(); }}>Copy details for help</button>
+        {error.operation === 'Discover Orka' && <Button type="button" kind="primary" disabled={busy} onClick={() => { void check(contextId); }}>Check again</Button>}
+        <Button type="button" kind="secondary" onClick={() => { void copy(); }}>Copy details for help</Button>
       </div>
     </div></div>}
-    <button type="button" className="workspace-secondary" disabled={reloading} onClick={() => { void reload(); }}>{reloading ? 'Reloading kubeconfig…' : 'Reload kubeconfig'}</button>
+    <Button type="button" kind="secondary" disabled={reloading} onClick={() => { void reload(); }}>{reloading ? 'Reloading kubeconfig…' : 'Reload kubeconfig'}</Button>
     <p className="muted">After reloading kubeconfig, choose a context and check access again.</p>
     {notice && <p role="status">{notice}</p>}
   </section>;

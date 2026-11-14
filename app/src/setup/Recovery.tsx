@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { helpDetails, workspaceRecovery, type WorkspaceFailure } from './recovery-info';
@@ -19,15 +20,15 @@ export default function Recovery({ detail, preflightFailure, failure, disabled, 
     <div className="workspace-failure-explanation"><p className="failure-summary">{info.summary}</p>
     <p>{info.action}</p><p>{preflightFailure ? 'This check made no changes.' : info.preservation}</p>
     <div className="workspace-step-actions">
-      {info.topic && <button type="button" className="workspace-primary" onClick={() => { void help(); }}>Show me how</button>}
-      <button type="button" className={info.topic ? 'workspace-secondary' : 'workspace-primary'} disabled={disabled || info.retryBlocked}
-        title={info.retryBlocked ? 'Quit Bridge and reopen it before trying again' : undefined} onClick={onRetry}>Try again</button>
-      <button type="button" className="workspace-secondary" onClick={() => { void copy(); }}>Copy details for help</button>
+      {info.topic && <Button type="button" kind="primary" onClick={() => { void help(); }}>Show me how</Button>}
+      <Button type="button" kind={info.topic ? 'secondary' : 'primary'} disabled={disabled || info.retryBlocked}
+        title={info.retryBlocked ? 'Quit Bridge and reopen it before trying again' : undefined} onClick={onRetry}>Try again</Button>
+      <Button type="button" kind="secondary" onClick={() => { void copy(); }}>Copy details for help</Button>
     </div>
     <button type="button" className="workspace-disclosure" aria-expanded={expanded} aria-controls="workspace-failure-details" onClick={() => setExpanded(value => !value)}>{expanded ? 'Hide details' : 'Show details'}</button>
     {expanded && <div id="workspace-failure-details" className="workspace-progress-details"><p>Stage: {info.stage}</p><pre tabIndex={0}>{preflightFailure ? info.summary : detail || 'No further error details were reported.'}</pre></div>}
     </div>
-    <button type="button" className="workspace-disclosure workspace-fallback" disabled={disabled || !onCluster} onClick={onCluster}>Use a cluster you already have instead</button>
+    <Button kind="quiet" className="workspace-fallback" disabled={disabled || !onCluster} onClick={onCluster}>Use a cluster you already have instead</Button>
     <p className="muted" role="status">{notice}</p>
   </div>;
 }

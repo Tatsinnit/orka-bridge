@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import mark from '../assets/orka-mark.svg';
 
 export const welcomePreference = 'bridge.welcomeSeen.v1';
@@ -17,9 +18,9 @@ export default function Welcome({ titleId, onStart, onCluster, unavailable }: { 
       <li><span className="journey-number" aria-hidden="true">3</span><b>Share it</b><span>Send the same agent to your team's cluster.</span></li>
     </ol>
     <div className="welcome-actions">
-      <button className="workspace-primary" type="button" onClick={onStart}>Get started</button>
+      <Button kind="primary" type="button" onClick={onStart}>Get started</Button>
       {unavailable && <p className="muted">{unavailable}</p>}
     </div>
-    <button className="workspace-link" type="button" onClick={onCluster}>I already run Orka on a cluster</button>
+    <Button kind="quiet" type="button" onClick={onCluster}>I already run Orka on a cluster</Button>
   </section>;
 }

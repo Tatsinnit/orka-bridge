@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readPreflight, type HostPreflight } from './preflight-state';
@@ -62,8 +63,8 @@ export default function Preflight({ requiredMemoryBytes, onBlocked, onUncertain 
     </div>
     <p className="muted" id="preflight-reason" role="status">{checking ? 'Checking this computer before setup.' : failedVirtualization || memory === 'insufficient' ? 'Fix the computer requirements above before continuing.' : uncertain ? 'Some requirements could not be checked. Check again, or continue to try starting the local cluster.' : 'These checks do not change this computer.'}</p>
     <div className="workspace-step-actions">
-      <button type="button" className={uncertain ? 'workspace-primary' : 'workspace-secondary'} disabled={checking} onClick={() => { onBlocked(true); setChecking(true); setNotice(''); setAttempt(value => value + 1); }}>Check again</button>
-      <button type="button" className="workspace-secondary" disabled={checking} onClick={() => { void copy(); }}>Copy details for help</button>
+      <Button type="button" kind={uncertain ? 'primary' : 'secondary'} disabled={checking} onClick={() => { onBlocked(true); setChecking(true); setNotice(''); setAttempt(value => value + 1); }}>Check again</Button>
+      <Button type="button" kind="secondary" disabled={checking} onClick={() => { void copy(); }}>Copy details for help</Button>
     </div>
     {notice && <p role="status">{notice}</p>}
   </section>;

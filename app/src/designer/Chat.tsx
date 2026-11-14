@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useEffect, useRef, useState } from 'react';
 import { type ChatCommand, type ChatSnapshot, chatCall, chatErrors } from './chat-api';
 
@@ -92,7 +93,7 @@ export default function Chat({ documentId, blocked }: { documentId: string; bloc
     ? 'The local cluster could not be reached. Check Clusters, then try sending again.'
     : snapshot?.error ? chatErrors[snapshot.error] : undefined;
   return <section className="chat-panel card" aria-label="Chat on local cluster">
-    <div className="chat-heading"><h2>Chat on local cluster</h2><button type="button" className="part-button" disabled={!canReset || !!command} title={!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined} onClick={() => { void act('agent_chat_new'); }}>New conversation</button></div>
+    <div className="chat-heading"><h2>Chat on local cluster</h2><Button type="button" kind="secondary" disabled={!canReset || !!command} title={!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button></div>
     <p className="muted">Talk to your saved agent. Chat does not run tests or change their results.</p>
     <section ref={transcript} className="chat-transcript" aria-label="Conversation" tabIndex={0} onScroll={event => {
       const area = event.currentTarget; follow.current = area.scrollHeight - area.clientHeight - area.scrollTop < 48;
@@ -114,7 +115,7 @@ export default function Chat({ documentId, blocked }: { documentId: string; bloc
     {(error || readError || snapshotError) && <p role="alert">{error?.message ?? readError ?? snapshotError}</p>}
     <form className="chat-composer" onSubmit={event => { event.preventDefault(); void act('agent_chat_send'); }}>
       <label htmlFor={`message-${documentId}`}>Message</label>
-      <textarea ref={composer} id={`message-${documentId}`} rows={3} value={draft} aria-describedby={`chat-hint-${documentId}`}
+      <textarea className="field" ref={composer} id={`message-${documentId}`} rows={3} value={draft} aria-describedby={`chat-hint-${documentId}`}
         onChange={event => { draftRef.current = event.target.value; setDraft(event.target.value); }}
         onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
         onKeyDown={event => {
@@ -124,9 +125,9 @@ export default function Chat({ documentId, blocked }: { documentId: string; bloc
         }} />
       <p className="muted" id={`chat-hint-${documentId}`}>{reason ?? 'Enter to send · Shift+Enter for a new line.'}</p>
       <div className="chat-actions">
-        <button type="submit" className="part-button chat-primary" disabled={!!reason || !draft.trim()} title={reason ?? (!draft.trim() ? 'Write a message first.' : undefined)}>Send message</button>
-        {canStop && <button type="button" className="part-button" disabled={!!command || snapshot.state === 'requestingStop'} onClick={() => { void act('agent_chat_stop'); }}>Stop</button>}
-        {snapshot && snapshot.state !== 'contextUnavailable' && !snapshot.busy && (!snapshot.canSend || pending.current?.uncertain) && <button type="button" className="part-button" disabled={!!command} onClick={() => { void act('agent_chat_reconnect'); }}>Reconnect</button>}
+        <Button type="submit" kind="primary" disabled={!!reason || !draft.trim()} title={reason ?? (!draft.trim() ? 'Write a message first.' : undefined)}>Send message</Button>
+        {canStop && <Button type="button" kind="secondary" disabled={!!command || snapshot.state === 'requestingStop'} onClick={() => { void act('agent_chat_stop'); }}>Stop</Button>}
+        {snapshot && snapshot.state !== 'contextUnavailable' && !snapshot.busy && (!snapshot.canSend || pending.current?.uncertain) && <Button type="button" kind="secondary" disabled={!!command} onClick={() => { void act('agent_chat_reconnect'); }}>Reconnect</Button>}
       </div>
     </form>
     <details className="card-details"><summary>About this conversation</summary>

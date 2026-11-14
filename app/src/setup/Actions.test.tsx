@@ -25,14 +25,14 @@ afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.c
 test('AI connection is the only next primary and its prerequisite is visible before clicking', async () => {
   const ipc = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   const connect = await screen.findByRole('button', { name: 'Connect the AI' });
-  expect(connect.className).toBe('workspace-primary');
+  expect(connect.className).toBe('button button-primary');
   expect(screen.getByText(/GitHub CLI must be installed and signed in/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Open example' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Change where agents run' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('workspace-link');
+  expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('button button-quiet');
   await user.click(connect);
   expect(await screen.findByText('Connected', { selector: '.model-state .pill' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Open your first agent' }).className).toBe('workspace-primary');
+  expect(screen.getByRole('button', { name: 'Open your first agent' }).className).toBe('button button-primary');
   expect(document.body.textContent).not.toMatch(/guest|\bVM\b|inference|gpt-5.6-terra/);
   expect(screen.queryByText('Engine diagnostics')).toBeNull();
   expect(ipc.mock.calls.some(([command]) => command === 'engine_call')).toBe(false);
@@ -56,7 +56,7 @@ test('the restored local page owns Stop and stays restartable even without an ol
   const ipc = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   const stop = await screen.findByRole('button', { name: 'Stop the local cluster' });
-  expect(stop.className).toBe('workspace-link');
+  expect(stop.className).toBe('button button-quiet');
   await user.click(stop);
   expect(await screen.findByRole('button', { name: 'Continue' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_change_local')).toHaveLength(1);

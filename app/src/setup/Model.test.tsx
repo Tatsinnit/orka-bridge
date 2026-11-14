@@ -68,7 +68,7 @@ test('failed removal retries cleanup rather than Connect and copies its own oper
   await user.click(screen.getByRole('button', { name: 'Remove sign-in' }));
   expect((await screen.findByRole('alert')).textContent).toContain('Retry removal');
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Retry removal' }).className).toContain('workspace-primary');
+  expect(screen.getByRole('button', { name: 'Retry removal' }).className).toContain('button button-primary');
   await user.click(screen.getByRole('button', { name: 'Copy details for help' }));
   expect(copy.mock.calls[0][0]).toBe('Bridge AI connection\nOperation: Removing sign-in\nCategory: modelStore\nOS code: 5');
   invoke.mockResolvedValue({ ready: false });

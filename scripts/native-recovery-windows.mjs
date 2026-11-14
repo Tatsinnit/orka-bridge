@@ -318,7 +318,7 @@ try {
       await clickAction('Remove sign-in');
       if (name === 'ai-removal-retry') {
         await clickAction('Remove sign-in');
-        await until(() => evaluate(`!!document.querySelector('button.workspace-primary') && [...document.querySelectorAll('button.workspace-primary')].some(button => button.textContent === 'Retry removal')`), 'primary removal retry');
+        await until(() => evaluate(`!!document.querySelector('button.button-primary') && [...document.querySelectorAll('button.button-primary')].some(button => button.textContent === 'Retry removal')`), 'primary removal retry');
         await clickAction('Retry removal');
         await until(() => evaluate(`window.__bridgeRemovals === 2 && !document.querySelector('[aria-label="Remove sign-in confirmation"]')`), 'direct cleanup retry without reconfirmation');
       }
@@ -340,7 +340,7 @@ try {
         const card = await evaluate(`(() => {
           const card = document.querySelector("[aria-label='Local cluster setup']");
           const shown = [...card.querySelectorAll('button')].filter(button => button.getClientRects().length);
-          return { text: card.innerText, primary: shown.filter(button => button.classList.contains('workspace-primary')).map(button => button.textContent), result: shown.some(button => button.textContent === 'See what it answered'), page: document.body.innerText };
+          return { text: card.innerText, primary: shown.filter(button => button.classList.contains('button-primary')).map(button => button.textContent), result: shown.some(button => button.textContent === 'See what it answered'), page: document.body.innerText };
         })()`);
         const fail = reason => { throw Error(`sample ${state}: ${reason}: ${JSON.stringify(card)}`); };
         if (card.primary.join('|') !== primary) fail(`primary action should be ${primary}`);

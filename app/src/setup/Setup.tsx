@@ -1,3 +1,4 @@
+import { Button } from '../components/Button';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Model, { type ModelState } from './Model';
 import Preflight from './Preflight';
@@ -168,17 +169,17 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
   const selected = status?.selected === 'localVm';
   const presentation = setupView(error ? undefined : status, { stopping: sending && pendingAction !== 'start', model: modelState, check: firstCheck, initialAutomatic });
   return <div className="places-workspace">
-    {view !== 'places' && <button type="button" className="workspace-link places-back" onClick={back}>Back to clusters</button>}
+    {view !== 'places' && <Button type="button" kind="quiet" className="places-back" onClick={back}>Back to clusters</Button>}
     <div className="workspace-heading places-heading">
       <h1 ref={heading} tabIndex={-1} id={titleId}>{view === 'places' ? 'Clusters' : view === 'cluster' ? entry?.current ? 'Manage your cluster' : entry?.intent ? 'Connect a cluster' : 'Add a cluster' : selected ? presentation.done ? 'Local cluster' : status?.localVm === 'ready' ? modelState === 'connected' ? 'Run your first agent' : 'Connect the AI' : status?.localVm === 'failed' ? status.preflightFailure ? 'Check this computer' : workspaceRecovery(status.workspaceFailure).heading : 'Getting the local cluster ready' : 'Set up this computer'}</h1>
-      {view === 'places' && <button type="button" className="workspace-primary" onClick={() => chooseCluster()}>Add a cluster</button>}
+      {view === 'places' && <Button type="button" kind="primary" onClick={() => chooseCluster()}>Add a cluster</Button>}
       {view === 'places' && <p className="muted">Choose where agents run</p>}
       {view === 'local' && selected && !['ready', 'failed', 'notIntegrated'].includes(status?.localVm ?? '') && <p className="muted">Meanwhile, meet the agent you'll test first.</p>}
       {view === 'local' && selected && status?.localVm === 'ready' && !presentation.done && !firstCheck && <p className="muted">On first setup, Bridge runs the bundled agent after you connect the AI, then opens its answer in Designer.</p>}
     </div>
     {view === 'places' && <Places snapshot={snapshot} unavailable={snapshotUnavailable} status={error ? undefined : status} view={presentation} place={currentPlace} onLocal={openLocal} onCluster={chooseCluster} />}
     <div hidden={view !== 'local'}>
-      {cluster && <button type="button" className="workspace-secondary" onClick={chooseComputer}>Use this computer</button>}
+      {cluster && <Button type="button" kind="secondary" onClick={chooseComputer}>Use this computer</Button>}
       <div className={selected ? `setup workspace-setup-grid${status?.localVm === 'failed' ? ' workspace-setup-failed' : ''}` : 'workspace-choice local-preflight'}>
         {!selected && <>
           <section className="card">
@@ -196,7 +197,7 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
             <p id="workspace-inside" hidden={!inside}>The local cluster includes Orka and the tools your agents use. Bridge checks the download before starting it.</p>
           </section>
           <div className="workspace-choice-footer"><span className="muted">Set up on this computer</span>
-            <button type="button" className={preflightUncertain ? 'workspace-secondary' : 'workspace-primary'} aria-describedby={requirements ? 'preflight-reason' : undefined} disabled={busy || !status || !!error || (status.localVm !== 'notIntegrated' && requirements !== null && preflightBlocked)} onClick={() => { void chooseLocal(); }}>Continue</button>
+            <Button type="button" kind={preflightUncertain ? 'secondary' : 'primary'} aria-describedby={requirements ? 'preflight-reason' : undefined} disabled={busy || !status || !!error || (status.localVm !== 'notIntegrated' && requirements !== null && preflightBlocked)} onClick={() => { void chooseLocal(); }}>Continue</Button>
           </div>
           {status?.localVm === 'notIntegrated' && <p className="muted">{runtimeCopy.notIntegrated}</p>}
         </>}
@@ -208,8 +209,8 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
     </div>
     {entry && <ClusterCard active={active && view === 'cluster'} entry={entry} selection={currentPlace} onPlace={publishPlace} onOpenAgent={onOpenAgent ?? onOpenExample} />}
     {error && <div role="alert"><p>{error}</p>
-      <button type="button" className="setup-button" disabled={busy}
-        onClick={() => { setBusy(true); setError(undefined); setCheck(value => value + 1); }}>Check again</button>
+      <Button type="button" kind="secondary" className="action-spaced" disabled={busy}
+        onClick={() => { setBusy(true); setError(undefined); setCheck(value => value + 1); }}>Check again</Button>
     </div>}
   </div>;
 }
