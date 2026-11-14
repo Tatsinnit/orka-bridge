@@ -1,4 +1,15 @@
 use super::*;
+
+// Exact guest versions of paired cancel-capable guest/Orka images. The image
+// pin update adds its qualified buildSourceCommit; existing images lack cancel.
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn run_cancel_guest(build: &str) -> bool {
+    const BUILDS: &[&str] = &[];
+    BUILDS.contains(&build)
+}
 #[cfg(any(
     test,
     all(windows, target_arch = "x86_64"),
@@ -397,6 +408,9 @@ impl LocalFactory for NativeFactory {
                         .as_secs();
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let installation = installed.installation_id();
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let cancel_supported =
+                        run_cancel_guest(&installed.identity().build_source_commit);
                     let journal = custody.take_for_launch(&closed)?;
                     drop(custody); // A stopped worker returns the original owner through this slot.
                     #[cfg(windows)]
@@ -407,7 +421,7 @@ impl LocalFactory for NativeFactory {
                         resources, journal, installed, utc, pending,
                     )?;
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                    let native = NativeSession(session, installation);
+                    let native = NativeSession(session, installation, cancel_supported);
                     wait_for_infrastructure(Box::new(native), closed, runtime)
                 },
             )?
@@ -427,6 +441,7 @@ fn start_windows_session(
     // shutdown releases its worker before diagnostics are written.
     let diagnostic_root = crate::runtime::windows::security::private_af_directory(root)?;
     let installation = image.installation_id();
+    let cancel_supported = run_cancel_guest(&image.identity().build_source_commit);
     let backend = crate::runtime::windows::backend::WindowsBackend::new(inputs);
     let failure = backend.failure_diagnostics();
     let result =
@@ -440,6 +455,7 @@ fn start_windows_session(
         Ok(session) => Ok(NativeSession {
             session,
             installation,
+            cancel_supported,
             root: root.to_owned(),
             _diagnostic_root: diagnostic_root,
         }),
@@ -456,6 +472,7 @@ fn start_windows_session(
 struct NativeSession {
     session: crate::runtime::windows::session::WindowsSession,
     installation: bridge_runtime_protocol::Uuid,
+    cancel_supported: bool,
     root: PathBuf,
     _diagnostic_root: fs::File,
 }
@@ -463,12 +480,23 @@ struct NativeSession {
 struct NativeSession(
     crate::runtime::apple_session::AppleVmSession,
     bridge_runtime_protocol::Uuid,
+    bool,
 );
 #[cfg(any(
     all(windows, target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl LocalSession for NativeSession {
+    fn run_cancel_supported(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.cancel_supported
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.2
+        }
+    }
     fn with_client(
         &mut self,
         work: &mut dyn FnMut(

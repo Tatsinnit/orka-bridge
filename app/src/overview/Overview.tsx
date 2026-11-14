@@ -89,7 +89,7 @@ export default function Overview({ onNewAgent, active, runBusy, workspaceKey, on
         const also = o && places?.historyState === 'complete' ? [...new Set(places.places.filter(p => p.agents.some(a => a.record && sameSource(a.record.source, o.source) === true)).map(p => `${p.context} · ${p.namespace} · ${p.service}`))] : [];
         const sourceUnavailable = !!o && !file?.source;
         const stale = !!o && (sourceUnavailable || sameSource(file?.source ?? undefined, o.source) !== true);
-        const state: Status = stale ? 'stale' : o?.state === 'running' ? 'running' : o?.state === 'unknown' || o?.report?.verdict === 'unknown' ? 'stale' : o?.state === 'complete' ? o.report?.verdict ?? 'not-started' : 'not-started';
+        const state: Status = stale ? 'stale' : o?.state === 'running' ? 'running' : o?.state === 'unknown' || o?.report?.verdict === 'unknown' ? 'stale' : o?.state === 'complete' && (o.report?.verdict === 'passed' || o.report?.verdict === 'failed') ? o.report.verdict : 'not-started';
         const check = sourceUnavailable ? 'Current saved version unavailable' : stale ? 'Checks not run since your change' : o?.state === 'running' ? 'Running checks' : o?.state === 'complete' && o.report && o.report.verdict !== 'unknown' ? `Checks ${o.report.verdict} in this session` : o ? 'Check result unknown' : 'Not tested by Bridge in this session';
         return { key: `${observed.installation}/${agent.namespace}/${agent.uid}`, source: o?.source, place: 'This computer', node: <LongCard key={`${observed.installation}/${agent.namespace}/${agent.uid}`} title={file?.summary?.name || file?.name || agent.name}
           status={<StatusPill state={state} />}

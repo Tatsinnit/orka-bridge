@@ -37,7 +37,7 @@ export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, block
   const uncertain = snapshot?.state === 'unknown' || snapshot?.report?.verdict === 'unknown';
   const failed = snapshot?.error && !(snapshot.error === 'model' && snapshot.modelConnected);
   const state: Status = outdated ? 'stale' : running ? 'running' : uncertain ? 'stale' : failed ? 'failed' : snapshot?.report?.verdict === 'passed' ? 'passed' : snapshot?.report?.verdict === 'failed' ? 'failed' : 'not-started';
-  const stage = { capture: 'Reading your saved files', model: 'Checking the local model', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', done: 'Tests finished' };
+  const stage = { capture: 'Reading your saved files', model: 'Checking the local model', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', cancel: 'Cancelling tests', done: 'Tests finished' };
   return <section className="example-run" aria-label="Tests on the local cluster">
     <LongCard title="Tests on the local cluster" status={<><StatusPill state={state} /><span className="status-description">{outdated ? 'Not run since your edit' : running ? undefined : uncertain ? 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>On this computer{snapshot?.model && <> · <code>{snapshot.model}</code></>}.{snapshot?.modelConnected === false && ' Connect the AI in Clusters first.'}</>}
       action={!running && <Button type="button" kind="primary" disabled={blocked || !snapshot?.canRun} title={blocked ? 'Save your changes before running the test' : !snapshot?.canRun ? 'Start the local cluster and connect the AI in Clusters first' : undefined} onClick={() => { void start(); }}>Run tests</Button>}>

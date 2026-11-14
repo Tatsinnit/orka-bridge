@@ -19,7 +19,7 @@ export function SendEntry({ failingCheck, blocked, onProceed, onFix }: { failing
     </div>}
   </div>;
 }
-const words = { passed: 'pass', failed: 'fail', unknown: 'unknown' } as const;
+const words = { passed: 'pass', failed: 'fail', unknown: 'unknown', cancelled: 'cancelled' } as const;
 function SavedSend({ attempt, revision }: { attempt: AttemptSummary; revision: string }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<SendHistoryDetail>();
@@ -56,7 +56,7 @@ function SavedSend({ attempt, revision }: { attempt: AttemptSummary; revision: s
       const value = await sendHistoryDetail(command, attempt.id);
       if (request === epoch.current) {
         setDetail(value); setError(undefined); setConfirmRemove(false);
-        if (command === 'send_history_check') setCheckedVerdict(value.interrupted ? 'unknown' : value.report?.verdict ?? 'unknown');
+        if (command === 'send_history_check') setCheckedVerdict(value.interrupted || value.report?.verdict === 'cancelled' ? 'unknown' : value.report?.verdict ?? 'unknown');
       }
     } catch (failure) { if (request === epoch.current) setError((failure as Error).message); }
     finally { operation.current = false; if (request === epoch.current) setBusy(false); }

@@ -24,6 +24,8 @@ fn main() {
             "setup_example",
             "agent_run",
             "agent_run_status",
+            "agent_run_cancel",
+            "agent_run_check_cancellation",
             "agent_chat_status",
             "agent_chat_send",
             "agent_chat_reconnect",

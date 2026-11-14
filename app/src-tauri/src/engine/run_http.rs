@@ -103,6 +103,22 @@ pub trait RunTransport: Send + Sync {
         body: Option<&'a Value>,
         deadline: Instant,
     ) -> RunFuture<'a>;
+    /// Local guest proof only; remote transports have no worker-pod authority.
+    fn run_worker<'a>(
+        &'a self,
+        _name: &'a str,
+        _uid: &'a str,
+        _deadline: Instant,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<bridge_runtime_protocol::RunWorkerReply, ErrorKind>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(ErrorKind::Configuration) })
+    }
     fn deadline(&self) -> Instant {
         Instant::now() + self.limits().operation_timeout
     }

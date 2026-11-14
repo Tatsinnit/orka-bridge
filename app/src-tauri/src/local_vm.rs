@@ -142,6 +142,10 @@ pub trait LocalFactory: Send + Sync {
     ) -> StartFuture<'_>;
 }
 pub trait LocalSession: Send {
+    /// From the installed guest build metadata, never a probing guest request.
+    fn run_cancel_supported(&self) -> bool {
+        false
+    }
     /// Only called under the whole-session blocking custody; no client transfer.
     fn with_client(
         &mut self,
@@ -158,6 +162,7 @@ pub trait LocalSession: Send {
 struct State {
     phase: LocalVmStatus,
     model_connected: bool,
+    run_cancel_supported: bool,
     failure: Option<String>,
     preflight_failure: Option<crate::setup::preflight::Failure>,
     workspace_failure: Option<WorkspaceFailure>,
@@ -449,6 +454,7 @@ impl LocalVm {
                         LocalVmStatus::NotIntegrated
                     },
                     model_connected: false,
+                    run_cancel_supported: false,
                     failure: None,
                     preflight_failure: None,
                     workspace_failure: None,
@@ -493,6 +499,10 @@ impl LocalVm {
     pub fn model_connected(&self) -> bool {
         let state = self.inner.state.lock().unwrap();
         !state.closing && state.phase == LocalVmStatus::Ready && state.model_connected
+    }
+    pub fn run_cancel_supported(&self) -> bool {
+        let state = self.inner.state.lock().unwrap();
+        !state.closing && state.phase == LocalVmStatus::Ready && state.run_cancel_supported
     }
     /// A successful guest observation can invalidate an earlier Connect acknowledgment.
     pub fn clear_model_acknowledgment(&self) {
@@ -541,6 +551,7 @@ impl LocalVm {
         *self.authoring.lock().unwrap() = Arc::new(AsyncMutex::new(()));
         state.phase = LocalVmStatus::Preparing;
         state.model_connected = false;
+        state.run_cancel_supported = false;
         state.failure = None;
         state.preflight_failure = None;
         state.workspace_failure = None;
@@ -573,6 +584,7 @@ impl LocalVm {
             let mut session = inner.session.lock().await;
             match result {
                 Ok(live) => {
+                    inner.state.lock().unwrap().run_cancel_supported = live.run_cancel_supported();
                     *session = Some(live);
                     inner.publish(LocalProgress::Status(LocalVmStatus::Ready));
                 }

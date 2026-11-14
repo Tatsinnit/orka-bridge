@@ -700,6 +700,7 @@ impl SendOwner {
                         .unwrap();
                     *old = resource;
                 }
+                RunCheckpoint::Evidence(_) => return Ok(()),
                 RunCheckpoint::Case(index, report) => {
                     if let Some(task) = details
                         .resources
@@ -770,7 +771,7 @@ impl SendOwner {
                 summary.verdict = match report.verdict {
                     Verdict::Passed => AttemptVerdict::Passed,
                     Verdict::Failed => AttemptVerdict::Failed,
-                    Verdict::Unknown => AttemptVerdict::Unknown,
+                    Verdict::Unknown | Verdict::Cancelled => AttemptVerdict::Unknown,
                 };
                 details.report = Some(report.clone());
                 Ok(report)

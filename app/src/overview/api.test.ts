@@ -41,6 +41,11 @@ test('places require coherent scoped identity and complete summary schema', asyn
   mockIPC(() => ({ ...valid, historyState: 'invented' }));
   expect(await readPlaces()).toBeUndefined();
 });
+test('cancelled local summaries do not make the entire Overview unavailable', () => {
+  const observation = { installation, documentId: installation, source: { agent: 'a'.repeat(64), tests: 'b'.repeat(64) }, namespace: 'orka-system', agentName: 'example', agentUid: 'uid', observedAt: 123, state: 'complete', report: { verdict: 'cancelled', passed: 1, total: 2 } };
+  expect(isLiveAgents({ ...complete, observation })).toBe(true);
+  expect(isLiveAgents({ ...complete, observation: { ...observation, report: { verdict: 'invented' } } })).toBe(false);
+});
 test('a scoped cluster read sends only its remembered key', async () => {
   vi.stubGlobal('isTauri', true);
   const value = { places: [], historyState: 'complete', unobserved: [] };

@@ -2,8 +2,8 @@
 use crate::{
     agent_folder::{AgentFolder, DocumentId, DocumentRef},
     engine::run::{
-        ErrorKind, NativeRunner, ParsedPair, RunFuture, RunHandle, RunLimits, RunReport,
-        RunTransport,
+        ErrorKind, NativeRunner, ParsedPair, RunCheckpoint, RunFuture, RunHandle, RunLimits,
+        RunReport, RunTransport,
     },
     local_vm::{LocalVm, LocalVmStatus},
     overview::{LocalRunObservation, ReportSummary},
@@ -18,6 +18,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::{sync::watch, time::Instant};
+#[path = "example_run_cancel.rs"]
+mod cancel;
+pub use cancel::Cancellation;
+use cancel::Recovery;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +49,10 @@ pub struct RunSnapshot {
     pub busy: Option<DocumentRef>,
     pub state: RunState,
     pub can_run: bool,
+    pub can_cancel: bool,
+    pub can_retry_cancellation: bool,
+    pub can_check_cancellation: bool,
+    pub cancellation: Cancellation,
     pub model_connected: bool,
     pub source: Option<SnapshotId>,
     pub stage: Option<&'static str>,
@@ -55,12 +63,23 @@ pub struct RunSnapshot {
     pub error: Option<&'static str>,
 }
 impl RunSnapshot {
+    fn claim_end(&mut self, stop: &watch::Receiver<bool>, phase: RunState) -> bool {
+        let cancelled = *stop.borrow();
+        if !cancelled {
+            self.state = phase;
+        }
+        cancelled
+    }
     fn idle(document_id: DocumentId) -> Self {
         Self {
             document_id,
             busy: None,
             state: RunState::Idle,
             can_run: false,
+            can_cancel: false,
+            can_retry_cancellation: false,
+            can_check_cancellation: false,
+            cancellation: Cancellation::None,
             model_connected: false,
             source: None,
             stage: None,
@@ -72,12 +91,69 @@ impl RunSnapshot {
         }
     }
 }
+#[cfg(test)]
+mod terminal_claim_tests {
+    use super::*;
+    #[tokio::test]
+    async fn validation_failure_before_submission_keeps_cancelled_before_start() {
+        let run = ExampleRun::new(
+            tokio::runtime::Handle::current(),
+            true,
+            Arc::new(AgentFolder::new(None)),
+        );
+        let mut snapshot = RunSnapshot::idle(DocumentId::SAMPLE);
+        snapshot.state = RunState::Running;
+        snapshot.stage = Some("model");
+        snapshot.cancellation = Cancellation::Cancelling;
+        run.0
+            .lock()
+            .unwrap()
+            .snapshots
+            .insert(DocumentId::SAMPLE, snapshot);
+        run.fail(DocumentId::SAMPLE, "submit");
+        let state = run.0.lock().unwrap();
+        let done = &state.snapshots[&DocumentId::SAMPLE];
+        assert_eq!(done.state, RunState::Complete);
+        assert!(done.cancellation == Cancellation::BeforeStart);
+        assert!(done.error.is_none());
+        assert!(done.acknowledged.is_empty() && done.pending.is_none());
+        let report = done.report.as_ref().unwrap();
+        assert!(report.cases.is_empty());
+        assert_eq!(report.verdict, crate::engine::run::Verdict::Cancelled);
+    }
+    #[test]
+    fn stop_and_terminal_claim_have_only_two_ordered_outcomes() {
+        for phase in [RunState::Unknown, RunState::Complete] {
+            let (sender, stop) = watch::channel(false);
+            let mut snapshot = RunSnapshot::idle(DocumentId::SAMPLE);
+            snapshot.state = RunState::Running;
+            assert!(!snapshot.claim_end(&stop, phase));
+            assert_ne!(
+                snapshot.state,
+                RunState::Running,
+                "late Cancel admission is retired before history I/O"
+            );
+            sender.send(true).unwrap();
+            assert_eq!(snapshot.state, phase);
+            let mut snapshot = RunSnapshot::idle(DocumentId::SAMPLE);
+            snapshot.state = RunState::Running;
+            assert!(snapshot.claim_end(&stop, phase));
+            assert_eq!(
+                snapshot.state,
+                RunState::Running,
+                "accepted Stop must reach cancellation proof instead of failure/completion"
+            );
+        }
+    }
+}
 #[derive(Default)]
 struct State {
     snapshots: HashMap<DocumentId, RunSnapshot>,
     active: Option<DocumentRef>,
     observation: Option<LocalRunObservation>,
     recorded_current: bool,
+    stop: Option<watch::Sender<bool>>,
+    recovery: HashMap<DocumentId, Recovery>,
     cleanup_cursor: usize,
 }
 pub struct ExampleRun(
@@ -131,6 +207,7 @@ impl ExampleRun {
             .cloned()
             .unwrap_or_else(|| RunSnapshot::idle(id));
         snapshot.busy = state.active.clone();
+        let cancellable = snapshot.state == RunState::Running;
         // Terminal means admission is released, not merely that the report arrived.
         if state
             .active
@@ -141,12 +218,140 @@ impl ExampleRun {
         } else if matches!(snapshot.state, RunState::Complete | RunState::Unknown) {
             snapshot.stage = Some("done");
         }
+        let supported = vm.run_cancel_supported();
+        snapshot.can_cancel = supported
+            && cancellable
+            && state
+                .active
+                .as_ref()
+                .is_some_and(|job| job.document_id == id)
+            && snapshot.cancellation == Cancellation::None;
+        snapshot.can_check_cancellation = supported
+            && state.active.is_none()
+            && state.recovery.contains_key(&id)
+            && snapshot.cancellation == Cancellation::Unconfirmed
+            && snapshot.error != Some("session");
+        snapshot.can_retry_cancellation &= snapshot.can_check_cancellation;
         snapshot.model_connected = vm.model_connected();
         snapshot.can_run = self.2
             && state.active.is_none()
             && vm.status() == LocalVmStatus::Ready
             && vm.try_authoring().is_some();
         snapshot
+    }
+    pub fn cancel(self: &Arc<Self>, vm: Arc<LocalVm>, id: DocumentId) -> RunSnapshot {
+        self.request_cancellation(vm, id, true)
+    }
+    pub fn check_cancellation(self: &Arc<Self>, vm: Arc<LocalVm>, id: DocumentId) -> RunSnapshot {
+        self.request_cancellation(vm, id, false)
+    }
+    fn request_cancellation(
+        self: &Arc<Self>,
+        vm: Arc<LocalVm>,
+        id: DocumentId,
+        retry: bool,
+    ) -> RunSnapshot {
+        if !vm.run_cancel_supported() {
+            return self.status_document(&vm, id);
+        }
+        {
+            let mut state = self.0.lock().unwrap();
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|job| job.document_id == id)
+            {
+                if retry
+                    && state.snapshots[&id].state == RunState::Running
+                    && state.snapshots[&id].cancellation == Cancellation::None
+                {
+                    state.stop.as_ref().unwrap().send_replace(true);
+                    state.snapshots.get_mut(&id).unwrap().cancellation = Cancellation::Cancelling;
+                }
+                drop(state);
+                return self.status_document(&vm, id);
+            }
+        }
+        let Some(admission) = vm.try_authoring() else {
+            return self.status_document(&vm, id);
+        };
+        let recovery = {
+            let mut state = self.0.lock().unwrap();
+            let recovery = state.recovery.get(&id).cloned().filter(|_| {
+                state.active.is_none()
+                    && state.snapshots[&id].cancellation == Cancellation::Unconfirmed
+                    && (!retry || state.snapshots[&id].can_retry_cancellation)
+            });
+            let Some(recovery) = recovery else {
+                drop(state);
+                return self.status_document(&vm, id);
+            };
+            state.active = Some(recovery.document.clone());
+            let snapshot = state.snapshots.get_mut(&id).unwrap();
+            snapshot.cancellation = Cancellation::Cancelling;
+            snapshot.stage = Some("cancel");
+            recovery
+        };
+        let owner = self.clone();
+        let target = vm.clone();
+        self.1.spawn(async move {
+            let runtime = tokio::runtime::Handle::current();
+            let worker = owner.clone();
+            let observing = target.clone();
+            let result = target
+                .with_client(move |installation, client| {
+                    if !observing.authoring_current(&admission)
+                        || installation != recovery.installation
+                        || client.boot_nonce() != recovery.boot
+                    {
+                        worker.recovery_failed(id);
+                        return;
+                    }
+                    let runner = NativeRunner::resume_with_transport(
+                        VmRunTransport {
+                            client: Mutex::new(client),
+                            provider: recovery.provider.clone(),
+                            vm: observing,
+                        },
+                        &recovery.handle,
+                    );
+                    runtime.block_on(worker.finish_cancellation(id, &runner, recovery, retry));
+                })
+                .await;
+            if result.is_err() && !matches!(&result, Err(crate::runtime::types::RuntimeError::Busy))
+            {
+                owner.recovery_failed(id);
+            }
+            let mut state = owner.0.lock().unwrap();
+            if state.snapshots[&id].error.is_some()
+                || matches!(&result, Err(crate::runtime::types::RuntimeError::Busy))
+            {
+                state.snapshots.get_mut(&id).unwrap().cancellation = Cancellation::Unconfirmed;
+            }
+            state.active = None;
+        });
+        self.status_document(&vm, id)
+    }
+    fn recovery_failed(&self, id: DocumentId) {
+        // Recovery owns one document's snapshot, not the latest run's global
+        // observation or previously saved history (possibly another document).
+        let mut state = self.0.lock().unwrap();
+        let snapshot = state.snapshots.get_mut(&id).unwrap();
+        snapshot.error = Some("session");
+        snapshot.cancellation = Cancellation::Unconfirmed;
+    }
+    fn cancelled_before_start(&self, id: DocumentId) {
+        let mut state = self.0.lock().unwrap();
+        let snapshot = state.snapshots.get_mut(&id).unwrap();
+        snapshot.cancellation = Cancellation::BeforeStart;
+        snapshot.state = RunState::Complete;
+        snapshot.error = None;
+        snapshot.acknowledged.clear();
+        snapshot.pending = None;
+        snapshot.report = Some(RunReport {
+            cases: Vec::new(),
+            verdict: crate::engine::run::Verdict::Cancelled,
+        });
     }
     pub fn start_first_test(
         self: &Arc<Self>,
@@ -181,6 +386,7 @@ impl ExampleRun {
         let Some(admission) = vm.try_authoring() else {
             return self.status_document(&vm, id);
         };
+        let (sender, stop) = watch::channel(false);
         {
             let mut state = self.0.lock().unwrap();
             if state.active.is_some() {
@@ -189,12 +395,16 @@ impl ExampleRun {
             }
             state.active = Some(folder.document());
             state.recorded_current = false;
+            state.stop = Some(sender);
+            state.recovery.remove(&id);
             let snapshot = state
                 .snapshots
                 .entry(id)
                 .or_insert_with(|| RunSnapshot::idle(id));
             snapshot.state = RunState::Running;
             snapshot.can_run = false;
+            snapshot.cancellation = Cancellation::None;
+            snapshot.can_retry_cancellation = false;
             snapshot.error = None;
             snapshot.report = None;
             snapshot.source = None;
@@ -206,6 +416,11 @@ impl ExampleRun {
         let target = vm.clone();
         self.1.spawn(async move {
             let admission = Arc::new(admission);
+            if *stop.borrow() {
+                owner.cancelled_before_start(id);
+                owner.0.lock().unwrap().active = None;
+                return;
+            }
             let pair = tokio::task::spawn_blocking(move || {
                 let snapshot = folder.capture().map_err(|_| ())?;
                 if bundled_example {
@@ -224,7 +439,9 @@ impl ExampleRun {
                 CapturedPair::from_snapshot(snapshot).map_err(|_| ())
             })
             .await;
-            if let Ok(Ok(pair)) = pair {
+            if *stop.borrow() {
+                owner.cancelled_before_start(id);
+            } else if let Ok(Ok(pair)) = pair {
                 let pair = pair.into_pair();
                 {
                     let mut state = owner.0.lock().unwrap();
@@ -242,7 +459,14 @@ impl ExampleRun {
                             worker.fail(id, "session");
                             return;
                         }
-                        runtime.block_on(worker.execute(id, installation, client, observing, pair));
+                        runtime.block_on(worker.execute(
+                            id,
+                            installation,
+                            client,
+                            observing,
+                            pair,
+                            stop,
+                        ));
                         // Observation is over, but admission and the original client
                         // are still held. Retained results keep their own Agents.
                         worker.cleanup(installation, client);
@@ -256,7 +480,9 @@ impl ExampleRun {
                 owner.fail(id, "source");
             }
             // One global admission, released only after the client work returns.
-            owner.0.lock().unwrap().active = None;
+            let mut state = owner.0.lock().unwrap();
+            state.active = None;
+            state.stop = None;
         });
         self.status_document(&vm, id)
     }
@@ -289,6 +515,13 @@ impl ExampleRun {
     }
     fn fail(&self, id: DocumentId, message: &'static str) {
         let mut state = self.0.lock().unwrap();
+        if state.snapshots[&id].cancellation == Cancellation::Cancelling
+            && matches!(state.snapshots[&id].stage, Some("capture" | "model"))
+        {
+            drop(state);
+            self.cancelled_before_start(id);
+            return;
+        }
         if state.recorded_current {
             if let Some(observation) = &mut state.observation {
                 observation.state = RunState::Unknown;
@@ -297,6 +530,9 @@ impl ExampleRun {
         }
         let snapshot = state.snapshots.get_mut(&id).unwrap();
         snapshot.state = RunState::Unknown;
+        if snapshot.cancellation == Cancellation::Cancelling {
+            snapshot.cancellation = Cancellation::Unconfirmed;
+        }
         snapshot.error = Some(message);
         let observation = state
             .recorded_current
@@ -315,8 +551,18 @@ impl ExampleRun {
         client: &mut VmClient,
         vm: Arc<LocalVm>,
         pair: ParsedPair,
+        stop: watch::Receiver<bool>,
     ) {
-        let model = match client.model_status() {
+        if *stop.borrow() {
+            self.cancelled_before_start(id);
+            return;
+        }
+        let observed = client.model_status();
+        if *stop.borrow() {
+            self.cancelled_before_start(id);
+            return;
+        }
+        let model = match observed {
             Ok(model) if model.phase == ModelPhase::Ready => model,
             Ok(_) => {
                 vm.clear_model_acknowledgment();
@@ -332,12 +578,13 @@ impl ExampleRun {
             self.fail(id, "model");
             return;
         };
+        let boot = client.boot_nonce();
+        let provider = connection.selection.provider;
         let runner = NativeRunner::with_transport(VmRunTransport {
             client: Mutex::new(client),
-            provider: connection.selection.provider,
+            provider: provider.clone(),
             vm,
         });
-        self.0.lock().unwrap().snapshots.get_mut(&id).unwrap().stage = Some("submit");
         let prepared = match runner.prepare(pair) {
             Ok(prepared) => prepared,
             Err(_) => {
@@ -345,9 +592,33 @@ impl ExampleRun {
                 return;
             }
         };
-        let (_sender, stop) = watch::channel(false);
-        let handle = match runner.submit_prepared(prepared, stop).await {
+        self.0.lock().unwrap().snapshots.get_mut(&id).unwrap().stage = Some("submit");
+        let handle = match runner.submit_prepared(prepared, stop.clone()).await {
             Ok(handle) => handle,
+            Err(error)
+                if self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .snapshots
+                    .get_mut(&id)
+                    .unwrap()
+                    .claim_end(&stop, RunState::Unknown) =>
+            {
+                let recovery = Recovery {
+                    document: self.0.lock().unwrap().active.clone().unwrap(),
+                    installation,
+                    boot,
+                    provider,
+                    handle: *error.handle,
+                    pending: error.pending.map(|p| PendingRef {
+                        kind: p.kind,
+                        name: p.name,
+                    }),
+                };
+                self.finish_cancellation(id, &runner, recovery, true).await;
+                return;
+            }
             Err(error) => {
                 self.record(
                     id,
@@ -366,7 +637,60 @@ impl ExampleRun {
         };
         self.record(id, installation, &handle, None, None, RunState::Running);
         self.0.lock().unwrap().snapshots.get_mut(&id).unwrap().stage = Some("observe");
-        match runner.observe(&handle).await {
+        let observed = runner
+            .observe_checkpointed(&handle, stop.clone(), &mut |event| {
+                if let RunCheckpoint::Case(_, case) | RunCheckpoint::Evidence(case) = event {
+                    let mut state = self.0.lock().unwrap();
+                    let report = state
+                        .snapshots
+                        .get_mut(&id)
+                        .unwrap()
+                        .report
+                        .get_or_insert_with(|| RunReport {
+                            cases: Vec::new(),
+                            verdict: crate::engine::run::Verdict::Unknown,
+                        });
+                    handle.retain_evidence(
+                        report,
+                        RunReport {
+                            cases: vec![case],
+                            verdict: crate::engine::run::Verdict::Unknown,
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .await;
+        // Cancel and normal completion compete under the same lock. Once the
+        // worker crosses its final Stop check, no request may claim to cancel it.
+        let cancelled = self
+            .0
+            .lock()
+            .unwrap()
+            .snapshots
+            .get_mut(&id)
+            .unwrap()
+            .claim_end(
+                &stop,
+                if observed.is_ok() {
+                    RunState::Complete
+                } else {
+                    RunState::Unknown
+                },
+            );
+        if cancelled {
+            let recovery = Recovery {
+                document: self.0.lock().unwrap().active.clone().unwrap(),
+                installation,
+                boot,
+                provider,
+                handle,
+                pending: None,
+            };
+            self.finish_cancellation(id, &runner, recovery, true).await;
+            return;
+        }
+        match observed {
             Ok(report) => {
                 self.record(
                     id,
@@ -456,6 +780,38 @@ impl RunTransport for VmRunTransport<'_> {
     fn max_create_body_bytes(&self) -> Option<usize> {
         Some(MAX_ORKA_BODY)
     }
+    fn run_worker<'a>(
+        &'a self,
+        name: &'a str,
+        uid: &'a str,
+        deadline: Instant,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<bridge_runtime_protocol::RunWorkerReply, ErrorKind>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if self.vm.status() != LocalVmStatus::Ready {
+                return Err(ErrorKind::Transport);
+            }
+            if Instant::now() >= deadline {
+                return Err(ErrorKind::Deadline);
+            }
+            let reply = self
+                .client
+                .lock()
+                .map_err(|_| ErrorKind::Transport)?
+                .run_worker(name, uid)
+                .map_err(|_| ErrorKind::Transport)?;
+            if Instant::now() >= deadline {
+                return Err(ErrorKind::Deadline);
+            }
+            Ok(reply)
+        })
+    }
     fn request<'a>(
         &'a self,
         path: &'a str,
@@ -480,7 +836,22 @@ impl RunTransport for VmRunTransport<'_> {
                     body: body.cloned(),
                 })
                 .map_err(|_| ErrorKind::Transport)?;
-            if reply.status != if body.is_some() { 201 } else { 200 } {
+            // A successful in-flight create is authority, even after its budget:
+            // retain its UID before Stop/error handling; later requests stay fenced.
+            let created =
+                body.is_some() && matches!(path, "agents" | "tasks") && reply.status == 201;
+            if Instant::now() >= deadline && !created {
+                return Err(ErrorKind::Deadline);
+            }
+            if path.ends_with("/cancel") {
+                match reply.status {
+                    200 => {}
+                    409 => return Err(ErrorKind::Conflict),
+                    401 => return Err(ErrorKind::Authentication),
+                    403 => return Err(ErrorKind::Permission),
+                    _ => return Err(ErrorKind::Response),
+                }
+            } else if reply.status != if body.is_some() { 201 } else { 200 } {
                 return Err(ErrorKind::Response);
             }
             Ok(reply.body)

@@ -333,6 +333,29 @@ impl VmClient {
         }
         serde_json::from_slice(&result.stdout).map_err(|_| invalid())
     }
+    /// Fixed local Run worker proof; all names and UIDs come from native receipts.
+    pub fn run_worker(&mut self, name: &str, uid: &str) -> io::Result<RunWorkerReply> {
+        if !valid_run_worker(name, uid) {
+            return Err(invalid());
+        }
+        let operation = Uuid::new_v4();
+        match self.call(RequestBody::Execute {
+            operation,
+            action: EngineActionWire::RunWorker {
+                name: name.into(),
+                uid: uid.into(),
+            },
+            snapshot: None,
+        })? {
+            ResultBody::Operation { operation: id, .. } if id == operation => {}
+            _ => return Err(invalid()),
+        }
+        let result = self.result(operation)?;
+        if result.exit != 0 {
+            return Err(invalid());
+        }
+        serde_json::from_slice(&result.stdout).map_err(|_| invalid())
+    }
     /// Native Chat only. Preserve DELETE/404 status for explicit reconciliation.
     pub fn chat_request(&mut self, request: ChatRequest) -> io::Result<OrkaReply> {
         if request.validate().is_err() || self.channel.is_none() {

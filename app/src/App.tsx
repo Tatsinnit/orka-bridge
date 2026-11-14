@@ -156,7 +156,7 @@ export default function App() {
   const cases = run?.report?.cases;
   const checksStale = stale || (run?.sourceCurrent === false && !!run.report);
   const localChecks = checksStale ? 'Tests not run since your edit' : runUnavailable ? 'Test status unavailable' : run?.state === 'unknown' ? 'Test result unknown'
-    : run?.state === 'running' ? 'Running tests…' : cases
+    : run?.state === 'running' ? 'Running tests…' : run?.report?.verdict === 'cancelled' ? 'Tests cancelled' : run?.report?.verdict === 'unknown' ? 'Test result unknown' : cases
     ? `${cases.filter(check => check.verdict === 'passed').length} of ${cases.length} tests passing` : undefined;
   const checks = remote && localChecks ? `This computer: ${localChecks}` : localChecks;
   const firstTest = useFirstTest({
@@ -168,7 +168,7 @@ export default function App() {
   });
   const sample = sampleResult?.snapshot;
   const firstCheck = sampleSource === null ? 'unknown' : firstTest === 'running' ? 'running' : sampleResult ? sampleStale || (sameSource(sampleSource, sample?.source) === false && !!sample?.report) ? 'stale'
-    : !sample || sample.state === 'unknown' ? 'unknown' : sample.state === 'running' ? 'running' : sample.state === 'complete' ? sample.report?.verdict : undefined
+    : !sample || sample.state === 'unknown' ? 'unknown' : sample.state === 'running' ? 'running' : sample.state === 'complete' ? sample.report?.verdict === 'cancelled' ? 'unknown' : sample.report?.verdict : undefined
     : firstTest;
   // Tab, footer and the Setup card share this derivation. Native selection, not the default radio, names the host.
   const initialAutomatic = firstTest === 'running' || (model === 'connected' && firstTestPending() && (!sample || sample.state === 'idle'));
@@ -182,6 +182,8 @@ export default function App() {
   const failedChecks = cases?.filter(check => check.verdict === 'failed').length ?? 0;
   const agentStatus = checksStale ? 'tests need running' : runUnavailable ? 'test status unavailable' : run?.state === 'unknown' ? 'test result unknown'
     : run?.state === 'running' ? 'running tests'
+    : run?.report?.verdict === 'cancelled' ? 'tests cancelled'
+    : run?.report?.verdict === 'unknown' ? 'test result unknown'
     : failedChecks ? `${failedChecks} ${failedChecks === 1 ? 'test' : 'tests'} failing`
     : cases?.some(check => check.verdict === 'unknown') ? 'test result unknown'
     : cases ? 'tests passing' : 'ready to edit';

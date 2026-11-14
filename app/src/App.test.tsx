@@ -240,6 +240,24 @@ test('model acknowledgment and observed check counts survive navigation', async 
   expect(screen.queryByRole('button', { name: /Model connected|Connecting/ })).toBeNull();
 });
 
+test.each(['cancelled', 'beforeStart', 'unconfirmed'] as const)('a %s run never announces tests passing', async cancellation => {
+  const empty = cancellation !== 'cancelled';
+  const snapshot = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', busy: null, state: 'complete', canRun: true, cancellation,
+    report: { verdict: cancellation === 'unconfirmed' ? 'unknown' : 'cancelled', cases: empty ? [] : [{ id: 'one', question: 'Question', phase: 'Cancelled', answer: null, completedTools: [], assertions: [], verdict: 'cancelled' }] }, acknowledged: [], pending: null, error: null };
+  mockIPC(command => {
+    if (command === 'setup_status') return { selected: 'localVm', localVm: 'ready', model: 'locked' };
+    if (command === 'agent_open') return { documentId: snapshot.documentId, name: 'reader', agent: '---\nname: reader\n---\nRead.', tests: 'Check' };
+    if (command === 'agent_run_status') return snapshot;
+    return { kind: 'version', version: 'v0.4.2', hasDiagnostics: false };
+  });
+  vi.stubGlobal('isTauri', true);
+  const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
+  const label = cancellation === 'unconfirmed' ? 'test result unknown' : 'tests cancelled';
+  await within(screen.getByRole('navigation')).findByTitle(`reader, ${label}`);
+  expect(within(screen.getByRole('contentinfo')).queryByText(/tests passing/i)).toBeNull();
+});
+
 test('a running check finishes in the footer after leaving Designer', async () => {
   let complete = false;
   const report = { verdict: 'passed', cases: [{ id: 'a', question: 'What did the page say?', phase: 'Succeeded', answer: 'ok', completedTools: [], assertions: [{ id: 'a1', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] };

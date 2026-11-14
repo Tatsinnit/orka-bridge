@@ -252,6 +252,37 @@ async fn recovery_reads_only_gets_uses_captured_rules_and_preserves_answer_when_
     );
 }
 
+#[tokio::test]
+async fn saved_send_recheck_keeps_the_shared_cancelled_verdict_without_assertions() {
+    let fixture = Fixture::start(Behavior {
+        phase: "Cancelled",
+        ..Behavior::default()
+    })
+    .await;
+    let runner = fixture.runner();
+    let pair = pair();
+    let cases = pair.cases().to_vec();
+    let (_tx, stop) = tokio::sync::watch::channel(false);
+    let mut resources = Vec::new();
+    runner
+        .submit_checkpointed(runner.prepare(pair).unwrap(), stop, &mut |event| {
+            if let RunCheckpoint::Acknowledged(resource) = event {
+                resources.push(resource);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let report = runner
+        .recover(&mut resources, &cases, None)
+        .await
+        .report
+        .unwrap();
+    assert_eq!(report.verdict, Verdict::Cancelled);
+    assert_eq!(report.cases[0].verdict, Verdict::Cancelled);
+    assert!(report.cases[0].assertions.is_empty());
+}
+
 #[derive(Clone, Copy)]
 struct Behavior {
     phase: &'static str,
@@ -925,6 +956,37 @@ async fn creates_one_task_per_case_without_reusing_inputs_or_expected_values() {
     assert!(!requests[2].1.to_string().contains("different-expected"));
 }
 #[tokio::test]
+async fn cancelled_is_neutral_has_no_assertions_and_reads_evidence_once() {
+    let fixture = Fixture::start(Behavior {
+        phase: "Cancelled",
+        ..Behavior::default()
+    })
+    .await;
+    let runner = fixture.runner();
+    let handle = runner.submit(pair()).await.unwrap();
+    let report = runner.observe(&handle).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["verdict"],
+        "cancelled"
+    );
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["cases"][0]["verdict"],
+        "cancelled"
+    );
+    assert!(report.cases[0].assertions.is_empty());
+    assert_eq!(
+        fixture
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p.contains("/result?"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evidence() {
     // Each row attacks a different proof source; missing tools are never a negative completeness claim.
     for (behavior, contains, tool, overall) in [
@@ -963,15 +1025,6 @@ async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evi
             },
             Verdict::Passed,
             Verdict::Unknown,
-            Verdict::Failed,
-        ),
-        (
-            Behavior {
-                phase: "Cancelled",
-                ..Behavior::default()
-            },
-            Verdict::Passed,
-            Verdict::Passed,
             Verdict::Failed,
         ),
         (

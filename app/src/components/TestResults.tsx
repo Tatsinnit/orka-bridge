@@ -6,10 +6,11 @@ import './test-results.css';
 
 type Report = NonNullable<RunSnapshot['report']>;
 type Case = Report['cases'][number];
-const words = { passed: 'Passed', failed: 'Failed', unknown: 'Unknown' };
+const words = { passed: 'Passed', failed: 'Failed', unknown: 'Unknown', cancelled: 'Cancelled' };
 export function resultLabel(report: Report | null | undefined) {
   if (!report) return undefined;
   if (report.verdict === 'unknown') return 'Result unknown';
+  if (report.verdict === 'cancelled') return 'Tests cancelled';
   return `${report.cases.filter(c => c.verdict === 'passed').length} of ${report.cases.length} passed`;
 }
 export function resultAnnouncement(report: Report | null | undefined) {
@@ -39,10 +40,10 @@ function reason(c: Case) {
 }
 export function TestResults({ report, stale }: { report: Report | null | undefined; stale: boolean }) {
   if (!report) return null;
-  const order = { failed: 0, unknown: 1, passed: 2 };
+  const order = { failed: 0, unknown: 1, passed: 2, cancelled: 3 };
   return <div className={stale ? 'test-results result-stale' : 'test-results'}>
     {stale && <p>Earlier result</p>}
-    {[...report.cases].sort((a, b) => order[a.verdict] - order[b.verdict]).map(c => <Disclosure className="test-result" key={`${c.id}:${c.verdict}:${stale}`} defaultOpen={c.verdict !== 'passed'} label={<><StatusIcon state={stale ? 'stale' : c.verdict === 'unknown' ? 'stale' : c.verdict} /><code>{c.id}</code><span>{stale ? 'Earlier result' : words[c.verdict]}</span></>}>
+    {[...report.cases].sort((a, b) => order[a.verdict] - order[b.verdict]).map(c => <Disclosure className="test-result" key={`${c.id}:${c.verdict}:${stale}`} defaultOpen={c.verdict !== 'passed'} label={<><StatusIcon state={stale ? 'stale' : c.verdict === 'cancelled' ? 'not-started' : c.verdict === 'unknown' ? 'stale' : c.verdict} /><code>{c.id}</code><span>{stale ? 'Earlier result' : words[c.verdict]}</span></>}>
       <div className="test-answer">
         <h5 className="section-label">Question</h5><p className="reading">{c.question}</p>
         <h5 className="section-label">Answer</h5><p className="reading">{c.answer ?? 'No answer was observed.'}</p>

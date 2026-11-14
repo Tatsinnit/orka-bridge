@@ -82,6 +82,18 @@ test('repeated calls to one tool render without duplicate keys', () => {
     expect(errors).not.toHaveBeenCalled();
   } finally { errors.mockRestore(); }
 });
+test('cancelled engine rows are readable, neutral and never a pass or failed assertion', () => {
+  const cancelled = { ...passed, id: 'cancelled', phase: 'Cancelled', verdict: 'cancelled' as const, assertions: [] };
+  const cancelledReport = { verdict: 'cancelled' as const, cases: [cancelled, passed] };
+  const { container } = render(<TestResults report={cancelledReport} stale={false} />);
+  expect(resultLabel(cancelledReport)).toBe('Tests cancelled');
+  expect(screen.getByText('Cancelled')).toBeTruthy();
+  const rows = container.querySelectorAll('details.test-result');
+  expect(rows[0].textContent).toContain('has-date');
+  expect(rows[1].querySelector('.status-not-started')).toBeTruthy();
+  expect(rows[1].querySelector('.status-failed, .status-passed')).toBeNull();
+  expect(rows[1].textContent).not.toContain('Not met');
+});
 test('stages and stale file differences report only known facts', () => {
   render(<TestProgress stage="Waiting for answers and evaluating tests" />);
   expect(screen.getByRole('status').textContent).toBe('Waiting for answers and evaluating tests');

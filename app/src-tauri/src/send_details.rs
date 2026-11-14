@@ -53,10 +53,14 @@ impl AttemptDetails {
     fn omit_answers(&mut self) {
         self.detail_state = "omitted".into();
         if let Some(report) = &mut self.report {
-            report.verdict = crate::engine::run::Verdict::Unknown;
+            if report.verdict != crate::engine::run::Verdict::Cancelled {
+                report.verdict = crate::engine::run::Verdict::Unknown;
+            }
             for case in &mut report.cases {
                 case.answer = None;
-                case.verdict = crate::engine::run::Verdict::Unknown;
+                if case.verdict != crate::engine::run::Verdict::Cancelled {
+                    case.verdict = crate::engine::run::Verdict::Unknown;
+                }
                 for assertion in &mut case.assertions {
                     assertion.verdict = crate::engine::run::Verdict::Unknown;
                 }
@@ -371,6 +375,26 @@ impl SummaryStore {
 #[cfg(test)]
 mod quota_tests {
     use super::*;
+    #[test]
+    fn quota_omission_preserves_cancelled_rows_and_their_empty_assertions() {
+        use crate::engine::run::Verdict;
+        let mut detail: AttemptDetails = serde_json::from_value(serde_json::json!({
+            "documentId":null,"model":null,"capturedAt":0,"cases":[],"resources":[],
+            "detailState":"saved","availability":null,
+            "report":{"verdict":"cancelled","cases":[
+                {"id":"cancelled","question":"one","phase":"Cancelled","answer":null,"completedTools":[],"assertions":[],"verdict":"cancelled"},
+                {"id":"passed","question":"two","phase":"Succeeded","answer":"answer","completedTools":[],"assertions":[{"id":"a","kind":"contains","expected":"answer","verdict":"passed"}],"verdict":"passed"}
+            ]}
+        })).unwrap();
+        detail.omit_answers();
+        let report = detail.report.unwrap();
+        assert_eq!(report.verdict, Verdict::Cancelled);
+        assert_eq!(report.cases[0].verdict, Verdict::Cancelled);
+        assert!(report.cases[0].assertions.is_empty());
+        assert_eq!(report.cases[1].verdict, Verdict::Unknown);
+        assert_eq!(report.cases[1].assertions[0].verdict, Verdict::Unknown);
+        assert!(report.cases.iter().all(|c| c.answer.is_none()));
+    }
     #[test]
     fn receipt_reservation_is_consumed_by_acknowledged_uid_bytes() {
         let mut detail: AttemptDetails = serde_json::from_value(serde_json::json!({

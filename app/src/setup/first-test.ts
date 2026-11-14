@@ -37,7 +37,8 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
     const finish = (snapshot?: RunSnapshot) => {
       if (cancelled || !mounted.current) return;
       latest.current.onSnapshot?.(snapshot);
-      setCheck(snapshot?.state === 'complete' ? snapshot.report?.verdict ?? 'unknown' : 'unknown');
+      const verdict = snapshot?.state === 'complete' ? snapshot.report?.verdict ?? 'unknown' : 'unknown';
+      setCheck(verdict === 'cancelled' ? 'unknown' : verdict);
       if (latest.current.ready && latest.current.canOpen) latest.current.onOpen();
     };
     const poll = () => {

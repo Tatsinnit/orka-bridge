@@ -22,6 +22,32 @@ test('frozen evidence contract accepts long valid source fields and optional loc
   expect(isRunSnapshot({ ...base, stage: 'done', model: 'm'.repeat(1048577) })).toBe(false);
   expect(isRunSnapshot({ ...base, report: { ...base.report, cases: [{ ...base.report.cases[0], question: 'q'.repeat(1048576), assertions: [{ ...base.report.cases[0].assertions[0], expected: 'e'.repeat(1048576) }] }] } })).toBe(true);
 });
+test('native cancellation metadata does not make ordinary Run snapshots unreadable', () => {
+  const metadata = { canCancel: false, canRetryCancellation: false, canCheckCancellation: false, cancellation: 'none' };
+  expect(isRunSnapshot({ ...base, ...metadata })).toBe(true);
+  expect(isRunSnapshot({ ...base, ...metadata, state: 'running', canRun: false, stage: 'cancel', cancellation: 'cancelling' })).toBe(true);
+  for (const key of ['canCancel', 'canRetryCancellation', 'canCheckCancellation']) {
+    expect(isRunSnapshot({ ...base, ...metadata, [key]: 'yes' })).toBe(false);
+  }
+  expect(isRunSnapshot({ ...base, ...metadata, cancellation: 'untrusted' })).toBe(false);
+});
+test('shared cancelled results remain readable without fabricating failed assertions', () => {
+  const cancelled = { ...base.report.cases[0], phase: 'Cancelled', verdict: 'cancelled', assertions: [] };
+  expect(isRunSnapshot({ ...base, report: { verdict: 'cancelled', cases: [cancelled] } })).toBe(true);
+  expect(isRunSnapshot({ ...base, report: { verdict: 'cancelled', cases: [{ ...cancelled, phase: 'Succeeded' }] } })).toBe(false);
+  expect(isRunSnapshot({ ...base, report: { verdict: 'passed', cases: [{ ...base.report.cases[0], assertions: [] }] } })).toBe(false);
+  expect(isRunSnapshot({ ...base, cancellation: 'beforeStart', report: { verdict: 'cancelled', cases: [] } })).toBe(true);
+  expect(isRunSnapshot({ ...base, cancellation: 'unconfirmed', report: { verdict: 'unknown', cases: [] } })).toBe(true);
+  expect(isRunSnapshot({ ...base, report: { verdict: 'passed', cases: [] } })).toBe(false);
+});
+test('an active cancellation recheck can retain an empty unknown report', () => {
+  const recovering = { ...base, state: 'running', canRun: false, cancellation: 'cancelling', report: { verdict: 'unknown', cases: [] } };
+  expect(isRunSnapshot(recovering)).toBe(true);
+  expect(isRunSnapshot({ ...recovering, report: { verdict: 'cancelled', cases: [] } })).toBe(true);
+  expect(isRunSnapshot({ ...recovering, state: 'complete', report: { verdict: 'cancelled', cases: [] } })).toBe(false);
+  expect(isRunSnapshot({ ...recovering, state: 'complete' })).toBe(false);
+  expect(isRunSnapshot({ ...recovering, cancellation: 'none' })).toBe(false);
+});
 test('missing or malformed evidence and impossible local stages fail closed', () => {
   for (const question of [undefined, null, 2, '', 'q'.repeat(1048577)]) {
     expect(isRunSnapshot({ ...base, report: { ...base.report, cases: [{ ...base.report.cases[0], question }] } })).toBe(false);

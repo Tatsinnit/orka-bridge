@@ -234,6 +234,22 @@ fn agent_run_status(
     state.status_document(vm.inner(), document_id)
 }
 #[tauri::command]
+fn agent_run_cancel(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> bridge_engine::example_run::RunSnapshot {
+    state.cancel(vm.inner().clone(), document_id)
+}
+#[tauri::command]
+fn agent_run_check_cancellation(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> bridge_engine::example_run::RunSnapshot {
+    state.check_cancellation(vm.inner().clone(), document_id)
+}
+#[tauri::command]
 async fn agent_run(
     document_id: DocumentId,
     bundled_example: Option<bool>,
@@ -499,6 +515,8 @@ fn main() {
             setup_remove_model,
             agent_run_status,
             agent_run,
+            agent_run_cancel,
+            agent_run_check_cancellation,
             agent_chat_status,
             agent_chat_send,
             agent_chat_reconnect,

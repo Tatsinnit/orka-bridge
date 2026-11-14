@@ -134,15 +134,15 @@ impl NativeRunner<'_> {
                 let after=self.http.request(&path,None,None,deadline).await?;
                 if !task.matches(&after) || after["status"]["phase"]!=phase {return Err(ErrorKind::Identity);}
                 self.read_saved(agent, deadline).await?;
-                let assertions=case.evaluate(answer.as_deref(),&tools);
-                let verdict=if phase=="Succeeded" {aggregate(assertions.iter().map(|r|r.verdict))} else {Verdict::Failed};
+                let assertions=if phase=="Cancelled" {Vec::new()} else {case.evaluate(answer.as_deref(),&tools)};
+                let verdict=if phase=="Cancelled" {Verdict::Cancelled} else if phase=="Succeeded" {aggregate(assertions.iter().map(|r|r.verdict))} else {Verdict::Failed};
                 Ok(Some((CaseReport {id:case.id.clone(),question:case.input().into(),phase:phase.into(),answer,completed_tools:tools,assertions,verdict},captured)))
             }.await;
             match read {
                 Ok(None) => (),
                 Ok(Some((row, captured))) => {
-                    verified_failure |= matches!(row.phase.as_str(), "Failed" | "Cancelled")
-                        || (captured && row.verdict == Verdict::Failed);
+                    verified_failure |=
+                        row.phase == "Failed" || (captured && row.verdict == Verdict::Failed);
                     refreshed |= captured
                         || report
                             .cases
@@ -165,7 +165,9 @@ impl NativeRunner<'_> {
                 }
             }
         }
-        report.verdict = if verified_failure {
+        report.verdict = if report.cases.iter().any(|r| r.verdict == Verdict::Cancelled) {
+            Verdict::Cancelled
+        } else if verified_failure {
             Verdict::Failed
         } else if seen == cases.len()
             && availability == "available"

@@ -17,6 +17,49 @@ fn observation(document: DocumentId, installation: Uuid, uid: &str) -> LocalRunO
 }
 
 #[test]
+fn cancelled_summary_round_trips_alongside_pre_cancel_history() {
+    use bridge_engine::engine::run::Verdict;
+    let home = tempfile::tempdir().unwrap();
+    let root = Some(home.path().join("data"));
+    let store = LocalResults::new(root.clone());
+    let installation = Uuid::new_v4();
+    let old = observation(DocumentId::SAMPLE, installation, "old");
+    store.record(old).unwrap();
+    let id = serde_json::from_value(json!(Uuid::new_v4())).unwrap();
+    let mut cancelled = observation(id, installation, "cancelled");
+    cancelled.report.as_mut().unwrap().verdict = Verdict::Cancelled;
+    cancelled.report.as_mut().unwrap().passed = 1;
+    store.record(cancelled).unwrap();
+    let reopened = LocalResults::new(root).list().unwrap();
+    assert_eq!(reopened.results.len(), 2);
+    assert_eq!(
+        reopened
+            .results
+            .iter()
+            .find(|r| r.document_id == id)
+            .unwrap()
+            .report
+            .as_ref()
+            .unwrap()
+            .verdict,
+        Verdict::Cancelled
+    );
+    assert_eq!(
+        reopened
+            .results
+            .iter()
+            .find(|r| r.document_id == DocumentId::SAMPLE)
+            .unwrap()
+            .report
+            .as_ref()
+            .unwrap()
+            .verdict,
+        Verdict::Failed
+    );
+    assert_eq!(reopened.run_agents.len(), 2);
+}
+
+#[test]
 fn reopen_keeps_latest_per_document_and_every_acknowledged_identity() {
     let home = tempfile::tempdir().unwrap();
     let root = Some(home.path().join("data"));
