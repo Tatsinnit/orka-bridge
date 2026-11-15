@@ -38,7 +38,11 @@ def gh(endpoint, *, paginate=False, download=None, body=None, upload=None):
     if paginate:
         args += ["--paginate", "--slurp"]
     if download:
-        args += ["-H", "Accept: application/octet-stream"]
+        # Actions archives redirect to ZIP bytes but require the API media type.
+        accept = ("application/vnd.github+json"
+                  if "/actions/artifacts/" in endpoint and endpoint.endswith("/zip")
+                  else "application/octet-stream")
+        args += ["-H", "Accept: " + accept]
     if body is not None:
         args += ["--input", "-"]
     if upload:

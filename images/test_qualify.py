@@ -92,6 +92,29 @@ class QualificationTests(unittest.TestCase):
         self.profile["artifactSha256"] = sha(path.read_bytes())
         return path
 
+    def test_download_accept_header_matches_endpoint_kind(self):
+        endpoints = (
+            ("repos/orka-agents/orka-bridge/actions/artifacts/12/zip",
+             "application/vnd.github+json"),
+            ("repos/orka-agents/orka-bridge/releases/assets/34",
+             "application/octet-stream"),
+        )
+        for index, (endpoint, accept) in enumerate(endpoints):
+            with self.subTest(endpoint=endpoint):
+                destination = self.root / f"download-{index}"
+
+                def download(args, *, input, stdout, check):
+                    self.assertEqual(args[:5], ["gh", "api", endpoint, "--method", "GET"])
+                    self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-H"],
+                                     ["X-GitHub-Api-Version: 2022-11-28", "Accept: " + accept])
+                    self.assertIsNone(input)
+                    self.assertTrue(check)
+                    stdout.write(b"archive bytes")
+
+                with patch.object(self.q.subprocess, "run", side_effect=download):
+                    self.assertIsNone(self.q.gh(endpoint, download=destination))
+                self.assertEqual(destination.read_bytes(), b"archive bytes")
+
     def test_public_cli_denies_empty_policy_before_any_gh(self):
         # The checked-in policy must reject without creating any package directory.
         for command in ("prepare", "draft"):
