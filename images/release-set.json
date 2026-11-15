@@ -17,5 +17,54 @@
       "manifestSha256": "be18ce4298a22b28bec2de5776288726bc5bd020c2dc9a62c360fc256a9718e9"
     }
   },
-  "appCandidates": {}
+  "appCandidates": {
+    "bridge-preview-20261115-1414-4bfa919f": {
+      "runId": 43723273684,
+      "workflowId": 406543958,
+      "runAttempt": 1,
+      "buildCommit": "4bfa919f3510e6d61aae93d83cd75e2b5deeee9a",
+      "artifacts": {
+        "bridge-windows-candidate": {
+          "id": 14165478622,
+          "sha256": "c4933597aedd34941a4a6bd217e62c86f41a981abf173e7e5ddd8fc5970fccde",
+          "files": {
+            "bridge-windows-x64.zip": {
+              "bytes": 57542055,
+              "sha256": "3142aff413ef91df8d34db1711edeafaf7705848bcb1e8559c3952cc08d4d3e2"
+            },
+            "windows-after.json": {
+              "bytes": 191,
+              "sha256": "3550a0b760c79f0b1fe07b7d1b0c9c74b42ee812ad089475f74c47b962164096"
+            },
+            "windows-before.json": {
+              "bytes": 102,
+              "sha256": "520479be40b6d070a74a87045562f48ed063e2f3f340764c47f9b0961e289db3"
+            },
+            "bridge-windows-runtime-source.zip": {
+              "bytes": 930666861,
+              "sha256": "1f1d8d6409a744a80bb726c243f864701298f4f94af01bee4487a4df023fdfcb"
+            }
+          }
+        },
+        "bridge-macos-candidate": {
+          "id": 14165887151,
+          "sha256": "c6897686c3f2fe86e8bd3677c4ed2a4d332d7f383568117b05433472d278498f",
+          "files": {
+            "bridge-macos-arm64.tar.gz": {
+              "bytes": 10839588,
+              "sha256": "b93131afd8eed60d23449989e7e46558ff9f3e09595025be922b3d8a313714dd"
+            },
+            "macos-before.json": {
+              "bytes": 99,
+              "sha256": "857fe4afdc6b02c6750ef8f1926a8ea6a50e337063344a1ed02aa067051bf357"
+            },
+            "macos-after.json": {
+              "bytes": 142,
+              "sha256": "b60af5f46d3f3d842c464425e31051cdbffd4003baa9297bfb936f74aff5a7a4"
+            }
+          }
+        }
+      }
+    }
+  }
 }
