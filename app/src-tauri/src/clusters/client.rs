@@ -142,7 +142,8 @@ impl ClusterClient {
             .ok_or(Check::Configuration.unknown())?
             .name;
         let server = config.cluster_url.to_string();
-        let bindings = installations(client, id, name, &server, deadline).await?;
+        let identity = super::destination::fingerprint(&config)?;
+        let bindings = installations(client, id, name, &server, &identity, deadline).await?;
         let mut views = Vec::new();
         for binding in bindings {
             let target_id = self
@@ -186,7 +187,9 @@ impl ClusterClient {
     ) -> Result<(), AccessOutcome> {
         let config =
             selected_config(&self.kubeconfig, &binding.context_name, "binding-only").await?;
-        if config.cluster_url.to_string() != binding.server_address {
+        if config.cluster_url.to_string() != binding.server_address
+            || super::destination::fingerprint(&config)? != binding.cluster_identity
+        {
             return Err(Check::Configuration.unknown());
         }
         let bindings = installations(
@@ -194,6 +197,7 @@ impl ClusterClient {
             binding.context_id,
             &binding.context_name,
             &config.cluster_url.to_string(),
+            &binding.cluster_identity,
             deadline,
         )
         .await?;
@@ -237,6 +241,9 @@ impl ClusterClient {
             self.resolve(binding.context_id, deadline),
         )
         .await?;
+        if super::destination::fingerprint(&resolved.config)? != binding.cluster_identity {
+            return Err(Configuration.unknown());
+        }
         let (bearer, expiry) = match resolved.credential {
             Credential::Bearer {
                 value,
@@ -617,7 +624,7 @@ impl RemoteAccess {
         Ok(())
     }
 }
-fn deployment_watches(deployment: &Deployment, namespace: &str) -> bool {
+pub(super) fn deployment_watches(deployment: &Deployment, namespace: &str) -> bool {
     let Some(template) = deployment.spec.as_ref().map(|s| &s.template) else {
         return false;
     };
@@ -693,6 +700,7 @@ async fn installations(
     context_id: ContextId,
     context_name: &str,
     server: &str,
+    cluster_identity: &str,
     deadline: Instant,
 ) -> Result<Vec<TargetBinding>, AccessOutcome> {
     let services = within(deadline, Check::ClusterApi, async {
@@ -757,6 +765,7 @@ async fn installations(
                     None => port.port,
                 };
                 bindings.push(TargetBinding {
+                    cluster_identity: cluster_identity.into(),
                     context_id,
                     context_name: context_name.into(),
                     server_address: server.into(),

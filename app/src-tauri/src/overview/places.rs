@@ -285,7 +285,9 @@ pub(crate) fn project(mut places: Vec<Place>, history: Option<Vec<AttemptSummary
         for agent in &mut place.agents {
             // History is newest first. A name is never an association key.
             if let Some(record) = history.iter().find(|r| {
-                r.agent_uid.as_deref() == Some(&agent.uid)
+                b.cluster_identity.is_some()
+                    && r.target_uids.cluster_identity == b.cluster_identity
+                    && r.agent_uid.as_deref() == Some(&agent.uid)
                     && r.target_display == format!("{} · {}", b.context_name, b.watched_namespace)
                     && r.target_uids.service_namespace == b.service_namespace
                     && r.target_uids.service_uid == b.service_uid

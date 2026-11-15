@@ -10,6 +10,8 @@ const LIMIT: usize = 1024 * 1024;
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Identity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_identity: Option<String>,
     pub context_name: String,
     pub service_name: String,
     pub service_namespace: String,
@@ -21,6 +23,7 @@ pub(super) struct Identity {
 impl From<&TargetBinding> for Identity {
     fn from(b: &TargetBinding) -> Self {
         Self {
+            cluster_identity: Some(b.cluster_identity.clone()),
             context_name: b.context_name.clone(),
             service_name: b.service_name.clone(),
             service_namespace: b.service_namespace.clone(),
@@ -35,6 +38,7 @@ impl Identity {
     pub fn key(&self) -> String {
         serde_json::to_string(&(
             &self.context_name,
+            &self.cluster_identity,
             &self.service_namespace,
             &self.service_uid,
             &self.deployment_namespace,
@@ -53,7 +57,10 @@ impl Identity {
         };
         // Discovery additionally requires a DNS-label watched namespace.
         let n = self.watched_namespace.as_bytes();
-        !n.is_empty()
+        self.cluster_identity
+            .as_deref()
+            .is_none_or(crate::clusters::valid_identity)
+            && !n.is_empty()
             && n.len() <= 63
             && n[0].is_ascii_alphanumeric()
             && n[n.len() - 1].is_ascii_alphanumeric()

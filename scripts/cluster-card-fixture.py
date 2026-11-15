@@ -117,7 +117,9 @@ class Discovery(BaseHTTPRequestHandler):
         self.reply(200, {"ok": True})
 
     def do_GET(self):
-        path = self.path.split("?")[0]
+        route = urlsplit(self.path)
+        path = route.path
+        query = parse_qs(route.query)
         place = self.place(self.headers.get("Authorization", ""))
         with self.lock:
             offline = place in self.offline
@@ -130,7 +132,9 @@ class Discovery(BaseHTTPRequestHandler):
             return
         if path.endswith("/pods"):
             value = {"apiVersion": "v1", "kind": "PodList", "items": [{
-                "metadata": {"name": "ready", "namespace": "control", "uid": "pod-fixture" + suffix, "labels": {"app": "orka"}},
+                "metadata": {"name": "ready", "namespace": "control", "uid": "pod-fixture" + suffix, "labels": {"app": "orka"},
+                             "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "controller-rs",
+                                                  "uid": "replicaset-fixture" + suffix, "controller": True}]},
                 "spec": {"containers": [{"name": "controller", "ports": [{"containerPort": 8080}]}]},
                 "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]},
             }]}
@@ -150,6 +154,13 @@ class Discovery(BaseHTTPRequestHandler):
                     }]},
                 }},
             }]}
+        elif path.endswith("/replicasets"):
+            value = {"apiVersion": "apps/v1", "kind": "ReplicaSetList", "items": [{
+                "apiVersion": "apps/v1", "kind": "ReplicaSet",
+                "metadata": {"name": "controller-rs", "namespace": "control", "uid": "replicaset-fixture" + suffix,
+                             "ownerReferences": [{"apiVersion": "apps/v1", "kind": "Deployment", "name": "controller",
+                                                  "uid": "deployment-fixture" + suffix, "controller": True}]},
+            }]}
         elif "/customresourcedefinitions/" in path:
             plural = path.rsplit("/", 1)[1].split(".")[0]
             value = {"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition",
@@ -161,6 +172,24 @@ class Discovery(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
             return
+        if value["kind"].endswith("List"):
+            namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0] if "/namespaces/" in path else None
+
+            def selected(item):
+                metadata = item["metadata"]
+                if namespace is not None and metadata["namespace"] != namespace:
+                    return False
+                # The native walk uses equality selectors for frozen names and Pod labels.
+                for parameter, fields in [("fieldSelector", {"metadata.name": metadata["name"]}),
+                                          ("labelSelector", metadata.get("labels", {}))]:
+                    for selector in query.get(parameter, []):
+                        for term in selector.split(","):
+                            key, operator, expected = term.partition("=")
+                            if not operator or fields.get(key) != expected:
+                                return False
+                return True
+
+            value["items"] = [item for item in value["items"] if selected(item)]
         self.reply(200, value)
 
     def frame(self, payload):

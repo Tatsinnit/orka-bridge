@@ -10,6 +10,7 @@ fn confirmed() -> Arc<RemoteAccess> {
         creator_bearer: "nor-the-creator".into(),
         expiry: None,
         binding: TargetBinding {
+            cluster_identity: "a".repeat(64),
             context_id: ContextId(Uuid::new_v4()),
             context_name: "team".into(),
             server_address: "http://127.0.0.1:1".into(),

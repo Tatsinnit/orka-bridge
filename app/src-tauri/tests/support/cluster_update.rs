@@ -201,6 +201,7 @@ async fn initial_checkpoint_failure_restores_binding_before_any_mutation() {
                     source: s.source(),
                     target_display: "earlier · agents".into(),
                     target_uids: TargetUids {
+                        cluster_identity: Some("a".repeat(64)),
                         service_namespace: "control".into(),
                         service_uid: "old-service".into(),
                         deployment_namespace: "control".into(),

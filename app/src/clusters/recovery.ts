@@ -14,6 +14,12 @@ const results: Record<ClusterFailure['result'], string> = {
 };
 export function clusterRecovery(failure: ClusterFailure) {
   const { check, result } = failure;
+  if (check === 'orkaConnection' && result === 'identityRejected') {
+    return {
+      cause: 'The Orka destination could not be verified. Bridge did not send the Orka credential.',
+      next: 'Choose your cluster again in Clusters. Ask its administrator to check the Service, Pod and controller ownership before retrying.',
+    };
+  }
   const next = check === 'configuration' ? 'Correct your kubeconfig, then press Reload kubeconfig.'
     : check === 'credentials' || result === 'unsupportedCredential' ? 'Check its sign-in method and credential plugin outside Bridge. If you change kubeconfig, press Reload kubeconfig, select the context and use the cluster again. Otherwise, check again.'
     : result === 'connectionFailed' ? 'Check connectivity and any VPN you use, then check again.'

@@ -123,7 +123,8 @@ impl Binding {
     fn validate(&self) -> Result<(), &'static str> {
         let text = |s: &str| !s.is_empty() && s.len() <= 4096 && !s.contains('\0');
         let dns = |s: &str| crate::engine::run::valid_cancel_identity(s, "uid");
-        if !dns(&self.name)
+        if !self.target.valid_identity()
+            || !dns(&self.name)
             || !dns(&self.target.watched_namespace)
             || !dns(&self.target.service_namespace)
             || !dns(&self.target.deployment_namespace)
@@ -191,10 +192,18 @@ impl SummaryStore {
         target: &TargetUids,
     ) -> Result<Option<Binding>, &'static str> {
         let _lock = self.lock.lock().map_err(|_| "storage")?;
-        Ok(self
-            .bindings()?
+        let bindings = self.bindings()?;
+        // Missing destination evidence is never permission to adopt or duplicate ownership.
+        if target.cluster_identity.is_none()
+            || bindings
+                .iter()
+                .any(|b| b.current && b.document == document && b.target.legacy_matches(target))
+        {
+            return Err("legacyDestination");
+        }
+        Ok(bindings
             .into_iter()
-            .find(|b| b.current && b.document == document && b.target == *target))
+            .find(|b| b.current && b.document == document && b.target.pinned_matches(target)))
     }
     pub(super) fn attempt_binding(&self, attempt: &str) -> Result<Option<Binding>, &'static str> {
         let _lock = self.lock.lock().map_err(|_| "storage")?;
@@ -283,11 +292,19 @@ impl SummaryStore {
 }
 pub(super) fn target(binding: &crate::clusters::TargetBinding) -> TargetUids {
     TargetUids {
+        cluster_identity: Some(binding.cluster_identity.clone()),
         service_namespace: binding.service_namespace.clone(),
         service_uid: binding.service_uid.clone(),
         deployment_namespace: binding.deployment_namespace.clone(),
         deployment_uid: binding.deployment_uid.clone(),
         watched_namespace: binding.watched_namespace.clone(),
+    }
+}
+pub(super) fn lookup_stage(error: &str) -> Stage {
+    if error == "legacyDestination" {
+        Stage::LegacyDestination
+    } else {
+        Stage::Storage
     }
 }
 impl SendOwner {
@@ -301,7 +318,7 @@ impl SendOwner {
         let Some(mut binding) = self
             .summary
             .binding(document, target)
-            .map_err(|_| Stage::Storage)?
+            .map_err(lookup_stage)?
         else {
             return Ok(None);
         };

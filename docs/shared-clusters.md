@@ -107,6 +107,42 @@ both top-level and `/finalizers` writes. The role also omits direct access to
 Secrets, Pods, Jobs, Deployments, ServiceAccounts, token creation, Roles,
 RoleBindings, `bind`, `escalate`, and impersonation.
 
+### Bridge connection access
+
+The roles above authorize calls through Orka. Connecting Bridge also needs a
+separately authorized Kubernetes identity: Service and Deployment discovery,
+Pod listing, namespaced ReplicaSet listing, and Pod port-forward access in the
+Orka installation namespace. ReplicaSet reads use a name-filtered list, not
+`get`; access must allow that list. These permissions are not added to the
+creator or observer roles in the fixture. A denied ReplicaSet read is reported
+as a Kubernetes connection permission failure, not an Orka authorization error.
+
+Before sending an Orka credential, Bridge checks the selected Pod's controller
+ReplicaSet and that ReplicaSet's controller Deployment against the recorded
+Deployment UID. It repeats the checks around opening the forward and refuses
+changed Service selectors, ports, Pod identities or controller ownership.
+Legitimate rollout Pods under the recorded Deployment can still connect.
+Kubernetes forwards by Pod name without a UID precondition: these checks narrow
+the replacement race but are not an atomic or authenticated Pod attestation.
+Anyone who can create Pods in Orka's namespace is inside this trust boundary;
+owner references can be forged by a Pod creator.
+
+Saved places and Send ownership include a hash of the API endpoint and configured
+TLS trust. Changing either no longer attaches history or linked Agents merely
+because object UIDs match. Authentication credentials are not part of this hash.
+A changed endpoint or TLS configuration, including CA rotation, is a distinct
+destination: a fresh Send can create a separate Agent there rather than reuse
+the old link. The old Agent and ownership are not deleted or transferred.
+An exact clone preserving the endpoint, trust keys and UIDs is outside this
+guarantee. Existing TLS verification settings are unchanged.
+
+Older saved history remains readable but cannot be associated with live Agents,
+checked remotely or cancelled without its original verified destination. Older
+linked-Agent ownership blocks Send and separate-Agent recovery rather than
+adopting or duplicating the Agent; Bridge does not erase pending work. There is
+no automatic re-enrolment. A legacy remembered place remains stale and separate
+from a newly confirmed place until explicitly forgotten.
+
 ### Observer
 
 An observer can read Agents, Tasks and Sessions in each explicitly enrolled

@@ -5,6 +5,7 @@ use bridge_runtime_protocol::{SnapshotId, Uuid};
 
 fn binding() -> TargetBinding {
     TargetBinding {
+        cluster_identity: "a".repeat(64),
         context_id: ContextId(Uuid::new_v4()),
         context_name: "team".into(),
         server_address: "https://cluster.invalid".into(),
@@ -20,7 +21,7 @@ fn binding() -> TargetBinding {
     }
 }
 fn record() -> AttemptSummary {
-    serde_json::from_value(serde_json::json!({"id":Uuid::new_v4().to_string(),"source":SnapshotId::of(b"agent",b"tests"),"targetDisplay":"team · agents","targetUids":{"serviceNamespace":"control","serviceUid":"service","deploymentNamespace":"control","deploymentUid":"deployment","watchedNamespace":"agents"},"provider":"model","plannedAgentName":"same-name","agentUid":"one","verdict":"passed","time":1})).unwrap()
+    serde_json::from_value(serde_json::json!({"id":Uuid::new_v4().to_string(),"source":SnapshotId::of(b"agent",b"tests"),"targetDisplay":"team · agents","targetUids":{"clusterIdentity":"a".repeat(64),"serviceNamespace":"control","serviceUid":"service","deploymentNamespace":"control","deploymentUid":"deployment","watchedNamespace":"agents"},"provider":"model","plannedAgentName":"same-name","agentUid":"one","verdict":"passed","time":1})).unwrap()
 }
 fn place() -> Place {
     let mut p = Place::new(binding());
@@ -39,6 +40,18 @@ fn place() -> Place {
         .unwrap(),
     ];
     p
+}
+#[test]
+fn legacy_history_is_readable_but_never_associated_with_live_inventory() {
+    let mut legacy = serde_json::to_value(record()).unwrap();
+    legacy["targetUids"]
+        .as_object_mut()
+        .unwrap()
+        .remove("clusterIdentity");
+    let legacy: AttemptSummary = serde_json::from_value(legacy).unwrap();
+    let result = project(vec![place()], Some(vec![legacy]));
+    assert!(result.places[0].agents.iter().all(|a| a.record.is_none()));
+    assert_eq!(result.unobserved.len(), 1);
 }
 #[test]
 fn recorded_target_and_uid_only_never_name_or_unacknowledged() {
@@ -65,6 +78,16 @@ fn recorded_target_and_uid_only_never_name_or_unacknowledged() {
             .record
             .is_none()
     );
+}
+#[test]
+fn copied_uids_under_another_destination_never_join_history_or_place_keys() {
+    let original = place();
+    let mut copied = place();
+    copied.identity.cluster_identity = Some("b".repeat(64));
+    assert_ne!(original.identity.key(), copied.identity.key());
+    let result = project(vec![copied], Some(vec![record()]));
+    assert!(result.places[0].agents.iter().all(|a| a.record.is_none()));
+    assert_eq!(result.unobserved.len(), 1);
 }
 #[test]
 fn every_version_joins_independently_and_history_error_never_means_not_tested() {
@@ -128,7 +151,7 @@ async fn metadata_roundtrip_is_allowlisted_stale_passive_and_removal_survives_re
     assert_eq!(
         json,
         serde_json::json!({"version":1,"places":[{
-        "identity":{"contextName":"team","serviceName":"orka","serviceNamespace":"control",
+        "identity":{"clusterIdentity":"a".repeat(64),"contextName":"team","serviceName":"orka","serviceNamespace":"control",
         "serviceUid":"service","deploymentNamespace":"control","deploymentUid":"deployment","watchedNamespace":"agents"},
         "observedAt":123}]})
     );

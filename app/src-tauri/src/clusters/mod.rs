@@ -3,7 +3,9 @@ mod client;
 mod credentials;
 pub use credentials::{Credential, ResolvedCreator};
 pub mod commands;
+mod destination;
 mod forward;
+pub(crate) use destination::valid_identity;
 pub mod preflight;
 use bridge_runtime_protocol::Uuid;
 pub use client::{ClusterClient, RemoteAccess};
@@ -41,6 +43,7 @@ pub struct ProviderView {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetBinding {
+    pub cluster_identity: String,
     pub context_id: ContextId,
     pub context_name: String,
     pub server_address: String,
@@ -64,6 +67,7 @@ pub struct ForwardPeer {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClusterError {
     Unavailable,
+    DestinationMismatch,
     Denied,
     UnsupportedCredential,
     MissingTool,

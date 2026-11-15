@@ -4,14 +4,10 @@ use http::{header, HeaderValue, Request};
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, client::conn::http1};
 use hyper_util::rt::TokioIo;
-use k8s_openapi::{
-    api::core::v1::{Pod, Service},
-    apimachinery::pkg::util::intstr::IntOrString,
-};
-use kube::{
-    api::{ListParams, Portforwarder},
-    Api, Client, ResourceExt,
-};
+use k8s_openapi::api::core::v1::Pod;
+use kube::{api::Portforwarder, Api, Client};
+#[path = "peer.rs"]
+mod peer;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -106,6 +102,7 @@ fn orka_error(check: Check, error: ErrorKind) -> AccessOutcome {
     check.fail(match error {
         ErrorKind::Authentication => CheckResult::AuthenticationRejected,
         ErrorKind::Permission => CheckResult::PermissionDenied,
+        ErrorKind::Identity => CheckResult::IdentityRejected,
         _ => CheckResult::Unknown,
     })
 }
@@ -173,6 +170,7 @@ impl RemoteAccess {
             .await
             .map_err(|e| match e {
                 ErrorKind::Authentication | ErrorKind::Permission => ClusterError::Denied,
+                ErrorKind::Identity => ClusterError::DestinationMismatch,
                 _ => ClusterError::Unavailable,
             })?;
         Ok(OrkaStreamTransport {
@@ -345,9 +343,11 @@ impl Connection {
         deadline: Instant,
     ) -> Result<Self, ErrorKind> {
         timeout_at(deadline, async {
-            let peer = select_peer(creator, binding).await?;
-            // Kubernetes forwards by name without a UID precondition; peer UID
-            // is discovery metadata, not authenticated stream attestation.
+            let selected = peer::select(creator, binding).await?;
+            peer::validate(creator, binding, &selected).await?;
+            let peer = &selected.peer;
+            // Kubernetes forwards by name without a UID precondition. These
+            // bracketing checks bound races; metadata is not stream attestation.
             let forward = Api::<Pod>::namespaced(creator.clone(), &peer.pod_namespace)
                 .portforward(&peer.pod_name, &[peer.port])
                 .await
@@ -356,6 +356,9 @@ impl Connection {
                 forward: Some(forward),
                 http: None,
             };
+            // Own the forward before the post-upgrade API awaits: rejection,
+            // deadline and cancellation must all abort its driver, without HTTP.
+            peer::validate(creator, binding, &selected).await?;
             let forward = drivers.forward.as_mut().unwrap();
             let stream = forward.take_stream(peer.port).ok_or(ErrorKind::Transport)?;
             let error = forward.take_error(peer.port).ok_or(ErrorKind::Transport)?;
@@ -367,7 +370,7 @@ impl Connection {
                 tokio::select! { _ = connection => {}, _ = error => {} }
             }));
             Ok(Self {
-                peer,
+                peer: selected.peer,
                 sender: AsyncMutex::new(Some(sender)),
                 drivers: Mutex::new(drivers),
                 closing: AsyncMutex::new(None),
@@ -548,87 +551,6 @@ fn kube_error(error: kube::Error) -> ErrorKind {
         kube::Error::Api(e) if e.code == 403 => ErrorKind::Permission,
         _ => ErrorKind::Transport,
     }
-}
-async fn select_peer(creator: &Client, binding: &TargetBinding) -> Result<ForwardPeer, ErrorKind> {
-    let services = Api::<Service>::namespaced(creator.clone(), &binding.service_namespace)
-        .list(&ListParams::default())
-        .await
-        .map_err(kube_error)?;
-    let service = services
-        .iter()
-        .find(|s| {
-            s.name_any() == binding.service_name && s.uid().as_deref() == Some(&binding.service_uid)
-        })
-        .ok_or(ErrorKind::Identity)?;
-    let spec = service.spec.as_ref().ok_or(ErrorKind::Response)?;
-    let selector = spec
-        .selector
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .ok_or(ErrorKind::Response)?;
-    let port = spec
-        .ports
-        .as_ref()
-        .and_then(|ports| ports.iter().find(|p| p.name.as_deref() == Some("api")))
-        .ok_or(ErrorKind::Response)?;
-    let labels = selector
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let pods = Api::<Pod>::namespaced(creator.clone(), &binding.service_namespace)
-        .list(&ListParams::default().labels(&labels))
-        .await
-        .map_err(kube_error)?;
-    for pod in pods {
-        if pod.metadata.deletion_timestamp.is_some()
-            || !selector
-                .iter()
-                .all(|(k, v)| pod.metadata.labels.as_ref().and_then(|l| l.get(k)) == Some(v))
-        {
-            continue;
-        }
-        if !pod.status.as_ref().is_some_and(|s| {
-            s.phase.as_deref() == Some("Running")
-                && s.conditions
-                    .as_ref()
-                    .is_some_and(|c| c.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
-        }) {
-            continue;
-        }
-        let number = match &port.target_port {
-            Some(IntOrString::Int(n)) => Some(*n),
-            None => Some(port.port),
-            Some(IntOrString::String(name)) => pod
-                .spec
-                .as_ref()
-                .and_then(|s| {
-                    s.containers
-                        .iter()
-                        .flat_map(|c| c.ports.iter().flatten())
-                        .find(|p| {
-                            p.name.as_ref() == Some(name)
-                                && p.protocol.as_deref().is_none_or(|p| p == "TCP")
-                        })
-                })
-                .map(|p| p.container_port),
-        };
-        let Some(port) = number
-            .and_then(|n| u16::try_from(n).ok())
-            .filter(|p| *p > 0)
-        else {
-            continue;
-        };
-        if let (Some(uid), Some(name)) = (pod.uid(), pod.metadata.name) {
-            return Ok(ForwardPeer {
-                pod_name: name,
-                pod_namespace: binding.service_namespace.clone(),
-                pod_uid: uid,
-                port,
-            });
-        }
-    }
-    Err(ErrorKind::Transport)
 }
 
 #[cfg(test)]

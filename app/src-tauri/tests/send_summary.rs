@@ -9,6 +9,7 @@ fn summary(id: Uuid, verdict: AttemptVerdict) -> AttemptSummary {
         source: SnapshotId::of(b"agent", b"tests"),
         target_display: "team-dev · agents".into(),
         target_uids: TargetUids {
+            cluster_identity: Some("a".repeat(64)),
             service_namespace: "control".into(),
             service_uid: "service-1".into(),
             deployment_namespace: "control".into(),

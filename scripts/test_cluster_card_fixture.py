@@ -280,6 +280,78 @@ class SendFixtureTest(unittest.TestCase):
         status, _ = handler.orka("GET", "/api/v1/tools", None, "Bearer unreadable-tools-fixture")
         self.assertEqual(status, 403)
 
+    def discovery_connection(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        self.addCleanup(connection.close)
+        return connection
+
+    def test_discovery_lists_expose_the_recorded_pod_controller_chain(self):
+        connection = self.discovery_connection()
+        for authorization, suffix in [("ci-fixture-not-a-credential", ""),
+                                      ("conditional-fixture", ""), ("secondary-fixture", "-secondary")]:
+            with self.subTest(authorization=authorization):
+                def listed(path):
+                    connection.request("GET", path, headers={"Authorization": "Bearer " + authorization})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    return json.loads(response.read())["items"]
+
+                service, = listed("/api/v1/namespaces/control/services?fieldSelector=metadata.name%3Dorka&limit=2")
+                deployment, = listed("/apis/apps/v1/namespaces/control/deployments?fieldSelector=metadata.name%3Dcontroller&limit=2")
+                pod, = listed("/api/v1/namespaces/control/pods?labelSelector=app%3Dorka")
+                self.assertEqual(service["metadata"]["uid"], "service-fixture" + suffix)
+                self.assertEqual(deployment["metadata"]["uid"], "deployment-fixture" + suffix)
+                self.assertEqual(pod["metadata"]["uid"], "pod-fixture" + suffix)
+                self.assertEqual(pod["status"]["phase"], "Running")
+                self.assertIn({"type": "Ready", "status": "True"}, pod["status"]["conditions"])
+                self.assertEqual(pod["metadata"].get("ownerReferences"), [{
+                    "apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "controller-rs",
+                    "uid": "replicaset-fixture" + suffix, "controller": True,
+                }])
+                replica_set, = listed("/apis/apps/v1/namespaces/control/replicasets?fieldSelector=metadata.name%3Dcontroller-rs&limit=2")
+                self.assertEqual(replica_set["metadata"]["uid"], "replicaset-fixture" + suffix)
+                self.assertEqual(replica_set["metadata"]["namespace"], "control")
+                self.assertEqual(replica_set["metadata"]["ownerReferences"], [{
+                    "apiVersion": "apps/v1", "kind": "Deployment", "name": "controller",
+                    "uid": "deployment-fixture" + suffix, "controller": True,
+                }])
+                self.assertEqual(listed("/api/v1/namespaces/control/pods?fieldSelector=metadata.name%3Dready&limit=2"), [pod])
+
+    def test_discovery_lists_scope_namespace_name_and_pod_labels(self):
+        connection = self.discovery_connection()
+        for prefix, resource, name, kind in [
+            ("/api/v1", "services", "orka", "ServiceList"),
+            ("/apis/apps/v1", "deployments", "controller", "DeploymentList"),
+            ("/api/v1", "pods", "ready", "PodList"),
+            ("/apis/apps/v1", "replicasets", "controller-rs", "ReplicaSetList"),
+        ]:
+            for scope, query, expected in [
+                ("", "", [name]),
+                ("/namespaces/control", f"?fieldSelector=metadata.name%3D{name}&limit=2", [name]),
+                ("/namespaces/agents", f"?fieldSelector=metadata.name%3D{name}&limit=2", []),
+                ("/namespaces/control", "?fieldSelector=metadata.name%3Dmissing&limit=2", []),
+            ]:
+                path = f"{prefix}{scope}/{resource}{query}"
+                with self.subTest(path=path):
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 200)
+                    page = json.loads(response.read())
+                    self.assertEqual(page["kind"], kind)
+                    self.assertEqual([item["metadata"]["name"] for item in page["items"]], expected)
+            if resource == "pods":
+                for query in ["labelSelector=app%3Dother", "labelSelector=app%3Dorka%2Ctier%3Dother",
+                              "labelSelector=app%3Dorka&fieldSelector=metadata.name%3Dmissing&limit=2"]:
+                    with self.subTest(query=query):
+                        connection.request("GET", f"{prefix}/namespaces/control/pods?{query}")
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(json.loads(response.read())["items"], [])
+
     def test_discovery_serves_required_send_schema_fields(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
         threading.Thread(target=server.serve_forever, daemon=True).start()

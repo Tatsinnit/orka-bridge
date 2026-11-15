@@ -9,7 +9,7 @@ export type SendView = Pick<RunSnapshot, 'acknowledged' | 'pending' | 'report'> 
   source: SourceId | null; model: string | null; agentName: string | null;
   state: 'running' | 'complete' | 'unknown';
   stage: 'capture' | 'access' | 'preflight' | 'submit' | 'submitRejected' | 'storage' | 'observe' | 'stopped' | 'done'
-    | 'updateConflict' | 'updateUnsupported' | 'updateMissing' | 'updateDenied' | 'updateInvalid' | 'updateUnconfirmed' | 'earlierWork';
+    | 'updateConflict' | 'updateUnsupported' | 'updateMissing' | 'updateDenied' | 'updateInvalid' | 'updateUnconfirmed' | 'earlierWork' | 'legacyDestination' | 'destinationMismatch';
   error: string | null; storageError: boolean; cancellation?: Cancellation | null;
   agentAction?: 'create' | 'update' | 'unchanged' | null;
 };
@@ -30,6 +30,8 @@ export const sendErrors = {
   updateDenied: 'Cannot update this agent with this cluster identity.',
   updateInvalid: 'Orka did not accept the agent update. Your files are unchanged.',
   updateUnconfirmed: 'Outcome not confirmed. Check this cluster before trying again. Nothing was retried.',
+  destinationMismatch: 'The Orka destination could not be verified. Bridge did not send the Orka credential.',
+  legacyDestination: 'Saved ownership predates destination verification. Bridge cannot reuse it or create a duplicate agent.',
   earlierWork: 'An earlier Send is not finished or its outcome is not confirmed. Check its status or cancel its tests before updating this agent.',
 } as const;
 function valid(v: unknown): v is SendView {
@@ -79,7 +81,7 @@ export async function sendPreflight(targetId: string, providerId: string, docume
 }
 export type AttemptSummary = {
   id: string; source: SourceId; targetDisplay: string;
-  targetUids: { serviceNamespace: string; serviceUid: string; deploymentNamespace: string; deploymentUid: string; watchedNamespace: string };
+  targetUids: { clusterIdentity?: string; serviceNamespace: string; serviceUid: string; deploymentNamespace: string; deploymentUid: string; watchedNamespace: string };
   provider: string; plannedAgentName: string; agentUid: string | null;
   verdict: 'running' | 'passed' | 'failed' | 'unknown' | 'cancelled'; time: number;
 };
@@ -94,7 +96,8 @@ export function isSummary(value: unknown): value is AttemptSummary {
     && ['running', 'passed', 'failed', 'unknown', 'cancelled'].includes(row.verdict as string)
     && typeof row.time === 'number' && Number.isSafeInteger(row.time) && row.time >= 0 && row.time <= 253402300799
     && typeof identity === 'object' && identity !== null && !Array.isArray(identity)
-    && Object.keys(identity).sort().join(',') === 'deploymentNamespace,deploymentUid,serviceNamespace,serviceUid,watchedNamespace'
+    && Object.keys(identity).filter(key => key !== 'clusterIdentity').sort().join(',') === 'deploymentNamespace,deploymentUid,serviceNamespace,serviceUid,watchedNamespace'
+    && (!('clusterIdentity' in identity) || typeof identity.clusterIdentity === 'string' && /^[a-f0-9]{64}$/.test(identity.clusterIdentity))
     && Object.values(identity).every(v => v !== null && text(v));
 }
 export async function sendHistory(): Promise<AttemptSummary[]> {

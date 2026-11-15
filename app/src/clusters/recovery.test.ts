@@ -28,6 +28,12 @@ test.each([
 ] as const)('kubeconfig-changing recovery for $result explains reload before retry', failure => {
   expect(clusterRecovery(failure).next).toContain('Reload kubeconfig');
 });
+test('forward identity mismatch states that no Orka credential was sent', () => {
+  const recovery = clusterRecovery({ check: 'orkaConnection', result: 'identityRejected' });
+  expect(recovery.cause).toMatch(/destination.*changed|destination.*verified/);
+  expect(recovery.cause).toMatch(/did not send.*credential/);
+  expect(recovery.next).toContain('Clusters');
+});
 test('no Providers is distinct from an unknown Provider read', () => {
   expect(clusterRecovery({ check: 'providers', result: 'noProviders' }).cause).toContain('No AI connections are configured');
   expect(clusterRecovery({ check: 'providers', result: 'noProviders' }).next).toContain('configure an AI connection');

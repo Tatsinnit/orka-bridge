@@ -796,6 +796,7 @@ async fn forget_preserves_other_identity_and_queues_after_started_use() {
 
 type ImpersonatedRequest = (String, Vec<(String, String)>);
 type GateStep = (String, std::sync::mpsc::Sender<()>);
+type ResponseHook = Box<dyn FnMut(&str, &mut Value) + Send>;
 #[derive(Default)]
 struct ApiFixture {
     wire: forward::Wire,
@@ -810,6 +811,7 @@ struct ApiFixture {
     changed_watch: Mutex<bool>,
     unrelated_api: Mutex<bool>,
     override_response: Mutex<Option<(String, u16, Value)>>,
+    response_hook: Mutex<Option<ResponseHook>>,
     // Hold an individual check open to exercise lock queuing and deadline labels.
     gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     step_gate: Mutex<Option<std::sync::mpsc::Sender<GateStep>>>,
@@ -886,7 +888,20 @@ impl ApiFixture {
                         body,
                     ));
                     fixture.queries.lock().unwrap().push(path.clone());
-                    let (status, response) = fixture.response(path.split('?').next().unwrap());
+                    let (status, mut response) = fixture.response(path.split('?').next().unwrap());
+                    if let Some(hook) = fixture.response_hook.lock().unwrap().as_mut() {
+                        hook(path.split('?').next().unwrap(), &mut response);
+                    }
+                    if let Some(selector) = reqwest::Url::parse(&format!("http://fixture{path}"))
+                        .unwrap()
+                        .query_pairs()
+                        .find_map(|(k, v)| (k == "fieldSelector").then(|| v.into_owned()))
+                        .and_then(|v| v.strip_prefix("metadata.name=").map(str::to_owned))
+                    {
+                        if let Some(items) = response["items"].as_array_mut() {
+                            items.retain(|item| item["metadata"]["name"] == selector);
+                        }
+                    }
                     let body = response.to_string();
                     let reply = write!(stream, "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                     // A deadline test deliberately drops the gated request before its reply.
@@ -940,8 +955,14 @@ impl ApiFixture {
                 200,
                 json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[
                     {"metadata":{"name":"not-ready","namespace":"control","uid":"bad","labels":{"app":"orka"}},"spec":{"containers":[]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"False"}]}},
-                    {"metadata":{"name":"ready","namespace":"control","uid":"pod-uid","labels":{"app":"orka"}},"spec":{"containers":[{"name":"controller","ports":[{"name":"api","containerPort":8080}]}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}
+                    {"metadata":{"name":"ready","namespace":"control","uid":"pod-uid","labels":{"app":"orka"},"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet","name":"controller-old","uid":"rs-uid","controller":true}]},"spec":{"containers":[{"name":"controller","ports":[{"name":"api","containerPort":8080}]}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}
                 ]}),
+            );
+        }
+        if path.ends_with("/replicasets") {
+            return (
+                200,
+                json!({"apiVersion":"apps/v1","kind":"ReplicaSetList","metadata":{},"items":[{"metadata":{"name":"controller-old","namespace":"control","uid":"rs-uid","ownerReferences":[{"apiVersion":"apps/v1","kind":"Deployment","name":"controller","uid":"deployment-uid","controller":true}]}}]}),
             );
         }
         if path.ends_with("/services") {
@@ -1683,6 +1704,40 @@ async fn full_api_address_replacement_cannot_revalidate_existing_access() {
         Some(ClusterError::Unavailable)
     );
     assert_eq!(api.calls.lock().unwrap().len(), before);
+}
+#[tokio::test]
+async fn changed_destination_trust_refuses_before_using_retained_creator() {
+    for change in ["invalid-cert-policy", "tls-name"] {
+        let api = Arc::new(ApiFixture::default());
+        let orka = Arc::new(OrkaFixture::default());
+        let cfg = config(&api.start(), json!({"token":"static-fixture"}));
+        let mut client = ClusterClient::new(cfg.clone(), orka.clone());
+        let id = target(&mut client).await;
+        let access = client.connect(id, None).await.unwrap();
+        let mut replacement = cfg;
+        let cluster = replacement.clusters[0].cluster.as_mut().unwrap();
+        if change == "invalid-cert-policy" {
+            cluster.insecure_skip_tls_verify = Some(true);
+        } else {
+            cluster.tls_server_name = Some("changed.example.invalid".into());
+        }
+        let changed = ClusterClient::new(replacement, orka.clone());
+        api.calls.lock().unwrap().clear();
+        orka.calls.lock().unwrap().clear();
+        assert_eq!(
+            changed.revalidate(&access).await.err(),
+            Some(ClusterError::Unavailable),
+            "{change}"
+        );
+        assert!(
+            api.calls.lock().unwrap().is_empty(),
+            "no retained-client API reads: {change}"
+        );
+        assert!(
+            orka.calls.lock().unwrap().is_empty(),
+            "no Orka bearer: {change}"
+        );
+    }
 }
 #[tokio::test]
 async fn ssar_http_403_is_denied_and_tokenrequest_503_is_not_retried() {

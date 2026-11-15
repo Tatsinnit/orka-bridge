@@ -7,6 +7,8 @@ use std::{
 };
 use tungstenite::{protocol::Role, Message, WebSocket};
 
+#[path = "cluster_peer.rs"]
+mod peer;
 #[path = "cluster_send.rs"]
 mod send;
 
@@ -17,6 +19,8 @@ pub(super) struct Wire {
     catalog: Mutex<Option<Vec<(u16, Value)>>>,
     active: AtomicUsize,
     forwards: AtomicUsize,
+    closed: AtomicUsize,
+    before_upgrade: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     objects: Mutex<HashMap<String, Value>>,
     after_post: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     before_cancel: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -53,20 +57,28 @@ impl Wire {
             })
             .unwrap();
         let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
+        if let Some(hook) = self.before_upgrade.lock().unwrap().take() {
+            hook();
+        }
         write!(stream, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: v4.channel.k8s.io\r\n\r\n").unwrap();
         let mut ws = WebSocket::from_raw_socket(stream, Role::Server, None);
         self.active.fetch_add(1, Ordering::SeqCst);
-        struct Active<'a>(&'a AtomicUsize);
+        struct Active<'a>(&'a Wire);
         impl Drop for Active<'_> {
             fn drop(&mut self) {
-                self.0.fetch_sub(1, Ordering::SeqCst);
+                self.0.active.fetch_sub(1, Ordering::SeqCst);
+                self.0.closed.fetch_add(1, Ordering::SeqCst);
             }
         }
-        let _active = Active(&self.active);
+        let _active = Active(self);
         for channel in [0, 1] {
             let [lo, hi] = port.to_le_bytes();
-            ws.send(Message::Binary(vec![channel, lo, hi].into()))
-                .unwrap();
+            if ws
+                .send(Message::Binary(vec![channel, lo, hi].into()))
+                .is_err()
+            {
+                return;
+            }
         }
         let mut bytes = Vec::new();
         while let Ok(message) = ws.read() {
@@ -681,7 +693,7 @@ async fn selected_ready_pod_resolves_named_target_port_during_rollout() {
     *api.override_response.lock().unwrap() = Some((
         "/pods".into(),
         200,
-        json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"ready","namespace":"control","uid":"rollout-uid","labels":{"app":"orka"}},"spec":{"containers":[{"name":"controller","ports":[{"name":"api","containerPort":9090}]}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}),
+        json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"ready","namespace":"control","uid":"rollout-uid","labels":{"app":"orka"},"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet","name":"controller-old","uid":"rs-uid","controller":true}]},"spec":{"containers":[{"name":"controller","ports":[{"name":"api","containerPort":9090}]}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}),
     ));
     let transport = transport(&api).await;
     assert_eq!(transport.peer().port, 9090);

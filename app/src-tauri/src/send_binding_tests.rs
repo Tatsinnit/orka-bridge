@@ -3,6 +3,7 @@ use serde_json::json;
 
 fn target() -> TargetUids {
     TargetUids {
+        cluster_identity: Some("a".repeat(64)),
         service_namespace: "control".into(),
         service_uid: "service-1".into(),
         deployment_namespace: "control".into(),
@@ -51,6 +52,39 @@ fn intent_survives_restart_without_attempt_details_and_never_comes_from_legacy_h
         .binding(DocumentId::SAMPLE, &other)
         .unwrap()
         .is_none());
+}
+#[test]
+fn unpinned_current_ownership_refuses_lookup_without_rewriting_pending_intent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SummaryStore::new(Some(dir.path().into()));
+    let mut legacy = serde_json::to_value(binding()).unwrap();
+    legacy["target"]
+        .as_object_mut()
+        .unwrap()
+        .remove("clusterIdentity");
+    let legacy: Binding = serde_json::from_value(legacy).unwrap();
+    store.save_binding(legacy.clone()).unwrap();
+    let before = std::fs::read(dir.path().join("send-history-v1/bindings.json")).unwrap();
+    assert!(store.binding(DocumentId::SAMPLE, &target()).is_err());
+    assert_eq!(
+        std::fs::read(dir.path().join("send-history-v1/bindings.json")).unwrap(),
+        before
+    );
+    let retained = store.attempt_binding(&legacy.attempt).unwrap().unwrap();
+    assert!(retained.unfinished && retained.intent.is_some());
+}
+#[test]
+fn copied_uids_at_a_different_destination_do_not_reuse_owned_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SummaryStore::new(Some(dir.path().into()));
+    store.save_binding(binding()).unwrap();
+    let mut other = target();
+    other.cluster_identity = Some("b".repeat(64));
+    assert!(store.binding(DocumentId::SAMPLE, &other).unwrap().is_none());
+    assert!(store
+        .binding(DocumentId::SAMPLE, &target())
+        .unwrap()
+        .is_some());
 }
 #[test]
 fn desired_equality_is_not_inclusion_and_optional_soul_removal_is_an_update() {

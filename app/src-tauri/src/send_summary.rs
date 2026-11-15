@@ -35,11 +35,32 @@ pub enum AttemptVerdict {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TargetUids {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_identity: Option<String>,
     pub service_namespace: String,
     pub service_uid: String,
     pub deployment_namespace: String,
     pub deployment_uid: String,
     pub watched_namespace: String,
+}
+
+impl TargetUids {
+    pub(crate) fn pinned_matches(&self, other: &Self) -> bool {
+        self.cluster_identity.is_some() && self == other
+    }
+    pub(crate) fn legacy_matches(&self, other: &Self) -> bool {
+        self.cluster_identity.is_none()
+            && self.service_namespace == other.service_namespace
+            && self.service_uid == other.service_uid
+            && self.deployment_namespace == other.deployment_namespace
+            && self.deployment_uid == other.deployment_uid
+            && self.watched_namespace == other.watched_namespace
+    }
+    pub(crate) fn valid_identity(&self) -> bool {
+        self.cluster_identity
+            .as_deref()
+            .is_none_or(crate::clusters::valid_identity)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +87,8 @@ impl AttemptSummary {
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         }
-        if Uuid::parse_str(&self.id).is_err()
+        if !self.target_uids.valid_identity()
+            || Uuid::parse_str(&self.id).is_err()
             || !hash(&self.source.agent)
             || !hash(&self.source.tests)
             || !text(&self.target_display)
