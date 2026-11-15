@@ -45,7 +45,7 @@ export function isRunSnapshot(value: unknown): value is RunSnapshot {
 export function sampleRun(snapshot?: RunSnapshot): RunSnapshot | undefined {
   return snapshot?.documentId === SAMPLE_DOCUMENT_ID ? snapshot : undefined;
 }
-export async function runCall(command: 'agent_run_status' | 'agent_run', documentId = SAMPLE_DOCUMENT_ID, bundledExample = false): Promise<{ ok: true; snapshot: RunSnapshot } | { ok: false; message: string }> {
+export async function runCall(command: 'agent_run_status' | 'agent_run' | 'agent_run_cancel' | 'agent_run_check_cancellation', documentId = SAMPLE_DOCUMENT_ID, bundledExample = false): Promise<{ ok: true; snapshot: RunSnapshot } | { ok: false; message: string }> {
   if (!isTauri()) return { ok: false, message: 'Run is available only in the native app.' };
   try { const value = await invoke<unknown>(command, { documentId, ...(bundledExample ? { bundledExample: true } : {}) }); if (isRunSnapshot(value) && value.documentId === documentId && 'busy' in value) return { ok: true, snapshot: value }; } catch { /* Never expose native errors or diagnostics. */ }
   return { ok: false, message: 'Run information is not supported by this build.' };

@@ -52,6 +52,7 @@ export function TestResults({ report, stale }: { report: Report | null | undefin
         {!!c.completedTools.length && <p>Tools used: {c.completedTools.map((tool, i) => <span key={`${tool}:${i}`}>{i > 0 && ', '}<code>{tool}</code></span>)}</p>}
         <Details hint="Test expectations and execution">
           <p>Execution: {c.phase}</p>
+          {c.verdict === 'cancelled' && <p>Actions already taken are not undone.</p>}
           <ul>{c.assertions.map(a => <li key={a.id}>{a.kind === 'contains' ? <>Answer includes “{a.expected}”</> : <>Uses <code>{a.expected}</code></>}: {{ passed: 'Met', failed: 'Not met', unknown: 'Unknown' }[a.verdict]}</li>)}</ul>
         </Details>
       </div>

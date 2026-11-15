@@ -1,7 +1,7 @@
 import { Button } from './components/Button';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import mark from './assets/orka-mark.svg';
-import Setup from './setup/Setup';
+import Setup, { type LocalClusterControl } from './setup/Setup';
 import { firstTestPending, retireFirstTest, useFirstTest } from './setup/first-test';
 import Example from './designer/Example';
 import Overview from './overview/Overview';
@@ -85,6 +85,7 @@ export default function App() {
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [workspaceStopping, setWorkspaceStopping] = useState(false);
+  const localCluster = useRef<LocalClusterControl>(null);
   const [localSetupView, setLocalSetupView] = useState(false);
   const catalogContext = useRef('');
   const observeModel = useCallback((value: ModelState) => { setModel(value); setCatalogEpoch(epoch => epoch + 1); }, []);
@@ -155,8 +156,8 @@ export default function App() {
   }, []);
   const cases = run?.report?.cases;
   const checksStale = stale || (run?.sourceCurrent === false && !!run.report);
-  const localChecks = checksStale ? 'Tests not run since your edit' : runUnavailable ? 'Test status unavailable' : run?.state === 'unknown' ? 'Test result unknown'
-    : run?.state === 'running' ? 'Running tests…' : run?.report?.verdict === 'cancelled' ? 'Tests cancelled' : run?.report?.verdict === 'unknown' ? 'Test result unknown' : cases
+  const localChecks = checksStale ? 'Tests not run since your edit' : runUnavailable ? 'Test status unavailable' : run?.cancellation === 'unconfirmed' ? 'Cancellation not confirmed' : run?.state === 'unknown' ? 'Test result unknown'
+    : run?.cancellation === 'cancelling' ? 'Cancelling tests' : run?.state === 'running' ? 'Running tests…' : run?.report?.verdict === 'cancelled' ? 'Tests cancelled' : run?.report?.verdict === 'unknown' ? 'Test result unknown' : cases
     ? `${cases.filter(check => check.verdict === 'passed').length} of ${cases.length} tests passing` : undefined;
   const checks = remote && localChecks ? `This computer: ${localChecks}` : localChecks;
   const firstTest = useFirstTest({
@@ -180,7 +181,8 @@ export default function App() {
     : { local: 'This computer', none: 'No cluster selected', checking: 'Checking…', unavailable: 'Status unavailable' }[view.place];
   const hostDetail = setup?.localVm === 'failed' ? (setup.preflightFailure ? preflightRecovery(setup.preflightFailure) : workspaceRecovery(setup.workspaceFailure)).summary : detail;
   const failedChecks = cases?.filter(check => check.verdict === 'failed').length ?? 0;
-  const agentStatus = checksStale ? 'tests need running' : runUnavailable ? 'test status unavailable' : run?.state === 'unknown' ? 'test result unknown'
+  const agentStatus = checksStale ? 'tests need running' : runUnavailable ? 'test status unavailable' : run?.cancellation === 'unconfirmed' ? 'cancellation not confirmed' : run?.state === 'unknown' ? 'test result unknown'
+    : run?.cancellation === 'cancelling' ? 'cancelling tests'
     : run?.state === 'running' ? 'running tests'
     : run?.report?.verdict === 'cancelled' ? 'tests cancelled'
     : run?.report?.verdict === 'unknown' ? 'test result unknown'
@@ -194,7 +196,7 @@ export default function App() {
       : exampleState === 'failed' ? 'Example unavailable' : exampleState === 'loaded' ? 'Agent file' : 'Opening example…',
     Clusters: remote ? place.target ? 'Access confirmed' : 'Choose a cluster' : welcome ? 'Start here' : setupLine,
   };
-  const tabTone = remote || exampleReadOnly ? 'not-started' : stale || (run?.sourceCurrent === false && !!run.report) ? 'stale' : run?.state === 'running' ? 'running' : run?.report?.verdict === 'failed' ? 'failed' : run?.report?.verdict === 'passed' ? 'passed' : 'not-started';
+  const tabTone = remote || exampleReadOnly ? 'not-started' : stale || (run?.sourceCurrent === false && !!run.report) ? 'stale' : run?.state === 'running' ? 'running' : run?.cancellation === 'unconfirmed' ? 'needs-you' : run?.report?.verdict === 'failed' ? 'failed' : run?.report?.verdict === 'passed' ? 'passed' : 'not-started';
   const copy = emptyCopy[page];
   const openDesigner = (id?: string, create = false) => {
     const request = ++openRequest.current;
@@ -251,10 +253,10 @@ export default function App() {
           </div>}
         </div>}
         <div hidden={page !== 'Clusters'}>
-          <Setup place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
+          <Setup ref={localCluster} place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
             onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)} onOpenAgent={() => openDesigner()} />
         </div>
-        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={!remote && !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup?.model !== 'locked' && model === 'connected' ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
+        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={!remote && !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup?.model !== 'locked' && model === 'connected' ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
         <Overview onNewAgent={() => openDesigner(undefined, true)} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} onCounts={setOverviewCounts}
           onOpenDocument={id => { if (remote) choosePlace({ kind: 'thisComputer' }); openDesigner(id); }}
           onOpenExample={() => { if (remote) choosePlace({ kind: 'thisComputer' }); openDesigner(SAMPLE_DOCUMENT_ID); }}

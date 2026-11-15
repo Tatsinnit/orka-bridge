@@ -229,7 +229,7 @@ try {
     }
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
-  const actionFixtures = ['places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'ai-idle', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'switch-place', 'designer'];
+  const actionFixtures = ['places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'ai-idle', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'switch-place', 'designer', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
@@ -262,6 +262,11 @@ try {
       let selected = ${JSON.stringify(!first && !name.startsWith('places-') && !name.startsWith('local-preflight'))};
       let connected = false;
       let submitted = false;
+      const localCancel = name.startsWith('local-cancel-');
+      window.__bridgeCancellation = name.slice('local-cancel-'.length);
+      window.__bridgeCancelCalls = [];
+      const finished = { id: 'finished-answer', question: 'What did the page say?', phase: 'Succeeded', answer: 'The page says fixture-checksum.', completedTools: ['web_fetch'], assertions: [{ id: 'checksum', kind: 'contains', expected: 'fixture-checksum', verdict: 'passed' }], verdict: 'passed' };
+      const cancelled = { id: 'unfinished-test', question: 'What does the next page say?', phase: 'Cancelled', answer: null, completedTools: [], assertions: [], verdict: 'cancelled' };
       window.__bridgeRemovals = 0;
       window.__bridgeStops = 0;
       window.__bridgeBadgeState = 'passed';
@@ -270,6 +275,12 @@ try {
       const status = () => ({ selected: selected ? 'localVm' : null, localVm: selected ? 'ready' : window.__bridgeStops ? 'cancelled' : 'idle', model: selected ? 'available' : 'locked' });
       const report = { verdict: 'failed', cases: [{ id: 'page-checksum', question: 'What checksum does the page show?', phase: 'Succeeded', answer: 'No checksum was given.', completedTools: ['web_fetch'], assertions: [{ id: 'checksum', kind: 'contains', expected: 'fixture-checksum', verdict: 'failed' }], verdict: 'failed' }] };
       const snapshot = () => {
+        if (localCancel) {
+          const state = window.__bridgeCancellation;
+          const running = state === 'running' || state === 'cancelling';
+          const cancellation = state === 'running' ? 'none' : state === 'before-start' ? 'beforeStart' : state;
+          return { documentId, source, busy: running ? { documentId, name: 'web-reader' } : null, state: running ? 'running' : 'complete', stage: running ? state === 'running' ? 'observe' : 'cancel' : 'done', canRun: !running, modelConnected: true, model: 'fixture-model', cancellation, canCancel: state === 'running', canRetryCancellation: state === 'unconfirmed', canCheckCancellation: state === 'unconfirmed', report: { verdict: state === 'unconfirmed' || state === 'running' || state === 'cancelling' ? 'unknown' : 'cancelled', cases: state === 'before-start' ? [] : state === 'cancelled' ? [cancelled, finished] : [finished] }, acknowledged: [], pending: null, error: null };
+        }
         const running = submitted && name === 'first-test-running';
         const complete = submitted && (name === 'first-test-result' || name === 'first-test-badges');
         const badge = window.__bridgeBadgeState;
@@ -299,7 +310,11 @@ try {
           if (name === 'ai-connecting') return new Promise(() => {});
           connected = true; return { ready: true };
         }
-        if (command === 'agent_open') return { ...pair, documentId, name: 'web-reader', ...(name === 'first-test-badges' ? { source } : {}) };
+        if (command === 'agent_open') return { ...pair, documentId, name: 'web-reader', ...(name === 'first-test-badges' || localCancel ? { source } : {}) };
+        if (localCancel && (command === 'agent_run_cancel' || command === 'agent_run_check_cancellation')) {
+          if (args?.documentId !== documentId) throw Error('Wrong cancellation document');
+          window.__bridgeCancelCalls.push(command); window.__bridgeCancellation = 'cancelling'; return snapshot();
+        }
         if (command === 'agent_run') { if (args?.bundledExample !== true) throw Error('Fixture automatic test requires native source guard'); if (submitted) throw Error('Fixture automatic test replayed'); submitted = true; window.__bridgeRuns++; return snapshot(); }
         if (command === 'agent_run_status') return snapshot();
         if (command === 'send_history' || command === 'cluster_contexts') return [];
@@ -334,7 +349,46 @@ try {
       await clickAction('Back to clusters');
       await clickAction('Add a cluster');
     }
-    if (name === 'designer') await clickAction('Read its instructions');
+    if (name === 'designer' || name.startsWith('local-cancel-')) await clickAction('Read its instructions');
+    if (name.startsWith('local-cancel-')) {
+      const state = name.slice('local-cancel-'.length);
+      const label = { running: 'Running', cancelling: 'Cancelling', cancelled: 'Cancelled', unconfirmed: 'Not confirmed', 'before-start': 'Cancelled' }[state];
+      await until(() => evaluate(`document.querySelector('.example-run .pill')?.textContent === ${JSON.stringify(label)}`), name);
+      const probe = await evaluate(`(() => {
+        const card = document.querySelector('.example-run');
+        return { buttons: [...card.querySelectorAll('button')].map(b => b.textContent.trim()), text: card.innerText, rows: [...card.querySelectorAll('.test-result > summary code')].map(c => c.textContent), width: innerWidth, scrollWidth: document.querySelector('main').scrollWidth };
+      })()`);
+      if (probe.scrollWidth > probe.width + 2) throw Error('Cancellation layout overflows: ' + JSON.stringify(probe));
+      if (state === 'running' && !probe.buttons.includes('Cancel tests')) throw Error('Missing local Cancel');
+      if (state === 'cancelling' && probe.buttons.includes('Cancel tests')) throw Error('Cancelling is a status, not a button');
+      if (state === 'cancelled' && (probe.rows.join('|') !== 'finished-answer|unfinished-test' || !probe.text.includes('1 passed, 0 failed, 1 cancelled.'))) throw Error('Lost results/order/counts: ' + JSON.stringify(probe));
+      if (state === 'unconfirmed' && !['Retry cancellation', 'Check again', 'Stop the local cluster'].every(b => probe.buttons.includes(b))) throw Error('Missing cancellation recovery');
+      if (state === 'before-start' && (!probe.text.includes('Cancelled before any test started.') || probe.rows.length)) throw Error('Incorrect before-start result');
+      // Open the kept answer and capture the card in the real native WebView.
+      if (state === 'cancelled') await evaluate(`document.querySelector('.example-run .test-result').open = true`);
+      await evaluate(`document.querySelector('.example-run').scrollIntoView({ block: 'start' })`);
+      await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+      const image = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(output, `${theme}-${size}-${name}.png`), Buffer.from(image.data, 'base64'));
+      if (await evaluate('window.__bridgeCancelCalls.length') !== 0) throw Error('Cancellation replayed on mount');
+      if (state === 'running') {
+        await clickAction('Cancel tests');
+        await until(() => evaluate(`document.querySelector('.example-run .pill')?.textContent === 'Cancelling' && window.__bridgeCancelCalls.join() === 'agent_run_cancel'`), 'explicit native renderer Cancel');
+      }
+      if (state === 'unconfirmed') {
+        for (const [button, command] of [['Check again', 'agent_run_check_cancellation'], ['Retry cancellation', 'agent_run_cancel']]) {
+          await clickAction(button);
+          await until(() => evaluate(`document.querySelector('.example-run .pill')?.textContent === 'Cancelling' && window.__bridgeCancelCalls.at(-1) === ${JSON.stringify(command)}`), button);
+          await evaluate(`window.__bridgeCancellation = 'unconfirmed'`);
+          await until(() => evaluate(`document.querySelector('.example-run .pill')?.textContent === 'Not confirmed'`), 'recovery back to unconfirmed');
+        }
+        // Scope the click to Tests because Setup's hidden Stop stays mounted.
+        await evaluate(`[...document.querySelectorAll('.example-run button')].find(b => b.textContent === 'Stop the local cluster').click()`);
+        await until(() => evaluate(`window.__bridgeStops === 1 && document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current') === 'page' && document.querySelector('h1')?.textContent === 'Set up this computer'`), 'explicit local Stop');
+      }
+      console.log(`Captured native WebView2 local cancellation fixture: ${theme}/${size}/${name}`);
+      return;
+    }
     if (name === 'first-test-badges') {
       await until(() => evaluate(`!!document.querySelector('.designer-work')`), 'sample result before badge recovery');
       await evaluate(`document.querySelector('button[aria-label="Clusters"]').click()`);
@@ -461,7 +515,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     for (const name of actionFixtures) await captureActions(theme, 'compact', name);
   }
   await writeFile(join(output, 'compact-window.txt'), notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Designer layout JSON records test/editor/Send geometry. compact-window.txt says whether 540x900 was a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. Designer layout JSON records test/editor/Send geometry. compact-window.txt says whether 540x900 was a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

@@ -1,6 +1,6 @@
 import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type Ref, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import Model, { type ModelState } from './Model';
 import Preflight from './Preflight';
 import { type LocalVmState, type SetupStatus, cancelLocal, changeLocal, selectLocal, setupStatus } from './state';
@@ -20,7 +20,9 @@ const pending = (state: LocalVmState) => ['preparing', 'installing', 'starting',
 const runtimeCopy = {
   notIntegrated: 'Local cluster setup is not included in this build. Nothing will be downloaded or started.',
 };
-export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelState, onWelcome, onExampleName, firstCheck, firstTestResult, initialAutomatic, onCheckFirstTest, onStarting, onWorkspaceAction, onPlace, place, onLocalView, active = true }: {
+export type LocalClusterControl = { stop: () => void };
+export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onModelState, onWelcome, onExampleName, firstCheck, firstTestResult, initialAutomatic, onCheckFirstTest, onStarting, onWorkspaceAction, onPlace, place, onLocalView, active = true }: {
+  ref?: Ref<LocalClusterControl>;
   onOpenExample: () => void; onOpenAgent?: () => void; active?: boolean;
   onStatus?: (status: SetupStatus | undefined) => void;
   onModelState?: (state: ModelState) => void;
@@ -174,6 +176,7 @@ export default function Setup({ onOpenExample, onOpenAgent, onStatus, onModelSta
     else timer.current = setTimeout(() => setCheck(value => value + 1), 1000);
   }
 
+  useImperativeHandle(ref, () => ({ stop() { setPanel('local'); void chooseLocal('change'); } }));
   const titleId = active ? 'page-title' : undefined;
   if (!status && !error) return <h1 id={titleId}>Checking the local cluster…</h1>;
   if (welcome && status) return <Welcome titleId={titleId} onStart={start} onCluster={() => chooseCluster()} unavailable={status.localVm === 'notIntegrated' ? runtimeCopy.notIntegrated : undefined} />;
