@@ -10,7 +10,7 @@ export const builtInToolDescriptions: Readonly<Record<string, string>> = {
   reply_in_conversation: 'Send a reply in the current conversation.',
 };
 
-// Orka KnownBuiltInToolNames union at image pin 7916cd1c8c083ade6b10df6ba408f854d930190c.
+// Orka KnownBuiltInToolNames union at image pin 3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea.
 // This is a naming map, not a claim that a workspace has enabled each tool.
 export const builtInTools: Readonly<Record<string, string>> = {
   web_fetch: 'Read a web page', web_search: 'Search the web',

@@ -195,7 +195,7 @@ After merge, an authorized operator runs these commands in order, not together:
 gh workflow run images.yml -R orka-agents/orka-bridge --ref main -f stage=images
 # Inspect the successful image-only draft, receipts and exact eleven assets.
 # Only an authorized publisher, after a separate publication decision:
-gh release edit bridge-images-preview-d86ebac3 -R orka-agents/orka-bridge --draft=false --prerelease --latest=false
+gh release edit bridge-images-preview-43e73491 -R orka-agents/orka-bridge --draft=false --prerelease --latest=false
 TAG=YOUR_APP_TAG
 gh workflow run images.yml -R orka-agents/orka-bridge --ref main -f stage=build-candidate -f candidate_tag="$TAG"
 gh run list -R orka-agents/orka-bridge --workflow images.yml --event workflow_dispatch --branch main --json databaseId,headSha,status,conclusion
@@ -205,14 +205,26 @@ Build first roundtrips both complete public images anonymously; missing assets
 fail with no credential fallback. Windows independently verifies transferred QEMU
 inputs and inspects native portable extraction; its source notice uses `TAG`.
 Mac uploads the true arm64 `Bridge.app` tarball with bundled helper and notices.
-Final artifacts and QEMU transfer artifacts retain 14 days. Each native artifact
-includes before/after JSON observations of free bytes and final asset sizes, not
+Final artifacts and QEMU transfer artifacts retain 14 days. Use the earliest
+actual artifact expiry: complete helper generation, review, approval merge and
+`app-draft` before it. From `buildCommit` through app draft, keep `imageRelease`
+and `images` unchanged in `release-set.json`, and keep both
+`images/release/{macos-arm64,windows-amd64}.json` manifests and
+`app/src-tauri/src/local_vm_image.rs` byte-identical to the build commit,
+including across unrelated merges. Expiry or a changed binding requires an
+unused tag, a new build and a new approval.
+
+Each native artifact includes before/after JSON observations of free bytes and final asset sizes, not
 an inferred peak. Builds never populate `appCandidates` or write a release.
 
 Select the successful final build run above. From this checkout, this read-only
 recipe proposes the exact approval schema in a local file; it does not approve,
 edit policy, execute artifact contents, or write a release. Only run/tag values
-are supplied. It selects artifact IDs **within that run**, never latest-by-name:
+are supplied. It selects artifact IDs **within that run**, never latest-by-name.
+Use Python 3.11+ and keep helper output in private scratch space outside the
+checkout (as below), or in verified Git-ignored space. Never commit that output.
+Check the helper's exit status and complete validated JSON before review;
+redirection can leave an empty or partial file after failure:
 
 ```sh
 export TAG

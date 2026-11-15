@@ -9,7 +9,7 @@ pub const IMAGE_AVAILABLE: bool = cfg!(any(
 pub const IMAGE_BYTES: Option<u64> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
     Some(17179869184)
 } else if cfg!(all(windows, target_arch = "x86_64")) {
-    Some(3780706304)
+    Some(3765960704)
 } else {
     None
 };

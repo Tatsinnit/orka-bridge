@@ -120,7 +120,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_profile_requires_exact_reviewed_input_before_network(self):
         policy = dict(schemaVersion='bridge-image-policy/v1', acceptedSchemaSha256='c' * 64,
-                      sourcePreviews={'7916cd1c8c083ade6b10df6ba408f854d930190c':
+                      sourcePreviews={'3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea':
                                       {'amd64': self.profile['inputIdentity']}},
                       profiles={'preview': self.profile})
         with patch.object(self.q, 'read_json', return_value=policy), \
@@ -424,7 +424,7 @@ class QualificationTests(unittest.TestCase):
     def test_input_draft_policy_denies_reordered_parts_and_output_tag_before_network(self):
         self.input_draft()
         policy = dict(schemaVersion='bridge-image-policy/v1', acceptedSchemaSha256='c'*64,
-                      sourcePreviews={'7916cd1c8c083ade6b10df6ba408f854d930190c':
+                      sourcePreviews={'3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea':
                                       {'amd64': self.profile['inputIdentity']}}, profiles={'preview':self.profile})
         with patch.object(self.q, 'read_json', return_value=policy), \
              patch.object(self.q, 'file_hash', return_value='c'*64), \

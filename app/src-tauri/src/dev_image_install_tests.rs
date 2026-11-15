@@ -156,8 +156,8 @@ async fn check_retained_engineering_binding(platform: DevImagePlatform) {
     assert_eq!(fs::read(path.join("image-binding.json")).unwrap(), binding);
     // Refused old bindings retain their bytes, including their compatibility id.
     let previous_platform_id = match platform {
-        DevImagePlatform::MacOsArm64 => "engineering-181d7f64",
-        DevImagePlatform::WindowsAmd64 => "engineering-181d7f64",
+        DevImagePlatform::MacOsArm64 => "engineering-d86ebac3",
+        DevImagePlatform::WindowsAmd64 => "engineering-d86ebac3",
     };
     for compatibility in ["engineering-d471f5eb", "engineering-10d23420", previous_platform_id] {
         let mut previous: serde_json::Value = serde_json::from_slice(&binding).unwrap();
@@ -203,7 +203,7 @@ async fn frozen_windows_source_materializes_actual_pinned_bytes() {
     );
     let installed = prepared.materialize(&target, closed, |_| {}).await.unwrap();
     installed.revalidate(&target).unwrap();
-    assert_eq!(installed.initial_os_bytes(), 3780706304);
-    assert_eq!(installed.initial_os_sha256(), "9aa023fd1b0187d5fc6b3099a51f63d4390f8dacbf3884b6d4f42a945252b7f4");
+    assert_eq!(installed.initial_os_bytes(), 3765960704);
+    assert_eq!(installed.initial_os_sha256(), "226cfa6e3f7ffc3cde467a3c8e9498aeb1db2aeac68e60c3f27e8f086528850c");
     assert_eq!(installed.kernel_release(), "6.1.0-54-cloud-amd64");
 }

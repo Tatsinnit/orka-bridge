@@ -117,7 +117,7 @@ test('catalog unavailable preserves model while soul remains editable without ca
   await waitFor(() => expect(screen.getByText('A new description', { selector: 'p' })).toBeTruthy());
 });
 test('every known built-in from the pinned Orka source renders a plain label before its name', async () => {
-  // KnownBuiltInToolNames union at image pin 7916cd1c8c083ade6b10df6ba408f854d930190c.
+  // KnownBuiltInToolNames union at image pin 3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea.
   const names = 'web_fetch web_search file_read file_write code_exec request_approval reply_in_conversation delegate_task wait_for_tasks create_container_task cancel_task send_message check_messages create_pull_request check_pull_request_ci merge_pull_request auto_merge_pull_request review_pull_request post_review_comment check_pr_review_marker list_issues list_pull_requests get_issue comment_on_issue create_agent delete_agent update_agent update_plan recall_memory remember propose_memory search_transcript create_ai_task create_pr_monitor create_agent_task check_task_progress fetch_task_output wait_for_task list_agents list_tools list_tasks list_connections create_tool delete_tool delete_session'.split(' ');
   native(agent.replace('    - kind: builtin\n      name: web_fetch\n', names.map(name => `    - kind: builtin\n      name: ${name}\n`).join('')));
   render(<Example />); await screen.findByRole('textbox', { name: 'Instructions' });

@@ -37,12 +37,12 @@ not caller-controlled paths or tar headers. A profile cannot authorize replacing
 an individual worker image or executable. A bundle cannot self-assert
 that it supports the release. Source qualification and production stay distinct.
 
-For source qualification, use the existing same-commit development descriptor
-from [the restricted-worker build](https://github.com/orka-agents/orka/actions/runs/42129731205),
-whose `sourceSHA` matches `versions.json`. It records the controller, AI worker,
+For source qualification, obtain the same-commit development descriptor selected
+by `sourceOfflineProfile.artifactsSha256` in `versions.json`, and verify its
+`sourceSHA` against `orkaSource` there. It records the controller, AI worker,
 general-worker and publisher indexes for both architectures; select their
 platform children and record the actual byte hashes. Restore the exact pinned
-staged chart using [kmx's retained-chart extraction instructions](https://github.com/kaimahi-agents/kaimahi/blob/e58f763cdda79ac41c81a1a695559c7aabfe4dc0/docs/kmx.md#source-packaged-restricted-profile),
+staged chart using [kmx's retained-chart extraction instructions](https://github.com/kaimahi-agents/kaimahi/blob/503b3ffcbdcc0a966e3b6de6235a8a98077b989e/docs/kmx.md#source-packaged-restricted-profile),
 not a fresh Helm package or the older checked-in release chart. A local rebuild
 instead requires approved **native builders for each architecture**; no builder
 is provisioned here. Obtain the session loader, node,
@@ -315,9 +315,9 @@ To enable the native six-role profile, select additional hash-locked tools `kmx`
 original supported `kmx-offline/v1` install.json, selected by hash, not another
 Bridge schema. Its source, platform, complete profile, chart, descriptor, tool and
 six image identities must agree with the input lock. Source bundles use the
-`versions.json` pins: kmx `e58f763cdda79ac41c81a1a695559c7aabfe4dc0`, Orka
-`7916cd1c8c083ade6b10df6ba408f854d930190c` and profile
-`orka-7916cd1c-native/v1`. The profile selects restricted AI-worker RBAC and
+`versions.json` pins: kmx `503b3ffcbdcc0a966e3b6de6235a8a98077b989e`, Orka
+`3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea` and profile
+`orka-3cb1f0df-native/v1`. The profile selects restricted AI-worker RBAC and
 controller context-token enforcement. This does not approve a production release.
 Missing tools or references fail rather than download.
 

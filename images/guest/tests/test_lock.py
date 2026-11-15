@@ -19,13 +19,13 @@ class LockTests(unittest.TestCase):
         self.value = lock(self.root)
 
     def test_selected_source_pin_binds_the_restricted_offline_profile(self):
-        self.assertEqual(VERSIONS['orkaSource'], '7916cd1c8c083ade6b10df6ba408f854d930190c')
+        self.assertEqual(VERSIONS['orkaSource'], '3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea')
         self.assertEqual(VERSIONS.get('sourceOfflineProfile'), {
-            'profile': 'orka-7916cd1c-native/v1',
-            'profileSha256': '6ab8213cae9f1d58fe59f34b2402f93ed951752269decdf750fc2a170bddf223',
-            'kmxSourceCommit': 'e58f763cdda79ac41c81a1a695559c7aabfe4dc0',
-            'chartSha256': '19c50cff36855b8792b4777c89c598cf33ea70180e677e1a4758fc0211f069ed',
-            'artifactsSha256': 'db1dae048af33841a295fdebb55c85d3a122242feade043f85a9e886938d1b3e',
+            'profile': 'orka-3cb1f0df-native/v1',
+            'profileSha256': '20647cab1e653394fe7466608a08dd816f05d1a44bc8a8598fa478f7e20fc8f5',
+            'kmxSourceCommit': '503b3ffcbdcc0a966e3b6de6235a8a98077b989e',
+            'chartSha256': '11cc020b923dd5bc810a6f3b97f236a6e3123ce8ad80791d912c0af760abcca8',
+            'artifactsSha256': '6f620c97411465b1f1559b57f6d279313894dcf0006ae25f8121e35afbb66080',
         })
         self.assertEqual(set(MODEL_IMAGES), {VERSIONS['sourceOfflineProfile']['kmxSourceCommit']})
         self.assertEqual(VERSIONS['releaseProfiles'], {})
@@ -39,13 +39,13 @@ class LockTests(unittest.TestCase):
             {'name': 'orka-images', 'sha256': selected['artifactsSha256']},
             {'name': 'kmx-offline-manifest'},
         ])
-        manifest = {'profile': 'orka-7916cd1c-native/v1',
-                    'kmx': {'revision': 'e58f763cdda79ac41c81a1a695559c7aabfe4dc0'}}
+        manifest = {'profile': 'orka-3cb1f0df-native/v1',
+                    'kmx': {'revision': '503b3ffcbdcc0a966e3b6de6235a8a98077b989e'}}
         try:
             validate_source_offline(self.value, manifest)
         except ValueError as error:
             self.fail(f'merged kmx source revision must be accepted: {error}')
-        manifest['kmx']['revision'] = 'f9dcb65001b8c424cbc51b976339b57f40c71c22'
+        manifest['kmx']['revision'] = 'e58f763cdda79ac41c81a1a695559c7aabfe4dc0'
         with self.assertRaisesRegex(ValueError, 'source offline profile or kmx revision differs'):
             validate_source_offline(self.value, manifest)
 
