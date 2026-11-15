@@ -11,7 +11,7 @@ export const errors = {
   submit: 'Submission was not confirmed. A named resource may still exist; it was not retried.',
   observe: 'Observation did not finish. The acknowledged Task may still be running.',
 } as const;
-export type RunSnapshot = { documentId?: string; busy?: DocumentRef | null; state: 'idle' | 'running' | 'complete' | 'unknown'; canRun: boolean; modelConnected?: boolean; stage?: 'capture' | 'model' | 'submit' | 'observe' | 'cancel' | 'done' | null; canCancel?: boolean; canRetryCancellation?: boolean; canCheckCancellation?: boolean; cancellation?: 'none' | 'cancelling' | 'cancelled' | 'unconfirmed' | 'beforeStart'; model?: string | null; source?: SourceId | null; sourceCurrent?: boolean; report: { cases: Case[]; verdict: Verdict } | null; acknowledged: Receipt[]; pending: Omit<Receipt, 'uid'> | null; error: keyof typeof errors | null };
+export type RunSnapshot = { documentId?: string; busy?: DocumentRef | null; state: 'idle' | 'running' | 'complete' | 'unknown'; canRun: boolean; modelConnected?: boolean; stage?: 'capture' | 'model' | 'submit' | 'observe' | 'cancel' | 'done' | null; canCancel?: boolean; canRetryCancellation?: boolean; canCheckCancellation?: boolean; cancellation?: 'none' | 'cancelling' | 'cancelled' | 'unconfirmed' | 'beforeStart'; model?: string | null; vendor?: 'openai' | 'anthropic' | null; source?: SourceId | null; sourceCurrent?: boolean; report: { cases: Case[]; verdict: Verdict } | null; acknowledged: Receipt[]; pending: Omit<Receipt, 'uid'> | null; error: keyof typeof errors | null };
 function record(value: unknown, keys: string[]): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).sort().join(',') === keys.sort().join(',');
 }
@@ -26,6 +26,7 @@ export function isRunSnapshot(value: unknown): value is RunSnapshot {
     if ('modelConnected' in value) keys.push('modelConnected');
     if ('stage' in value) keys.push('stage');
     if ('model' in value) keys.push('model');
+    if ('vendor' in value) keys.push('vendor');
     for (const key of ['canCancel', 'canRetryCancellation', 'canCheckCancellation', 'cancellation']) if (key in value) keys.push(key);
   }
   if (!record(value, keys) || ('documentId' in value && !isDocumentId(value.documentId)) || ('busy' in value && value.busy !== null && !isDocumentRef(value.busy)) || ('modelConnected' in value && typeof value.modelConnected !== 'boolean') || ('source' in value && value.source !== null && !isSourceId(value.source)) || typeof value.state !== 'string' || !['idle', 'running', 'complete', 'unknown'].includes(value.state) || typeof value.canRun !== 'boolean' || value.state === 'running' && value.canRun || value.error !== null && !(typeof value.error === 'string' && Object.hasOwn(errors, value.error))) return false;
@@ -33,6 +34,7 @@ export function isRunSnapshot(value: unknown): value is RunSnapshot {
   if ('cancellation' in value && !['none', 'cancelling', 'cancelled', 'unconfirmed', 'beforeStart'].includes(value.cancellation as string)) return false;
   if ('stage' in value && !(value.state === 'idle' ? value.stage === null : value.state === 'running' ? ['capture', 'model', 'submit', 'observe', 'cancel'].includes(value.stage as string) : value.stage === 'done')) return false;
   if ('model' in value && value.model !== null && !text(value.model, 1048576)) return false;
+  if ('vendor' in value && value.vendor !== null && value.vendor !== 'openai' && value.vendor !== 'anthropic') return false;
   if (!Array.isArray(value.acknowledged) || value.acknowledged.length > 33 || !value.acknowledged.every(r => record(r, ['kind', 'name', 'uid']) && (r.kind === 'Agent' || r.kind === 'Task') && text(r.name) && text(r.uid))) return false;
   if (value.pending !== null && !(record(value.pending, ['kind', 'name']) && (value.pending.kind === 'Agent' || value.pending.kind === 'Task') && text(value.pending.name))) return false;
   if (value.report === null) return value.state !== 'complete';

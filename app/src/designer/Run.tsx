@@ -87,7 +87,7 @@ export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, block
         {actionMessage && <p role="status">{actionMessage}</p>}
         {message && <p role="status">{message}</p>}
         {snapshot?.error && !(snapshot.error === 'model' && snapshot.modelConnected) && <p role="alert">{errors[snapshot.error]}</p>}
-        {(!running || cancelling) && <TestResults report={snapshot?.report} stale={outdated} />}
+        {(!running || cancelling) && <TestResults report={snapshot?.report} stale={outdated} vendor={snapshot?.vendor} />}
       </CardSection>
       {(!!snapshot?.acknowledged.length || snapshot?.pending || snapshot?.source) && <Details hint="Resources and file hashes">
         {snapshot.source && <><GeneratedValue label="Agent file hash" value={snapshot.source.agent} /><GeneratedValue label="Test file hash" value={snapshot.source.tests} /></>}

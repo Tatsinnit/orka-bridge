@@ -49,6 +49,33 @@ test('first completion submits the sample once, waits for release, then opens it
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
 });
 
+test('setup prepares the connected example before opening its saved bytes', async () => {
+  vi.stubGlobal('isTauri', true); armFirstTest();
+  let prepared = false;
+  const ipc = vi.fn((command: string, args?: unknown) => {
+    if (command === 'setup_example') { prepared = (args as { prepare?: boolean })?.prepare === true; return pair; }
+    if (command === 'agent_open') return { ...pair, agent: prepared ? pair.agent : 'original wrong model', documentId: sample, name: 'web-reader' };
+    if (command === 'agent_run_status') return idle;
+    if (command === 'agent_run') return { ...idle, error: 'session' };
+  });
+  mockIPC(ipc);
+  renderHook(() => useFirstTest({ ready: true, canOpen: true, sampleDirty: false, onOpen: vi.fn() }));
+  await waitFor(() => expect(ipc.mock.calls.some(([c]) => c === 'agent_run')).toBe(true));
+  expect(ipc.mock.calls.find(([c]) => c === 'setup_example')).toEqual(['setup_example', { prepare: true }]);
+});
+test('transient preparation busy preserves the one-shot and notifies the editor before submission', async () => {
+  const { ipc } = native({ rejected: true }); const original = ipc.getMockImplementation()!;
+  let attempts = 0; const events: string[] = []; const prepared = vi.fn(() => { events.push('prepared'); });
+  ipc.mockImplementation((command, args) => {
+    if (command === 'setup_example' && attempts++ === 0) throw 'exampleBusy';
+    if (command === 'agent_run') events.push('submitted');
+    return original(command, args);
+  });
+  armFirstTest(); renderHook(() => useFirstTest({ ready: true, canOpen: true, sampleDirty: false, onOpen: vi.fn(), onPrepared: prepared }));
+  await waitFor(() => expect(ipc.mock.calls.some(([c]) => c === 'agent_run')).toBe(true), { timeout: 2000 });
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
+  expect(prepared).toHaveBeenCalledOnce(); expect(events).toEqual(['prepared', 'submitted']);
+});
 test('observing an existing ready setup or retiring intent never submits a test', async () => {
   const { ipc } = native(); const onOpen = vi.fn();
   const view = renderHook(() => useFirstTest({ ready: true, canOpen: true, sampleDirty: false, onOpen }));

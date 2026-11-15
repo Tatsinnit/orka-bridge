@@ -80,6 +80,7 @@ async fn cancel_fixture(
             lost_task: false,
             cleanup_reply: None,
             cancel: Some(script.clone()),
+            model: "gpt-5.6-terra",
         }),
         id,
     )
@@ -606,6 +607,7 @@ async fn recovery_refuses_a_new_boot_even_on_the_same_installation() {
             lost_task: false,
             cleanup_reply: None,
             cancel: Some(other_script.clone()),
+            model: "gpt-5.6-terra",
         }),
         Uuid::new_v4(),
     )

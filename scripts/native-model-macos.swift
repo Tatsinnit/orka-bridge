@@ -38,6 +38,8 @@ require(["light", "dark"].contains(theme), "Expected light or dark")
 try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
 let child = Process()
 child.executableURL = URL(fileURLWithPath: CommandLine.arguments[2])
+let keyCheckRelease = URL(fileURLWithPath: output).appendingPathComponent("key-check-release-\(UUID().uuidString)")
+child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path]) { _, fixture in fixture }
 try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
@@ -89,7 +91,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     }
     for value in expected {
         let found = visible.replacingOccurrences(of: "Connect the Al", with: "Connect the AI").contains(value)
-        let nativeText = !found && name.hasPrefix("local-") && nativeResultTextIsVisible(value)
+        let nativeText = !found && name.hasPrefix("local-") && (nativeResultTextIsVisible(value) || name.hasPrefix("local-key-") && nativeChatTextIsVisible(value))
         let chatText = !found && name.hasPrefix("chat-") && nativeChatTextIsVisible(value)
         require(found || nativeText || chatText, "Missing \(value) in \(name): \(text)")
     }
@@ -170,8 +172,12 @@ func scroll(_ pixels: Int32) {
 func seek(_ label: String, _ pixels: Int32) throws -> [VNRecognizedTextObservation] {
     for _ in 0..<6 {
         let seen = try capture("local-probe", [])
-        if seen.contains(where: { ($0.topCandidates(1).first?.string ?? "").contains(label) }) {
+        if seen.contains(where: { ($0.topCandidates(1).first?.string ?? "").contains(label) }) || nativeChatTextIsVisible(label) {
             if label == "Run tests" && enabledButton(label) == nil { Thread.sleep(forTimeInterval: 0.3); continue }
+            if ["Connect the AI", "Check again", "Change", "Remove key"].contains(label),
+                enabledButton(label).flatMap(nativeBounds).map({ window()!.1.contains($0) }) != true {
+                scroll(pixels); continue
+            }
             return seen
         }
         scroll(pixels)
@@ -190,7 +196,81 @@ func localSize(_ width: CGFloat, _ height: CGFloat) {
     Thread.sleep(forTimeInterval: 0.3)
     require(abs(window()!.1.width - size.width) < 3 && abs(window()!.1.height - size.height) < 3, "Fixture content size not applied")
 }
-// Synthetic IPC renders the real local result component; no VM or inference.
+// Key entry stays in the real password control; these actions never use a store or VM.
+func chooseConnection(_ label: String) {
+    let choices = nativeElements().filter { element in
+        attribute(element, "AXRole") as? String == "AXRadioButton"
+            && ["AXTitle", "AXDescription"].contains { (attribute(element, $0) as? String)?.hasPrefix(label) == true }
+    }
+    require(choices.count == 1, "Expected one AI connection choice")
+    require(AXUIElementPerformAction(choices[0], kAXPressAction as CFString) == .success, "Cannot select AI connection")
+}
+func keyCapture(_ state: String, _ expected: [String], compact: Bool = false) throws {
+    for size in compact ? ["wide", "compact"] : ["wide"] {
+        if compact { localSize(size == "wide" ? 1280 : 540, size == "wide" ? 800 : 900) }
+        scroll(4000)
+        _ = try seek(expected.last!, -200)
+        let seen = try capture("local-key-\(state)-\(size)", expected)
+        require(!seen.contains { ($0.topCandidates(1).first?.string ?? "").contains("synthetic-only") }, "Password must be masked")
+    }
+    if compact { localSize(1280, 800); scroll(4000) }
+}
+click("Change", [])
+chooseConnection("Your own API key")
+waitForButton("Anthropic")
+try keyCapture("anthropic-empty", ["Your own API key", "OpenAI", "Anthropic", "API key", "claude-sonnet-5-5"], compact: true)
+click("OpenAI", [])
+try keyCapture("openai-empty", ["OpenAI", "Anthropic", "API key", "gpt-4.1"])
+click("Anthropic", [])
+fillMessage("sk-ant-synthetic-only-not-a-real-key", secure: true)
+try keyCapture("filled", ["API key", "claude-sonnet-5-5"], compact: true)
+_ = try seek("Connect the AI", -200)
+click("Connect the AI", [])
+try keyCapture("checking", ["Checking", "Asking Anthropic"])
+try Data().write(to: keyCheckRelease, options: .atomic)
+waitForButton("Check again")
+for (state, message) in [("rejected", "Anthropic didn't accept this key"),
+                         ("unreachable", "local cluster couldn't reach Anthropic"),
+                         ("model-unavailable", "isn't listed for this key")] {
+    try keyCapture(state, [message])
+    fillMessage("sk-ant-synthetic-only-not-a-real-key", secure: true)
+    _ = try seek("Check again", -200)
+    click("Check again", [])
+}
+waitForButton("Change")
+try keyCapture("connected", ["Anthropic with your API key", "claude-sonnet-5-5", "Connected", "Change"], compact: true)
+// The existing first-test report now carries a finite credit result, not raw company text.
+scroll(4000)
+_ = try seek("Read its instructions", -200)
+click("Read its instructions", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("Anthropic refused", -200)
+    _ = try capture("local-key-credit-limited-\(size)", ["Anthropic refused the request", "out of credit or over its rate limit", "Check your Anthropic plan."])
+}
+localSize(1280, 800)
+click("Clusters", [])
+scroll(4000)
+_ = try seek("Change", -200)
+click("Change", [])
+try keyCapture("change-failed", ["Key removal has not been confirmed", "Retry removal"])
+require(enabledButton("Anthropic") == nil, "Change must not permit replacement before cleanup")
+click("Retry removal", [])
+try keyCapture("changed", ["API key", "No AI connection."], compact: true)
+fillMessage("sk-ant-synthetic-only-not-a-real-key", secure: true)
+_ = try seek("Connect the AI", -200)
+click("Connect the AI", [])
+waitForButton("Remove key")
+_ = try seek("Remove key", -200)
+click("Remove key", [])
+try keyCapture("remove-confirmation", ["saved key?", "Cancel", "Remove key"], compact: true)
+click("Remove key", [])
+try keyCapture("removed", ["API key", "No AI connection."])
+chooseConnection("GitHub Copilot")
+_ = try seek("Connect the AI", -200)
+click("Connect the AI", [])
+// Restore Copilot before the original result, editor and Chat captures.
+scroll(4000)
 rows = try seek("Read its instructions", -200)
 click("Read its instructions", rows)
 rows = try seek("Tests on the local cluster", -250)
@@ -264,15 +344,17 @@ func waitForChatText(_ text: String) {
     }
     require(false, "Native Chat text did not appear: \(text)")
 }
-func fillMessage(_ text: String) {
+func fillMessage(_ text: String, secure: Bool = false) {
+    let label = secure ? "API key" : "Message"
     let fields = nativeElements().filter { element in
-        attribute(element, "AXRole") as? String == "AXTextArea"
-            && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == "Message" })
+        (secure ? ["AXTextField", "AXSecureTextField"] : ["AXTextArea"]).contains(attribute(element, "AXRole") as? String ?? "")
+            && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == label })
     }
-    require(fields.count == 1, "Expected one labelled Chat Message editor")
+    require(fields.count == 1, "Expected one labelled \(label) editor")
     let field = fields[0]
-    require(AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success, "Cannot focus Chat Message")
-    require(attribute(field, "AXFocused") as? Bool == true, "Chat Message did not receive focus")
+    if secure { require(attribute(field, "AXSubrole") as? String == "AXSecureTextField", "API key must use a secure field") }
+    require(AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success, "Cannot focus \(label)")
+    require(attribute(field, "AXFocused") as? Bool == true, "\(label) did not receive focus")
     for down in [true, false] {
         let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)!
         event.flags = .maskCommand; event.post(tap: .cghidEventTap)
@@ -289,9 +371,12 @@ func fillMessage(_ text: String) {
         }
     }
     Thread.sleep(forTimeInterval: 0.2)
-    let actual = attribute(field, "AXValue") as? String
-    if actual != text { _ = try? capture("chat-input-failed", []) }
-    require(actual == text, "Native keystrokes did not fill Chat Message: expected \(text.debugDescription), got \(String(describing: actual))")
+    // Secure values may be hidden by AX; never read or log their contents.
+    if !secure {
+        let actual = attribute(field, "AXValue") as? String
+        if actual != text { _ = try? capture("chat-input-failed", []) }
+        require(actual == text, "Native keystrokes did not fill Chat Message: expected \(text.debugDescription), got \(String(describing: actual))")
+    }
 }
 // Controls use the compiled frontend with a synthetic catalog, not real tools.
 for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {

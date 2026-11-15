@@ -135,6 +135,8 @@ struct StoreDiagnostic {
 pub struct SetupError {
     kind: &'static str,
     message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor: Option<bridge_runtime_protocol::ModelVendor>,
     // Only the finite call and numeric code may cross to the sign-in error UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     native: Option<StoreDiagnostic>,
@@ -143,9 +145,16 @@ pub struct SetupError {
 }
 impl SetupError {
     pub(crate) fn connect(diagnostic: Option<bridge_runtime_protocol::ModelDiagnostic>) -> Self {
+        use bridge_runtime_protocol::ModelErrorCode;
+        let kind = match diagnostic.as_ref().and_then(|d| d.error_code) {
+            Some(ModelErrorCode::CredentialRejected) => "modelCredentialRejected",
+            Some(ModelErrorCode::ProviderUnreachable) => "modelProviderUnreachable",
+            Some(ModelErrorCode::ModelUnavailable) => "modelModelUnavailable",
+            _ => "modelConnect",
+        };
         Self {
             diagnostic,
-            ..Self::model("modelConnect")
+            ..Self::model(kind)
         }
     }
     pub(crate) fn model_detail(&self) -> Option<String> {
@@ -165,6 +174,12 @@ impl SetupError {
     }
     pub(crate) fn model(kind: &'static str) -> Self {
         let message = match kind {
+            "modelKeyInvalid" => "Paste the whole key with the selected company's key prefix.",
+            "modelAlreadyAssociated" => "Remove the saved AI connection before connecting another.",
+            "modelCredentialRejected" => "The model company did not accept this key.",
+            "modelProviderUnreachable" => "The workspace could not reach the model company.",
+            "modelModelUnavailable" => "The selected model is not listed for this key.",
+            "modelKeyCleanup" => "Key removal was not confirmed. The saved connection was kept for another removal attempt.",
             "modelCaptureUnavailable" => {
                 "Install GitHub CLI and sign in to github.com before connecting."
             }
@@ -189,6 +204,7 @@ impl SetupError {
         Self {
             kind,
             message,
+            vendor: None,
             diagnostic: None,
             native: None,
         }
@@ -198,6 +214,7 @@ fn storage_error() -> SetupError {
     SetupError {
         kind: "storage",
         message: "The setup choice could not be read or saved.",
+        vendor: None,
         diagnostic: None,
         native: None,
     }
@@ -210,7 +227,7 @@ pub mod preflight;
 pub mod help;
 #[path = "setup_model.rs"]
 mod model;
-pub use model::ModelSetupState;
+pub use model::{KeyVendor, ModelSetupState};
 
 /// Owns preferences and an opaque sign-in association, never stored secret bytes.
 pub struct SetupStore {

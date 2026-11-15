@@ -92,6 +92,50 @@ async fn first_test_accepts_bundled_lf_crlf_and_mixed_line_endings() {
 }
 
 #[tokio::test]
+async fn first_test_requires_the_expected_template_and_current_connection() {
+    for (saved, expected, connected, error) in [
+        ("gpt-4.1", "gpt-4.1", "gpt-4.1", None),
+        (
+            "claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            None,
+        ),
+        (
+            "gpt-4.1",
+            "claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            Some("source"),
+        ),
+        ("gpt-4.1", "gpt-4.1", "gpt-5.6-terra", Some("model")),
+    ] {
+        let (vm, posts, _) = fixture_with_model(false, false, false, None, connected).await;
+        let home = tempfile::tempdir().unwrap();
+        let folder = Arc::new(AgentFolder::new(Some(home.path().into())));
+        let pair = folder.prepare_example_model(saved).unwrap();
+        let run = ExampleRun::new(tokio::runtime::Handle::current(), true, folder);
+        run.start_first_test_with_model(vm.clone(), pair.document_id, expected.into())
+            .unwrap();
+        let done = finished(&run, &vm).await;
+        assert_eq!(done.error, error, "{saved}/{expected}/{connected}");
+        if error.is_none() {
+            assert_eq!(
+                serde_json::to_value(&done).unwrap()["vendor"],
+                if connected == "gpt-4.1" {
+                    "openai"
+                } else {
+                    "anthropic"
+                }
+            );
+        }
+        assert_eq!(
+            posts.lock().unwrap().len(),
+            if error.is_none() { 2 } else { 0 }
+        );
+        vm.shutdown().await.unwrap();
+    }
+}
+#[tokio::test]
 async fn first_test_cannot_select_another_document_or_claim_admission() {
     let (vm, posts, _) = fixture(false, false).await;
     let home = tempfile::tempdir().unwrap();
@@ -101,6 +145,9 @@ async fn first_test_cannot_select_another_document_or_claim_admission() {
     let run = ExampleRun::new(tokio::runtime::Handle::current(), true, sample);
     assert!(run
         .start_first_test(vm.clone(), other.document_id())
+        .is_err());
+    assert!(run
+        .start_first_test_with_model(vm.clone(), pair.document_id, "arbitrary-model".into())
         .is_err());
     assert!(!run.is_active());
     assert!(posts.lock().unwrap().is_empty());
@@ -365,6 +412,7 @@ struct Channel {
     lost_task: bool,
     cancel: Option<Arc<cancellation::Script>>,
     cleanup_reply: Option<bool>,
+    model: &'static str,
 }
 impl Write for Channel {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -383,7 +431,11 @@ impl Write for Channel {
                     diagnostic: None,
                     phase: ModelPhase::Ready,
                     credential: CredentialState {
-                        profile: CREDENTIAL_PROFILE,
+                        profile: if self.model == "gpt-5.6-terra" {
+                            CREDENTIAL_PROFILE
+                        } else {
+                            MODEL_API_KEY_PROFILE
+                        },
                         generation: Some(r.boot_nonce),
                         installed: true,
                     },
@@ -391,9 +443,18 @@ impl Write for Channel {
                         id: r.boot_nonce,
                         generation: r.boot_nonce,
                         selection: ModelSelection {
-                            vendor: None,
-                            provider: "copilot".into(),
-                            model: "gpt-5.6-terra".into(),
+                            vendor: match self.model {
+                                "gpt-4.1" => Some(ModelVendor::Openai),
+                                "claude-sonnet-5-5" => Some(ModelVendor::Anthropic),
+                                _ => None,
+                            },
+                            provider: if self.model == "gpt-5.6-terra" {
+                                "copilot"
+                            } else {
+                                "key"
+                            }
+                            .into(),
+                            model: self.model.into(),
                         },
                     }),
                 })
@@ -723,6 +784,22 @@ async fn fixture_with_cleanup(
     closed_after_work: bool,
     cleanup_reply: Option<bool>,
 ) -> (Arc<LocalVm>, Arc<Mutex<Vec<Value>>>, Arc<AtomicBool>) {
+    fixture_with_model(
+        missing_tools,
+        lost_task,
+        closed_after_work,
+        cleanup_reply,
+        "gpt-5.6-terra",
+    )
+    .await
+}
+async fn fixture_with_model(
+    missing_tools: bool,
+    lost_task: bool,
+    closed_after_work: bool,
+    cleanup_reply: Option<bool>,
+    model: &'static str,
+) -> (Arc<LocalVm>, Arc<Mutex<Vec<Value>>>, Arc<AtomicBool>) {
     let id = Uuid::new_v4();
     let posts = Arc::new(Mutex::new(Vec::new()));
     let stopped = Arc::new(AtomicBool::new(false));
@@ -736,6 +813,7 @@ async fn fixture_with_cleanup(
             lost_task,
             cancel: None,
             cleanup_reply,
+            model,
         }),
         id,
         &StageHello {

@@ -15,6 +15,19 @@ const TESTS: &str = "web-reader.agent.test.md";
 const MARKER: &str = ".bridge-agent-folder";
 const OWNER: &[u8] = b"Bridge web-reader folder v1\n";
 type Result<T> = std::result::Result<T, &'static str>;
+const EXAMPLE_AGENT: &str = include_str!("../example-agent/web-reader.agent.md");
+const EXAMPLE_TESTS: &str = include_str!("../example-agent/web-reader.agent.test.md");
+
+/// The same closed template is used for setup preparation and first-test admission.
+pub fn example_for_model(model: &str) -> Option<(String, &'static str)> {
+    if !matches!(model, "gpt-5.6-terra" | "gpt-4.1" | "claude-sonnet-5-5") {
+        return None;
+    }
+    Some((
+        EXAMPLE_AGENT.replacen("\nmodel: gpt-5.6-terra", &format!("\nmodel: {model}"), 1),
+        EXAMPLE_TESTS,
+    ))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
@@ -461,19 +474,36 @@ impl AgentFolder {
         if content.len() > MAX_FILE {
             return Err("The agent file is too large to save.");
         }
+        self.with(|root| self.save_pair(root, self.pair(root)?, content))
+    }
+    /// Setup-only: never rewrite edited files or an already prepared example.
+    pub fn prepare_example_model(&self, model: &str) -> Result<AgentPair> {
+        let (agent, _) = example_for_model(model).ok_or("The example model is unavailable.")?;
+        if !self.sample {
+            return Err("Only the bundled example can be prepared.");
+        }
         self.with(|root| {
-            let mut pair = self.pair(root)?;
-            git::validate(root)?;
-            if pair.agent != content {
-                // Preserve edits from another editor before replacing the disk version.
-                git::commit(root, &pair, &self.agent, &self.tests)?;
-                replace(root, &self.agent, content.as_bytes())?;
-                pair.agent = content;
-                pair.source = SnapshotId::of(pair.agent.as_bytes(), pair.tests.as_bytes());
-            }
-            git::commit(root, &pair, &self.agent, &self.tests)?; // Failure leaves draft bytes; retry reconciles disk with HEAD.
-            Ok(pair)
+            let pair = self.pair(root)?;
+            let content = if pair.agent == EXAMPLE_AGENT && pair.tests == EXAMPLE_TESTS {
+                agent
+            } else {
+                pair.agent.clone()
+            };
+            // Compare and save under the same folder and cross-process marker locks.
+            self.save_pair(root, pair, content)
         })
+    }
+    fn save_pair(&self, root: &Dir, mut pair: AgentPair, content: String) -> io::Result<AgentPair> {
+        git::validate(root)?;
+        if pair.agent != content {
+            // Preserve edits from another editor before replacing the disk version.
+            git::commit(root, &pair, &self.agent, &self.tests)?;
+            replace(root, &self.agent, content.as_bytes())?;
+            pair.agent = content;
+            pair.source = SnapshotId::of(pair.agent.as_bytes(), pair.tests.as_bytes());
+        }
+        git::commit(root, &pair, &self.agent, &self.tests)?; // Failure leaves draft bytes; retry reconciles disk with HEAD.
+        Ok(pair)
     }
     /// Trusted native Send seam only; never exposed through IPC.
     pub fn source(&self) -> Result<(PathBuf, AgentDocument)> {

@@ -218,16 +218,32 @@ impl VmClient {
         token: &CredentialPayload,
         expected: Option<Uuid>,
     ) -> io::Result<CredentialState> {
+        self.deliver_credential_for_profile(CREDENTIAL_PROFILE, token, expected)
+    }
+    /// A cleared endpoint can change profile; the publication ACK must match the request.
+    pub fn deliver_credential_for_profile(
+        &mut self,
+        profile: u16,
+        token: &CredentialPayload,
+        expected: Option<Uuid>,
+    ) -> io::Result<CredentialState> {
+        if !valid_credential_profile(profile) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         let before = self.credential_status()?;
         if before.generation != expected || before.installed {
             return Err(invalid());
         }
         let state = self.credential_call(RequestBody::CredentialPublish {
-            profile: CREDENTIAL_PROFILE,
+            profile,
             expected_generation: expected,
             token: token.clone(),
         })?;
-        if !state.installed || state.generation.is_none() || state.generation == expected {
+        if state.profile != profile
+            || !state.installed
+            || state.generation.is_none()
+            || state.generation == expected
+        {
             self.channel = None;
             return Err(invalid());
         }

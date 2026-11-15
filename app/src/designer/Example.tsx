@@ -17,9 +17,9 @@ import Send, { SendEntry, SendHistory } from '../clusters/Send';
 
 export type DocumentAction = { id: number; documentId: string; action: 'open' | 'chat' | 'run' };
 
-export default function Example({ actionRequest, onActionHandled, agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, onStopLocalCluster, actions, onPair, onRun, onSaveState, onStale }: {
+export default function Example({ sampleRevision = 0, actionRequest, onActionHandled, agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, onStopLocalCluster, actions, onPair, onRun, onSaveState, onStale }: {
   actionRequest?: DocumentAction; onActionHandled?: (id: number) => void;
-  agentsRevision?: number; onRegistered?: () => void; documentId?: string; persistInitialSelection?: boolean; openDocumentRequest?: number; newAgentRequest?: number; onNewAgentHandled?: () => void; onDocument?: (id: string) => void; active?: boolean; setupPending?: boolean; remote?: boolean; catalogKey?: number; place?: SelectedPlace; onChooseCluster?: () => void; onStopLocalCluster?: () => void; actions?: ReactNode;
+  sampleRevision?: number; agentsRevision?: number; onRegistered?: () => void; documentId?: string; persistInitialSelection?: boolean; openDocumentRequest?: number; newAgentRequest?: number; onNewAgentHandled?: () => void; onDocument?: (id: string) => void; active?: boolean; setupPending?: boolean; remote?: boolean; catalogKey?: number; place?: SelectedPlace; onChooseCluster?: () => void; onStopLocalCluster?: () => void; actions?: ReactNode;
   onPair?: (pair: AgentPair | undefined, documentId: string) => void; onRun?: (snapshot: RunSnapshot | undefined, documentId: string) => void;
   onSaveState?: (state: SaveState, documentId: string) => void; onStale?: (stale: boolean, documentId: string) => void;
 }) {
@@ -83,12 +83,14 @@ export default function Example({ actionRequest, onActionHandled, agentsRevision
   const [openAttempt, setOpenAttempt] = useState(0);
   useEffect(() => {
     let mounted = true;
+    const request = ++reloadEpoch.current;
+    reloadAdmitted.current = false; setReloading(false);
     const open = agentCall('agent_open', undefined, boundDocument);
     void open.then(value => {
-      if (!mounted) return;
+      if (!mounted || request !== reloadEpoch.current) return;
       setPair(value); setDraft(value.agent); latest.current = saved.current = value.agent;
       lineEnding.current = value.agent.includes('\r\n') ? '\r\n' : '\n'; onPair?.(value, boundDocument);
-    }, () => { if (mounted) { setError('Your agent folder could not be opened. Open it again from Designer.'); onPair?.(undefined, boundDocument); } });
+    }, () => { if (mounted && request === reloadEpoch.current) { setError('Your agent folder could not be opened. Open it again from Designer.'); onPair?.(undefined, boundDocument); } });
     return () => { mounted = false; };
   }, [onPair, boundDocument, openAttempt]);
   useEffect(() => { onSaveState?.(pendingSoul ? 'dirty' : saveState, boundDocument); }, [saveState, pendingSoul, onSaveState, boundDocument]);
@@ -167,10 +169,10 @@ export default function Example({ actionRequest, onActionHandled, agentsRevision
     setSaveState('dirty'); clearTimeout(timer.current);
     timer.current = setTimeout(() => { void flush(); }, 500);
   };
-  async function reloadSource() {
-    if (reloadAdmitted.current || busy.current || needsCommit.current || pendingSoulCurrent.current || latest.current !== saved.current) return;
+  async function reloadSource(prepared = false) {
+    if ((reloadAdmitted.current && !prepared) || busy.current || needsCommit.current || pendingSoulCurrent.current || latest.current !== saved.current) return;
     reloadAdmitted.current = true; setReloading(true);
-    const request = reloadEpoch.current;
+    const request = ++reloadEpoch.current;
     const before = latest.current;
     try {
       const value = await agentCall('agent_open', undefined, boundDocument);
@@ -180,8 +182,16 @@ export default function Example({ actionRequest, onActionHandled, agentsRevision
       setPair(value); setDraft(value.agent); latest.current = saved.current = value.agent;
       lineEnding.current = value.agent.includes('\r\n') ? '\r\n' : '\n';
       setStale(false); onPair?.(value, boundDocument);
+    } catch (failure) {
+      if (request === reloadEpoch.current && !pair) {
+        setError('Your agent folder could not be opened. Open it again from Designer.'); onPair?.(undefined, boundDocument);
+      }
+      throw failure;
     } finally { if (request === reloadEpoch.current) { reloadAdmitted.current = false; setReloading(false); } }
   }
+  useEffect(() => {
+    if (sampleRevision && boundDocument === SAMPLE_DOCUMENT_ID) void reloadSource(true).catch(() => { /* Keep the current draft on an unreadable refresh. */ });
+  }, [sampleRevision, boundDocument]);
   const info = { ...agentInfo(draft), description: readForm(draft).description };
   const saveLabel = pendingSoul ? 'Unsaved changes' : { saved: '', dirty: 'Unsaved changes', saving: 'Saving…', error: 'Not saved' }[saveState];
   const sendBlocked = !pair ? error ? 'Reopen your agent before sending' : 'Wait for your agent folder to open'

@@ -7,6 +7,8 @@ pub enum HelpTopic {
     Workspace,
     GithubCliInstall,
     GithubSignIn,
+    OpenaiKey,
+    AnthropicKey,
 }
 impl HelpTopic {
     fn url(self) -> &'static str {
@@ -16,6 +18,8 @@ impl HelpTopic {
             Self::Workspace => "https://github.com/orka-agents/orka-bridge/blob/main/CONTRIBUTING.md",
             Self::GithubCliInstall => "https://cli.github.com/",
             Self::GithubSignIn => "https://cli.github.com/manual/gh_auth_login",
+            Self::OpenaiKey => "https://platform.openai.com/api-keys",
+            Self::AnthropicKey => "https://console.anthropic.com/settings/keys",
         }
     }
 }
@@ -94,6 +98,8 @@ mod tests {
             ("workspace", "https://github.com/orka-agents/orka-bridge/blob/main/CONTRIBUTING.md"),
             ("githubCliInstall", "https://cli.github.com/"),
             ("githubSignIn", "https://cli.github.com/manual/gh_auth_login"),
+            ("openaiKey", "https://platform.openai.com/api-keys"),
+            ("anthropicKey", "https://console.anthropic.com/settings/keys"),
         ] {
             let topic: HelpTopic = serde_json::from_value(serde_json::json!(topic)).unwrap();
             assert_eq!(topic.url(), expected);

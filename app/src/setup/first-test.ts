@@ -20,10 +20,11 @@ function claim() {
 }
 const text = (value: string) => value.replaceAll('\r\n', '\n');
 
-export function useFirstTest(options: { ready: boolean; canOpen: boolean; sampleDirty: boolean; onOpen: () => void; onSnapshot?: (snapshot: RunSnapshot | undefined) => void }): CheckStepState | undefined {
+export function useFirstTest(options: { ready: boolean; canOpen: boolean; sampleDirty: boolean; onOpen: () => void; onPrepared?: () => void; onSnapshot?: (snapshot: RunSnapshot | undefined) => void }): CheckStepState | undefined {
   const latest = useRef(options);
   useEffect(() => { latest.current = options; });
   const [check, setCheck] = useState<CheckStepState>();
+  const [prepareAttempt, setPrepareAttempt] = useState(0);
   const mounted = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
@@ -54,7 +55,15 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
       setCheck('running');
       poll();
     };
-    void Promise.all([loadExample(), agentCall('agent_open', undefined, SAMPLE_DOCUMENT_ID), runCall('agent_run_status')]).then(async ([bundled, saved, status]) => {
+    // Preparation can update only the pristine managed sample. Finish it before reading saved bytes.
+    void loadExample(true).then(async bundled => {
+      if (cancelled || !mounted.current || !latest.current.ready || latest.current.sampleDirty) return;
+      if (!bundled.ok && bundled.retryable) {
+        timer.current = setTimeout(() => { if (!cancelled && mounted.current) setPrepareAttempt(value => value + 1); }, 500);
+        return;
+      }
+      if (bundled.ok) latest.current.onPrepared?.();
+      const [saved, status] = await Promise.all([agentCall('agent_open', undefined, SAMPLE_DOCUMENT_ID), runCall('agent_run_status')]);
       // StrictMode's abandoned effect must not consume the durable one-shot.
       if (cancelled || !mounted.current || !latest.current.ready || latest.current.sampleDirty || !claim()) return;
       claimed = true;
@@ -71,6 +80,6 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
     // Eligibility gates submission, not observation of an already claimed attempt.
     // A transient setup poll failure must not orphan native busy ownership.
     return () => { if (!claimed) cancelled = true; };
-  }, [options.ready, options.sampleDirty]);
+  }, [options.ready, options.sampleDirty, prepareAttempt]);
   return check;
 }

@@ -132,6 +132,11 @@ fn main() {
     let chat = std::sync::Mutex::new(ChatFixture::new());
     let selected = std::sync::atomic::AtomicBool::new(true);
     let connected = std::sync::atomic::AtomicBool::new(false);
+    let key_connected = std::sync::atomic::AtomicBool::new(false);
+    let key_attempt = std::sync::atomic::AtomicUsize::new(0);
+    let key_check_release =
+        std::env::var_os("BRIDGE_MODEL_CHECK_RELEASE").map(std::path::PathBuf::from);
+    let key_removed_once = std::sync::atomic::AtomicBool::new(false);
     let first_test_pending = std::sync::atomic::AtomicBool::new(false);
     let original = include_str!("../example-agent/web-reader.agent.md");
     let agent = std::sync::Mutex::new(original.to_owned());
@@ -242,12 +247,13 @@ fn main() {
                     }
                     let active = running.load(std::sync::atomic::Ordering::SeqCst);
                     let waiting = first_test_pending.load(std::sync::atomic::Ordering::SeqCst);
+                    let credit_limited = key_connected.load(std::sync::atomic::Ordering::SeqCst);
                     json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "busy":null,
                         "state":if active {"running"} else if waiting {"idle"} else {"complete"}, "stage":if active {json!("observe")} else if waiting {json!(null)} else {json!("done")},
-                        "model":"gpt-5.6-terra", "modelConnected":connected.load(std::sync::atomic::Ordering::SeqCst), "canRun":!active, "source":source,
+                        "model":if credit_limited {"claude-sonnet-5-5"} else {"gpt-5.6-terra"}, "vendor":if credit_limited {json!("anthropic")} else {json!(null)}, "modelConnected":connected.load(std::sync::atomic::Ordering::SeqCst), "canRun":!active, "source":source,
                         "acknowledged":[], "pending":null, "error":null,
                         "report":if active || waiting {json!(null)} else {json!({"verdict":"failed", "cases":[
-                            {"id":"reads-page", "question":"What did the page say?", "phase":"Succeeded", "answer":"Fixture checksum.", "completedTools":["web_fetch"], "verdict":"passed", "assertions":[{"id":"text", "kind":"contains", "expected":"checksum", "verdict":"passed"}]},
+                            {"id":"reads-page", "question":"What did the page say?", "phase":if credit_limited {"CreditLimited"} else {"Succeeded"}, "answer":if credit_limited {json!(null)} else {json!("Fixture checksum.")}, "completedTools":if credit_limited {json!([])} else {json!(["web_fetch"])}, "verdict":if credit_limited {"failed"} else {"passed"}, "assertions":[{"id":"text", "kind":"contains", "expected":"checksum", "verdict":if credit_limited {"unknown"} else {"passed"}}]},
                             {"id":"has-a-date", "question":"Which date is shown on the page?", "phase":"Succeeded", "answer":"No date was given.", "completedTools":[], "verdict":"failed", "assertions":[{"id":"date", "kind":"contains", "expected":"2099-12-31", "verdict":"failed"}]}
                         ]})}})
                 }
@@ -270,10 +276,50 @@ fn main() {
                 "setup_requirements" => json!(null),
                 "setup_connect_model" => {
                     connected.store(true, std::sync::atomic::Ordering::SeqCst);
+                    key_connected.store(false, std::sync::atomic::Ordering::SeqCst);
                     json!({"ready":true})
+                }
+                "setup_connect_key" => {
+                    let tauri::ipc::InvokeBody::Json(args) = invoke.message.payload() else { return false; };
+                    let vendor = args["vendor"].as_str().unwrap_or("");
+                    let expected = match vendor {
+                        "anthropic" => "sk-ant-synthetic-only-not-a-real-key",
+                        "openai" => "sk-synthetic-only-not-a-real-key",
+                        _ => "",
+                    };
+                    if expected.is_empty() || args["key"] != expected {
+                        invoke.resolver.reject(json!({"kind":"modelKeyInvalid"}));
+                        return true;
+                    }
+                    let attempt = key_attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(kind) = ["modelCredentialRejected", "modelProviderUnreachable", "modelModelUnavailable"].get(attempt) {
+                        let error = json!({"kind":kind});
+                        let resolver = invoke.resolver;
+                        let release = key_check_release.clone();
+                        // The native driver releases the first rejection after capturing Checking.
+                        tauri::async_runtime::spawn(async move {
+                            if attempt == 0 {
+                                if let Some(release) = release {
+                                    while !release.exists() { tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
+                                }
+                            }
+                            resolver.reject(error);
+                        });
+                        return true;
+                    }
+                    key_connected.store(true, std::sync::atomic::Ordering::SeqCst);
+                    connected.store(true, std::sync::atomic::Ordering::SeqCst);
+                    json!({"ready":true, "connection":{"kind":"key", "vendor":vendor,
+                        "model":if vendor == "anthropic" {"claude-sonnet-5-5"} else {"gpt-4.1"}}})
                 }
                 "setup_remove_model" => {
                     connected.store(false, std::sync::atomic::Ordering::SeqCst);
+                    if key_connected.load(std::sync::atomic::Ordering::SeqCst)
+                        && !key_removed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        invoke.resolver.reject(json!({"kind":"modelKeyCleanup"}));
+                        return true;
+                    }
+                    key_connected.store(false, std::sync::atomic::Ordering::SeqCst);
                     if !removed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
                         invoke.resolver.reject(json!({"kind":"modelBusy"}));
                         return true;

@@ -4,7 +4,7 @@ use bridge_engine::agent_folder::{AgentFolder, AgentPair, DocumentId};
 use bridge_engine::agents::Agents;
 use bridge_engine::chat::{ChatError, ChatOwner, ChatSnapshot};
 use bridge_engine::engine::{types::*, EngineState};
-use bridge_engine::local_vm::{self, ExamplePair, LocalVm, LocalVmStatus};
+use bridge_engine::local_vm::{self, LocalVm, LocalVmStatus};
 use bridge_engine::send::{SendOwner, SendStatus};
 use bridge_engine::setup::{SetupError, SetupSnapshot, SetupStore};
 use bridge_engine::shutdown::TerminalShutdown;
@@ -72,8 +72,18 @@ async fn setup_open_help(topic: bridge_engine::setup::help::HelpTopic) -> Result
         .map_err(|_| "Could not open setup help.")?
 }
 #[tauri::command]
-fn setup_example() -> ExamplePair {
-    local_vm::example()
+async fn setup_example(
+    prepare: Option<bool>,
+    setup: tauri::State<'_, Arc<SetupStore>>,
+    agents: tauri::State<'_, Arc<Agents>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<serde_json::Value, &'static str> {
+    if prepare == Some(true) {
+        let folder = document_folder(agents.inner().clone(), DocumentId::SAMPLE).await?;
+        let (agent, tests) = vm.prepare_example(setup.inner().clone(), folder).await?;
+        return Ok(serde_json::json!({"agent":agent, "tests":tests}));
+    }
+    Ok(serde_json::to_value(local_vm::example()).expect("fixed example serializes"))
 }
 
 async fn document_folder(
@@ -206,14 +216,62 @@ async fn workspace_catalog(
 #[derive(serde::Serialize)]
 struct ModelReply {
     ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection: Option<ConnectionInfo>,
+}
+#[derive(serde::Serialize)]
+struct ConnectionInfo {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor: Option<bridge_runtime_protocol::ModelVendor>,
+    model: String,
+}
+impl From<bridge_engine::setup::ModelSetupState> for ModelReply {
+    fn from(state: bridge_engine::setup::ModelSetupState) -> Self {
+        Self {
+            ready: state.ready,
+            connection: state
+                .connection
+                .filter(|_| state.ready)
+                .map(|c| ConnectionInfo {
+                    kind: if c.selection.vendor.is_some() {
+                        "key"
+                    } else {
+                        "copilot"
+                    },
+                    vendor: c.selection.vendor,
+                    model: c.selection.model,
+                }),
+        }
+    }
 }
 #[tauri::command]
 async fn setup_connect_model(
+    vendor: Option<bridge_runtime_protocol::ModelVendor>,
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
 ) -> Result<ModelReply, SetupError> {
-    let model = vm.connect_model(Arc::clone(state.inner())).await?;
-    Ok(ModelReply { ready: model.ready })
+    let model = if let Some(vendor) = vendor {
+        vm.connect_saved_key_model(Arc::clone(state.inner()), vendor)
+            .await?
+    } else {
+        vm.connect_model(Arc::clone(state.inner())).await?
+    };
+    Ok(model.into())
+}
+
+#[tauri::command]
+async fn setup_connect_key(
+    vendor: bridge_runtime_protocol::ModelVendor,
+    key: String,
+    state: tauri::State<'_, Arc<SetupStore>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ModelReply, SetupError> {
+    // Never log arguments; key custody moves straight to the native owned worker.
+    Ok(vm
+        .connect_key_model(Arc::clone(state.inner()), vendor, key)
+        .await?
+        .into())
 }
 
 #[tauri::command]
@@ -222,7 +280,7 @@ async fn setup_remove_model(
     vm: tauri::State<'_, Arc<LocalVm>>,
 ) -> Result<ModelReply, SetupError> {
     let model = vm.remove_model(Arc::clone(state.inner())).await?;
-    Ok(ModelReply { ready: model.ready })
+    Ok(model.into())
 }
 
 #[tauri::command]
@@ -253,12 +311,31 @@ fn agent_run_check_cancellation(
 async fn agent_run(
     document_id: DocumentId,
     bundled_example: Option<bool>,
+    setup: tauri::State<'_, Arc<SetupStore>>,
     agents: tauri::State<'_, Arc<Agents>>,
     state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
 ) -> Result<bridge_engine::example_run::RunSnapshot, &'static str> {
     if bundled_example == Some(true) {
-        return state.start_first_test(vm.inner().clone(), document_id);
+        if !vm.model_connected() {
+            return Err("Connect the AI before running the first agent.");
+        }
+        let setup = setup.inner().clone();
+        let model = tauri::async_runtime::spawn_blocking(move || {
+            let binding = setup
+                .model_binding_status()
+                .map_err(|_| "The AI connection is unavailable.")?;
+            if binding.unknown {
+                return Err("The AI connection is unavailable.");
+            }
+            binding
+                .connection
+                .map(|c| c.selection.model)
+                .ok_or("The AI connection is unavailable.")
+        })
+        .await
+        .map_err(|_| "The AI connection is unavailable.")??;
+        return state.start_first_test_with_model(vm.inner().clone(), document_id, model);
     }
     let folder = document_folder(agents.inner().clone(), document_id).await?;
     Ok(state.start_document(vm.inner().clone(), folder))
@@ -534,6 +611,7 @@ fn main() {
             setup_open_help,
             setup_example,
             setup_connect_model,
+            setup_connect_key,
             setup_remove_model,
             agent_run_status,
             agent_run,

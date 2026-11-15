@@ -1,6 +1,6 @@
 //! Fixed example Run on the original VM client. Credentials remain in the guest.
 use crate::{
-    agent_folder::{AgentFolder, DocumentId, DocumentRef},
+    agent_folder::{example_for_model, AgentFolder, DocumentId, DocumentRef},
     engine::run::{
         ErrorKind, NativeRunner, ParsedPair, RunCheckpoint, RunFuture, RunHandle, RunLimits,
         RunReport, RunTransport,
@@ -57,6 +57,8 @@ pub struct RunSnapshot {
     pub source: Option<SnapshotId>,
     pub stage: Option<&'static str>,
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<bridge_runtime_protocol::ModelVendor>,
     pub report: Option<RunReport>,
     pub acknowledged: Vec<Receipt>,
     pub pending: Option<PendingRef>,
@@ -84,6 +86,7 @@ impl RunSnapshot {
             source: None,
             stage: None,
             model: None,
+            vendor: None,
             report: None,
             acknowledged: Vec::new(),
             pending: None,
@@ -358,10 +361,18 @@ impl ExampleRun {
         vm: Arc<LocalVm>,
         id: DocumentId,
     ) -> Result<RunSnapshot, &'static str> {
-        if id != DocumentId::SAMPLE {
-            return Err("The automatic first test requires the bundled example.");
+        self.start_first_test_with_model(vm, id, "gpt-5.6-terra".into())
+    }
+    pub fn start_first_test_with_model(
+        self: &Arc<Self>,
+        vm: Arc<LocalVm>,
+        id: DocumentId,
+        model: String,
+    ) -> Result<RunSnapshot, &'static str> {
+        if id != DocumentId::SAMPLE || example_for_model(&model).is_none() {
+            return Err("The automatic first test requires the connected bundled example.");
         }
-        Ok(self.start_checked(vm, self.3.clone(), true))
+        Ok(self.start_checked(vm, self.3.clone(), Some(model)))
     }
     pub fn start(self: &Arc<Self>, vm: Arc<LocalVm>) -> RunSnapshot {
         self.start_document(vm, self.3.clone())
@@ -371,13 +382,13 @@ impl ExampleRun {
         vm: Arc<LocalVm>,
         folder: Arc<AgentFolder>,
     ) -> RunSnapshot {
-        self.start_checked(vm, folder, false)
+        self.start_checked(vm, folder, None)
     }
     fn start_checked(
         self: &Arc<Self>,
         vm: Arc<LocalVm>,
         folder: Arc<AgentFolder>,
-        bundled_example: bool,
+        expected_model: Option<String>,
     ) -> RunSnapshot {
         let id = folder.document_id();
         if !self.2 {
@@ -410,12 +421,14 @@ impl ExampleRun {
             snapshot.source = None;
             snapshot.stage = Some("capture");
             snapshot.model = None;
+            snapshot.vendor = None;
             // Keep this document's receipts through preflight failures.
         }
         let owner = self.clone();
         let target = vm.clone();
         self.1.spawn(async move {
             let admission = Arc::new(admission);
+            let bundled_example = expected_model.is_some();
             if *stop.borrow() {
                 owner.cancelled_before_start(id);
                 owner.0.lock().unwrap().active = None;
@@ -423,11 +436,11 @@ impl ExampleRun {
             }
             let pair = tokio::task::spawn_blocking(move || {
                 let snapshot = folder.capture().map_err(|_| ())?;
-                if bundled_example {
-                    let example = crate::local_vm::example();
+                if let Some(model) = expected_model {
+                    let (agent, tests) = example_for_model(&model).ok_or(())?;
                     for (slot, expected) in [
-                        (bridge_runtime_protocol::FileSlot::Agent, example.agent),
-                        (bridge_runtime_protocol::FileSlot::Tests, example.tests),
+                        (bridge_runtime_protocol::FileSlot::Agent, agent.as_str()),
+                        (bridge_runtime_protocol::FileSlot::Tests, tests),
                     ] {
                         let actual = std::str::from_utf8(snapshot.file(slot)).map_err(|_| ())?;
                         if actual.replace("\r\n", "\n") != expected.replace("\r\n", "\n") {
@@ -464,7 +477,7 @@ impl ExampleRun {
                             installation,
                             client,
                             observing,
-                            pair,
+                            (pair, bundled_example),
                             stop,
                         ));
                         // Observation is over, but admission and the original client
@@ -550,9 +563,10 @@ impl ExampleRun {
         installation: Uuid,
         client: &mut VmClient,
         vm: Arc<LocalVm>,
-        pair: ParsedPair,
+        pair: (ParsedPair, bool),
         stop: watch::Receiver<bool>,
     ) {
+        let (pair, bundled_example) = pair;
         if *stop.borrow() {
             self.cancelled_before_start(id);
             return;
@@ -578,6 +592,17 @@ impl ExampleRun {
             self.fail(id, "model");
             return;
         };
+        if bundled_example && connection.selection.model != pair.model() {
+            self.fail(id, "model");
+            return;
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .snapshots
+            .get_mut(&id)
+            .unwrap()
+            .vendor = connection.selection.vendor;
         let boot = client.boot_nonce();
         let provider = connection.selection.provider;
         let runner = NativeRunner::with_transport(VmRunTransport {

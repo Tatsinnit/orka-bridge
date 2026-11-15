@@ -1,4 +1,4 @@
-export type HelpTopic = 'virtualization' | 'hypervisor' | 'workspace' | 'githubCliInstall' | 'githubSignIn';
+export type HelpTopic = 'virtualization' | 'hypervisor' | 'workspace' | 'githubCliInstall' | 'githubSignIn' | 'openaiKey' | 'anthropicKey';
 export type RecoveryInfo = { summary: string; action: string; topic?: HelpTopic; stage: string; retryBlocked?: boolean; heading?: string; preservation?: string; category?: string };
 const operations = ['requirements', 'download', 'verify', 'prepare', 'start', 'services', 'stop'] as const;
 const causes = ['permission', 'noSpace', 'integrity', 'inUse', 'network', 'preparation', 'guestConnection', 'services', 'stopUnconfirmed', 'unknown'] as const;

@@ -59,16 +59,18 @@ export const cancelLocal = () => call('setup_cancel_local');
 export const changeLocal = () => call('setup_change_local');
 
 export type ExamplePair = { agent: string; tests: string };
-export async function loadExample(): Promise<{ ok: true; pair: ExamplePair } | { ok: false; message: string }> {
+export async function loadExample(prepare = false): Promise<{ ok: true; pair: ExamplePair } | { ok: false; message: string; retryable?: boolean }> {
   if (!isTauri()) return { ok: false, message: 'The native example is not available in this preview.' };
   try {
-    const value = await invoke<unknown>('setup_example');
+    const value = await (prepare ? invoke<unknown>('setup_example', { prepare: true }) : invoke<unknown>('setup_example'));
     if (typeof value === 'object' && value !== null && !Array.isArray(value)
       && Object.keys(value).sort().join(',') === 'agent,tests'
       && 'agent' in value && typeof value.agent === 'string' && value.agent.length > 0 && value.agent.length <= 65536
       && 'tests' in value && typeof value.tests === 'string' && value.tests.length > 0 && value.tests.length <= 65536) {
       return { ok: true, pair: { agent: value.agent, tests: value.tests } };
     }
-  } catch { /* Rejected native data never crosses into the page. */ }
+  } catch (error) {
+    if (prepare && error === 'exampleBusy') return { ok: false, message: 'The local cluster is busy.', retryable: true };
+  }
   return { ok: false, message: 'The example could not be opened.' };
 }

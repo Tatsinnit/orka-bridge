@@ -109,6 +109,7 @@ export default function App() {
   const [sampleSource, setSampleSource] = useState<SourceId | null>();
   const [sampleStale, setSampleStale] = useState(false);
   const [sampleDirty, setSampleDirty] = useState(false);
+  const [sampleRevision, setSampleRevision] = useState(0);
   const observeSampleRun = useCallback((snapshot: RunSnapshot | undefined) => {
     // Observed sample completion consumes held setup intent; a later unreadable poll must not re-arm it.
     if (snapshot?.state === 'complete' && snapshot.report) retireFirstTest();
@@ -168,6 +169,7 @@ export default function App() {
     canOpen: page === 'Clusters' && localSetupView && setup?.localVm === 'ready' && !workspaceBusy && !remote,
     sampleDirty,
     onOpen: () => openDesigner(SAMPLE_DOCUMENT_ID),
+    onPrepared: () => setSampleRevision(value => value + 1),
     onSnapshot: observeSampleRun,
   });
   const sample = sampleResult?.snapshot;
@@ -266,7 +268,7 @@ export default function App() {
           <Setup ref={localCluster} place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
             onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)} onOpenAgent={() => openDesigner()} />
         </div>
-        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={!remote && !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup?.model !== 'locked' && model === 'connected' ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
+        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={!remote && !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup?.model !== 'locked' && model === 'connected' ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
         <Overview onNewAgent={() => openDesigner(undefined, true)} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} activeDocumentId={firstTest === 'running' ? SAMPLE_DOCUMENT_ID : run?.busy?.documentId} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} onCounts={setOverviewCounts}
           onOpenDocument={id => openOverviewDocument(id, 'open')}
           onChatDocument={id => openOverviewDocument(id, 'chat')}
