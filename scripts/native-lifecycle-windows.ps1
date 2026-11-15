@@ -107,7 +107,11 @@ $button = [System.Windows.Automation.ControlType]::Button
 # A Places row action can carry its row name after the visible verb; match the verb as a leading word.
 function Find-Action($Root, [string]$Label) {
     $buttons = $Root.FindAll($children, [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, $button))
-    foreach ($candidate in $buttons) { $name = $candidate.Current.Name; if ($name -ceq $Label -or $name.StartsWith("$Label ", [StringComparison]::Ordinal)) { return $candidate } }
+    foreach ($candidate in $buttons) {
+        $name = $candidate.Current.Name
+        if ($null -eq $name) { continue }
+        if ($name -ceq $Label -or $name.StartsWith("$Label ", [StringComparison]::Ordinal)) { return $candidate }
+    }
 }
 function Get-UiNames($Root) {
     @($Root.FindAll($children, [System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name } | Where-Object { $_ })

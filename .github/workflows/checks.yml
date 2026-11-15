@@ -173,6 +173,7 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: |
+          & ../scripts/test-native-lifecycle-windows.ps1
           $env:BRIDGE_DEV_IMAGE_DIR = Join-Path $env:RUNNER_TEMP "lifecycle-empty-$([Guid]::NewGuid().ToString('N'))"
           New-Item -ItemType Directory $env:BRIDGE_DEV_IMAGE_DIR | Out-Null
           # Must precede any fixture walk: use the fresh hosted-CI known-folder profile.
