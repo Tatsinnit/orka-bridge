@@ -121,7 +121,7 @@ test('global history refreshes when another document’s Send releases admission
   expect(await screen.findByText('bridge-run-before-restart')).toBeTruthy();
 });
 
-test.each(['pending', 'failed'])('saved Sends are readable while the document open is %s', async state => {
+test.each(['pending', 'failed'])('remote saved Sends are readable while the document open is %s', async state => {
   vi.stubGlobal('isTauri', true);
   const ipc = vi.fn((command: string) => {
     if (command === 'agent_open') {
@@ -131,7 +131,7 @@ test.each(['pending', 'failed'])('saved Sends are readable while the document op
     if (command === 'send_history') return [summary];
     throw Error('Unexpected operation');
   });
-  mockIPC(ipc); render(<Example />);
+  mockIPC(ipc); render(<Example remote />);
   expect(await screen.findByText('bridge-run-before-restart')).toBeTruthy();
   if (state === 'failed') expect(screen.getByText('Your agent folder could not be opened. Open it again from Designer.')).toBeTruthy();
   expect(document.body.textContent).not.toContain('PRIVATE_SOURCE_FAILURE');

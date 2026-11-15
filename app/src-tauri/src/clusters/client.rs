@@ -45,6 +45,10 @@ pub struct ClusterClient {
     orka: Arc<dyn OrkaRead>,
     exec: ExecOwner,
 }
+#[cfg(test)]
+#[path = "catalog_read_tests.rs"]
+mod catalog_read_tests;
+
 /// Native access only: no Serialize/Debug implementation can export credentials.
 pub struct RemoteAccess {
     pub(crate) creator: Client,

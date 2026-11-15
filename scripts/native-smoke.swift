@@ -404,7 +404,10 @@ func capture(_ name: String, _ page: String, afterFrame: (() throws -> Void)? = 
     }
     if name == "send-history-restarted" {
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(text.contains("Past Sends") && text.contains("Saved tests: pass") && text.contains("Saved tests: unknown"), "Newest saved results missing after restart: \(text)")
+        // Vision can misread small dark badges; exact visible AX text proves the same property.
+        let savedPass = text.contains("Saved tests: pass") || nativeTextIsVisible("Saved tests: pass")
+        let savedUnknown = text.contains("Saved tests: unknown") || nativeTextIsVisible("Saved tests: unknown")
+        require(text.contains("Past Sends") && savedPass && savedUnknown, "Newest saved results missing after restart: \(text)")
         require(text.contains("bridge-run-") && text.contains("fixture-secondary"), "Saved destination or planned Agent missing: \(text)")
         print("PASS send-history-restarted: saved summaries after app restart; no new Send")
         return observations
@@ -1493,6 +1496,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
             "Removed cluster returned after restart")
     clickTab("Designer", restarted)
     Thread.sleep(forTimeInterval: 1)
+    try clickSendControl("Send to a cluster", scrolling: -350)
     scrollMain(3000)
     var historyFound = false
     for _ in 0..<12 {

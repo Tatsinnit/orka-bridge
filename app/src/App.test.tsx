@@ -41,6 +41,24 @@ test.each(['Agent', 'File'] as const)('a pending %s draft survives setup readine
   expect(editor.value).toBe(edited);
 });
 
+test.each([true, false])('reopening Designer uses native model connection evidence (%s)', async modelConnected => {
+  vi.stubGlobal('isTauri', true); const catalogs = vi.fn();
+  const id = '9b2b93c4-375c-4815-9717-39852a96e411';
+  mockIPC(command => {
+    if (command === 'setup_status') return { selected: 'localVm', localVm: 'ready', model: 'available' };
+    if (command === 'agent_open') return { documentId: id, name: 'reader', agent: '---\nname: reader\nmodel: file-model\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools: []\n---\nRead.', tests: 'Checks' };
+    if (command === 'agent_run_status') return { documentId: id, busy: null, state: 'idle', canRun: modelConnected, modelConnected, report: null, acknowledged: [], pending: null, error: null };
+    if (command === 'workspace_catalog') { catalogs(); return { defaultModel: 'file-model', models: { state: 'ready', items: [{ id: 'file-model' }] }, tools: { state: 'ready', items: [] } }; }
+    return { kind: 'version', version: 'v0.4.2', hasDiagnostics: false };
+  });
+  const user = userEvent.setup(); render(<App />);
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  if (modelConnected) await waitFor(() => expect(screen.getByRole('button', { name: 'Add a tool' }).matches(':disabled')).toBe(false));
+  else { await screen.findByText(/Connect the AI in Clusters first/); expect(screen.getByRole('button', { name: 'Add a tool' }).matches(':disabled')).toBe(true); }
+  expect(catalogs.mock.calls.length).toBe(modelConnected ? 1 : 0);
+});
+
 test('navigation_order', () => {
   render(<App />);
   const nav = screen.getByRole('navigation', { name: 'Main' });

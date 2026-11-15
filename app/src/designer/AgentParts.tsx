@@ -15,8 +15,8 @@ function Unavailable({ label, reason, children, focusRef }: { label: string; rea
 function toolDescription(tool: CatalogTool): string {
   return tool.kind === 'builtin' && Object.hasOwn(builtInToolDescriptions, tool.name) ? builtInToolDescriptions[tool.name] : tool.description;
 }
-export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_ID, readOnly, setupPending = false, catalog, catalogLoading = false, onPendingEdit, onChange }: {
-  source: string; path?: string; documentId?: string; readOnly: boolean; setupPending?: boolean; catalog?: WorkspaceCatalogReply; catalogLoading?: boolean; onPendingEdit?: (pending: boolean) => void; onChange: (source: string) => void;
+export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_ID, readOnly, setupPending = false, catalog, catalogLoading = false, remote = false, onPendingEdit, onChange }: {
+  source: string; path?: string; documentId?: string; readOnly: boolean; setupPending?: boolean; catalog?: WorkspaceCatalogReply; catalogLoading?: boolean; remote?: boolean; onPendingEdit?: (pending: boolean) => void; onChange: (source: string) => void;
 }) {
   const form = readForm(source); const id = useId();
   // Markdown's separating blank lines stay in the file, not above the prompt.
@@ -63,15 +63,15 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
   const models = catalog?.models.state === 'ready' ? catalog.models.items.filter(model => model.pickerEnabled !== false && model.chatSupported !== false) : undefined;
   const listed = models?.some(model => model.id === form.model);
   const knownModel = catalog?.models.state === 'ready' && catalog.models.items.some(model => model.id === form.model);
-  const unlistedLabel = models ? knownModel ? ' (not offered for chat)' : ' (unlisted)' : '';
+  const unlistedLabel = !remote && models ? knownModel ? ' (not offered for chat)' : ' (unlisted)' : '';
   const toolReason = readOnly ? 'You can change tools after setup.' : !form.toolsEditable ? 'Edit this agent’s tools in File view.'
-    : setupPending ? 'Tools will be available when the local cluster is ready.' : catalogLoading ? 'Loading tools…' : tools === undefined ? 'Tools unavailable. Connect the AI in Clusters or edit File view.' : undefined;
+    : setupPending ? 'Tools will be available when the local cluster is ready.' : catalogLoading ? 'Loading tools…' : tools === undefined ? 'Tools could not be read from this cluster. Check Clusters or edit File view.' : undefined;
   useEffect(() => {
     if (toolReason) { setPicker(false); setQuery(''); return; }
     if (picker) { popover.current?.showPopover?.(); popover.current?.querySelector('input')?.focus(); }
   }, [picker, toolReason]);
   const modelReason = readOnly ? 'You can change the model after setup.' : !form.modelEditable ? 'Edit the model in File view for this file’s format.'
-    : setupPending ? 'Models will be available when the local cluster is ready.' : catalogLoading ? 'Loading models…' : models === undefined ? 'Models unavailable. Connect the AI in Clusters or edit File view.' : undefined;
+    : setupPending ? 'Models will be available when the local cluster is ready.' : catalogLoading ? 'Loading models…' : models === undefined ? 'Models could not be read from this cluster. Check Clusters or edit File view.' : undefined;
   const labelFor = (name: string) => Object.hasOwn(builtInTools, name) ? builtInTools[name] : name;
   const editSoul = async (value: string) => {
     if (readOnly || !form.soulEditable) return;
@@ -121,7 +121,7 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
           <span className="tool-description">{toolDescription(tool)}</span>
           {tool.available === false && <span className="muted">Observed unavailable</span>}
         </button></li>)}</ul>
-        {!choices?.length && <p className="muted">{tools?.length ? 'No matching tools to add.' : 'No tools listed by the local cluster.'}</p>}
+        {!choices?.length && <p className="muted">{tools?.length ? 'No matching tools to add.' : 'No tools listed by this cluster.'}</p>}
       </div>}
     </section>
     <div className="agent-part">
@@ -131,9 +131,9 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
           {!listed && <option value={form.model ?? ''}>{form.model ? `${form.model}${unlistedLabel}` : 'No model in this file'}</option>}
           {models?.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}
         </select>
-        <span className="muted">{catalogLoading ? 'The model saved in your file is shown while choices load.' : modelReason ?? (models?.length ? `Default model: ${catalog?.defaultModel}` : 'No models listed by the local cluster.')}</span>
+        <span className="muted">{catalogLoading ? 'The model saved in your file is shown while choices load.' : modelReason ?? (remote ? models?.length ? 'The selected AI connection’s configured default. Other models can be entered in File view.' : 'No default model is configured for this AI connection. Enter a model in File view.' : models?.length ? `Default model: ${catalog?.defaultModel}` : 'No models listed by the local cluster.')}</span>
       </div>
-      {!listed && models && form.model && <p className="muted">{knownModel ? 'This model is not offered for chat by the connected AI. Choose another model to use it here.' : 'This model is saved in your file but is not listed by the connected AI. It may not run here. Choose a listed model or check your AI connection.'}</p>}
+      {!remote && !listed && models && form.model && <p className="muted">{knownModel ? 'This model is not offered for chat by the connected AI. Choose another model to use it here.' : 'This model is saved in your file but is not listed by the connected AI. It may not run here. Choose a listed model or check your AI connection.'}</p>}
     </div>
     <Disclosure className="agent-settings" label="More settings">
       <div className="agent-part">
@@ -155,7 +155,7 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
         </> : <>
           <label htmlFor={`${id}-soul`}>Personality</label>
           <p className="muted" id={`${id}-soul-hint`}>Tone and style to keep across tasks. Put the task itself in Instructions.</p>
-          <textarea id={`${id}-soul`} aria-describedby={`${id}-soul-hint`} className="field description-editor" readOnly={readOnly || !form.soulEditable} value={soulDraft?.source === source ? soulDraft.value : form.soul?.inline ?? ''}
+          <textarea id={`${id}-soul`} placeholder="For example: Be concise, use plain words and explain unfamiliar terms." aria-describedby={`${id}-soul-hint`} className="field description-editor" readOnly={readOnly || !form.soulEditable} value={soulDraft?.source === source ? soulDraft.value : form.soul?.inline ?? ''}
             onChange={event => { void editSoul(event.target.value); }} />
           {form.soul?.digest && <p className="muted">The existing digest is updated with each personality edit.</p>}
           {!form.soulEditable && <p className="muted">Edit personality in File view for this file’s format.</p>}

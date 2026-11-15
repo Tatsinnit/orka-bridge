@@ -1,3 +1,4 @@
+pub mod catalog;
 mod client;
 mod credentials;
 pub use credentials::{Credential, ResolvedCreator};

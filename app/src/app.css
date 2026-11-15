@@ -137,7 +137,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .designer-file, .designer-checks, .designer-tests { margin-top: 16px; display: grid; gap: 12px; }
 .designer-work { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
 .designer-tests { grid-column: 2; grid-row: 1; }
-.designer-tests[hidden], .designer-work[hidden] { display: none; }
+.designer-tests[hidden], .designer-work[hidden], .designer-checks[hidden] { display: none; }
 .chat-panel { margin-top: var(--space-4); display: grid; gap: var(--space-4); }
 .chat-heading, .chat-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .chat-heading { justify-content: space-between; }
@@ -205,7 +205,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .check-source pre { margin-top: 12px; }
 .designer-tests h3 { font-size: var(--size-reading); margin: 0 0 8px; }
 .designer-tests .example-run > p { margin-top: 8px; max-width: 70ch; }
-@media (max-width: 1000px) {
+@media (max-width: 819px) {
   .designer-work { grid-template-columns: minmax(0, 1fr); }
   .designer-tests, .designer-editing { grid-column: auto; grid-row: auto; }
   .designer-heading { flex-wrap: wrap; }

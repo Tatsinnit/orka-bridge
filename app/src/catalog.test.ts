@@ -5,6 +5,19 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: ipc.invoke, isTauri: () => ipc.
 const fixture = { defaultModel: 'm:exact', models: { state: 'ready', items: [{ id: 'm:exact' }, { id: 'other', pickerEnabled: false, chatSupported: true }] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch' }, { kind: 'tool', name: 'custom', description: '<script>plain text</script>', available: false }] } };
 beforeEach(() => { ipc.invoke.mockReset(); ipc.native = true; });
 const read = () => readWorkspaceCatalog(new AbortController().signal);
+const remote = { targetId: '39dc68be-f597-4535-8ebd-7759f544b27a', providerId: '39dc68be-f597-4535-8ebd-7759f544b27b' };
+test('remote catalog uses only selected native ids and permits an absent configured default', async () => {
+  ipc.invoke.mockResolvedValue({ ...fixture, defaultModel: null, models: { state: 'ready', items: [] } });
+  expect(await readWorkspaceCatalog(new AbortController().signal, remote)).toEqual({ ...fixture, defaultModel: null, models: { state: 'ready', items: [] } });
+  expect(ipc.invoke).toHaveBeenCalledExactlyOnceWith('cluster_catalog', remote);
+});
+test('local replies still require a default model and malformed remote ids never invoke', async () => {
+  ipc.invoke.mockResolvedValue({ ...fixture, defaultModel: null });
+  expect(await read()).toBeUndefined();
+  ipc.invoke.mockClear();
+  expect(await readWorkspaceCatalog(new AbortController().signal, { ...remote, targetId: 'not-an-id' })).toBeUndefined();
+  expect(ipc.invoke).not.toHaveBeenCalled();
+});
 test('reads exact metadata without supplying a target or losing unknown capabilities', async () => {
   ipc.invoke.mockResolvedValue(fixture);
   expect(await read()).toEqual(fixture);

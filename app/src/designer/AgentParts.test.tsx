@@ -106,7 +106,7 @@ test('catalog unavailable preserves model while soul remains editable without ca
   native(); const user = userEvent.setup(); render(<Example />);
   await screen.findByRole('textbox', { name: 'Instructions' });
   expect(screen.getByRole('combobox', { name: 'It thinks with' }).matches(':disabled')).toBe(true);
-  expect(screen.getByRole('option', { name: 'file-model' })).toBeTruthy(); expect(screen.getByText(/Models unavailable/)).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'file-model' })).toBeTruthy(); expect(screen.getByText(/Models could not be read/)).toBeTruthy();
   expect(screen.queryByText('through GitHub Copilot')).toBeNull();
   expect(screen.getByRole('button', { name: 'Add a tool' }).matches(':disabled')).toBe(true);
   await user.click(screen.getByText('More settings'));

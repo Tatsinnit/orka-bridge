@@ -220,6 +220,44 @@ impl ClusterSession {
             self.1.clone(),
         )
     }
+    pub async fn catalog(
+        &self,
+        target: &str,
+        provider: &str,
+    ) -> Result<catalog::CatalogReply, &'static str> {
+        use crate::engine::run::RunTransport;
+        let failure = "The selected cluster catalog could not be read.";
+        tokio::time::timeout(READ_LIMIT, async {
+            // Serialize with Use/Forget so a catalog never renews another target's access.
+            let _session = self.0.lock().await;
+            let access = self.send_access(target).0.ok_or(failure)?;
+            let provider = Uuid::parse_str(provider)
+                .ok()
+                .map(ProviderId)
+                .ok_or(failure)?;
+            if !access.providers().iter().any(|p| p.id == provider) {
+                return Err(failure);
+            }
+            let current = access.fresh_client(
+                self.read_configuration(self.1.clone())
+                    .await
+                    .map_err(|_| failure)?,
+            );
+            let stream = access.read_transport(&current).await.map_err(|_| failure)?;
+            let result = async {
+                access.recheck_reads(&stream).await.map_err(|_| failure)?;
+                access
+                    .designer_catalog(&stream, provider)
+                    .await
+                    .map_err(|_| failure)
+            }
+            .await;
+            stream.close().await;
+            result
+        })
+        .await
+        .map_err(|_| failure)?
+    }
     pub async fn contexts(&self) -> Result<Vec<ContextView>, ClusterFailure> {
         let mut session = self.0.lock().await;
         session

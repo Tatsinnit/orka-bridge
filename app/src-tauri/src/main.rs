@@ -213,6 +213,14 @@ async fn workspace_catalog(
 ) -> Result<bridge_engine::catalog::CatalogReply, &'static str> {
     vm.workspace_catalog(Arc::clone(state.inner())).await
 }
+#[tauri::command]
+async fn cluster_catalog(
+    target_id: String,
+    provider_id: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::catalog::CatalogReply, &'static str> {
+    state.catalog(&target_id, &provider_id).await
+}
 #[derive(serde::Serialize)]
 struct ModelReply {
     ready: bool,
@@ -634,6 +642,7 @@ fn main() {
             agent_save,
             agent_reveal,
             workspace_catalog,
+            cluster_catalog,
             cluster_places,
             cluster_reconnect,
             cluster_forget,

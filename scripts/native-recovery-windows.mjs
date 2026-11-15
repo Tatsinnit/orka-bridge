@@ -229,7 +229,7 @@ try {
     }
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
-  const actionFixtures = ['places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'ai-idle', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'switch-place', 'designer', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
+  const actionFixtures = ['places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'ai-idle', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'switch-place', 'designer', 'designer-connected', 'designer-file', 'designer-failed', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
@@ -260,8 +260,14 @@ try {
       const name = ${JSON.stringify(name)};
       const documentId = '9b2b93c4-375c-4815-9717-39852a96e411';
       let selected = ${JSON.stringify(!first && !name.startsWith('places-') && !name.startsWith('local-preflight'))};
-      let connected = false;
+      const designer = name.startsWith('designer');
+      if (designer) pair.agent = ${JSON.stringify('---\nname: web-reader\nmodel: fixture-model\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools: []\n---\nFetch before answering.')};
+      let connected = designer && name !== 'designer';
       let submitted = false;
+      const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev' };
+      const target = { id: '00000000-0000-4000-8000-000000000002', context_id: context.id, context_name: context.name, service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'fixture-image' };
+      const provider = { id: '00000000-0000-4000-8000-000000000003', name: 'team-ai', ready: true };
+      window.__bridgeCatalogCalls = [];
       const localCancel = name.startsWith('local-cancel-');
       window.__bridgeCancellation = name.slice('local-cancel-'.length);
       window.__bridgeCancelCalls = [];
@@ -282,7 +288,7 @@ try {
           return { documentId, source, busy: running ? { documentId, name: 'web-reader' } : null, state: running ? 'running' : 'complete', stage: running ? state === 'running' ? 'observe' : 'cancel' : 'done', canRun: !running, modelConnected: true, model: 'fixture-model', cancellation, canCancel: state === 'running', canRetryCancellation: state === 'unconfirmed', canCheckCancellation: state === 'unconfirmed', report: { verdict: state === 'unconfirmed' || state === 'running' || state === 'cancelling' ? 'unknown' : 'cancelled', cases: state === 'before-start' ? [] : state === 'cancelled' ? [cancelled, finished] : [finished] }, acknowledged: [], pending: null, error: null };
         }
         const running = submitted && name === 'first-test-running';
-        const complete = submitted && (name === 'first-test-result' || name === 'first-test-badges');
+        const complete = name === 'designer-failed' || submitted && (name === 'first-test-result' || name === 'first-test-badges');
         const badge = window.__bridgeBadgeState;
         if (name === 'first-test-badges') {
           report.verdict = report.cases[0].verdict = report.cases[0].assertions[0].verdict = badge === 'failed' ? 'failed' : 'passed';
@@ -310,6 +316,19 @@ try {
           if (name === 'ai-connecting') return new Promise(() => {});
           connected = true; return { ready: true };
         }
+        if (designer && command === 'agent_select') {
+          if (args?.documentId !== documentId) throw Error('Wrong selected document');
+          return null;
+        }
+        if (designer && command === 'agent_selected') return documentId;
+        if (designer && (command === 'workspace_catalog' || command === 'cluster_catalog')) {
+          window.__bridgeCatalogCalls.push({ command, args });
+          return { defaultModel: 'fixture-model', models: { state: 'ready', items: [{ id: 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }] } };
+        }
+        if (name === 'designer-remote' && command === 'cluster_contexts') return [context];
+        if (name === 'designer-remote' && command === 'cluster_discover') return [target];
+        if (name === 'designer-remote' && command === 'cluster_use') return { status: 'connected', providers: [provider], failure: null };
+        if (command === 'send_status') return { documentId, view: null, busy: null };
         if (command === 'agent_open') return { ...pair, documentId, name: 'web-reader', ...(name === 'first-test-badges' || localCancel ? { source } : {}) };
         if (localCancel && (command === 'agent_run_cancel' || command === 'agent_run_check_cancellation')) {
           if (args?.documentId !== documentId) throw Error('Wrong cancellation document');
@@ -349,7 +368,24 @@ try {
       await clickAction('Back to clusters');
       await clickAction('Add a cluster');
     }
-    if (name === 'designer' || name.startsWith('local-cancel-')) await clickAction('Read its instructions');
+    if (name === 'designer-remote') {
+      await clickAction('Back to clusters'); await clickAction('Add a cluster');
+      await until(() => evaluate(`!!document.querySelector('select')`), 'cluster context');
+      await evaluate(`(() => { const select = document.querySelector('select'); select.value = '00000000-0000-4000-8000-000000000001'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+      await clickAction('Use this cluster');
+      await clickAction('Open your agent');
+    } else if (name.startsWith('designer') || name.startsWith('local-cancel-')) await clickAction('Read its instructions');
+    if (name.startsWith('designer')) {
+      await until(() => evaluate(`!!document.querySelector('.instructions-editor')`), 'Designer editor');
+      if (name !== 'designer') await until(() => evaluate(`!document.querySelector('.model-select').disabled`), 'connected Designer catalog');
+      if (name === 'designer-file') await clickAction('File');
+      if (name === 'designer-failed') await until(() => evaluate(`!!document.querySelector('.test-next-step')`), 'failure next action');
+      const state = await evaluate(`({ historyHidden: !document.querySelector('.designer-checks').getClientRects().length, catalog: window.__bridgeCatalogCalls, runPrimary: [...document.querySelectorAll('.example-run button')].some(button => button.textContent === 'Run tests' && button.classList.contains('button-primary')) })`);
+      if (await evaluate(`document.body.innerText.includes('Your agent selection could not be saved')`)) throw Error('Designer fixture failed to acknowledge document selection');
+      if (name === 'designer' && (state.catalog.length || state.runPrimary)) throw Error('Disconnected Designer presents a runnable primary/catalog: ' + JSON.stringify(state));
+      if (name !== 'designer-remote' && !state.historyHidden) throw Error('Unopened local Send/history card is visible');
+      if (name === 'designer-remote' && (state.historyHidden || !state.catalog.some(call => call.command === 'cluster_catalog' && call.args.targetId === '00000000-0000-4000-8000-000000000002' && call.args.providerId === '00000000-0000-4000-8000-000000000003'))) throw Error('Remote catalog is not scoped to the selected cluster/AI');
+    }
     if (name.startsWith('local-cancel-')) {
       const state = name.slice('local-cancel-'.length);
       const label = { running: 'Running', cancelling: 'Cancelling', cancelled: 'Cancelled', unconfirmed: 'Not confirmed', 'before-start': 'Cancelled' }[state];
@@ -419,7 +455,7 @@ try {
       if (await evaluate('window.__bridgeRuns') !== 1) throw Error('A sample state submitted a run other than the automatic test');
       return;
     }
-    const expected = { 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Data disk, up to', 'local-preflight-missing': 'Data disk, up to', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'local-stopped': 'Set up this computer', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings' };
+    const expected = { 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Data disk, up to', 'local-preflight-missing': 'Data disk, up to', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'local-stopped': 'Set up this computer', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])})`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -437,7 +473,7 @@ try {
       if (name === 'local-preflight' && !probe.text.includes('GiB')) fail('known sizes were not shown');
       if (name === 'local-preflight-missing' && !probe.text.includes('Not available yet')) fail('missing sizes need plain explanatory copy');
     }
-    if (name === 'first-test-result' || name === 'designer') {
+    if (name === 'first-test-result' || name.startsWith('designer')) {
       await until(() => evaluate(`!!document.querySelector('.designer-work')`), 'Designer columns');
       const layout = await evaluate(`(() => {
         const tests = document.querySelector('.designer-tests').getBoundingClientRect();
@@ -445,10 +481,11 @@ try {
         const send = document.querySelector('.designer-checks').getBoundingClientRect();
         return { tests: { x: tests.x, y: tests.y, bottom: tests.bottom }, editor: { x: editor.x, y: editor.y, bottom: editor.bottom }, sendY: send.y, width: innerWidth, height: innerHeight, scrollWidth: document.querySelector('main').scrollWidth };
       })()`);
-      if (size === 'wide' ? Math.abs(layout.tests.y - layout.editor.y) > 2 || layout.tests.x <= layout.editor.x : layout.tests.bottom > layout.editor.y + 2) throw Error(`Test visibility failed: ${JSON.stringify(layout)}`);
-      if (layout.sendY < layout.editor.bottom || layout.scrollWidth > layout.width + 2) throw Error(`Editor/Send layout failed: ${JSON.stringify(layout)}`);
+      if (name !== 'designer-remote' && (size === 'wide' ? Math.abs(layout.tests.y - layout.editor.y) > 2 || layout.tests.x <= layout.editor.x : layout.editor.bottom > layout.tests.y + 2)) throw Error(`Editor-first layout failed: ${JSON.stringify(layout)}`);
+      if (layout.scrollWidth > layout.width + 2) throw Error(`Designer overflow: ${JSON.stringify(layout)}`);
       await writeFile(join(output, `${theme}-${size}-${name}-layout.json`), JSON.stringify(layout, null, 2));
     }
+    if (name === 'designer-failed') await evaluate(`document.querySelector('.example-run').scrollIntoView({ block: 'start' })`);
     if (name.startsWith('ai-removal-')) await evaluate(`document.querySelector('.setup-model').scrollIntoView({ block: 'center' })`);
     await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
     const image = await call('Page.captureScreenshot', { format: 'png' });

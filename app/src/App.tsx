@@ -19,21 +19,6 @@ import { agentInfo, sameSource, type SaveState, type SourceId } from './designer
 const pages = ['Overview', 'Designer', 'Clusters'] as const;
 type Page = (typeof pages)[number];
 
-const emptyCopy: Record<Page, { title: string; detail: string }> = {
-  Overview: {
-    title: 'Your agents, wherever they run',
-    detail: 'Agents on this machine and your connected clusters will appear here.',
-  },
-  Designer: {
-    title: 'Build and test your agent',
-    detail: 'Your agent file, prompt, tools and tests will live here.',
-  },
-  Clusters: {
-    title: 'Choose where agents run',
-    detail: 'Your local Orka and connected clusters will appear here.',
-  },
-};
-
 function PageIcon({ page }: { page: Page }) {
   return (
     <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -130,7 +115,9 @@ export default function App() {
     void observe();
     return () => { cancelled = true; clearTimeout(timer); };
   }, [sampleObserved, sampleCheck, observeSampleRun]);
+  const nativeConnection = useRef<boolean | undefined>(undefined);
   const observeRun = useCallback((snapshot: RunSnapshot | undefined, id: string) => {
+    if (nativeConnection.current !== snapshot?.modelConnected) { nativeConnection.current = snapshot?.modelConnected; setCatalogEpoch(epoch => epoch + 1); }
     setRun(snapshot); setRunUnavailable(!snapshot);
     if (id === SAMPLE_DOCUMENT_ID) observeSampleRun(snapshot);
   }, [observeSampleRun]);
@@ -202,7 +189,8 @@ export default function App() {
     Clusters: remote ? place.target ? 'Access confirmed' : 'Choose a cluster' : welcome ? 'Start here' : setupLine,
   };
   const tabTone = remote || exampleReadOnly ? 'not-started' : stale || (run?.sourceCurrent === false && !!run.report) ? 'stale' : run?.state === 'running' ? 'running' : run?.cancellation === 'unconfirmed' ? 'needs-you' : run?.report?.verdict === 'failed' ? 'failed' : run?.report?.verdict === 'passed' ? 'passed' : 'not-started';
-  const copy = emptyCopy[page];
+  const catalogConnected = run?.modelConnected ?? model === 'connected';
+  const catalogReady = remote ? !!place.target && !!place.providerId : !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup.model !== 'locked' && catalogConnected;
   const openDesigner = (id?: string, create = false) => {
     setDocumentAction(undefined);
     const request = ++openRequest.current;
@@ -268,21 +256,14 @@ export default function App() {
           <Setup ref={localCluster} place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
             onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)} onOpenAgent={() => openDesigner()} />
         </div>
-        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={!remote && !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup?.model !== 'locked' && model === 'connected' ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
+        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={catalogReady ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
         <Overview onNewAgent={() => openDesigner(undefined, true)} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} activeDocumentId={firstTest === 'running' ? SAMPLE_DOCUMENT_ID : run?.busy?.documentId} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} onCounts={setOverviewCounts}
           onOpenDocument={id => openOverviewDocument(id, 'open')}
           onChatDocument={id => openOverviewDocument(id, 'chat')}
           onRunDocument={id => openOverviewDocument(id, 'run')}
           onOpenExample={() => { if (remote) choosePlace({ kind: 'thisComputer' }); openDesigner(SAMPLE_DOCUMENT_ID); }}
           onChooseWorkspace={() => setPage('Clusters')} />
-        {page === 'Designer' && !exampleOpen && <section className="card empty-state">
-          <span className="icon-tile empty-icon"><PageIcon page={page} /></span>
-          <div>
-            <h2>{copy.title}</h2>
-            <p className="empty-status">Nothing is connected yet.</p>
-            <p className="muted">{copy.detail}</p>
-          </div>
-        </section>}
+        {page === 'Designer' && !exampleOpen && <p role="status">Opening your agent…</p>}
       </main>
       <footer className="status-bar">
         {footer.map((part, index) => <span key={index}>{index > 0 && <span aria-hidden="true"> · </span>}<span aria-live={index > 0 ? 'polite' : undefined}>{part}</span></span>)}

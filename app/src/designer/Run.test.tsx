@@ -83,8 +83,8 @@ test.each([
   vi.stubGlobal('isTauri', true);
   mockIPC(() => ({ ...idle, state: 'unknown', error, modelConnected }));
   render(<Run />);
-  // Wait for the native response, not the initial disabled rendering.
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Run tests' }).hasAttribute('disabled')).toBe(false));
+  await screen.findByText('Result unknown');
+  expect(screen.getByRole('button', { name: 'Run tests' }).hasAttribute('disabled')).toBe(!modelConnected);
   expect(!!screen.queryByRole('alert')).toBe(alert);
 });
 test('uncertain submission names retained receipts and never retries automatically', async () => {
@@ -126,6 +126,24 @@ test.each([
   expect(screen.queryByRole('button', { name: 'Run tests' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
 });
+test.each([false, true])('disconnected AI keeps Run secondary/disabled even when native canRun is %s', async canRun => {
+  vi.stubGlobal('isTauri', true); mockIPC(() => ({ ...idle, canRun, modelConnected: false }));
+  const choose = vi.fn(); const user = userEvent.setup(); render(<Run onChooseCluster={choose} />);
+  const run = await screen.findByRole('button', { name: 'Run tests' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Connect the AI' })).toBeTruthy());
+  expect(run.classList.contains('button-primary')).toBe(false);
+  expect(run.hasAttribute('disabled')).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Connect the AI' })); expect(choose).toHaveBeenCalledOnce();
+});
+test.each(['Succeeded', 'Failed'])('failed %s gives factual next steps and editor navigation', async phase => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(() => ({ ...complete, report: { verdict: 'failed', cases: [{ ...complete.report.cases[0], phase, verdict: 'failed', assertions: [{ id: 'contains', kind: 'contains', expected: 'checksum', verdict: 'failed' }] }] } }));
+  const edit = vi.fn(); const user = userEvent.setup(); render(<Run onEditInstructions={edit} />);
+  await screen.findByText(phase === 'Succeeded' ? /The agent answered, but its checks failed/ : /The task did not finish successfully/);
+  await user.click(screen.getByRole('button', { name: 'Edit instructions' })); expect(edit).toHaveBeenCalledOnce();
+  expect(document.body.textContent).not.toContain('page is unavailable');
+});
+
 test('preview never fabricates a native test or sends Run IPC', async () => {
   vi.stubGlobal('isTauri', false); const ipc = vi.fn(); mockIPC(ipc); render(<Run />);
   expect(await screen.findByText('Run is available only in the native app.')).toBeTruthy(); expect(ipc).not.toHaveBeenCalled();

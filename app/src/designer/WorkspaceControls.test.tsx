@@ -80,10 +80,10 @@ test('independent catalog failures and empty lists do not fall back to static in
   const user = userEvent.setup(); const view = render(<AgentParts source={source} readOnly={false} onChange={() => {}} />);
   expect(screen.getByRole('combobox').matches(':disabled')).toBe(true);
   expect(screen.getByRole('button', { name: 'Add a tool' }).matches(':disabled')).toBe(true);
-  expect(screen.getAllByText(/(tools|models).*unavailable/i).length).toBeGreaterThan(0);
+  expect(screen.getAllByText(/(tools|models).*could not be read/i).length).toBeGreaterThan(0);
   view.rerender(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, models: { state: 'unavailable' }, tools: { state: 'ready', items: [] } }} onChange={() => {}} />);
   await user.click(screen.getByRole('button', { name: 'Add a tool' }));
-  expect(screen.getByText('No tools listed by the local cluster.')).toBeTruthy();
+  expect(screen.getByText('No tools listed by this cluster.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: /Read a file/ })).toBeNull();
   view.rerender(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, models: { state: 'ready', items: [] }, tools: { state: 'unavailable' } }} onChange={() => {}} />);
   expect(screen.getByText('No models listed by the local cluster.')).toBeTruthy();
