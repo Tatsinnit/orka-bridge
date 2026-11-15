@@ -71,6 +71,19 @@ jobs:
             artifact: macos-arm64-release-checks
             suite: release-checks
             rust-cache: app-macos-15-release-rust-1.98.1
+          # Debug fixture walks must not consume the release smoke's budget.
+          - os: macos-15
+            artifact: macos-arm64-fixtures-light
+            suite: fixtures
+            theme: light
+            rust-cache: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-fixtures-dark
+            suite: fixtures
+            theme: dark
+            rust-cache: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
           # Each GUI theme has its own existing 30m job budget.
           - os: macos-15
             artifact: macos-arm64-light
@@ -111,7 +124,7 @@ jobs:
             app/src-tauri/target
           key: ${{ matrix.rust-cache }}-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
           restore-keys: |
-            ${{ matrix.rust-cache }}-
+            ${{ matrix.rust-cache-restore || matrix.rust-cache }}-
             app-${{ matrix.os }}-rust-1.98.1-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
             app-${{ matrix.os }}-rust-1.98.1-
       - run: npm ci
@@ -146,7 +159,7 @@ jobs:
           cargo +1.98.1 clippy --release --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
       # Keep successful compilation/tests even if the later desktop walk fails.
       - name: Preserve verified Rust cache
-        if: matrix.suite != 'bundle' && steps.rust-cache.outputs.cache-hit != 'true'
+        if: (matrix.suite == 'debug-checks' || matrix.suite == 'release-checks') && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -193,13 +206,13 @@ jobs:
       # Restored targets do not include generated helper resources. Warm debug
       # dependencies outside the lifecycle walk's six-minute desktop deadline.
       - name: Prepare Mac bundle builds
-        if: runner.os == 'macOS' && matrix.suite == 'bundle'
+        if: runner.os == 'macOS' && matrix.suite == 'fixtures'
         run: |
           bash ../scripts/build-vm-helper-macos.sh
           cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
           cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --example model_walk
       - name: Mac integrated debug lifecycle walk (no VM)
-        if: runner.os == 'macOS' && matrix.suite == 'bundle'
+        if: runner.os == 'macOS' && matrix.suite == 'fixtures'
         timeout-minutes: 6
         run: |
           npm run tauri -- build --debug --features custom-protocol --bundles app --no-sign --no-binary-patching --config '{"identifier":"ai.orka.bridge.lifecycle"}' -- --locked
@@ -229,6 +242,33 @@ jobs:
           osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
           test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
           swift ../scripts/native-lifecycle-macos.swift "native-lifecycle/$theme" "$bundle" "$theme"
+      - name: Mac native model renderer fixtures (no VM or credentials)
+        if: runner.os == 'macOS' && matrix.suite == 'fixtures'
+        run: |
+          prior_dark="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
+          prior_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
+          prior_auto="$(defaults read -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true)"
+          prior="$(defaults read -g AppleKeyboardUIMode 2>/dev/null || true)"
+          restore_model_theme() {
+            local status=0
+            if [[ -n "$prior" ]]; then defaults write -g AppleKeyboardUIMode -int "$prior" || status=$?
+            else defaults delete -g AppleKeyboardUIMode 2>/dev/null || true; fi
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $prior_dark" || status=$?
+            if [[ -n "$prior_style" ]]; then defaults write -g AppleInterfaceStyle -string "$prior_style" || status=$?
+            else defaults delete -g AppleInterfaceStyle 2>/dev/null || true; fi
+            if [[ -n "$prior_auto" ]]; then defaults write -g AppleInterfaceStyleSwitchesAutomatically -bool "$prior_auto" || status=$?
+            else defaults delete -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true; fi
+            return "$status"
+          }
+          trap restore_model_theme EXIT
+          defaults write -g AppleKeyboardUIMode -int 3
+          mkdir -p native-model
+          git rev-parse HEAD > native-model/head.txt
+          theme="${{ matrix.theme }}"
+          if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
+          osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
+          test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
+          swift ../scripts/native-model-macos.swift "native-model/$theme" "$PWD/src-tauri/target/debug/examples/model_walk" "$theme"
       - name: Mac app bundle and native walk
         if: runner.os == 'macOS' && matrix.suite == 'bundle'
         run: |
@@ -270,16 +310,13 @@ jobs:
           test -s "$RUNNER_TEMP/cluster-card-kubeconfig.json"
           export BRIDGE_WALK_KUBECONFIG="$RUNNER_TEMP/cluster-card-kubeconfig.json"
           defaults write -g AppleKeyboardUIMode -int 3
-          mkdir -p native-model
-          git rev-parse HEAD > native-model/head.txt
           theme="${{ matrix.theme }}"
           if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
           osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
           test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
           swift ../scripts/native-smoke.swift "native-walk/$theme" "$PWD/smoke-app/Bridge.app" "$theme"
-          swift ../scripts/native-model-macos.swift "native-model/$theme" "$PWD/src-tauri/target/debug/examples/model_walk" "$theme"
       - name: Preserve native bundle cache
-        if: matrix.suite == 'bundle' && steps.rust-cache.outputs.cache-hit != 'true'
+        if: (matrix.suite == 'bundle' || matrix.suite == 'fixtures') && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -288,7 +325,7 @@ jobs:
             app/src-tauri/target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Preserve compiled dependencies after a failed native check
-        if: failure() && steps.rust-cache.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true'
+        if: failure() && matrix.suite != 'fixtures' && steps.rust-cache.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -310,6 +347,13 @@ jobs:
           path: |
             app/bridge-macos-arm64.tar.gz
             app/native-walk/
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'macOS' && matrix.suite == 'fixtures'
+        with:
+          name: bridge-${{ matrix.artifact }}
+          path: |
             app/native-lifecycle/
             app/native-model/
           retention-days: 3
