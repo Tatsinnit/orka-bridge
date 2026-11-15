@@ -2,12 +2,14 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { isDocumentRef, isDocumentId, SAMPLE_DOCUMENT_ID, isSourceId, type DocumentRef, type SourceId } from '../designer/agent-api';
 import { isRunSnapshot, type RunSnapshot } from '../designer/run-api';
 
+export type Cancellation = 'cancelling' | 'requested' | 'confirmed' | 'unconfirmed' | 'denied' | 'unsupported';
+const isCancellation = (v: unknown) => v === null || ['cancelling', 'requested', 'confirmed', 'unconfirmed', 'denied', 'unsupported'].includes(v as string);
 export type SendView = Pick<RunSnapshot, 'acknowledged' | 'pending' | 'report'> & {
   documentId: string; id: string; targetId: string; providerId: string; targetName: string | null;
   source: SourceId | null; model: string | null; agentName: string | null;
   state: 'running' | 'complete' | 'unknown';
   stage: 'capture' | 'access' | 'preflight' | 'submit' | 'storage' | 'observe' | 'stopped' | 'done';
-  error: string | null; storageError: boolean;
+  error: string | null; storageError: boolean; cancellation?: Cancellation | null;
 };
 const uuid = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
 const text = (v: unknown) => v === null || typeof v === 'string' && v.length > 0 && v.length <= 4096;
@@ -23,7 +25,8 @@ export const sendErrors = {
 function valid(v: unknown): v is SendView {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   const row = v as Record<string, unknown>;
-  return Object.keys(row).sort().join(',') === 'acknowledged,agentName,documentId,error,id,model,pending,providerId,report,source,stage,state,storageError,targetId,targetName'
+  return Object.keys(row).filter(key => key !== 'cancellation').sort().join(',') === 'acknowledged,agentName,documentId,error,id,model,pending,providerId,report,source,stage,state,storageError,targetId,targetName'
+    && (!('cancellation' in row) || isCancellation(row.cancellation))
     && typeof row.storageError === 'boolean'
     && isDocumentId(row.documentId) && uuid(row.id) && uuid(row.targetId) && uuid(row.providerId) && text(row.targetName)
     && (row.source === null || isSourceId(row.source)) && text(row.model) && text(row.agentName)
@@ -63,7 +66,7 @@ export type AttemptSummary = {
   id: string; source: SourceId; targetDisplay: string;
   targetUids: { serviceNamespace: string; serviceUid: string; deploymentNamespace: string; deploymentUid: string; watchedNamespace: string };
   provider: string; plannedAgentName: string; agentUid: string | null;
-  verdict: 'running' | 'passed' | 'failed' | 'unknown'; time: number;
+  verdict: 'running' | 'passed' | 'failed' | 'unknown' | 'cancelled'; time: number;
 };
 export function isSummary(value: unknown): value is AttemptSummary {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -73,7 +76,7 @@ export function isSummary(value: unknown): value is AttemptSummary {
     && uuid(row.id) && isSourceId(row.source)
     && [row.targetDisplay, row.provider, row.plannedAgentName].every(v => v !== null && text(v))
     && text(row.agentUid)
-    && ['running', 'passed', 'failed', 'unknown'].includes(row.verdict as string)
+    && ['running', 'passed', 'failed', 'unknown', 'cancelled'].includes(row.verdict as string)
     && typeof row.time === 'number' && Number.isSafeInteger(row.time) && row.time >= 0 && row.time <= 253402300799
     && typeof identity === 'object' && identity !== null && !Array.isArray(identity)
     && Object.keys(identity).sort().join(',') === 'deploymentNamespace,deploymentUid,serviceNamespace,serviceUid,watchedNamespace'
@@ -91,13 +94,16 @@ export async function sendHistory(): Promise<AttemptSummary[]> {
 export type SendHistoryDetail = {
   id: string; documentId: string | null; model: string | null; capturedAt: number | null;
   report: RunSnapshot['report']; interrupted: boolean; canCheck: boolean; canRemove: boolean;
+  cancellation?: Cancellation | null; canCancel?: boolean;
   detailState: 'saved' | 'legacy' | 'omitted' | 'removed';
   availability: 'available' | 'missing' | 'unavailable' | null;
 };
 function isHistoryDetail(value: unknown): value is SendHistoryDetail {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  return Object.keys(row).sort().join(',') === 'availability,canCheck,canRemove,capturedAt,detailState,documentId,id,interrupted,model,report'
+  return Object.keys(row).filter(key => key !== 'cancellation' && key !== 'canCancel').sort().join(',') === 'availability,canCheck,canRemove,capturedAt,detailState,documentId,id,interrupted,model,report'
+    && (!('cancellation' in row) || isCancellation(row.cancellation))
+    && (!('canCancel' in row) || typeof row.canCancel === 'boolean')
     && uuid(row.id) && (row.documentId === null || isDocumentId(row.documentId)) && text(row.model)
     && (row.capturedAt === null || typeof row.capturedAt === 'number' && Number.isSafeInteger(row.capturedAt) && row.capturedAt >= 0 && row.capturedAt <= 253402300799)
     && ['interrupted', 'canCheck', 'canRemove'].every(key => typeof row[key] === 'boolean')
@@ -105,20 +111,22 @@ function isHistoryDetail(value: unknown): value is SendHistoryDetail {
     && (row.availability === null || ['available', 'missing', 'unavailable'].includes(row.availability as string))
     && isRunSnapshot({ state: 'unknown', canRun: false, report: row.report, acknowledged: [], pending: null, error: null });
 }
-export async function sendHistoryDetail(command: 'send_history_details' | 'send_history_check' | 'send_history_remove', sendId: string): Promise<SendHistoryDetail> {
+export async function sendHistoryDetail(command: 'send_history_details' | 'send_history_check' | 'send_history_remove' | 'send_history_cancel', sendId: string): Promise<SendHistoryDetail> {
   if (isTauri() && uuid(sendId)) {
     try {
       const value: unknown = await invoke(command, { sendId });
       if (isHistoryDetail(value) && value.id === sendId) return value;
     } catch { /* Neither stored content nor native diagnostics is an error message. */ }
   }
-  throw Error(command === 'send_history_check'
+  throw Error(command === 'send_history_cancel'
+    ? 'Cancellation could not be confirmed. Work may still be running. Saved answers are unchanged.'
+    : command === 'send_history_check'
     ? 'Cluster status could not be checked. Reconnect this cluster in Clusters and try again. Saved answers are unchanged.'
     : command === 'send_history_remove' ? 'Saved details could not be removed. Nothing on the cluster was changed.'
       : 'Saved details could not be read. The summary is still available.');
 }
 export type SendStatus = { documentId: string; view: SendView | null; busy: DocumentRef | null };
-export async function sendCall(command: 'send_start' | 'send_status' | 'send_stop', args: Record<string, unknown> = {}): Promise<SendStatus> {
+export async function sendCall(command: 'send_start' | 'send_status' | 'send_cancel', args: Record<string, unknown> = {}): Promise<SendStatus> {
   if (!isTauri()) throw Error('Send is available only in the desktop app.');
   const documentId = args.documentId ?? SAMPLE_DOCUMENT_ID;
   try {

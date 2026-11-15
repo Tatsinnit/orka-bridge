@@ -1,6 +1,6 @@
 //! Bounded private sidecars; the renderer receives only a small evidence view.
 use super::*;
-use crate::engine::run::{RunCase, RunReport, SavedResource};
+use crate::engine::run::{Cancellation, RunCase, RunReport, SavedResource};
 
 const ATTEMPT_BYTES: usize = 4 * 1024 * 1024;
 const TOTAL_BYTES: u64 = 64 * 1024 * 1024;
@@ -18,6 +18,8 @@ pub struct AttemptDetails {
     pub report: Option<RunReport>,
     pub detail_state: String,
     pub availability: Option<String>,
+    #[serde(default)]
+    pub cancellation: Option<Cancellation>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +31,8 @@ pub struct DetailView {
     pub report: Option<RunReport>,
     pub interrupted: bool,
     pub can_check: bool,
+    pub can_cancel: bool,
+    pub cancellation: Option<Cancellation>,
     pub can_remove: bool,
     pub detail_state: String,
     pub availability: Option<String>,
@@ -132,6 +136,17 @@ impl AttemptDetails {
             report: self.report.clone(),
             interrupted: self.unresolved(),
             can_check: !self.cases.is_empty() && self.resources.iter().any(|r| r.kind == "Task"),
+            can_cancel: self
+                .resources
+                .iter()
+                .any(|r| r.kind == "Task" && !r.terminal),
+            cancellation: self.cancellation.map(|c| {
+                if c == Cancellation::Cancelling {
+                    Cancellation::Unconfirmed
+                } else {
+                    c
+                }
+            }),
             can_remove: !self.unresolved() && self.detail_state != "removed",
             detail_state: self.detail_state.clone(),
             availability: self.availability.clone(),
@@ -166,6 +181,8 @@ impl SummaryStore {
             report: None,
             interrupted: false,
             can_check: false,
+            can_cancel: false,
+            cancellation: None,
             can_remove: false,
             detail_state: "legacy".into(),
             availability: None,

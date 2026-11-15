@@ -424,6 +424,21 @@ async fn send_history_check(
     state.inner().history_check(&send_id).await
 }
 #[tauri::command]
+fn send_cancel(
+    document_id: DocumentId,
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<SendStatus, &'static str> {
+    state.cancel_document(document_id, &send_id)
+}
+#[tauri::command]
+async fn send_history_cancel(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    state.inner().history_cancel(&send_id).await
+}
+#[tauri::command]
 async fn send_stop(
     document_id: DocumentId,
     send_id: String,
@@ -548,6 +563,8 @@ fn main() {
             send_history_details,
             send_history_remove,
             send_history_check,
+            send_history_cancel,
+            send_cancel,
             send_stop
         ])
         .build(tauri::generate_context!())

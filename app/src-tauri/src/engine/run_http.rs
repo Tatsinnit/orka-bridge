@@ -96,6 +96,15 @@ pub trait RunTransport: Send + Sync {
     fn close(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }
+    /// Default fails closed; only native control transports opt in.
+    fn cancel_task<'a>(
+        &'a self,
+        _name: &'a str,
+        _uid: &'a str,
+        _deadline: Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async { Err(ErrorKind::Unsupported) })
+    }
     fn request<'a>(
         &'a self,
         path: &'a str,

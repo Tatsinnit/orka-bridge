@@ -140,6 +140,45 @@ fn details() -> bridge_engine::send_summary::AttemptDetails {
 }
 
 #[test]
+fn cancellation_sidecars_are_optional_finite_and_restart_never_restores_cancelling() {
+    use bridge_engine::engine::run::Cancellation;
+    assert_eq!(details().cancellation, None, "old sidecars default null");
+    let dir = tempfile::tempdir().unwrap();
+    let store = SummaryStore::new(Some(dir.path().into()));
+    for state in [
+        Cancellation::Cancelling,
+        Cancellation::Requested,
+        Cancellation::Confirmed,
+        Cancellation::Unconfirmed,
+        Cancellation::Denied,
+        Cancellation::Unsupported,
+    ] {
+        let mut evidence = details();
+        evidence.cancellation = Some(state);
+        let attempt = summary(Uuid::new_v4(), AttemptVerdict::Unknown);
+        store.checkpoint(attempt.clone(), evidence).unwrap();
+        let reopened = SummaryStore::new(Some(dir.path().into()))
+            .details(&attempt.id)
+            .unwrap();
+        assert_eq!(
+            reopened.cancellation,
+            Some(if state == Cancellation::Cancelling {
+                Cancellation::Unconfirmed
+            } else {
+                state
+            })
+        );
+        assert!(!reopened.can_cancel, "no Task means nothing to cancel");
+    }
+    assert!(serde_json::from_value::<Cancellation>(serde_json::json!("stop")).is_err());
+    let legacy = summary(Uuid::new_v4(), AttemptVerdict::Unknown);
+    store.begin(legacy.clone()).unwrap();
+    let view = store.details(&legacy.id).unwrap();
+    assert_eq!(view.cancellation, None);
+    assert!(!view.can_cancel);
+}
+
+#[test]
 fn details_restart_remove_and_legacy_keep_exact_summary_shape() {
     let dir = tempfile::tempdir().unwrap();
     let store = SummaryStore::new(Some(dir.path().into()));

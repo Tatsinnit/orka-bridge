@@ -7,6 +7,8 @@ use bridge_engine::{
 };
 use bridge_runtime_protocol::SnapshotId;
 
+#[path = "cluster_cancel.rs"]
+mod cancel;
 #[path = "created_agent.rs"]
 mod created_agent;
 

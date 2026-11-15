@@ -232,9 +232,10 @@ func nativeStrings() -> [String] {
         ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
     }
 }
-func nativeTextBounds(_ expected: String, heading: Bool = false) -> [CGRect] {
+func nativeTextBounds(_ expected: String, heading: Bool = false, visibleOnly: Bool = true) -> [CGRect] {
     guard let rect = window()?.1 else { return [] }
     // Destination chips and footer mirrors are not evidence of a visible card.
+    // Below-the-fold bounds can guide scrolling, but never prove visibility.
     let body = CGRect(x: rect.minX, y: rect.minY + 110, width: rect.width, height: max(0, rect.height - 142))
     var matches: [CGRect] = []
     for element in nativeElements() {
@@ -242,7 +243,7 @@ func nativeTextBounds(_ expected: String, heading: Bool = false) -> [CGRect] {
         if ["AXStaticText", "AXHeading", "AXDisclosureTriangle"].contains(role) && (!heading || role == "AXHeading") {
             let values = ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
             if values.contains(where: { heading ? $0 == expected : $0.contains(expected) }),
-                let bounds = nativeBounds(element), body.contains(bounds) { matches.append(bounds) }
+                let bounds = nativeBounds(element), (!visibleOnly || body.contains(bounds)) { matches.append(bounds) }
         }
         guard !heading, role == "AXGroup",
             let children = attribute(element, "AXChildren") as? [AXUIElement] else { continue }
@@ -257,7 +258,7 @@ func nativeTextBounds(_ expected: String, heading: Bool = false) -> [CGRect] {
         for child in children {
             guard attribute(child, "AXRole") as? String == "AXStaticText",
                 let value = attribute(child, "AXValue") as? String,
-                let bounds = nativeBounds(child), body.contains(bounds) else { finishLine(); continue }
+                let bounds = nativeBounds(child), (!visibleOnly || body.contains(bounds)) else { finishLine(); continue }
             if let prior = line, abs(prior.midY - bounds.midY) > 2
                 || bounds.minX < prior.maxX - 2 || bounds.minX > prior.maxX + 4 { finishLine() }
             text += value
@@ -308,7 +309,7 @@ func key(_ code: CGKeyCode, shift: Bool = false) {
     Thread.sleep(forTimeInterval: 0.3)
 }
 @discardableResult
-func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservation] {
+func capture(_ name: String, _ page: String, afterFrame: (() throws -> Void)? = nil) throws -> [VNRecognizedTextObservation] {
     let file = "\(output)/\(name).png"
     let command = Process()
     command.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
@@ -316,6 +317,7 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
     command.arguments = ["-x", "-o", "-l", String(window()!.0), file]
     try command.run(); command.waitUntilExit()
     require(command.terminationStatus == 0, "Cannot capture Bridge")
+    try afterFrame?()
     // Render the PNG's profile into sRGB bytes; NSColor calibration changed the sampled values.
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
         let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
@@ -417,7 +419,8 @@ func capture(_ name: String, _ page: String) throws -> [VNRecognizedTextObservat
     }
     if name.hasPrefix("send-") {
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        let markers = ["Send your agent", "Tests on your cluster", "passed", "evaluating tests", "Planned Agent", "question", "answer", "Not run since your edit", "Stopped watching"]
+        let markers = ["Send your agent", "Tests on your cluster", "passed", "evaluating tests", "Planned Agent", "question", "answer", "Not run since your edit", "Stopped watching",
+            "Cancelling tests", "Cancellation requested.", "Cannot cancel with this cluster identity", "This Orka cannot cancel tests.", "Cancellation not confirmed.", "Tests cancelled on the cluster.", "Tests finished before cancellation."]
         require(markers.contains { text.localizedCaseInsensitiveContains($0) }, "Send panel not visible: \(text)")
         print("PASS \(name): fixture-backed native Send screen; no real cluster or model")
         return observations
@@ -536,11 +539,26 @@ func clickSendControl(_ label: String, scrolling pixels: Int32) throws {
     var observed: [String] = []
     var disabled = false
     for _ in 0..<4 {
+        // A state capture may leave the card header above the viewport. Locate
+        // its actual button instead of searching only in the caller's direction.
+        let buttons = nativeButtons(label)
+        if buttons.count == 1, let bounds = nativeBounds(buttons[0]), !bodyBounds().contains(bounds) {
+            scrollMain(Int32((bodyBounds().minY + 32 - bounds.minY).rounded()))
+        }
+        // Shared disclosures expose real button semantics. Use their enabled,
+        // visible hit region instead of OCR-ing the decorative chevron as text.
+        if buttons.count == 1, attribute(buttons[0], "AXEnabled") as? Bool == true,
+            let bounds = nativeBounds(buttons[0]), bodyBounds().contains(bounds) {
+            let point = CGPoint(x: bounds.midX, y: bounds.midY)
+            mouse(.leftMouseDown, point); mouse(.leftMouseUp, point)
+            Thread.sleep(forTimeInterval: 0.5)
+            return
+        }
         let seen = try capture("send-probe", "Designer")
         observed = seen.compactMap { $0.topCandidates(1).first?.string }
         // Vision includes the native disclosure triangle as a bullet in this label.
         if let control = observed.first(where: { $0 == label || (label == "published-checksum" && $0.range(of: #"^\W*published-checksum\b"#, options: .regularExpression) != nil) || (label == "Details" && $0.lowercased().range(of: #"^\W*details\b"#, options: .regularExpression) != nil) }) {
-            if ["Send and run tests", "Stop", "Check again", "Reload saved files", "Send to a cluster"].contains(label) {
+            if ["Send and run tests", "Cancel tests", "Retry cancellation", "Check cluster status", "Check again", "Reload saved files", "Send to a cluster"].contains(label) {
                 let enabled = nativeElements().contains { element in
                     attribute(element, "AXRole") as? String == "AXButton"
                         && attribute(element, "AXEnabled") as? Bool == true
@@ -952,13 +970,30 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     }
     func capturePreflight(_ name: String, _ expected: String) throws -> [VNRecognizedTextObservation] {
         for _ in 0..<8 {
+            // Preserve a visible transient state before doing any search work.
             let seen = try capture("send-probe", "Designer")
-            if seen.contains(where: { ($0.topCandidates(1).first?.string ?? "").contains(expected) }) {
-                let captured = try capture(name, "Designer")
-                require(captured.contains { ($0.topCandidates(1).first?.string ?? "").contains(expected) }, "Captured state missing in \(name): \(expected)")
-                return captured
+            let text = seen.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            if text.contains(expected) {
+                // Keep the frame we verified. A transient state can end between
+                // two screenshots; a second OCR pass would test a different frame.
+                if name != "send-probe" {
+                    for ext in ["png", "ocr.txt"] {
+                        try Data(contentsOf: URL(fileURLWithPath: "\(output)/send-probe.\(ext)"))
+                            .write(to: URL(fileURLWithPath: "\(output)/\(name).\(ext)"), options: .atomic)
+                    }
+                }
+                return seen
             }
-            scrollMain(-100)
+            // Reflow and result updates preserve a scroll offset, not a row.
+            // Anchor missing text in either direction, away from fixed chrome.
+            // Prefer rendered text over a 1px screen-reader announcement.
+            if let anchor = nativeTextBounds(expected, visibleOnly: false)
+                .filter({ $0.width > 1 && $0.height > 1 })
+                .max(by: { $0.width * $0.height < $1.width * $1.height }) {
+                let delta = bodyBounds().minY + 64 - anchor.minY
+                if abs(delta) > 2 { scrollMain(Int32(delta.rounded())); continue }
+            }
+            Thread.sleep(forTimeInterval: 0.3)
         }
         fail("Preflight state missing: \(expected)")
     }
@@ -988,10 +1023,16 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         let entry = matches[0]
         require(AXUIElementSetAttributeValue(entry, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success, "Cannot focus Send entry")
         Thread.sleep(forTimeInterval: 0.3)
-        guard let bounds = nativeBounds(entry), window()!.1.contains(bounds) else { fail("Focused Send entry is not visible") }
+        guard let focusedBounds = nativeBounds(entry) else { fail("Focused Send entry has no bounds") }
+        if !bodyBounds().contains(focusedBounds) {
+            scrollMain(Int32((bodyBounds().minY + 32 - focusedBounds.minY).rounded()))
+        }
+        guard let bounds = nativeBounds(entry), bodyBounds().contains(bounds) else { fail("Focused Send entry is not visible") }
         mouse(.leftMouseDown, CGPoint(x: bounds.midX, y: bounds.midY))
         mouse(.leftMouseUp, CGPoint(x: bounds.midX, y: bounds.midY))
         Thread.sleep(forTimeInterval: 0.5)
+        // Observe the actual destination, not a screenshot at the restored offset.
+        _ = try capturePreflight("send-probe", "Send your agent")
     }
     func resultSize(_ width: CGFloat, _ height: CGFloat) throws {
         let frame = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: width, height: height),
@@ -1005,8 +1046,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         try focusSend()
     }
     func captureAnswer(_ name: String) throws {
-        let seen = try capturePreflight("send-probe", "QUESTION")
-        guard let question = seen.first(where: { ($0.topCandidates(1).first?.string ?? "").contains("QUESTION") })
+        let seen = try capturePreflight("send-probe", "What SHA-256 checksum does")
+        guard let question = seen.first(where: { ($0.topCandidates(1).first?.string ?? "").contains("What SHA-256 checksum does") })
             else { fail("Question heading missing after native search") }
         let y = (1 - question.boundingBox.maxY) * window()!.1.height
         scrollMain(-Int32(max(0, y - 180)))
@@ -1069,23 +1110,35 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     require(failed.contains { ($0.topCandidates(1).first?.string ?? "").contains("2099-12-31") }, "Plain test failure reason missing")
     try resultSize(540, 900)
     try capturePreflight("send-failed", "The answer did not include")
-    // The fixture's third Agent stays Running. This still stops watching only;
-    // it does not claim to cancel already-submitted cluster work.
+    // Arm only the loopback fixture: first answer completes, second Task stays
+    // live. Hold the cancel reply until its in-flight state has been captured.
+    try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "cancelling"])
     try clickSendControl("Send and run tests", scrolling: 350)
     Thread.sleep(forTimeInterval: 0.5)
     try capturePreflight("send-running", "Waiting for answers and evaluating tests")
     try resultSize(1280, 800)
     try capturePreflight("send-running-wide", "Waiting for answers and evaluating tests")
+    let partial = try capturePreflight("send-running-partial", "published-checksum")
+    require(partial.contains { ($0.topCandidates(1).first?.string ?? "").contains("Passed") }, "Cancellation walk needs a completed test before Cancel tests")
+    try clickSendControl("published-checksum", scrolling: -250)
+    try captureAnswer("send-running-answer-wide")
+    try clickSendControl("published-checksum", scrolling: 250)
     try focusSend()
-    try clickSendControl("Stop", scrolling: -350)
+    try clickSendControl("Cancel tests", scrolling: -350)
+    scrollMain(-500)
+    // Release the synthetic response as soon as pixels are captured. OCR is
+    // deliberately outside the existing five-second fixture hold window.
+    let cancellingFrame = try capture("send-cancelling", "Designer") {
+        try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "requested"])
+    }
+    require(cancellingFrame.contains { ($0.topCandidates(1).first?.string ?? "").contains("Cancelling tests") }, "Native cancellation progress missing from captured frame")
     Thread.sleep(forTimeInterval: 0.5)
-    let stopped = try capture("send-stopped", "Designer")
-    require(stopped.contains { ($0.topCandidates(1).first?.string ?? "").contains("Stopped watching") }, "Native Stop did not return its result")
-    clickTab("Clusters", stopped); clickTab("Designer", stopped)
-    let returned = try capture("agent-cluster-return", "Designer")
-    clickText("Send to a cluster", in: returned)
-    let returnedResult = try capturePreflight("send-page-return", "Stopped watching")
-    require(returnedResult.contains { ($0.topCandidates(1).first?.string ?? "").contains("Stopped watching") }, "Page return lost the stopped Send result")
+    try capturePreflight("send-cancel-requested-wide", "Cancellation requested. Waiting for the cluster.")
+    try resultSize(540, 900)
+    let requested = try capturePreflight("send-cancel-requested", "Cancellation requested. Waiting for the cluster.")
+    clickTab("Clusters", requested); clickTab("Designer", requested)
+    try focusSend()
+    let returnedResult = try capturePreflight("send-page-return", "Cancellation requested. Waiting for the cluster.")
     // Widen the CI-owned native window for the real Overview board. This does
     // not change app state; the earlier compact captures remain 540x900.
     let overviewFrame = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 1220, height: 900),
@@ -1159,6 +1212,44 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     let unknownUID = try recordShot("overview-fixture-versions-unknown-by-place", "Checks unknown")
     require(passedUID != unknownUID, "Repeated Send did not retain distinct Agent UIDs")
     try overviewShot("overview-fixture-external-by-place", ["runtime-reader", "Not tested by Bridge", "Model on cluster: external-model", "Tools on cluster: web_fetch"])
+    // Explicit retries reuse this attempt's exact Task UID. Neither an HTTP
+    // acknowledgement nor a lost response may manufacture a terminal result.
+    clickTab("Designer", [])
+    try resultSize(1280, 800)
+    for (mode, expected) in [("denied", "Cannot cancel with this cluster identity"),
+                             ("unsupported", "This Orka cannot cancel tests."),
+                             ("unconfirmed", "Cancellation not confirmed.")] {
+        try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": mode])
+        try clickSendControl("Retry cancellation", scrolling: -250)
+        Thread.sleep(forTimeInterval: 0.5)
+        try capturePreflight("send-cancel-\(mode)", expected)
+        require(visibleButtons("Check cluster status").count == 1 && visibleButtons("Retry cancellation").count == 1, "Unresolved cancellation lost its explicit recovery actions")
+    }
+    try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "confirmed"])
+    try clickSendControl("Retry cancellation", scrolling: -250)
+    Thread.sleep(forTimeInterval: 0.5)
+    try capturePreflight("send-cancel-confirmed-wide", "Tests cancelled on the cluster. Completed answers kept.")
+    try resultSize(540, 900)
+    try capturePreflight("send-cancel-confirmed", "Tests cancelled on the cluster. Completed answers kept.")
+    try clickSendControl("published-checksum", scrolling: -250)
+    try captureAnswer("send-cancel-answer")
+    try resultSize(1280, 800)
+    try captureAnswer("send-cancel-answer-wide")
+    // A separate run wins the cancel race with a real answer. The date test
+    // fails normally; cancellation must not replace it with a Cancelled result.
+    try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "completed"])
+    try focusSend()
+    try clickSendControl("Send and run tests", scrolling: -350)
+    Thread.sleep(forTimeInterval: 0.5)
+    try capturePreflight("send-race-running", "Waiting for answers and evaluating tests")
+    try focusSend()
+    try clickSendControl("Cancel tests", scrolling: -350)
+    Thread.sleep(forTimeInterval: 0.5)
+    try capturePreflight("send-cancel-completion-race", "Tests finished before cancellation.")
+    try focusSend()
+    try capturePreflight("send-cancel-race-result", "1 of 2 passed")
+    try capturePreflight("send-cancel-race-failure", "The answer did not include")
+    clickTab("Overview", [])
     // The primary-place captures retain the changed two-test revision. Restore
     // the original pair before the separate place/provenance scenarios.
     try restoreTemporaryTests?()

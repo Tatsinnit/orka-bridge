@@ -29,6 +29,7 @@ pub enum AttemptVerdict {
     Passed,
     Failed,
     Unknown,
+    Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

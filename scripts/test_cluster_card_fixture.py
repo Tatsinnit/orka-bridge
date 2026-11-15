@@ -20,6 +20,81 @@ class SendFixtureTest(unittest.TestCase):
         fixture.Discovery.agents = {}
         fixture.Discovery.offline = set()
         fixture.Discovery.lose_receipt = set()
+        fixture.Discovery.cancel_modes = {}
+        fixture.Discovery.cancel_ready = threading.Event()
+
+    def cancel_fixture(self, mode):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        self.addCleanup(connection.close)
+
+        def control(mode):
+            connection.request("POST", "/fixture-control", json.dumps({
+                "action": "cancel-mode", "place": "fixture-cluster", "mode": mode,
+            }))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+
+        connection.request("POST", "/fixture-control", json.dumps({"action": "reset"}))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        response.read()
+        control(mode)
+        handler = object.__new__(fixture.Discovery)
+        handler.orka("POST", "/api/v1/agents", {"name": "probe", "spec": {}})
+        for name in ["finished", "live"]:
+            self.assertEqual(handler.orka("POST", "/api/v1/tasks", {
+                "name": name, "spec": {"agentRef": {"name": "probe"}},
+            })[0], 201)
+        return handler, control
+
+    def test_cancel_walk_preserves_completed_answer_and_requires_exact_task_uid(self):
+        handler, _ = self.cancel_fixture("requested")
+        self.assertEqual(handler.orka("GET", "/api/v1/tasks/finished", None)[1]["status"]["phase"], "Succeeded")
+        self.assertEqual(handler.orka("GET", "/api/v1/tasks/live", None)[1]["status"]["phase"], "Running")
+        answer = handler.orka("GET", "/api/v1/tasks/finished/result", None)[1]
+        self.assertEqual(handler.orka("POST", "/api/v1/tasks/finished/cancel", {"uid": "uid-finished"})[0], 409)
+        self.assertEqual(handler.orka("GET", "/api/v1/tasks/finished", None)[1]["status"]["phase"], "Succeeded")
+        for body, expected in [({}, 400), ({"uid": "replacement"}, 409), ({"uid": "uid-live"}, 200)]:
+            status, reply = handler.orka("POST", "/api/v1/tasks/live/cancel?namespace=agents", body)
+            self.assertEqual(status, expected)
+        self.assertEqual(reply, {"name": "live", "namespace": "agents", "requested": True, "phase": "Running"})
+        self.assertEqual(handler.orka("GET", "/api/v1/tasks/live", None)[1]["status"]["phase"], "Running")
+        self.assertEqual(handler.orka("GET", "/api/v1/tasks/finished/result", None)[1], answer)
+        self.assertEqual(len(fixture.Discovery.objects), 3)  # agent and both Tasks retained
+
+    def test_cancel_modes_distinguish_terminal_denied_unsupported_unknown_and_completion_race(self):
+        for mode, expected_status, expected_phase in [
+            ("denied", 403, "Running"), ("unsupported", 405, "Running"),
+            ("unconfirmed", None, "Running"), ("confirmed", 200, "Cancelled"),
+            ("completed", 409, "Succeeded"),
+        ]:
+            with self.subTest(mode=mode):
+                handler, _ = self.cancel_fixture(mode)
+                status, _ = handler.orka("POST", "/api/v1/tasks/live/cancel", {"uid": "uid-live"})
+                self.assertEqual(status, expected_status)
+                self.assertEqual(handler.orka("GET", "/api/v1/tasks/live", None)[1]["status"]["phase"], expected_phase)
+                self.assertEqual(handler.orka("GET", "/api/v1/tasks/finished", None)[1]["status"]["phase"], "Succeeded")
+                self.assertEqual(len(fixture.Discovery.objects), 3)
+
+    def test_cancelling_response_waits_for_explicit_fixture_release(self):
+        handler, control = self.cancel_fixture("cancelling")
+        reply = []
+        worker = threading.Thread(target=lambda: reply.append(handler.orka(
+            "POST", "/api/v1/tasks/live/cancel", {"uid": "uid-live"})))
+        worker.start()
+        self.addCleanup(worker.join, 2)
+        worker.join(0.05)
+        self.assertTrue(worker.is_alive(), "Cancelling must remain visible until the native capture releases it")
+        control("requested")
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(reply[0][0], 200)
+        self.assertEqual(reply[0][1]["phase"], "Running")
 
     def test_inventory_retains_unique_versions_and_external_runtime_metadata(self):
         handler = object.__new__(fixture.Discovery)
@@ -204,6 +279,24 @@ class SendFixtureTest(unittest.TestCase):
             self.assertEqual(external["spec"]["tools"], [{"name": "web_fetch"}])
             # The fault is consumed once. Another explicit create receives its UID.
             self.assertIn("uid", request("agents", {"name": "after-loss", "spec": {}}, expected_status=201)["metadata"])
+            # The cancellation fixture first leaves a completed answer, then a
+            # live Task. A lost response closes this real forward, not a fake 200.
+            control.request("POST", "/fixture-control", json.dumps({
+                "action": "cancel-mode", "place": "fixture-cluster", "mode": "unconfirmed",
+            }))
+            response = control.getresponse()
+            self.assertEqual(response.status, 200)
+            response.read()
+            request("agents", {"name": "cancel-probe", "spec": {}}, expected_status=201)
+            for name in ["cancel-finished", "cancel-live"]:
+                request("tasks", {"name": name, "spec": {"agentRef": {"name": "cancel-probe"}}}, expected_status=201)
+            self.assertEqual(request("tasks/cancel-live")["status"]["phase"], "Running")
+            data = json.dumps({"uid": "uid-cancel-live"}).encode()
+            payload = b"\x00" + f"POST /api/v1/tasks/cancel-live/cancel?namespace=agents HTTP/1.1\r\nHost: fixture\r\nContent-Length: {len(data)}\r\n\r\n".encode() + data
+            mask = b"1234"
+            sock.sendall(b"\x82\xfe" + struct.pack("!H", len(payload)) + mask + bytes(v ^ mask[i % 4] for i, v in enumerate(payload)))
+            self.assertEqual(wire.read(2), b"", "Lost cancellation response must end the forward without an acknowledgement")
+            self.assertEqual(fixture.Discovery.objects["fixture-cluster", "/api/v1/tasks/cancel-live"]["status"]["phase"], "Running")
             wire.close()
 
 

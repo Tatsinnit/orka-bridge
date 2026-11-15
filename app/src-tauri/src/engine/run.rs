@@ -6,9 +6,11 @@ pub use source::{Assertion, DeclaredTool, ParsedAgent, ParsedPair, RunCase, Tool
 mod http;
 use bridge_runtime_protocol::{SnapshotId, Uuid};
 pub use http::{NativeRunTarget, RunFuture, RunLimits, RunTransport};
+#[path = "run_cancel.rs"]
+mod cancel;
 #[path = "run_saved.rs"]
 mod saved;
-pub use saved::{Recovery, SavedResource};
+pub use saved::{cancel_identity as valid_cancel_identity, Cancellation, Recovery, SavedResource};
 
 pub enum RunCheckpoint {
     Before(SavedResource),
@@ -37,6 +39,7 @@ pub enum ErrorKind {
     Conflict,
     Storage,
     NotFound,
+    Unsupported,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -26,7 +26,7 @@ function native(local: unknown = idle, initial: unknown = null, preflight: unkno
     if (command === 'send_history') return [];
     if (command === 'send_preflight') return preflight;
     if (command === 'send_start') { send = running; return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', view: send, busy: null }; }
-    if (command === 'send_stop') { send = { ...running, state: 'unknown', stage: 'stopped' }; return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', view: send, busy: null }; }
+    if (command === 'send_cancel') { send = { ...running, state: 'unknown', stage: 'stopped', cancellation: 'unconfirmed' }; return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', view: send, busy: null }; }
     throw Error('Unsupported');
   });
   mockIPC(ipc); return ipc;
@@ -222,15 +222,15 @@ test('Send entry returns keyboard focus to an already open panel without submitt
   await waitFor(() => expect(document.activeElement).toBe(panel));
   expect(ipc.mock.calls.some(([cmd]) => cmd === 'send_start')).toBe(false);
 });
-test('Stop shows retained receipts and remount observes without replay', async () => {
+test('Cancel tests shows retained receipts and remount observes without replay', async () => {
   const ipc = native(idle, running); const user = userEvent.setup(); const view = render(<Example remote place={place} />);
-  await user.click(await screen.findByRole('button', { name: 'Stop' }));
-  expect(await screen.findByText(/cluster may still be running checks/)).toBeTruthy();
+  await user.click(await screen.findByRole('button', { name: 'Cancel tests' }));
+  expect(await screen.findByText('Cancellation not confirmed. Work may still be running.')).toBeTruthy();
   await user.click(within(screen.getByRole('region', { name: 'Send and cluster tests' })).getByText('Details'));
   expect(screen.getByRole('button', { name: 'Copy Agent' })).toBeTruthy();
   expect(screen.getAllByText('brid…ozen').length).toBeGreaterThan(0);
   view.unmount(); render(<Example remote place={place} />);
-  await screen.findByText('Stopped watching. The cluster may still be running checks.');
+  await screen.findByText('Cancellation not confirmed. Work may still be running.');
   expect(ipc.mock.calls.some(([cmd]) => cmd === 'send_start')).toBe(false);
 });
 test('no_only_you_pre_live_or_internal_jargon and honest unknown evidence', async () => {
@@ -271,14 +271,14 @@ test('changing Provider or destination does not validate the new selection with 
   view.rerender(<Example remote place={{ ...place, target: { ...target, id: '00000000-0000-4000-8000-000000000006', context_name: 'other-cluster' } }} />);
   expect(screen.getByText(/not your current selection/)).toBeTruthy();
 });
-test('running results show a factual stage instead of a disabled primary beside Stop', async () => {
+test('running results show a factual stage instead of a disabled primary beside Cancel tests', async () => {
   const ipc = native(idle, running);
   render(<Send place={place} source={source} stale={false} visible remote />);
   expect(await screen.findByText('Waiting for answers and evaluating tests')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Send and run tests' })).toBeNull();
-  await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
-  expect(await screen.findByText('Stopped watching. The cluster may still be running checks.')).toBeTruthy();
-  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'send_stop')).toHaveLength(1);
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel tests' }));
+  expect(await screen.findByText('Cancellation not confirmed. Work may still be running.')).toBeTruthy();
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'send_cancel')).toHaveLength(1);
 });
 test('cluster results use frozen questions and plain reasons; stale rows cannot look passed', async () => {
   native(idle, { ...running, state: 'complete', stage: 'done', report });

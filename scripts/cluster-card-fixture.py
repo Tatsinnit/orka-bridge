@@ -32,6 +32,8 @@ class Discovery(BaseHTTPRequestHandler):
     agents = {}
     offline = set()
     lose_receipt = set()
+    cancel_modes = {}
+    cancel_ready = threading.Event()
     lock = threading.Lock()
 
     @staticmethod
@@ -66,6 +68,14 @@ class Discovery(BaseHTTPRequestHandler):
                     self.agents.clear()
                     self.offline.clear()
                     self.lose_receipt.clear()
+                    self.cancel_modes.clear()
+                    self.cancel_ready.set()
+                elif action == "cancel-mode" and control["place"] in ["fixture-cluster", "fixture-secondary"] and control["mode"] in ["cancelling", "requested", "confirmed", "denied", "unsupported", "unconfirmed", "completed"]:
+                    self.cancel_modes[control["place"]] = control["mode"]
+                    if control["mode"] == "cancelling":
+                        self.cancel_ready.clear()
+                    else:
+                        self.cancel_ready.set()
                 elif action == "lose-agent-receipt" and control["place"] in ["fixture-cluster", "fixture-secondary"]:
                     self.lose_receipt.add(control["place"])
                 elif action == "offline" and control["place"] in ["fixture-cluster", "fixture-secondary"] and isinstance(control["offline"], bool):
@@ -172,6 +182,8 @@ class Discovery(BaseHTTPRequestHandler):
                         break
                     method, route, _ = lines[0].split(" ")
                     status, value = self.orka(method, route, json.loads(body[:length]) if length else None, headers.get("authorization", "").strip())
+                    if status is None:  # Synthetic response loss: close the forward without an acknowledgement.
+                        return
                     encoded = json.dumps(value).encode()
                     reply = f"HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {len(encoded)}\r\n\r\n".encode() + encoded
                     self.frame(b"\x00" + reply)
@@ -191,9 +203,31 @@ class Discovery(BaseHTTPRequestHandler):
             return 403, {}
         if route.endswith("/auth/whoami") and authorization == "Bearer conditional-fixture":
             return 200, {"authenticated": True, "authType": "tokenReview", "namespace": ""}
+        cancel = method == "POST" and route.startswith("/api/v1/tasks/") and route.endswith("/cancel")
+        # Hold only the synthetic cancel response, never the state lock or ordinary reads.
+        if cancel and self.cancel_modes.get(place) == "cancelling" and not self.cancel_ready.wait(5):
+            return 503, {"error": "Synthetic cancellation capture was not released"}
         with self.lock:
             if place in self.offline:
                 return 503, {"error": "Synthetic place offline"}
+            if cancel:
+                task = self.objects.get((place, route.removesuffix("/cancel")))
+                if task is None:
+                    return 404, {}
+                if not isinstance(body, dict) or not body.get("uid"):
+                    return 400, {}
+                if body["uid"] != task["metadata"]["uid"] or task["status"]["phase"] in ["Succeeded", "Failed", "Cancelled"]:
+                    return 409, {}
+                mode = self.cancel_modes.get(place, "confirmed")
+                if mode in ["denied", "unsupported", "unconfirmed"]:
+                    return {"denied": 403, "unsupported": 405, "unconfirmed": None}[mode], {}
+                if mode == "completed":
+                    task["status"]["phase"] = "Succeeded"
+                    return 409, {}
+                if mode == "confirmed":
+                    task["status"]["phase"] = "Cancelled"
+                return 200, {"name": task["metadata"]["name"], "namespace": "agents", "requested": True,
+                             "phase": task["status"]["phase"]}
             if method == "POST":
                 kind = "Agent" if route.endswith("/agents") else "Task"
                 if kind == "Agent":
@@ -201,6 +235,11 @@ class Discovery(BaseHTTPRequestHandler):
                 value = {"apiVersion": "core.orka.ai/v1alpha1", "kind": kind,
                          "metadata": {"name": body["name"], "namespace": "agents", "uid": "uid-" + body["name"], "generation": 1},
                          "spec": body["spec"], "status": {"phase": "Succeeded" if self.agents.get(place, 0) % 3 else "Running"}}
+                if kind == "Task" and place in self.cancel_modes:
+                    agent = body["spec"].get("agentRef")
+                    earlier = any(scope == place and item["kind"] == "Task" and item["spec"].get("agentRef") == agent
+                                  for (scope, _), item in self.objects.items())
+                    value["status"]["phase"] = "Running" if earlier else "Succeeded"
                 if kind == "Task" and "timeout" in value["spec"]:
                     value["spec"]["timeout"] = "2m0s"
                     value["spec"]["retryPolicy"].pop("maxRetries", None)

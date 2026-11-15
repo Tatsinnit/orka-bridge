@@ -91,6 +91,8 @@ fn agent_commands_are_granted_only_to_local_main_window() {
         "send_history_details",
         "send_history_remove",
         "send_history_check",
+        "send_history_cancel",
+        "send_cancel",
         "send_stop",
         "agent_run",
         "agent_run_status",

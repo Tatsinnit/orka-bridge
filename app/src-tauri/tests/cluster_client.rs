@@ -802,6 +802,7 @@ struct ApiFixture {
     calls: Mutex<Vec<(String, String, String, Value)>>,
     impersonation: Mutex<Vec<ImpersonatedRequest>>,
     deny: Mutex<bool>,
+    forward_status: Mutex<Option<u16>>,
     replacement: Mutex<bool>,
     deployment_replacement: Mutex<bool>,
     queries: Mutex<Vec<String>>,
@@ -862,6 +863,11 @@ impl ApiFixture {
                             .collect(),
                     ));
                     if path.contains("/portforward") {
+                        if let Some(status) = *fixture.forward_status.lock().unwrap() {
+                            let body = json!({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","message":"unavailable","code":status}).to_string();
+                            write!(stream, "HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                            return;
+                        }
                         fixture.wire.serve(stream, &headers);
                         return;
                     }

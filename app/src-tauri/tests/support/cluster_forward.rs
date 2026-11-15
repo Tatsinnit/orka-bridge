@@ -19,6 +19,8 @@ pub(super) struct Wire {
     forwards: AtomicUsize,
     objects: Mutex<HashMap<String, Value>>,
     after_post: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    before_cancel: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    lose_task_reply: AtomicUsize,
 }
 impl Wire {
     pub(super) fn serve(&self, mut stream: std::net::TcpStream, headers: &str) {
@@ -122,13 +124,49 @@ impl Wire {
                 }
                 let route = path.split('?').next().unwrap();
                 let mut objects = self.objects.lock().unwrap();
-                let (mut status, mut value) = if method == "POST" {
+                let (mut status, mut value) = if method == "POST" && route.ends_with("/cancel") {
+                    if let Some(hook) = self.before_cancel.lock().unwrap().take() {
+                        hook();
+                    }
+                    let task = objects.get_mut(route.trim_end_matches("/cancel")).unwrap();
+                    assert_eq!(body, json!({"uid":task["metadata"]["uid"]}));
+                    let status = match mode {
+                        "cancel-denied" => 403,
+                        "cancel-missing" => 404,
+                        "cancel-unsupported" => 405,
+                        "cancel-conflict" => 409,
+                        _ => 200,
+                    };
+                    if mode == "cancel-lost" {
+                        return;
+                    }
+                    if status == 200 && !matches!(mode, "cancel-running" | "cancel-already") {
+                        task["status"]["phase"] = json!("Cancelled");
+                    }
+                    if mode == "cancel-conflict" {
+                        task["status"]["phase"] = json!("Succeeded");
+                    }
+                    (
+                        status,
+                        json!({"name":task["metadata"]["name"],"namespace":"agents","requested":mode != "cancel-already","phase":task["status"]["phase"],"message":"caller creator-fixture issued-fixture"}),
+                    )
+                } else if method == "POST" {
                     let kind = if route.ends_with("agents") {
                         "Agent"
                     } else {
                         "Task"
                     };
-                    let mut object = json!({"apiVersion":"core.orka.ai/v1alpha1","kind":kind,"metadata":{"name":body["name"],"namespace":"agents","uid":format!("uid-{}",body["name"].as_str().unwrap()),"generation":1},"spec":body["spec"],"status":{"phase":match mode { "failed" => "Failed", "running" => "Running", _ => "Succeeded" }}});
+                    let phase = match mode {
+                        "failed" => "Failed",
+                        "running" => "Running",
+                        "mixed-pending"
+                            if objects.values().filter(|o| o["kind"] == "Task").count() >= 1 =>
+                        {
+                            "Running"
+                        }
+                        _ => "Succeeded",
+                    };
+                    let mut object = json!({"apiVersion":"core.orka.ai/v1alpha1","kind":kind,"metadata":{"name":body["name"],"namespace":"agents","uid":format!("uid-{}",body["name"].as_str().unwrap()),"generation":1},"spec":body["spec"],"status":{"phase":phase}});
                     if kind == "Task" {
                         object["spec"]["timeout"] = json!("2m0s");
                         object["spec"]["retryPolicy"]
@@ -226,6 +264,17 @@ impl Wire {
                         .map(|v| (200, v.clone()))
                         .unwrap_or((404, json!({"error":"missing"})))
                 };
+                let task_count = objects.values().filter(|o| o["kind"] == "Task").count();
+                drop(objects);
+                if method == "POST" && route == "/api/v1/tasks" {
+                    if self.lose_task_reply.load(Ordering::SeqCst) != 0 {
+                        return;
+                    }
+                    if mode == "mixed-pending" && task_count == 2 {
+                        while ws.read().is_ok() {}
+                        return;
+                    }
+                }
                 if method == "POST" {
                     if let Some(hook) = self.after_post.lock().unwrap().take() {
                         hook();

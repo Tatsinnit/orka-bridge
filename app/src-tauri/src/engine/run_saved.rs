@@ -2,7 +2,29 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-fn digest(spec: &Value) -> String {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Cancellation {
+    Cancelling,
+    Requested,
+    Confirmed,
+    Unconfirmed,
+    Denied,
+    Unsupported,
+}
+
+/// Shared validation for native-owned control paths, including untrusted saved receipts.
+pub fn cancel_identity(name: &str, uid: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.'))
+        && !uid.is_empty()
+        && uid.len() <= 4096
+        && !uid.contains('\0')
+}
+pub(super) fn digest(spec: &Value) -> String {
     format!("{:x}", Sha256::digest(serde_json::to_vec(spec).unwrap()))
 }
 
@@ -40,7 +62,7 @@ impl SavedResource {
         saved.generation = resource.generation;
         saved
     }
-    fn matches(&self, value: &Value) -> bool {
+    pub(super) fn matches(&self, value: &Value) -> bool {
         value["apiVersion"] == "core.orka.ai/v1alpha1"
             && value["kind"] == self.kind
             && value["metadata"]["name"] == self.name
@@ -54,9 +76,11 @@ pub struct Recovery {
     pub report: Option<RunReport>,
     pub availability: &'static str,
     pub refreshed: bool,
+    /// A failed outcome verified during this read, not only a cached row.
+    pub verified_failure: bool,
 }
 impl NativeRunner<'_> {
-    async fn read_saved(
+    pub(super) async fn read_saved(
         &self,
         resource: &SavedResource,
         deadline: Instant,
@@ -169,7 +193,8 @@ impl NativeRunner<'_> {
             Verdict::Cancelled
         } else if verified_failure {
             Verdict::Failed
-        } else if seen == cases.len()
+        } else if (seen == cases.len()
+            || (seen + report.cases.iter().filter(|r| r.phase == "NotRun").count() == cases.len()))
             && availability == "available"
             && resources
                 .iter()
@@ -185,6 +210,7 @@ impl NativeRunner<'_> {
             report: (!report.cases.is_empty()).then_some(report),
             availability,
             refreshed,
+            verified_failure,
         }
     }
 }

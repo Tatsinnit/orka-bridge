@@ -121,6 +121,7 @@ pub struct OrkaStreamTransport {
     creator: Client,
     binding: TargetBinding,
     read_only: bool,
+    cancel_only: bool,
 }
 impl OrkaStreamTransport {
     pub fn peer(&self) -> &ForwardPeer {
@@ -149,6 +150,15 @@ impl RemoteAccess {
     ) -> Result<OrkaStreamTransport, ClusterError> {
         self.open_transport(current, String::new(), true).await
     }
+    /// Independent control lease: GETs and exact-UID cancellation, never creates.
+    pub(crate) async fn cancel_transport(
+        &self,
+        current: &ClusterClient,
+    ) -> Result<OrkaStreamTransport, ClusterError> {
+        let mut transport = self.open_transport(current, String::new(), true).await?;
+        transport.cancel_only = true;
+        Ok(transport)
+    }
     async fn open_transport(
         &self,
         current: &ClusterClient,
@@ -170,6 +180,7 @@ impl RemoteAccess {
             namespace: self.binding.watched_namespace.clone(),
             provider,
             read_only,
+            cancel_only: false,
             bearer: self.bearer.clone(),
             creator_bearer: self.creator_bearer.clone(),
             current: current.clone(),
@@ -190,6 +201,39 @@ impl RunTransport for OrkaStreamTransport {
     }
     fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(self.connection.close())
+    }
+    fn cancel_task<'a>(&'a self, name: &'a str, uid: &'a str, deadline: Instant) -> RunFuture<'a> {
+        Box::pin(async move {
+            if !self.cancel_only || !crate::engine::run::valid_cancel_identity(name, uid) {
+                return Err(ErrorKind::Configuration);
+            }
+            let deadline = deadline.min(Instant::now() + REQUEST_TIMEOUT);
+            let validation = timeout_at(
+                deadline,
+                self.current
+                    .revalidate_binding(&self.binding, &self.creator),
+            )
+            .await;
+            if !matches!(validation, Ok(Ok(()))) {
+                self.connection.close().await;
+                return Err(match validation {
+                    Ok(Err(ClusterError::Denied)) => ErrorKind::Permission,
+                    _ => ErrorKind::Identity,
+                });
+            }
+            self.connection
+                .request(
+                    &format!("tasks/{name}/cancel"),
+                    &self.namespace,
+                    &self.bearer,
+                    &[&self.bearer, &self.creator_bearer],
+                    None,
+                    Some(&serde_json::json!({"uid":uid})),
+                    deadline,
+                    false,
+                )
+                .await
+        })
     }
     fn request<'a>(
         &'a self,
@@ -389,9 +433,10 @@ impl Connection {
                 .await
                 .map_err(|_| ErrorKind::Transport)?;
             let status = response.status().as_u16();
+            let cancel = body.is_some() && path.ends_with("/cancel");
             match status {
-                401 => return Err(ErrorKind::Authentication),
-                403 => return Err(ErrorKind::Permission),
+                401 if !cancel => return Err(ErrorKind::Authentication),
+                403 if !cancel => return Err(ErrorKind::Permission),
                 _ => {}
             }
             if response
@@ -415,13 +460,25 @@ impl Connection {
                 }
             }
             fully_read = true;
-            if status == 404 && body.is_none() {
-                return Err(ErrorKind::NotFound);
+            match status {
+                401 => return Err(ErrorKind::Authentication),
+                403 => return Err(ErrorKind::Permission),
+                404 if body.is_none() || cancel => return Err(ErrorKind::NotFound),
+                405 if cancel => return Err(ErrorKind::Unsupported),
+                409 if cancel => return Err(ErrorKind::Conflict),
+                _ => (),
             }
-            if status != if body.is_some() { 201 } else { 200 } {
+            if status != if body.is_some() && !cancel { 201 } else { 200 } {
                 return Err(ErrorKind::Response);
             }
-            let value = serde_json::from_slice(&bytes).map_err(|_| ErrorKind::Response)?;
+            let mut value: Value =
+                serde_json::from_slice(&bytes).map_err(|_| ErrorKind::Response)?;
+            // Cancel acknowledgements may include caller identity. Never retain or export it.
+            if cancel {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("message");
+                }
+            }
             if known.iter().any(|b| super::client::echoed(&value, b)) {
                 return Err(ErrorKind::Response);
             }
@@ -432,7 +489,16 @@ impl Connection {
         // Missing optional evidence or a rejected, fully consumed JSON reply
         // must not poison a healthy lease. Never reuse an incomplete response.
         if result.is_err()
-            && !(fully_read && matches!(result, Err(ErrorKind::Response | ErrorKind::NotFound)))
+            && !(fully_read
+                && matches!(
+                    result,
+                    Err(ErrorKind::Response
+                        | ErrorKind::NotFound
+                        | ErrorKind::Conflict
+                        | ErrorKind::Unsupported
+                        | ErrorKind::Permission
+                        | ErrorKind::Authentication)
+                ))
         {
             self.close().await;
         }

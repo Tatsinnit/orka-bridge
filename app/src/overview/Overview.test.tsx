@@ -66,6 +66,17 @@ test('exact native identity attaches checks and suppresses only that current fil
   expect(screen.queryByText('Saved file')).toBeNull();
 });
 
+test('a cancelled local observation keeps the agent list readable with neutral status', async () => {
+  ipc(files, { ...live, observation: { ...observation, report: { verdict: 'cancelled' } } });
+  render(<Overview {...props} />);
+  expect(await screen.findByText('Checks cancelled in this session')).toBeTruthy();
+  expect(screen.getByText('1 saved file · 1 agent')).toBeTruthy();
+  expect(screen.queryByText('Could not read agents')).toBeNull();
+  const card = screen.getByRole('heading', { name: 'reader' }).closest('.long-card')!;
+  expect(card.querySelector('.status-passed, .status-failed')).toBeNull();
+  expect(card.querySelector('.status-not-started')).toBeTruthy();
+});
+
 test.each([
   ['uid', { ...observation, agentUid: 'different' }],
   ['installation', { ...observation, installation: '87654321-1234-1234-1234-123456789abc' }],

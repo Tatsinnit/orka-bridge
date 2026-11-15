@@ -345,6 +345,10 @@ impl RunCase {
     pub fn assertions(&self) -> &[Assertion] {
         &self.assertions
     }
+    /// Keep captured assertion context without judging work that never completed.
+    pub fn unevaluated(&self) -> Vec<AssertionReport> {
+        self.evaluate(None, &[])
+    }
     pub(super) fn evaluate(&self, answer: Option<&str>, tools: &[String]) -> Vec<AssertionReport> {
         self.assertions
             .iter()
