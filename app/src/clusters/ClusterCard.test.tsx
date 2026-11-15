@@ -53,13 +53,15 @@ test('cluster actions share the footer with retry first and reload quiet', async
   expect(document.activeElement).toBe(await screen.findByRole('combobox', { name: 'kubectl context' }));
 });
 
-test('local readiness never enables unconfirmed remote checks, and changing places keeps the VM', async () => {
+test('single-target discovery keeps This computer selected and successful Use selects the cluster', async () => {
   const ipc = native({ selected: 'localVm', localVm: 'ready', model: 'available' });
   ipc.mockImplementation(command => {
     if (command === 'setup_status') return { selected: 'localVm', localVm: 'ready', model: 'available' };
     if (command === 'setup_requirements') return null;
     if (command === 'cluster_contexts') return [context];
     if (command === 'cluster_discover') return [target];
+    if (command === 'cluster_use') return { status: 'connected', providers: [provider], failure: null };
+    if (command === 'agent_run_status') return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', busy: null, state: 'idle', canRun: true, report: null, acknowledged: [], pending: null, error: null };
     if (command === 'agent_open') return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', name: 'web-reader', agent: '---\\nname: reader\\n---\\nRead.', tests: 'Checks' };
     throw Error('Unsupported');
   });
@@ -69,12 +71,65 @@ test('local readiness never enables unconfirmed remote checks, and changing plac
   await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
   await screen.findByText('Cluster found');
   await user.click(screen.getByRole('button', { name: 'Designer' }));
-  const run = await screen.findByRole('button', { name: 'Run all tests' });
-  expect(run.matches(':disabled')).toBe(true);
+  const run = await screen.findByRole('button', { name: 'Run tests' });
+  await waitFor(() => expect(run.matches(':disabled')).toBe(false));
+  expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  expect(screen.getByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Use this cluster' }));
+  await screen.findAllByText('Access confirmed');
+  expect(document.querySelector('.host-chip')?.textContent).toContain(context.name);
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  expect(screen.getByRole('button', { name: 'Run all tests' }).matches(':disabled')).toBe(true);
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('setup_change_local');
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('agent_run');
+});
+
+test('failed context discovery leaves local Run and Chat usable without reselecting This computer', async () => {
+  const ipc = native();
+  const documentId = '9b2b93c4-375c-4815-9717-39852a96e411';
+  ipc.mockImplementation(command => {
+    if (command === 'setup_status') return { selected: 'localVm', localVm: 'ready', model: 'available' };
+    if (command === 'setup_requirements') return null;
+    if (command === 'cluster_contexts') return [context];
+    if (command === 'cluster_discover') return Promise.reject({ check: 'clusterApi', result: 'connectionFailed' });
+    if (command === 'agent_open') return { documentId, name: 'reader', agent: '---\nname: reader\n---\nRead.', tests: 'Checks' };
+    if (command === 'agent_run_status' || command === 'agent_run') return { documentId, busy: null, state: 'idle', canRun: true, report: null, acknowledged: [], pending: null, error: null };
+    if (command === 'agent_chat_status' || command === 'agent_chat_send') return { documentId, state: 'ready', busy: false, canSend: true, versions: [], error: null };
+    throw Error('Unsupported');
+  });
+  const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
+  await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
+  await screen.findByRole('alert');
+  expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  const run = await screen.findByRole('button', { name: 'Run tests' });
+  await waitFor(() => expect(run.matches(':disabled')).toBe(false));
+  await user.click(run);
+  await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([['agent_run', { documentId }]]));
+  await user.click(screen.getByRole('button', { name: 'Chat' }));
+  await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Still local');
+  const send = screen.getByRole('button', { name: 'Send message' });
+  await waitFor(() => expect(send.matches(':disabled')).toBe(false));
+  await user.click(send);
+  await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_chat_send')).toEqual([['agent_chat_send', { documentId, message: 'Still local' }]]));
+  expect(ipc.mock.calls.map(([c]) => c)).not.toContain('send_start');
+  expect(ipc.mock.calls.map(([c]) => c)).not.toContain('setup_select_local');
+});
+
+test('changing a selected remote context revokes its capability before failed discovery returns', async () => {
+  const ipc = native(); const pending = deferred<unknown>();
+  const selection = { kind: 'cluster' as const, target, providers: [provider], providerId: provider.id };
+  ipc.mockImplementation(command => command === 'cluster_contexts' ? [context] : command === 'cluster_discover' ? pending.promise : Promise.reject('Unsupported'));
+  const onPlace = vi.fn(); const user = userEvent.setup();
+  render(<ClusterCard selection={selection} onPlace={onPlace} onOpenAgent={vi.fn()} />);
+  await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
+  expect(onPlace).toHaveBeenCalledExactlyOnceWith({ kind: 'cluster' });
+  await act(async () => pending.resolve(Promise.reject({ check: 'clusterApi', result: 'connectionFailed' })));
+  await screen.findByRole('alert');
+  expect(onPlace).toHaveBeenCalledExactlyOnceWith({ kind: 'cluster' });
+  expect(screen.queryByRole('button', { name: 'Open your agent' })).toBeNull();
 });
 
 test('a selected unavailable workspace can choose a cluster without resetting it', async () => {
@@ -162,9 +217,10 @@ test('local-result observation continues while remote access is unconfirmed', as
   await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
   await screen.findByText('Cluster found');
   complete = true;
-  expect(await screen.findByText('This computer: 1 of 1 tests passing', { selector: '.checks-status' })).toBeTruthy();
+  expect(await screen.findByText('1 of 1 tests passing', { selector: '.checks-status' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Designer' }));
-  expect(screen.getByRole('button', { name: 'Run all tests' }).matches(':disabled')).toBe(true);
+  expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
+  expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
 });
 
 test('expert_skip_selects_cluster_without_vm', async () => {

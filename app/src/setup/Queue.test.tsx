@@ -12,7 +12,7 @@ type Sim = { selected: 'localVm' | null; localVm: string; model: 'locked' | 'ava
 function native(localVm = 'installing', extra: Partial<Sim> = {}) {
   vi.stubGlobal('isTauri', true);
   const sim: Sim = { selected: 'localVm', localVm, model: 'locked', modelSupported: true, unreadable: false, connect: 'ok', remove: 'ok', ...extra };
-  const ipc = vi.fn((command: string) => {
+  const ipc = vi.fn((command: string): unknown => {
     switch (command) {
       case 'setup_status': if (sim.unreadable) throw Error('unreadable');
         return { selected: sim.selected, localVm: sim.localVm, model: sim.model, ...(sim.modelSupported === undefined ? {} : { modelSupported: sim.modelSupported }), workspaceProgress: sim.localVm === 'installing'
@@ -157,8 +157,15 @@ test('a queued connection that fails is not retried without an explicit action',
   expect(connects()).toBe(2);
 });
 
-test('choosing a cluster clears the held intent even though the view stays mounted', async () => {
-  const { ipc, sim, connects } = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
+test('using a cluster clears the held intent even though the view stays mounted', async () => {
+  const { ipc, sim, connects } = native();
+  const original = ipc.getMockImplementation();
+  ipc.mockImplementation(command => {
+    if (command === 'cluster_discover') return [{ id: '00000000-0000-4000-8000-000000000002', context_id: '00000000-0000-4000-8000-000000000001', context_name: 'team-dev', service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'ghcr.io/orka:0.9.4' }];
+    if (command === 'cluster_use') return { status: 'connected', providers: [{ id: '00000000-0000-4000-8000-000000000003', name: 'team-model', ready: true }], failure: null };
+    return original?.(command);
+  });
+  const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   sim.localVm = 'ready';
   await observe(ipc);
@@ -166,7 +173,8 @@ test('choosing a cluster clears the held intent even though the view stays mount
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), '00000000-0000-4000-8000-000000000001');
-  await screen.findByText('No cluster with Orka was found using this context.');
+  await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
+  await screen.findAllByText('Access confirmed');
   sim.model = 'available';
   await observe(ipc); expect(connects()).toBe(0);
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));

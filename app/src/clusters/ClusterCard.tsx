@@ -169,7 +169,8 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
     const request = ++epoch.current;
     setContextId(id); setTargets(undefined); setTargetId(''); setAccess(undefined); setProviderId(''); providerName.current = ''; setAccount(''); setNeedsAccount(false); setError(undefined); setDetails(false); setNotice('');
     setRetained(undefined); setSummary(undefined);
-    onPlace({ kind: 'cluster' });
+    // Discovery revokes remote handles, but does not replace a selected local workspace.
+    if (selection?.kind !== 'thisComputer') onPlace({ kind: 'cluster' });
     if (!id) { setBusy(false); return; }
     setBusy(true);
     try {
