@@ -5,6 +5,7 @@ import importlib
 import io
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,15 +54,29 @@ class CandidateTests(unittest.TestCase):
             patcher.start(); self.addCleanup(patcher.stop)
         self.release, self.assets, self.downloads, self.lists = None, {}, [], 0
         self.fault = None
+        self.id_fault = None
 
     def gh(self, endpoint, *, paginate=False, body=None, upload=None, download=None):
         if endpoint.endswith("/releases") and body:
             self.release = dict(body, id=71, published_at=None)
             if self.fault == "title": self.release["name"] = "wrong"
             return self.release
+        if endpoint.endswith("/releases/71"):
+            if self.fault == "unreadable-id":
+                raise subprocess.CalledProcessError(1, ["gh", "api", endpoint])
+            row = copy.deepcopy(self.release)
+            if self.fault == "changed-release" and self.assets: row["target_commitish"] = "b" * 40
+            if self.id_fault: row[self.id_fault[0]] = self.id_fault[1]
+            return row
         if "/releases?" in endpoint:
-            if self.fault == "changed-release" and self.assets: self.release["target_commitish"] = "b" * 40
-            return [[self.release] if self.release else []]
+            rows = [self.release] if self.release else []
+            if self.release:
+                if self.fault == "stale-list": rows = []
+                if self.fault == "overlapping-list": rows *= 2
+                if self.fault == "foreign-with-created" or (self.fault == "foreign-final" and self.lists == 2):
+                    rows.append(dict(self.release, id=72))
+                if self.fault == "foreign-only": rows = [dict(self.release, id=72)]
+            return [rows]
         if "/git/matching-refs/" in endpoint:
             return [[{"ref": "refs/tags/" + self.p["imageRelease"]["tag"],
                       "object": {"type": "commit", "sha": "b" * 40}}]] if self.fault == "ref" or (self.fault == "changed-ref" and self.assets) else [[]]
@@ -97,6 +112,42 @@ class CandidateTests(unittest.TestCase):
         self.assertEqual(self.publish(), 71)
         self.assertEqual(set(self.downloads), set(self.files))
         self.assertEqual(self.lists, 2)
+
+    def test_stale_release_list_does_not_hide_created_draft(self):
+        for fault in ("stale-list", "overlapping-list"):
+            self.release, self.assets, self.downloads, self.lists, self.fault = None, {}, [], 0, fault
+            with self.subTest(fault=fault):
+                self.assertEqual(self.publish(), 71)
+                self.assertEqual(set(self.downloads), set(self.files))
+                self.assertEqual(self.lists, 2)
+
+    def test_post_create_identity_fields_are_checked_by_id_before_upload(self):
+        for field, value in (("id", 72), ("tag_name", "other"), ("target_commitish", "b" * 40),
+                             ("name", "other"), ("draft", False), ("prerelease", False),
+                             ("published_at", "2026-11-15T00:00:00Z")):
+            self.release, self.assets, self.id_fault = None, {}, (field, value)
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "created draft identity changed"):
+                    self.publish()
+                self.assertEqual(self.release["id"], 71)
+                self.assertFalse(self.assets)
+
+    def test_unreadable_created_id_retains_empty_draft(self):
+        self.fault = "unreadable-id"
+        with self.assertRaises(subprocess.CalledProcessError): self.publish()
+        self.assertEqual(self.release["id"], 71)
+        self.assertFalse(self.assets)
+
+    def test_observed_foreign_duplicate_is_rejected_even_if_created_id_is_missing(self):
+        for fault in ("foreign-with-created", "foreign-only", "foreign-final"):
+            self.release, self.assets, self.lists, self.fault = None, {}, 0, fault
+            with self.subTest(fault=fault), self.assertRaisesRegex(ValueError, "another release shares the candidate tag"):
+                self.publish()
+            self.assertEqual(self.release["id"], 71)
+            if fault == "foreign-final":
+                self.assertEqual(self.lists, 2)
+            else:
+                self.assertFalse(self.assets)
 
     def test_policy_allows_explicit_repin_but_rejects_changed_pin_profile_and_source(self):
         repin = copy.deepcopy(self.p)

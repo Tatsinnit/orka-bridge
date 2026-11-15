@@ -96,6 +96,8 @@ def receipt(stage, path, files, report=None):
 
 
 def check_available(spec, created=None):
+    if created is not None:
+        release_identity(spec, q.gh(BASE + "/releases/" + str(created)), created)
     releases = [r for page in q.gh(BASE + "/releases?per_page=100", paginate=True)
                 for r in page if r["tag_name"] == spec["tag"]]
     refs = [r for page in q.gh(BASE + "/git/matching-refs/tags/" + spec["tag"], paginate=True)
@@ -103,8 +105,9 @@ def check_available(spec, created=None):
     if created is None:
         require(not releases and not refs, "candidate tag/ref already exists; use a new tag and repin")
     else:
-        require(len(releases) == 1, "created draft is not unique")
-        release_identity(spec, releases[0], created)
+        # The discovery list may not include a just-created draft yet; its ID
+        # readback above is authoritative. Still reject observed tag conflicts.
+        require(all(r["id"] == created for r in releases), "another release shares the candidate tag")
         require(all(r["object"]["type"] == "commit" and r["object"]["sha"] == spec["sourceCommit"] for r in refs),
                 "candidate tag/source changed")
 

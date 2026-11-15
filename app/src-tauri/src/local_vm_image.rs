@@ -49,10 +49,10 @@ pub(super) fn shipping_image(target: ImageTarget) -> Option<ReleaseImage> {
         ),
     };
     let value: serde_json::Value = serde_json::from_slice(manifest).ok()?;
-    let base = "https://github.com/orka-agents/orka-bridge/releases/download/bridge-images-preview-43e73491/";
+    let base = "https://github.com/orka-agents/orka-bridge/releases/download/bridge-images-preview-43e73491-r2/";
     Some(ReleaseImage {
         pin: ImagePin {
-            release_id: "bridge-images-preview-43e73491".into(),
+            release_id: "bridge-images-preview-43e73491-r2".into(),
             manifest_url: format!("{base}manifest-{platform}.json"),
             manifest_sha256: digest.into(),
             accepted_schema_sha256:

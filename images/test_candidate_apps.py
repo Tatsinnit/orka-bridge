@@ -96,7 +96,10 @@ class Apps(unittest.TestCase):
             return self.rows[artifact_id]
         if endpoint.endswith("/releases") and body:
             self.release = dict(body, id=71, published_at=None); return self.release
-        if "/releases?" in endpoint: return [[self.release] if self.release else []]
+        if endpoint.endswith("/releases/71"):
+            return dict(self.release, draft=False) if self.fault == "published-id" else self.release
+        if "/releases?" in endpoint:
+            return [[]] if self.fault == "stale-list" else [[self.release] if self.release else []]
         if "/git/matching-refs/" in endpoint: return [[]]
         if upload:
             from urllib.parse import parse_qs, urlsplit
@@ -134,9 +137,22 @@ class Apps(unittest.TestCase):
         pins = json.loads(self.uploads["image-pins.json"])
         self.assertEqual(len(pins["assets"]), 11)
         self.assertEqual(pins["images"], self.policy["images"])
-        self.assertIn("/bridge-images-preview-43e73491/", pins["assetBase"])
+        self.assertIn("/bridge-images-preview-43e73491-r2/", pins["assetBase"])
         self.assertEqual(len(json.loads(self.uploads["size-space.json"])["observations"]), 4)
         self.assertFalse(any(n.endswith((".kernel", ".initrd")) or ".part-" in n for n in self.uploads))
+
+    def test_stale_release_list_does_not_hide_created_app_draft(self):
+        self.fault = "stale-list"
+        self.assertEqual(self.publish(), 71)
+        self.assertEqual(set(self.uploads), {*self.payloads, "manifest-macos-arm64.json",
+            "manifest-windows-amd64.json", "image-pins.json", "size-space.json"})
+        self.assertEqual(set(self.downloads), set(range(1, 12)))
+
+    def test_created_app_id_readback_rejects_published_release_before_upload(self):
+        self.fault = "published-id"
+        with self.assertRaisesRegex(ValueError, "created draft identity changed"): self.publish()
+        self.assertEqual(self.release["id"], 71)
+        self.assertFalse(self.uploads)
 
     def test_missing_approval_and_untrusted_or_build_commit_environment_cannot_write(self):
         for changes in ({"GITHUB_EVENT_NAME": "push"}, {"GITHUB_REF": "refs/heads/topic"},

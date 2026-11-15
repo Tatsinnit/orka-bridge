@@ -1,8 +1,8 @@
 {
   "schemaVersion": "bridge-release-set/v1",
   "imageRelease": {
-    "tag": "bridge-images-preview-43e73491",
-    "title": "Bridge VM images — preview-43e73491",
+    "tag": "bridge-images-preview-43e73491-r2",
+    "title": "Bridge VM images — preview-43e73491-r2",
     "sourceCommit": "43e7349115b4c7e9b1865a4d5f0989a02726724c"
   },
   "images": {
