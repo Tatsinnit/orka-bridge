@@ -13,7 +13,7 @@ on:
         type: choice
         options: [images, build-candidate, app-draft]
       candidate_tag:
-        description: App tag required for build-candidate and app-draft
+        description: v<app version> tag required for build-candidate and app-draft
         required: false
         type: string
 
@@ -78,7 +78,7 @@ jobs:
       - name: Validate future app tag
         env:
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
-        run: PYTHONPATH=runtime/windows python3 -c 'import os, delivery; delivery.validate_tag(os.environ["CANDIDATE_TAG"])'
+        run: PYTHONPATH=images python3 -c 'import os, candidate; candidate.validate_app_tag(os.environ["CANDIDATE_TAG"], candidate.package.read_json(candidate.q.ROOT / "app/src-tauri/tauri.conf.json")["version"])'
       - name: Anonymous full public image roundtrip (no authentication)
         run: python3 images/candidate.py public --out "$RUNNER_TEMP/public-images"
 
@@ -263,3 +263,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
         run: python3 images/candidate.py apps --out "$RUNNER_TEMP/app-draft" --candidate-tag "$CANDIDATE_TAG"
+      - name: Retain app admission evidence (including failed drafts)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bridge-app-evidence
+          path: |
+            ${{ runner.temp }}/app-draft/evidence/image-pins.json
+            ${{ runner.temp }}/app-draft/evidence/manifest-macos-arm64.json
+            ${{ runner.temp }}/app-draft/evidence/manifest-windows-amd64.json
+            ${{ runner.temp }}/app-draft/evidence/size-space.json
+            ${{ runner.temp }}/app-draft/evidence/windows-before.json
+            ${{ runner.temp }}/app-draft/evidence/windows-after.json
+            ${{ runner.temp }}/app-draft/evidence/macos-before.json
+            ${{ runner.temp }}/app-draft/evidence/macos-after.json
+          retention-days: 14
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}

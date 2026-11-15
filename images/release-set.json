@@ -18,7 +18,7 @@
     }
   },
   "appCandidates": {
-    "bridge-preview-20261115-1414-4bfa919f": {
+    "v0.1.0": {
       "runId": 43723273684,
       "workflowId": 406543958,
       "runAttempt": 1,

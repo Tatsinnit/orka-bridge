@@ -5,8 +5,12 @@ import hashlib
 import io
 import json
 import os
+import re
+import shlex
 import shutil
+import subprocess
 import stat
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -20,12 +24,45 @@ def pin(data):
     return dict(bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
 
 
+PUBLIC_FILES = {"bridge-windows-x64.zip", "bridge-macos-arm64.tar.gz", "bridge-windows-runtime-source.zip"}
+EVIDENCE_FILES = {"image-pins.json", "manifest-macos-arm64.json", "manifest-windows-amd64.json",
+                  "size-space.json", "windows-before.json", "windows-after.json", "macos-before.json", "macos-after.json"}
+
+
+class AppTags(unittest.TestCase):
+    def test_semver_tags_match_the_complete_app_version(self):
+        for version in ("0.1.0", "1.20.300", "0.1.0-rc.1", "1.0.0-0", "1.0.0-01a", "1.0.0-alpha-beta.2"):
+            with self.subTest(version=version):
+                c.validate_app_tag("v" + version, version)
+        c.validate_app_tag("v1.0.0-" + "a" * 121, "1.0.0-" + "a" * 121)
+        for tag, version in (("v0.1.0", "0.2.0"), ("v0.1.0-rc.1", "0.1.0"),
+                             ("v0.1.0", "0.1.0-rc.1"), ("v0.1.0-rc.1", "0.1.0-rc.2"),
+                             ("v0.1.0", None), ("v0.1.0", "")):
+            with self.subTest(tag=tag, version=version), self.assertRaisesRegex(ValueError, "version"):
+                c.validate_app_tag(tag, version)
+
+    def test_malformed_semver_and_unsafe_tags_are_rejected(self):
+        for tag in (None, "", "0.1.0", "bridge-preview-fixture", "v1", "v1.2", "v01.2.3", "v1.02.3", "v1.2.03",
+                    "v1.2.3-01", "v1.2.3-rc.01", "v1.2.3-", "v1.2.3-rc..1", "v1.2.3-rc_1", "v1.2.3+build",
+                    "v1.2.3-rc.1+build", "v1.2.3\n", "v١.2.3", "../v1.2.3", "v1.2.3/x", "v1.2.3.lock",
+                    "v1.2.3-" + "a" * 122):
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "tag"):
+                c.validate_app_tag(tag)
+
+    def test_real_historical_approval_is_rekeyed_without_repinning(self):
+        policy = c.load_policy()
+        approval = c.app_approval(policy, "v0.1.0")
+        self.assertEqual(approval["buildCommit"], "4bfa919f3510e6d61aae93d83cd75e2b5deeee9a")
+        self.assertNotIn("bridge-preview-20261115-1414-4bfa919f", policy["appCandidates"])
+
+
 class Apps(unittest.TestCase):
     def setUp(self):
         self.assertTrue(hasattr(c, "apps"), "separately approved app admission is missing")
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        self.tag = "bridge-preview-fixture"
+        self.tag = "v0.1.0"
+        self.build_version = "0.1.0"
         self.policy = c.load_policy()
         self.build_policy = copy.deepcopy(self.policy)
         self.run = dict(id=19, workflow_id=29, path=".github/workflows/images.yml", run_attempt=1,
@@ -67,6 +104,7 @@ class Apps(unittest.TestCase):
                         patch.dict(os.environ, self.env, clear=True)):
             patcher.start(); self.addCleanup(patcher.stop)
         self.release, self.assets, self.downloads, self.uploads = None, {}, [], {}
+        self.requests = []
         self.fault = None
 
     @staticmethod
@@ -82,9 +120,14 @@ class Apps(unittest.TestCase):
         self.zips[artifact_id] = stream.getvalue()
 
     def api(self, endpoint, *, paginate=False, download=None, upload=None, body=None):
+        self.requests.append((endpoint, bool(body or upload)))
         if "/contents/" in endpoint:
+            self.assertTrue(endpoint.endswith("?ref=" + self.approval["buildCommit"]))
             path = endpoint.split("/contents/", 1)[1].split("?ref=", 1)[0]
-            raw = json.dumps(self.build_policy).encode() if path == "images/release-set.json" else (c.q.ROOT / path).read_bytes()
+            if path == "app/src-tauri/tauri.conf.json":
+                raw = json.dumps(dict(version=self.build_version)).encode()
+            else:
+                raw = json.dumps(self.build_policy).encode() if path == "images/release-set.json" else (c.q.ROOT / path).read_bytes()
             digest = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False).hexdigest()
             return dict(type="file", encoding="base64", content=base64.b64encode(raw).decode(),
                         sha="0" * 40 if self.fault == path else digest)
@@ -122,31 +165,45 @@ class Apps(unittest.TestCase):
         original = c.package.read_json
         def read(path, *args):
             return runtime if str(path).endswith("runtime-inputs.json") else original(path, *args)
+        self.out = self.root / name
         with patch.object(c.package, "read_json", side_effect=read):
-            return c.apps(self.root / name, self.tag)
+            return c.apps(self.out, self.tag)
 
     def test_exact_paired_draft_target_and_all_asset_id_readbacks(self):
         self.assertEqual(self.publish(), 71)
         self.assertEqual(self.release["target_commitish"], "b" * 40)
         self.assertTrue(self.release["draft"] and self.release["prerelease"])
-        expected = {*self.payloads, "manifest-macos-arm64.json", "manifest-windows-amd64.json", "image-pins.json", "size-space.json"}
-        self.assertEqual(set(self.uploads), expected)
-        self.assertEqual(set(self.downloads), set(range(1, 12)))
+        self.assertEqual(set(self.uploads), PUBLIC_FILES)
+        self.assertEqual(set(self.downloads), {1, 2, 3})
+        for name in PUBLIC_FILES:
+            self.assertEqual(self.uploads[name], self.payloads[name])
+        self.assert_evidence()
+
+    def assert_evidence(self):
+        evidence = self.out / "evidence"
+        self.assertEqual({p.name for p in evidence.iterdir()}, EVIDENCE_FILES)
+        for name in ("windows-before.json", "windows-after.json", "macos-before.json", "macos-after.json"):
+            self.assertEqual((evidence / name).read_bytes(), self.payloads[name])
         for target in ("macos-arm64", "windows-amd64"):
-            self.assertEqual(self.uploads["manifest-" + target + ".json"], (c.MANIFESTS / (target + ".json")).read_bytes())
-        pins = json.loads(self.uploads["image-pins.json"])
+            self.assertEqual((evidence / ("manifest-" + target + ".json")).read_bytes(),
+                             (c.MANIFESTS / (target + ".json")).read_bytes())
+        pins = json.loads((evidence / "image-pins.json").read_bytes())
         self.assertEqual(len(pins["assets"]), 11)
         self.assertEqual(pins["images"], self.policy["images"])
         self.assertIn("/bridge-images-preview-43e73491-r2/", pins["assetBase"])
-        self.assertEqual(len(json.loads(self.uploads["size-space.json"])["observations"]), 4)
-        self.assertFalse(any(n.endswith((".kernel", ".initrd")) or ".part-" in n for n in self.uploads))
+        space = json.loads((evidence / "size-space.json").read_bytes())
+        self.assertEqual(len(space["observations"]), 4)
+        self.assertEqual(space["files"], {**{n: len(data) for n, data in self.payloads.items()},
+            **{"manifest-" + t + ".json": (c.MANIFESTS / (t + ".json")).stat().st_size
+               for t in ("macos-arm64", "windows-amd64")}})
+        self.assertEqual({p.name for p in self.out.iterdir()}, {"evidence"})
 
     def test_stale_release_list_does_not_hide_created_app_draft(self):
         self.fault = "stale-list"
         self.assertEqual(self.publish(), 71)
-        self.assertEqual(set(self.uploads), {*self.payloads, "manifest-macos-arm64.json",
-            "manifest-windows-amd64.json", "image-pins.json", "size-space.json"})
-        self.assertEqual(set(self.downloads), set(range(1, 12)))
+        self.assertEqual(set(self.uploads), PUBLIC_FILES)
+        self.assertEqual(set(self.downloads), {1, 2, 3})
+        self.assert_evidence()
 
     def test_created_app_id_readback_rejects_published_release_before_upload(self):
         self.fault = "published-id"
@@ -164,8 +221,27 @@ class Apps(unittest.TestCase):
         with self.assertRaises(ValueError): self.publish()
         self.assertIsNone(self.release)
 
+    def test_tag_mismatch_with_original_build_version_cannot_write(self):
+        for version in ("0.2.0", "0.1.0-rc.1"):
+            self.build_version = version
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "version"):
+                self.publish()
+            self.assertFalse(any(write for _, write in self.requests))
+            self.assertFalse(self.uploads)
+
+    def test_original_build_version_not_later_checkout_version_is_authoritative(self):
+        original = c.package.read_json
+        def read(path, *args):
+            if str(path).endswith("tauri.conf.json"):
+                return dict(version="9.9.9")
+            return original(path, *args)
+        with patch.object(c.package, "read_json", side_effect=read):
+            self.assertEqual(self.publish(), 71)
+        self.assertIn((c.BASE + "/contents/app/src-tauri/tauri.conf.json?ref=" + "b" * 40, False), self.requests)
+
     def test_approval_cannot_relabel_the_packaged_source_url_to_another_tag(self):
-        self.tag = "bridge-preview-other"
+        self.tag = "v0.2.0"
+        self.build_version = "0.2.0"
         self.policy["appCandidates"][self.tag] = self.approval
         with self.assertRaisesRegex(ValueError, "source notice"):
             self.publish()
@@ -248,9 +324,41 @@ class Apps(unittest.TestCase):
             self.fault, self.release, self.assets, self.uploads = fault, None, {}, {}
             with self.subTest(fault=fault), self.assertRaises(ValueError): self.publish(fault)
             self.assertTrue(self.release["draft"])
+            self.assertEqual(set(self.uploads), PUBLIC_FILES)
+            self.assert_evidence()
 
 
 class Workflow(unittest.TestCase):
+    def test_build_tag_command_enforces_checkout_version_before_public_downloads(self):
+        workflow = (c.q.ROOT / ".github/workflows/images.yml").read_text()
+        job = workflow.split("\n  public-images:\n", 1)[1].split("\n  qemu-inputs:\n", 1)[0]
+        step = job.split("- name: Validate future app tag\n", 1)[1].split("\n      - name:", 1)[0]
+        command = step.split("run: ", 1)[1].strip()
+        assignment, executable, *arguments = shlex.split(command)
+        self.assertEqual((assignment, executable), ("PYTHONPATH=images", "python3"))
+        version = json.loads((c.q.ROOT / "app/src-tauri/tauri.conf.json").read_bytes())["version"]
+        for tag, expected in (("v" + version, 0), ("v" + version + "0", 1), ("v" + version + "-rc.1", 1),
+                              ("bridge-preview-fixture", 1), ("v0.1.0-01", 1)):
+            with self.subTest(tag=tag):
+                result = subprocess.run([sys.executable, *arguments], cwd=c.q.ROOT,
+                                        env={**os.environ, "PYTHONPATH": "images", "CANDIDATE_TAG": tag},
+                                        capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode == 0, expected == 0, result.stderr)
+
+    def test_app_evidence_upload_is_closed_pinned_and_retained_even_after_failure(self):
+        workflow = (c.q.ROOT / ".github/workflows/images.yml").read_text()
+        job = workflow.split("\n  app-draft:\n", 1)[1]
+        uploads = re.findall(r"^      - (.*?)(?=^      - |\Z)", job, re.M | re.S)
+        uploads = [step for step in uploads if "uses: actions/upload-artifact@" in step]
+        self.assertEqual(len(uploads), 1)
+        step = uploads[0]
+        self.assertRegex(step, r"uses: actions/upload-artifact@[0-9a-f]{40}")
+        self.assertIn("if: ${{ always() }}", step)
+        self.assertIn("retention-days: 14", step)
+        self.assertIn("if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}", step)
+        paths = {line.strip() for line in step.split("path: |\n", 1)[1].split("retention-days:", 1)[0].splitlines() if line.strip()}
+        self.assertEqual(paths, {"${{ runner.temp }}/app-draft/evidence/" + name for name in EVIDENCE_FILES})
+
     def test_dispatch_choices_and_permissions_bind_native_pair_to_public_roundtrip(self):
         import re
         text = (c.q.ROOT / ".github/workflows/images.yml").read_text()
@@ -288,8 +396,6 @@ class Workflow(unittest.TestCase):
             self.assertIn(command, mac)
 
     def test_measure_cli_writes_observed_sizes_and_free_space_not_peak(self):
-        import subprocess
-        import sys
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); data = root / "app.zip"; data.write_bytes(b"test")
             report = root / "space.json"

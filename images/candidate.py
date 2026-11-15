@@ -245,9 +245,23 @@ APP_FILES = {
 }
 
 
+APP_PUBLIC_FILES = {"bridge-windows-x64.zip", "bridge-macos-arm64.tar.gz", "bridge-windows-runtime-source.zip"}
+APP_EVIDENCE_FILES = {"image-pins.json", "manifest-macos-arm64.json", "manifest-windows-amd64.json", "size-space.json",
+                      "windows-before.json", "windows-after.json", "macos-before.json", "macos-after.json"}
+
+
+def validate_app_tag(tag, version=...):
+    number = r"(?:0|[1-9][0-9]*)"
+    identifier = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][A-Za-z0-9-]*)"
+    semver = number + r"\." + number + r"\." + number + "(?:-" + identifier + r"(?:\." + identifier + ")*)?"
+    require(q.matches(tag, "v" + semver) and len(tag) <= 128 and not tag.endswith(".lock"),
+            "invalid app candidate tag; expected v<SemVer> without build metadata")
+    if version is not ...:
+        require(tag[1:] == version, "app candidate tag differs from build app version")
+
+
 def app_approval(p, tag):
-    require(q.matches(tag, r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}") and ".." not in tag
-            and not tag.endswith((".", ".lock")), "invalid app candidate tag")
+    validate_app_tag(tag)
     require(tag in p["appCandidates"], "app candidate not independently approved")
     a = p["appCandidates"][tag]
     q.shape(a, ("runId", "workflowId", "runAttempt", "buildCommit", "artifacts"))
@@ -289,6 +303,11 @@ def apps(out, tag):
             and run["event"] == "workflow_dispatch" and run["status"] == "completed" and run["conclusion"] == "success"
             and all(run[k]["id"] == repository_id and run[k]["full_name"] == q.REPOSITORY for k in ("repository", "head_repository")),
             "unqualified app build run")
+    # The approval checkout may already carry the next app version. Bind only
+    # to the authoritative Tauri version compiled by the original build.
+    remote = q.gh(BASE + "/contents/app/src-tauri/tauri.conf.json?ref=" + a["buildCommit"])
+    require(remote["type"] == "file" and remote["encoding"] == "base64", "invalid build app configuration")
+    validate_app_tag(tag, q.read_json(base64.b64decode(remote["content"]))["version"])
     remote = q.gh(BASE + "/contents/images/release-set.json?ref=" + a["buildCommit"])
     require(remote["type"] == "file" and remote["encoding"] == "base64", "invalid build image policy")
     built = q.read_json(base64.b64decode(remote["content"]))
@@ -360,8 +379,18 @@ def apps(out, tag):
             path = root / name
             path.write_text(json.dumps(data, sort_keys=True) + "\n", encoding="utf-8")
             files[name] = path
-        return exact_draft(dict(tag=tag, title="Bridge preview — " + tag, sourceCommit=a["buildCommit"]), files, out,
-                           lambda readback: require({f.name for f in readback.iterdir()} == set(files), "app readback inventory mismatch"))
+        require(set(files) == APP_PUBLIC_FILES | APP_EVIDENCE_FILES, "app file inventory mismatch")
+        evidence = out / "evidence"
+        evidence.mkdir()
+        for name in sorted(APP_EVIDENCE_FILES):
+            shutil.copyfile(files[name], evidence / name)
+        require({f.name for f in evidence.iterdir()} == APP_EVIDENCE_FILES, "app evidence inventory mismatch")
+        # Evidence survives temporary app cleanup and any subsequent draft or
+        # readback failure, but never enters the public release inventory.
+        public_files = {name: path for name, path in files.items() if name in APP_PUBLIC_FILES}
+        return exact_draft(dict(tag=tag, title="Bridge preview — " + tag, sourceCommit=a["buildCommit"]), public_files, out,
+                           lambda readback: require({f.name for f in readback.iterdir()} == APP_PUBLIC_FILES,
+                                                    "app readback inventory mismatch"))
 
 
 def main():

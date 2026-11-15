@@ -184,6 +184,17 @@ plus 1 GiB headroom. Sampled free space is not a measured peak.
 
 The **Image assets** workflow (`images.yml`) has explicit `stage` choices:
 `images`, `build-candidate`, `app-draft`; the latter two require `candidate_tag`.
+App tags are exactly `v<app version>`, with `app/src-tauri/tauri.conf.json`
+authoritative (for example `0.1.0` → `v0.1.0`, `0.2.0-rc.1` → `v0.2.0-rc.1`).
+The complete SemVer version, including any prerelease suffix, must match.
+When changing versions, keep `app/package.json`, `app/src-tauri/Cargo.toml`
+and `tauri.conf.json` aligned: the runtime reads Cargo's package version, while
+release tag validation reads Tauri's version. Update generated lockfiles through
+their package managers, not by hand. This workflow does not check that agreement.
+Tags are at most 128 characters; build metadata (`+...`), leading zeros in
+numeric version/prerelease identifiers, and unsafe Git refs are rejected.
+Build admission checks the dispatch checkout version; app-draft checks only
+the original `buildCommit` version, not the later approval checkout's version.
 Only same-repository trusted-main manual dispatch can acquire drafts or create
 candidates. PR/push tests use fixtures without network. Native builds are
 read-only, check out the same dispatch SHA, and receive no publisher token.
@@ -196,7 +207,7 @@ gh workflow run images.yml -R orka-agents/orka-bridge --ref main -f stage=images
 # Inspect the successful image-only draft, receipts and exact eleven assets.
 # Only an authorized publisher, after a separate publication decision:
 gh release edit bridge-images-preview-43e73491-r2 -R orka-agents/orka-bridge --draft=false --prerelease --latest=false
-TAG=YOUR_APP_TAG
+TAG=v0.2.0-rc.1 # Example only; must match tauri.conf.json and be unused.
 gh workflow run images.yml -R orka-agents/orka-bridge --ref main -f stage=build-candidate -f candidate_tag="$TAG"
 gh run list -R orka-agents/orka-bridge --workflow images.yml --event workflow_dispatch --branch main --json databaseId,headSha,status,conclusion
 ```
@@ -211,8 +222,9 @@ actual artifact expiry: complete helper generation, review, approval merge and
 and `images` unchanged in `release-set.json`, and keep both
 `images/release/{macos-arm64,windows-amd64}.json` manifests and
 `app/src-tauri/src/local_vm_image.rs` byte-identical to the build commit,
-including across unrelated merges. Expiry or a changed binding requires an
-unused tag, a new build and a new approval.
+including across unrelated merges. Expiry or a changed binding requires a
+version/prerelease bump across the app manifests above, an unused matching tag,
+a new build and a new approval.
 
 Each native artifact includes before/after JSON observations of free bytes and final asset sizes, not
 an inferred peak. Builds never populate `appCandidates` or write a release.
@@ -230,7 +242,7 @@ redirection can leave an empty or partial file after failure:
 export TAG
 export RUN=YOUR_BUILD_RUN_ID
 python3 - <<'PY' > "$HOME/bridge-app-approval.json"
-import hashlib, json, os, stat, tempfile, zipfile
+import base64, hashlib, json, os, stat, tempfile, zipfile
 from pathlib import Path
 from images import candidate as c
 r = c.q.gh(c.BASE + '/actions/runs/' + os.environ['RUN'])
@@ -239,6 +251,9 @@ assert r['event'] == 'workflow_dispatch' and r['head_branch'] == 'main'
 assert r['path'] == '.github/workflows/images.yml'
 assert all(r[k]['full_name'] == c.q.REPOSITORY for k in ('repository', 'head_repository'))
 a = dict(runId=r['id'], workflowId=r['workflow_id'], runAttempt=r['run_attempt'], buildCommit=r['head_sha'], artifacts={})
+config = c.q.gh(c.BASE + '/contents/app/src-tauri/tauri.conf.json?ref=' + a['buildCommit'])
+assert config['type'] == 'file' and config['encoding'] == 'base64'
+c.validate_app_tag(os.environ['TAG'], c.q.read_json(base64.b64decode(config['content']))['version'])
 rows = [v for page in c.q.gh(c.BASE + '/actions/runs/' + str(r['id']) + '/artifacts?per_page=100', paginate=True) for v in page['artifacts']]
 with tempfile.TemporaryDirectory() as tmp:
     for name, members in c.APP_FILES.items():
@@ -269,25 +284,51 @@ The draft operation compares image policy, manifest bytes and the native image
 selector with the build commit before admitting its assets. In a
 **later PR**, add the proposed tag entry under `appCandidates` in
 `release-set.json`; leave existing image bytes/pins unchanged. Merge that approval
-before the next command. Approval/build SHAs must differ; no entries are seeded
-by this change. Expired artifacts, wrong run/workflow/repository, unsafe ZIPs or
-extra/missing members fail before any draft mutation.
+before the next command. Approval/build SHAs must differ. The retained `v0.1.0`
+entry records the already-published original build; it is not redispatchable.
+Its Windows ZIP still embeds the original pre-retag source URL, now stale;
+future admission still requires an exact tag/source URL and hash match.
+Expired artifacts, wrong run/workflow/repository, unsafe ZIPs or extra/missing
+members fail before any draft mutation.
 
 ```sh
 gh workflow run images.yml -R orka-agents/orka-bridge --ref main -f stage=app-draft -f candidate_tag="$TAG"
 ```
 
-The app draft targets `buildCommit`, not the later approval SHA. Its exact eleven
-assets are two apps, separate QEMU source, four build receipts, both immutable
-manifests, generated `image-pins.json` (stable URLs and exact eleven-image-asset
-inventory), and `size-space.json` (measured files and boundary observations).
-There are no image chunks or boot files. Both draft operations enforce asset
-limits, refuse existing tags/releases, never clobber, and verify every asset by
+The app draft targets `buildCommit`, not the later approval SHA. Its public
+inventory is exactly three files:
+
+- `bridge-windows-x64.zip`
+- `bridge-macos-arm64.tar.gz`
+- `bridge-windows-runtime-source.zip` (required QEMU corresponding source)
+
+Admission still validates all seven artifact members, image bindings and receipts,
+and generates the same four evidence files. Exactly eight JSON files are retained
+under the new output's `evidence/` directory, never uploaded as release assets:
+`windows-before.json`, `windows-after.json`, `macos-before.json`, `macos-after.json`,
+`manifest-macos-arm64.json`, `manifest-windows-amd64.json`, `image-pins.json`
+(stable URLs and the exact eleven-image-asset inventory), and `size-space.json`
+(the unchanged nine pre-generated file sizes and four boundary observations).
+
+The app-draft run uploads only those eight explicit paths as `bridge-app-evidence`
+with 14-day retention, including available evidence after draft/readback failure.
+Successful admission requires all eight files; an already failed job tolerates
+absent files. These JSON files contain no secrets, but workflow-artifact retention
+is finite: download them from the specific app-draft run before actual expiry
+and preserve them in the operator's non-release evidence record. For example:
+
+```sh
+gh run download YOUR_APP_DRAFT_RUN_ID -R orka-agents/orka-bridge --name bridge-app-evidence --dir NEW_EVIDENCE_DIRECTORY
+```
+
+There are no image chunks or boot files in the app release. Both draft operations
+enforce asset limits, refuse existing tags/releases, never clobber, and verify every asset by
 ID readback plus the complete list. After creation, release fields are checked
 through the returned release ID, not by requiring that ID in the release list.
 An observed different release ID for the same tag still fails. A failed draft
-remains visible: use a new
-tag and repin/rebuild/approve; never delete, reuse or silently retry its tag.
+remains visible, with retained evidence: bump the app version/prerelease, choose
+its unused matching tag and repin/rebuild/approve; never delete, reuse or silently
+retry its tag.
 Changed image-release tags require an image/app repin PR before new builds;
 changed image bytes also require new walks. Input drafts are never published.
 The native walks and separate unchanged-app publication remain later manual steps.
