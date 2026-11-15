@@ -440,5 +440,12 @@ click("Overview", [])
 for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
     localSize(CGFloat(width), CGFloat(height))
     scroll(4000)
-    _ = try capture("local-controls-overview-\(size)", ["Your agents", "Refresh"])
+    _ = try capture("local-controls-overview-\(size)", ["Your agents", "Refresh", "web-reader", "Failed"])
 }
+click("By agent", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
+    localSize(CGFloat(width), CGFloat(height))
+    scroll(4000)
+    _ = try capture("local-overview-by-agent-\(size)", ["Your agents", "web-reader", "This computer"])
+}
+click("By cluster", [])

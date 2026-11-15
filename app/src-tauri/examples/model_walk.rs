@@ -152,10 +152,25 @@ fn main() {
                         .ok()
                         .map(|pair| json!({"name":pair.name(), "description":pair.description(), "model":pair.model(), "tools":pair.tools()}));
                     let reason = summary.is_none().then_some("The saved declarations are unsupported or invalid.");
-                    json!({"state":"complete", "runActive":running.load(std::sync::atomic::Ordering::SeqCst), "files":[{
+                    let observation = |document: &str, name: &str, verdict: &str, passed: usize| json!({
+                        "installation":"12345678-1234-4234-8234-123456789abc", "documentId":document,
+                        "source":source, "namespace":"orka-system", "agentName":name, "agentUid":format!("run-{name}"),
+                        "observedAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64, "state":"complete", "report":{"verdict":verdict,"passed":passed,"total":2}
+                    });
+                    json!({"state":"complete", "runActive":running.load(std::sync::atomic::Ordering::SeqCst),
+                        "historyState":"complete", "runAgents":[], "files":[{
                         "documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "name":"web-reader", "state":"readable",
                         "source":bridge_runtime_protocol::SnapshotId::of(content.as_bytes(), tests.as_bytes()),
-                        "summary":summary, "reason":reason
+                        "summary":summary, "reason":reason,
+                        "localResult":observation("9b2b93c4-375c-4815-9717-39852a96e411", "web-reader", "failed", 1)
+                    }, {
+                        "documentId":"22345678-1234-4234-8234-123456789abc", "name":"release-notes", "state":"readable",
+                        "source":source, "summary":{"name":"release-notes","description":"Summarises changes for a release.","model":"gpt-5.6-terra","tools":["file_read"]},
+                        "reason":null,"localResult":observation("22345678-1234-4234-8234-123456789abc", "release-notes", "passed", 2)
+                    }, {
+                        "documentId":"32345678-1234-4234-8234-123456789abc", "name":"pr-summary", "state":"readable",
+                        "source":source,"summary":{"name":"pr-summary","description":"Explains a pull request before review.","model":"gpt-5.6-terra","tools":[]},
+                        "reason":null,"localResult":null
                     }]})
                 }
                 // Match the native Mac image's unavailable-list contract, not a live VM.
@@ -173,6 +188,16 @@ fn main() {
                     json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "name":"web-reader", "agent":*content, "tests":tests,
                         "source":bridge_runtime_protocol::SnapshotId::of(content.as_bytes(), tests.as_bytes())})
                 }
+                "overview_places" => json!({"historyState":"complete","unobserved":[],"places":[{
+                    "key":"team-observed","context":"team-dev","service":"control/orka","namespace":"agents",
+                    "stale":false,"observedAt":1234567890000_u64,"agents":[{
+                        "name":"review-helper","namespace":"agents","uid":"external-agent",
+                        "agentType":"runtime","model":"team-model","tools":["web_fetch"],"record":null
+                    }]
+                },{
+                    "key":"team-remembered","context":"team-west","service":"control/orka","namespace":"agents",
+                    "stale":true,"observedAt":null,"agents":[]
+                }]}),
                 "agents_list" => json!([{"id":bridge_engine::agent_folder::DocumentId::SAMPLE,
                     "name":"web-reader", "path":null, "available":true}]),
                 "agent_selected" => json!(bridge_engine::agent_folder::DocumentId::SAMPLE),

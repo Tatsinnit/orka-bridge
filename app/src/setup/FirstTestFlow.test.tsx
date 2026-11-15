@@ -193,7 +193,7 @@ test('a newer automatic test replaces retained sample evidence after Designer sw
   await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1));
   expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')!.textContent).toBe('Run your first agentRunning');
   await user.click(screen.getByRole('button', { name: 'Overview' })); finish();
-  await screen.findByText('Local cluster stopped', {}, { timeout: 2000 });
+  await screen.findByText('The local cluster is stopped. Start it to test or chat.', {}, { timeout: 2000 });
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')!.textContent).toBe('Run your first agentIts test passed');
 });
@@ -225,10 +225,10 @@ test.each([false, true])('Overview refreshes after the automatic test releases n
   const { ipc, finish } = native(false, lostReplies); const user = await completeSetup();
   await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1));
   await user.click(screen.getByRole('button', { name: 'Overview' }));
-  await screen.findByText('Refresh pending until checks finish');
+  await screen.findByText('Updating when the test finishes.');
   finish();
-  expect(await screen.findByText('Local cluster stopped', {}, { timeout: 2000 })).toBeTruthy();
-  expect(screen.queryByText('Refresh pending until checks finish')).toBeNull();
+  expect(await screen.findByText('The local cluster is stopped. Start it to test or chat.', {}, { timeout: 2000 })).toBeTruthy();
+  expect(screen.queryByText('Updating when the test finishes.')).toBeNull();
   expect(screen.getByRole('button', { name: 'Overview' }).getAttribute('aria-current')).toBe('page');
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
 });

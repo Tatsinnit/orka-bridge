@@ -3,9 +3,35 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import Run from './Run';
+import { StrictMode } from 'react';
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
 const idle = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', busy: null, state: 'idle', canRun: true, report: null, acknowledged: [], pending: null, error: null };
 const complete = { ...idle, state: 'complete', report: { verdict: 'unknown', cases: [{ id: 'published-checksum', question: 'What did the page say?', phase: 'Succeeded', answer: '<script>not executable</script>', completedTools: [], assertions: [{ id: 'checksum-from-page', kind: 'contains', expected: 'checksum', verdict: 'passed' }, { id: 'fetched-page', kind: 'toolCalled', expected: 'web_fetch', verdict: 'unknown' }], verdict: 'unknown' }] } };
+test('an Overview request waits for this document status and starts once in StrictMode', async () => {
+  vi.stubGlobal('isTauri', true);
+  let resolve!: (value: unknown) => void;
+  const handled = vi.fn();
+  const ipc = vi.fn((command: string) => command === 'agent_run_status' ? new Promise(r => { resolve = r; }) : { ...idle, state: 'running', canRun: false });
+  mockIPC(ipc);
+  render(<StrictMode><Run startRequest={1} onStartRequestHandled={handled} /></StrictMode>);
+  await waitFor(() => expect(resolve).toBeTypeOf('function'));
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(0);
+  resolve(idle);
+  await waitFor(() => expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(1));
+  expect(handled).toHaveBeenCalledTimes(1);
+});
+test.each(['blocked', 'cannot-run', 'unreadable'])('an Overview request is consumed without replay when %s', async reason => {
+  vi.stubGlobal('isTauri', true);
+  let available = reason !== 'cannot-run';
+  const handled = vi.fn();
+  const ipc = vi.fn((command: string) => command === 'agent_run_status' && reason === 'unreadable' ? null : { ...idle, canRun: available });
+  mockIPC(ipc);
+  const view = render(<Run startRequest={1} onStartRequestHandled={handled} blocked={reason === 'blocked'} />);
+  await waitFor(() => expect(handled).toHaveBeenCalledTimes(1));
+  available = true;
+  view.rerender(<Run startRequest={1} onStartRequestHandled={handled} />);
+  expect(ipc.mock.calls.some(([cmd]) => cmd === 'agent_run')).toBe(false);
+});
 test('Run is explicit, duplicate clicks and remounts only observe existing work', async () => {
   vi.stubGlobal('isTauri', true); let value: unknown = idle;
   const ipc = vi.fn(command => {

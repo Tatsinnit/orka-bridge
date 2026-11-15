@@ -711,9 +711,9 @@ require(!retained.contains { $0.topCandidates(1).first?.string == "Get started" 
         "Restart must retain welcome dismissal without starting a workspace")
 clickTab("Overview", retained)
 let overview = try capture("overview", "Overview")
-require(nativeTextIsVisible("Agent list unavailable with this Mac image"),
+require(nativeTextIsVisible("This local cluster can't list its agents yet."),
         "Overview must explain the source-inferred old Mac image limit")
-require(nativeTextIsVisible("Saved file") && nativeTextIsVisible("web-reader"),
+require(!visibleButtons("Open web-reader").isEmpty && nativeTextIsVisible("web-reader"),
         "Overview must show the saved file opened through the native Designer")
 clickTab("Designer", overview)
 let designer = try capture("designer-pointer", "Designer")
@@ -1080,7 +1080,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try resultSize(1220, 900)
     clickTab("Overview", [])
     Thread.sleep(forTimeInterval: 1)
-    let passedUID = try recordShot("overview-fixture-versions-passed-by-place", "Checks passed here")
+    let passedUID = try recordShot("overview-fixture-versions-passed-by-place", "Passed")
     clickTab("Designer", [])
     try resultSize(540, 900)
     // Add a distinct failing test to the CI-owned saved file. Reload through the
@@ -1180,38 +1180,38 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     func recordShot(_ name: String, _ checks: String) throws -> String {
         try overviewShot("overview-probe", [checks])
         let anchor = visibleTextBounds(checks)[0]
-        guard let disclosure = visibleButtons("Details Cluster details").filter({ $0.minY > anchor.minY }).min(by: { $0.minY < $1.minY }) else {
-            fail("Cluster details disclosure not visible below \(checks)")
+        guard let disclosure = visibleButtons("Details").filter({ $0.minY > anchor.minY }).min(by: { $0.minY < $1.minY }) else {
+            fail("Details disclosure not visible below \(checks)")
         }
         let point = CGPoint(x: disclosure.midX, y: disclosure.midY)
         mouse(.leftMouseDown, point); mouse(.leftMouseUp, point)
         Thread.sleep(forTimeInterval: 0.5)
-        // Expanding the last card adds content below the old scroll limit.
-        // Bring its place row into view before checking the scoped identity.
-        try overviewShot("overview-probe", [checks, "fixture-cluster · agents"])
+        // Generated IDs are shortened on screen; exercise Copy instead of requiring a raw UID in the layout.
+        try overviewShot("overview-probe", [checks, "Agent ID"])
         guard let currentAnchor = visibleTextBounds(checks).first,
-            let identity = visibleButtons("Details Cluster details").filter({ $0.minY > currentAnchor.minY }).min(by: { $0.minY < $1.minY }) else {
-            fail("Selected identity moved out of view below \(checks)")
+            let copy = visibleButtons("Copy Agent ID").filter({ $0.minY > currentAnchor.minY }).min(by: { $0.minY < $1.minY }) else {
+            fail("Agent ID Copy not visible below \(checks)")
         }
-        // Earlier cards can retain open identities. Scope the UID to the
-        // disclosure below this card's check result, not the whole window.
-        let uids = Set(nativeElements().compactMap { element -> String? in
-            guard attribute(element, "AXRole") as? String == "AXStaticText",
-                let value = attribute(element, "AXValue") as? String, value.hasPrefix("uid-bridge-run-"),
-                let bounds = nativeBounds(element), bounds.minY > identity.maxY, window()!.1.contains(bounds) else { return nil }
-            return value
-        })
-        require(uids.count == 1 && nativeTextIsVisible(checks) && nativeTextIsVisible("fixture-cluster · agents"),
-                "Expected one visible retained Agent UID below selected identity, place and \(checks), found \(uids)")
+        NSPasteboard.general.clearContents()
+        let copyPoint = CGPoint(x: copy.midX, y: copy.midY)
+        mouse(.leftMouseDown, copyPoint); mouse(.leftMouseUp, copyPoint)
+        Thread.sleep(forTimeInterval: 0.5)
+        let uid = NSPasteboard.general.string(forType: .string) ?? ""
+        require(uid.hasPrefix("uid-bridge-run-"), "Copy did not retain the full synthetic Agent UID")
+        NSPasteboard.general.clearContents()
         try capture(name, "Overview")
-        print("PASS \(name): \(checks), retained \(uids.first!)")
-        return uids.first!
+        if let close = visibleButtons("Details").filter({ $0.minY > currentAnchor.minY }).min(by: { $0.minY < $1.minY }) {
+            let p = CGPoint(x: close.midX, y: close.midY)
+            mouse(.leftMouseDown, p); mouse(.leftMouseUp, p)
+        }
+        print("PASS \(name): \(checks), retained \(uid)")
+        return uid
     }
     clickTab("Overview", returnedResult)
     Thread.sleep(forTimeInterval: 1)
-    let unknownUID = try recordShot("overview-fixture-versions-unknown-by-place", "Checks unknown")
+    let unknownUID = try recordShot("overview-fixture-versions-unknown-by-place", "Result unknown")
     require(passedUID != unknownUID, "Repeated Send did not retain distinct Agent UIDs")
-    try overviewShot("overview-fixture-external-by-place", ["runtime-reader", "Not tested by Bridge", "Model on cluster: external-model", "Tools on cluster: web_fetch"])
+    try overviewShot("overview-fixture-external-by-place", ["runtime-reader", "No agent file on this computer.", "external-model", "web_fetch"])
     // Explicit retries reuse this attempt's exact Task UID. Neither an HTTP
     // acknowledgement nor a lost response may manufacture a terminal result.
     clickTab("Designer", [])
@@ -1319,28 +1319,26 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     clickTab("Overview", noReceipt)
     Thread.sleep(forTimeInterval: 1)
     // Manage already observed the cluster's agents; an offline refresh keeps that earlier check.
-    try overviewShot("overview-fixture-first-read-unavailable", ["Earlier cluster check", "Last seen", "runtime-reader"], heading: "fixture-secondary")
+    try overviewShot("overview-fixture-first-read-unavailable", ["Couldn't check just now.", "Showing what Bridge saw", "runtime-reader"], heading: "fixture-secondary")
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false])
     scrollMain(12000)
     clickText("Refresh", in: try capture("overview-probe", "Overview"))
     Thread.sleep(forTimeInterval: 1)
-    try overviewShot("overview-fixture-multiple-places-by-place", ["fixture-secondary", "3 agents", "Checks passed here"], heading: "fixture-secondary")
-    try overviewShot("overview-probe", ["Earlier Sends"])
-    clickButton("fixture-secondary · agents Checks unknown")
-    try overviewShot("overview-fixture-unknown-attempt", ["Agent creation not confirmed", "Checks unknown", "Planned name: bridge-run-"])
+    try overviewShot("overview-fixture-multiple-places-by-place", ["fixture-secondary", "Passed"], heading: "fixture-secondary")
+    require(!nativeTextIsVisible("Earlier Sends"), "Unobserved Send attempts must stay in Send history, not become Overview cards")
     scrollMain(12000)
     clickText("By agent", in: try capture("overview-probe", "Overview"))
-    try overviewShot("overview-fixture-multiple-places-by-agent", ["saved version", "Also found on fixture-secondary · agents"])
+    try overviewShot("overview-fixture-multiple-places-by-agent", ["web-reader", "This computer", "fixture-secondary"])
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": true])
     defer { try? fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false]) }
     scrollMain(12000)
     clickText("Refresh", in: try capture("overview-probe", "Overview"))
     Thread.sleep(forTimeInterval: 1)
-    try overviewShot("overview-fixture-offline-by-agent", ["fixture-secondary · agents", "Recorded checks passed; observation stale", "Stale"])
+    try overviewShot("overview-fixture-offline-by-agent", ["fixture-secondary", "Last Send passed", "Result unknown"])
     scrollMain(12000)
     clickText("By cluster", in: try capture("overview-probe", "Overview"))
-    try overviewShot("overview-fixture-offline-by-place", ["fixture-secondary", "Earlier cluster check", "Last seen", "Stale"], heading: "fixture-secondary")
-    try overviewShot("overview-fixture-offline-record-by-place", ["Recorded checks passed; observation stale", "Stale"])
+    try overviewShot("overview-fixture-offline-by-place", ["fixture-secondary", "Couldn't check just now.", "Showing what Bridge saw"], heading: "fixture-secondary")
+    try overviewShot("overview-fixture-offline-record-by-place", ["Last Send passed", "Result unknown"])
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false])
     // Keep the existing preflight-only cards out of the focused Overview walk.
     // These identities still exercise the same blocked states without a Send.

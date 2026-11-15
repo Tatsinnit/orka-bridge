@@ -26,6 +26,38 @@ test('supported long declarations, empty optional metadata and large registries 
   expect(isSavedFiles({ state: 'complete', runActive: false, files: Array(1025).fill(file) })).toBe(true);
   expect(isLiveAgents({ ...complete, agents: Array(1025).fill({ name: 'agent', namespace: 'ns', uid: 'uid' }) })).toBe(true);
 });
+const runAgent = { installation, namespace: 'orka-system', agentUid: 'run-uid' };
+const document = '9b2b93c4-375c-4815-9717-39852a96e411';
+const result = { installation, documentId: document, source: { agent: 'a'.repeat(64), tests: 'b'.repeat(64) }, namespace: 'orka-system', agentName: 'bridge-run-1', agentUid: 'run-uid', observedAt: 5, state: 'complete', report: { verdict: 'failed', passed: 1, total: 3 } };
+const saved = { documentId: document, name: 'reader', state: 'readable', source: result.source, summary: null, reason: null, localResult: result };
+const history = { state: 'complete', runActive: false, historyState: 'complete', runAgents: [runAgent], files: [saved] };
+test('local results, history state and run Agent ownership are validated and normalised', async () => {
+  expect(isSavedFiles(history)).toBe(true);
+  vi.stubGlobal('isTauri', true); mockIPC(() => history);
+  expect(await readFiles()).toEqual(history);
+  // Older payloads cannot prove ownership or a last result: conservative defaults, never an invented "none".
+  const old = { state: 'complete', runActive: false, files: [{ ...saved, localResult: undefined }] };
+  mockIPC(() => old);
+  const read = await readFiles();
+  expect(read.historyState).toBe('unavailable'); expect(read.runAgents).toEqual([]); expect(read.files[0].localResult).toBeNull();
+});
+test.each([
+  ['unknown history state', { ...history, historyState: 'maybe' }],
+  ['run Agents without history', { ...history, historyState: 'unavailable' }],
+  ['run Agents not an array', { ...history, runAgents: {} }],
+  ['run Agent missing uid', { ...history, runAgents: [{ installation, namespace: 'ns' }] }],
+  ['run Agent with a bad installation', { ...history, runAgents: [{ ...runAgent, installation: 'x' }] }],
+  ['result for another document', { ...history, files: [{ ...saved, localResult: { ...result, documentId: installation } }] }],
+  ['result without counts', { ...history, files: [{ ...saved, localResult: { ...result, report: { verdict: 'passed' } } }] }],
+  ['more passed than total', { ...history, files: [{ ...saved, localResult: { ...result, report: { verdict: 'passed', passed: 4, total: 3 } } }] }],
+  ['fractional counts', { ...history, files: [{ ...saved, localResult: { ...result, report: { verdict: 'passed', passed: 0.5, total: 1 } } }] }],
+  ['result state invented', { ...history, files: [{ ...saved, localResult: { ...result, state: 'invented' } }] }],
+  ['result as a string', { ...history, files: [{ ...saved, localResult: 'passed' }] }],
+])('malformed local result metadata fails closed: %s', async (_, value) => {
+  expect(isSavedFiles(value)).toBe(false);
+  vi.stubGlobal('isTauri', true); mockIPC(() => value);
+  expect((await readFiles()).state).toBe('unavailable');
+});
 test('places require coherent scoped identity and complete summary schema', async () => {
   const agent = { name: 'reader', namespace: 'agents', uid: 'uid', agentType: null, model: null, tools: null, record: null };
   const place = { key: 'key', context: 'team', service: 'control/orka', namespace: 'agents', stale: false, observedAt: 123, agents: [agent] };
@@ -44,7 +76,7 @@ test('places require coherent scoped identity and complete summary schema', asyn
 test('cancelled local summaries do not make the entire Overview unavailable', () => {
   const observation = { installation, documentId: installation, source: { agent: 'a'.repeat(64), tests: 'b'.repeat(64) }, namespace: 'orka-system', agentName: 'example', agentUid: 'uid', observedAt: 123, state: 'complete', report: { verdict: 'cancelled', passed: 1, total: 2 } };
   expect(isLiveAgents({ ...complete, observation })).toBe(true);
-  expect(isLiveAgents({ ...complete, observation: { ...observation, report: { verdict: 'invented' } } })).toBe(false);
+  expect(isLiveAgents({ ...complete, observation: { ...observation, report: { verdict: 'invented', passed: 0, total: 0 } } })).toBe(false);
 });
 test('a scoped cluster read sends only its remembered key', async () => {
   vi.stubGlobal('isTauri', true);

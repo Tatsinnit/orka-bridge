@@ -4,7 +4,7 @@ import { CardSection, Details, GeneratedValue, LongCard, StatusPill, type Status
 import { changedFiles, resultAnnouncement, resultLabel, TestProgress, TestResults } from '../components/TestResults';
 import { SAMPLE_DOCUMENT_ID, type SourceId, sameSource } from './agent-api';
 import { errors, type RunSnapshot, runCall } from './run-api';
-export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, blocked = false, stale = false, onStart, source, onStopLocalCluster }: { documentId?: string; onSnapshot?: (snapshot: RunSnapshot | undefined) => void; blocked?: boolean; stale?: boolean; onStart?: () => void; source?: SourceId; onStopLocalCluster?: () => void }) {
+export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, blocked = false, stale = false, onStart, source, onStopLocalCluster, startRequest, onStartRequestHandled }: { documentId?: string; onSnapshot?: (snapshot: RunSnapshot | undefined) => void; blocked?: boolean; stale?: boolean; onStart?: () => void; source?: SourceId; onStopLocalCluster?: () => void; startRequest?: number; onStartRequestHandled?: () => void }) {
   const [received, setSnapshot] = useState<RunSnapshot>();
   const snapshot = received?.documentId === documentId ? received : undefined;
   const [message, setMessage] = useState<string>();
@@ -43,6 +43,14 @@ export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, block
     else setActionMessage(result.message);
     observations.current++; admitted.current = false; setAction(undefined);
   };
+  const handledStart = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!startRequest || handledStart.current === startRequest || (!snapshot && !message)) return;
+    handledStart.current = startRequest;
+    // A card click is one attempt, never an intent held until the cluster reconnects.
+    if (!message) void act('agent_run');
+    onStartRequestHandled?.();
+  });
   const cancelling = action === 'agent_run_cancel' || action === 'agent_run_check_cancellation' || snapshot?.cancellation === 'cancelling';
   const running = action === 'agent_run' || cancelling || snapshot?.state === 'running';
   const unconfirmed = snapshot?.cancellation === 'unconfirmed';

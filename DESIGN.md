@@ -95,7 +95,7 @@ Six statuses. Every state word in the app maps to one of them, so the same icon 
 | Passed | circle with a check | green | Passed, Ready, Connected |
 | Failed | circle with a cross | red | Failed, Couldn't start, Denied |
 | Running | half-filled circle | blue | Installing, Running (a test), Checking |
-| Stale | dashed ring | slate | Not run since your edit, Result unknown |
+| Stale | dashed ring | slate | Not run since your edit, Earlier files, Result unknown |
 | Needs you | ring with a dot | amber | Needs you, Couldn't check |
 | Not started | plain ring | ink-3 | Not started, Waiting, Not checked, Pick any time |
 

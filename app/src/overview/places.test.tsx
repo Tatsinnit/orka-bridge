@@ -6,138 +6,198 @@ import Overview from './Overview';
 
 const source = { agent: 'a'.repeat(64), tests: 'b'.repeat(64) };
 const id = '12345678-1234-1234-1234-123456789abc';
-const file = { documentId: id, name: 'reader', state: 'readable', source, summary: { name: 'reader', description: 'Reads a page', model: 'declared-model', tools: ['web_fetch'] }, reason: null };
+const id2 = '22345678-1234-1234-1234-123456789abc';
+const file = { documentId: id, name: 'reader', state: 'readable', source, summary: { name: 'reader', description: 'Reads a page', model: 'declared-model', tools: ['web_fetch'] }, reason: null, localResult: null };
 const record = { id, source, targetDisplay: 'team-one · agents', targetUids: { serviceNamespace: 'control', serviceUid: 'svc-one', deploymentNamespace: 'control', deploymentUid: 'dep-one', watchedNamespace: 'agents' }, provider: 'team-model', plannedAgentName: 'same-name', agentUid: 'uid-one', verdict: 'passed', time: 1234567890 };
 const agent = { name: 'same-name', namespace: 'agents', uid: 'uid-one', agentType: 'native', model: 'observed-model', tools: ['web_fetch'], record };
-const first = { key: 'one', context: 'team-one', service: 'control/orka', namespace: 'agents', stale: false, observedAt: 1234567890000, agents: [agent, { ...agent, uid: 'uid-two', record: { ...record, id: '22345678-1234-1234-1234-123456789abc', agentUid: 'uid-two', verdict: 'unknown' } }, { ...agent, uid: 'external', agentType: 'runtime', record: null }] };
-const second = { ...first, key: 'two', context: 'team-two', agents: [{ ...agent, uid: 'uid-three', record: { ...record, agentUid: 'uid-three', targetDisplay: 'team-two · agents', targetUids: { ...record.targetUids, serviceUid: 'svc-two', deploymentUid: 'dep-two' } } }] };
-const places = { places: [first, second], historyState: 'complete', unobserved: [] };
+const unrelated = { ...agent, uid: 'external', name: 'external-agent', record: null };
+const place = (key: string, context: string, agents: unknown[], over: object = {}) => ({ key, context, service: 'control/orka', namespace: 'agents', stale: false, observedAt: 1234567890000, agents, ...over });
+const one = place('one', 'team-one', [agent, unrelated]);
+const two = place('two', 'team-two', [{ ...agent, uid: 'uid-three', record: { ...record, agentUid: 'uid-three' } }]);
+const places = (list: unknown[] = [one, two], over: object = {}) => ({ places: list, historyState: 'complete', unobserved: [], ...over });
+const saved = (list: unknown[] = [file]) => ({ state: 'complete', files: list, runActive: false, historyState: 'complete', runAgents: [] });
 const local = { state: 'complete', installation: id, agents: [], observedAt: 123, observation: null, runActive: false, reason: null };
 const props = { active: true, runBusy: false, workspaceKey: 'ready', onOpenDocument: vi.fn(), onOpenExample: vi.fn(), onChooseWorkspace: vi.fn() };
-function ipc(value: unknown = places, files: unknown[] = [file], live: unknown = local) {
+function ipc(value: unknown = places(), files: unknown = saved(), live: unknown = local) {
   vi.stubGlobal('isTauri', true);
-  mockIPC(command => command === 'overview_places' ? value : command === 'overview_files' ? { state: 'complete', files, runActive: false } : live);
+  mockIPC(command => command === 'overview_places' ? value : command === 'overview_files' ? files : live);
 }
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+const group = (name: string) => screen.findByRole('region', { name });
+const buttons = (el: HTMLElement) => within(el).getAllByRole('button').map(b => b.textContent);
 
-test('two installations in the same context and namespace keep distinct accessible place labels and cross-links', async () => {
-  const a = { ...second, key: 'a', context: 'same-team', service: 'control/orka-a' };
-  const b = { ...second, key: 'b', context: 'same-team', service: 'control/orka-b' };
-  ipc({ ...places, places: [a, b] }); render(<Overview {...props} />);
-  expect(await screen.findByRole('region', { name: 'same-team · agents · control/orka-a' })).toBeTruthy();
-  expect(screen.getByRole('region', { name: 'same-team · agents · control/orka-b' })).toBeTruthy();
-  expect(screen.getByText('Also found on same-team · agents · control/orka-b')).toBeTruthy();
-  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
-  const group = screen.getByRole('region', { name: 'reader · saved version' });
-  expect(within(group).getAllByRole('heading', { level: 3 })).toHaveLength(2);
-  expect(within(group).getAllByText('same-team · agents · control/orka-a').length).toBeGreaterThan(0);
-});
-
-test('each retained Agent has a card per place, external runtime is read-only and not blessed by its name', async () => {
+test('By cluster: This computer first, then each cluster by context name, with a count at the right', async () => {
   ipc(); render(<Overview {...props} />);
-  const one = await screen.findByRole('region', { name: 'team-one · agents · control/orka' });
-  expect(within(one).getAllByRole('heading', { name: 'reader' })).toHaveLength(2);
-  expect(within(one).getByRole('heading', { name: 'same-name' })).toBeTruthy();
-  expect(within(one).getByText('Not tested by Bridge')).toBeTruthy();
-  expect(within(one).getByText('Runtime: runtime')).toBeTruthy();
-  expect(within(one).getAllByText('Model on cluster: observed-model')).toHaveLength(3);
-  const external = within(one).getByRole('heading', { name: 'same-name' }).closest('.long-card')! as HTMLElement;
-  expect(external.querySelector('button')).toBeNull();
-  await userEvent.click(within(external).getByRole('button', { name: 'Open' }));
-  expect(within(external).getByText('external')).toBeTruthy();
-  expect(props.onOpenDocument).not.toHaveBeenCalled();
-  expect(screen.getAllByText('Also found on team-two · agents · control/orka')).toHaveLength(2);
+  const first = await group('This computer');
+  expect(within(first).getByText('local cluster')).toBeTruthy();
+  const remote = await group('team-one');
+  expect(within(remote).getByText('2 agents')).toBeTruthy();
+  const order = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent);
+  expect(order[0]).toBe('This computer'); expect(order.slice().sort()).toEqual(['This computer', 'team-one', 'team-two']);
 });
 
-test('By agent joins only known pair hashes across places and local Agent, leaving unassociated identities separate', async () => {
-  const observation = { installation: id, documentId: id, source, namespace: 'orka-system', agentName: 'local-reader', agentUid: 'local-uid', observedAt: 123, state: 'complete', report: { verdict: 'passed' } };
-  ipc(places, [file], { ...local, agents: [{ name: 'local-reader', namespace: 'orka-system', uid: 'local-uid' }], observation });
-  render(<Overview {...props} />);
-  await userEvent.click(await screen.findByRole('button', { name: 'By agent' }));
-  const revision = screen.getByRole('region', { name: 'reader · saved version' });
-  expect(within(revision).getAllByRole('heading', { level: 3 })).toHaveLength(4);
-  expect(within(revision).getByText('This computer')).toBeTruthy();
-  expect(within(revision).getByText('Also found on team-one · agents · control/orka; team-two · agents · control/orka')).toBeTruthy();
-  expect(within(revision).getAllByText('team-two · agents · control/orka').length).toBeGreaterThan(0);
-  const unassociated = screen.getByRole('region', { name: 'Agent without a linked file · team-one · agents · control/orka' });
-  expect(within(unassociated).getAllByRole('heading', { level: 3 })).toHaveLength(1);
-  expect(screen.getByRole('button', { name: 'By agent' }).getAttribute('aria-pressed')).toBe('true');
-});
-
-test('different check-file hashes form different revision groups even with identical names', async () => {
-  const different = { ...second, agents: [{ ...agent, record: { ...record, source: { ...source, tests: 'c'.repeat(64) } } }] };
-  ipc({ ...places, places: [first, different] }); render(<Overview {...props} />);
-  await userEvent.click(await screen.findByRole('button', { name: 'By agent' }));
-  expect(screen.getByRole('region', { name: 'reader · saved version' })).toBeTruthy();
-  expect(screen.getByRole('region', { name: 'Known file · saved version' })).toBeTruthy();
-});
-
-test('remote Open uses one exact owned hash binding, but identical files are ambiguous and remain read-only', async () => {
-  ipc({ ...places, places: [second] }); const view = render(<Overview {...props} />);
-  const remote = await screen.findByRole('region', { name: 'team-two · agents · control/orka' });
-  await userEvent.click(within(remote).getByRole('button', { name: 'Open reader' }));
+test('remote cards keep a verdict only from a Bridge record, link a file only on exactly one hash match, and offer Open only', async () => {
+  ipc(); render(<Overview {...props} />);
+  const remote = await group('team-one');
+  const linked = within(remote).getByRole('article', { name: /^reader/ });
+  expect(within(linked).getByText('Passed')).toBeTruthy();
+  expect(buttons(linked)).toEqual(['Open', 'Details']);
+  await userEvent.click(within(linked).getByRole('button', { name: 'Open reader on team-one' }));
   expect(props.onOpenDocument).toHaveBeenCalledWith(id);
-  ipc({ ...places, places: [second] }, [file, { ...file, documentId: '22345678-1234-1234-1234-123456789abc' }]);
-  view.rerender(<Overview {...props} workspaceKey="new" />);
-  await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  expect(within(remote).queryByRole('button', { name: 'Open reader' })).toBeNull();
-  expect(within(remote).getByText('Open')).toBeTruthy();
+  const external = within(remote).getByRole('article', { name: /^external-agent/ });
+  expect(within(external).queryByText(/Passed|Failed|Not tested|Result unknown/)).toBeNull();
+  expect(buttons(external)).toEqual(['Details']);
+  expect(within(external).getByText('No agent file on this computer.')).toBeTruthy();
 });
 
-test('offline last-seen cards never present a current green pass and recover only on fresh native result', async () => {
-  ipc({ ...places, places: [{ ...second, stale: true }] }); render(<Overview {...props} />);
-  const remote = await screen.findByRole('region', { name: 'team-two · agents · control/orka' });
-  expect(within(remote).getByText('Earlier cluster check. Refresh to check again.')).toBeTruthy();
-  expect(within(remote).getByText(/Last seen/)).toBeTruthy();
-  expect(within(remote).getByText('Recorded checks passed; observation stale')).toBeTruthy();
+test('a cancelled cluster result remains neutral rather than failed or passed', async () => {
+  ipc(places([{ ...two, agents: [{ ...agent, record: { ...record, verdict: 'cancelled' } }] }]));
+  render(<Overview {...props} />);
+  const remote = await group('team-two');
+  expect(within(remote).getByText('Not tested')).toBeTruthy();
+  expect(remote.querySelector('.status-passed, .status-failed')).toBeNull();
+  expect(remote.querySelector('.status-not-started')).toBeTruthy();
+});
+
+test('identical saved files are ambiguous: the cluster card stays unlinked, local cards stay one per document', async () => {
+  ipc(places([two]), saved([file, { ...file, documentId: id2, name: 'copy', summary: { ...file.summary, name: 'copy' } }]));
+  render(<Overview {...props} />);
+  const remote = await group('team-two');
+  expect(within(remote).queryByRole('button', { name: /^Open/ })).toBeNull();
+  expect(within(remote).getByText('No agent file on this computer.')).toBeTruthy();
+  const here = await group('This computer');
+  expect(within(here).getAllByRole('article')).toHaveLength(2);
+  expect(within(here).queryByText(/also on/)).toBeNull();
+});
+
+test('also on comes from unique document links: names for two, a count for more', async () => {
+  const third = place('three', 'team-three', [{ ...agent, uid: 'u3', record: { ...record, agentUid: 'u3' } }]);
+  ipc(places([one, two]), saved()); const view = render(<Overview {...props} />);
+  const here = await group('This computer');
+  expect(within(here).getByText(/also on/).closest('p')!.textContent).toBe('declared-model · web_fetch · also on team-one and team-two');
+  const remote = within(await group('team-two')).getByRole('article', { name: /^reader/ });
+  expect(within(remote).getByText(/also on/).closest('p')!.textContent).toBe('observed-model · web_fetch · also on this computer and team-one');
+  view.unmount(); ipc(places([one, two, third])); render(<Overview {...props} />);
+  expect((await within(await group('This computer')).findByText(/also on/)).textContent).toContain('also on 3 clusters');
+});
+
+test('same-context clusters stay distinguishable', async () => {
+  ipc(places([place('a', 'same', [], { service: 'control/a' }), place('b', 'same', [], { service: 'control/b' })])); render(<Overview {...props} />);
+  expect(await group('same · agents · control/a')).toBeTruthy(); expect(screen.getByRole('region', { name: 'same · agents · control/b' })).toBeTruthy();
+});
+
+test('By agent: one group per file with a card per cluster, agents without a file last with their cluster', async () => {
+  ipc(); render(<Overview {...props} />);
+  await group('team-one');
+  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
+  expect(screen.getByRole('button', { name: 'By agent' }).getAttribute('aria-pressed')).toBe('true');
+  const doc = screen.getByRole('region', { name: 'reader' });
+  expect(within(doc).getAllByText('Reads a page')).toHaveLength(1);
+  expect(within(doc).getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['This computer', 'team-one', 'team-two']);
+  const none = screen.getByRole('region', { name: 'Agents without a file' });
+  expect(within(none).getByRole('heading', { level: 3, name: 'external-agent' })).toBeTruthy();
+  expect(within(none).getByText('team-one', { selector: 'code' }).closest('p')!.textContent).toBe('observed-model · web_fetch · on team-one');
+  const titles = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent);
+  expect(titles).toEqual(['reader', 'Agents without a file']);
+});
+
+test('By agent keeps an unreadable saved document in its own group with a cluster title', async () => {
+  ipc(places([]), saved([{ ...file, state: 'unreadable', source: null, summary: null, reason: 'The saved file is unreadable.' }]));
+  render(<Overview {...props} />); await group('This computer');
+  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
+  const doc = screen.getByRole('region', { name: 'reader' });
+  expect(within(doc).getByRole('heading', { level: 3, name: 'This computer' })).toBeTruthy();
+  expect(within(doc).getByText('The saved file is unreadable.')).toBeTruthy();
+  expect(within(doc).queryByRole('button', { name: /^Open/ })).toBeNull();
+});
+
+test('By agent keeps cluster trouble explanations and recovery actions visible', async () => {
+  ipc(places([{ ...two, stale: true }]), saved(), { ...local, state: 'unavailable', reason: 'stopped' });
+  render(<Overview {...props} />); await group('team-two');
+  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
+  expect(screen.getByText('The local cluster is stopped. Start it to test or chat.')).toBeTruthy();
+  expect(screen.getByText(/Couldn't check just now/)).toBeTruthy();
+  expect(screen.getAllByRole('button', { name: 'Open Clusters' })).toHaveLength(2);
+});
+
+test('groups go to two stacks by card count and compact is one stack in the same logical order', async () => {
+  const many = place('many', 'big', [agent, { ...agent, uid: 'b' }, { ...agent, uid: 'c' }].map((a, i) => ({ ...a, record: null, uid: `m${i}` })));
+  ipc(places([many, place('s1', 'small-1', []), place('s2', 'small-2', [])])); const view = render(<Overview {...props} />);
+  await group('big');
+  const stacks = () => [...document.querySelectorAll('.overview-stack')].map(s => [...s.querySelectorAll('h2')].map(h => h.textContent));
+  // Greedy by card count: the tall group sits alone in its stack while the short ones share the other.
+  expect(stacks()).toEqual([['This computer', 'small-1', 'small-2'], ['big']]);
+  view.unmount();
+  vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
+  render(<Overview {...props} />); await group('big');
+  expect(stacks()[0]).toEqual(['This computer', 'big', 'small-1', 'small-2']);
+});
+
+test('a cluster not connected since startup shows no count and no invented empty or green state', async () => {
+  ipc(places([place('west', 'team-west', [], { observedAt: null, stale: true, checkedAt: 1234567890000 })]));
+  const choose = vi.fn(); render(<Overview {...props} onChooseWorkspace={choose} />);
+  const west = await group('team-west');
+  expect(within(west).getByText('Not connected since Bridge started. Connect it to see its agents.')).toBeTruthy();
+  expect(within(west).queryByText(/^\d+ agents?$/)).toBeNull();
+  expect(within(west).queryByText(/No agents in/)).toBeNull();
+  await userEvent.click(within(west).getByRole('button', { name: 'Open Clusters' })); expect(choose).toHaveBeenCalled();
+});
+
+test('a stale cluster keeps cards as Result unknown with Open only, offers Check again, and recovers on a fresh read', async () => {
+  ipc(places([{ ...two, stale: true }])); render(<Overview {...props} />);
+  const remote = await group('team-two');
+  expect(within(remote).getByText("Couldn't check just now.", { exact: false })).toBeTruthy();
+  expect(within(remote).getByText(/Showing what Bridge saw/)).toBeTruthy();
+  expect(within(remote).getByText('Result unknown')).toBeTruthy();
+  expect(within(remote).getByText('Last Send passed', { exact: false })).toBeTruthy();
   expect(remote.querySelector('.status-passed')).toBeNull();
-  ipc({ ...places, places: [second] }); await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  expect(within(remote).getByText('Checks passed here')).toBeTruthy();
+  expect(within(remote).getByRole('button', { name: 'Open Clusters' })).toBeTruthy();
+  ipc(places([two])); await userEvent.click(within(remote).getByRole('button', { name: 'Check again' }));
+  await waitFor(() => expect(within(screen.getByRole('region', { name: 'team-two' })).getByText('Passed')).toBeTruthy());
 });
 
-test('a place with no successful observation never contributes an invented zero Agent total', async () => {
-  ipc({ ...places, places: [{ ...second, checkedAt: 1234567890000, observedAt: null, stale: true, agents: [] }] });
-  const counts = vi.fn(); render(<Overview {...props} onCounts={counts} />);
-  expect(await screen.findByText('Agents not checked yet. Refresh or check access in Clusters.')).toBeTruthy();
-  await waitFor(() => expect(counts).toHaveBeenLastCalledWith(expect.stringContaining('Cluster agent count unavailable')));
-  expect(screen.queryByText(/0 cluster Agents/)).toBeNull();
-});
-
-test('earlier Sends to the same target keep their verdict distinguishable before unfolding', async () => {
-  ipc({ places: [], historyState: 'complete', unobserved: [
-    { ...record, agentUid: null, verdict: 'unknown' },
-    { ...record, id: '22345678-1234-1234-1234-123456789abc', agentUid: null, verdict: 'failed' },
-  ] });
-  render(<Overview {...props} />);
-  const attempts = await screen.findByRole('region', { name: 'Earlier Sends' });
-  expect(within(attempts).getByRole('button', { name: 'team-one · agents Checks unknown' }).getAttribute('aria-expanded')).toBe('false');
-  expect(within(attempts).getByRole('button', { name: 'team-one · agents Checks failed' }).getAttribute('aria-expanded')).toBe('false');
-});
-
-test('unknown without UID is an attempt, not a counted Agent or association; history failure is visible', async () => {
-  ipc({ places: [], historyState: 'complete', unobserved: [{ ...record, agentUid: null, verdict: 'unknown' }] });
-  render(<Overview {...props} />);
-  const attempts = await screen.findByRole('region', { name: 'Earlier Sends' });
-  expect(within(attempts).getByText('Saved Send attempts. Current cluster status is unknown.')).toBeTruthy();
-  expect(within(attempts).queryByText(/not found in the latest check/)).toBeNull();
-  expect(within(attempts).getByText('Agent creation not confirmed')).toBeTruthy();
-  expect(within(attempts).getByText('Checks unknown', { selector: 'p' })).toBeTruthy();
-  expect(within(attempts).queryByRole('button', { name: /Open/ })).toBeNull();
-  ipc({ places: [second], historyState: 'unavailable', unobserved: [] });
+test('a failed cluster read keeps the last good clusters flagged stale, never as fresh', async () => {
+  ipc(); render(<Overview {...props} />);
+  await group('team-two');
+  mockIPC(command => { if (command === 'overview_places') throw Error('nope'); return command === 'overview_files' ? saved() : local; });
   await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Saved Send summaries unavailable. Recorded checks cannot be confirmed.');
-  const missing = (await screen.findByText('Recorded checks unavailable')).closest('.long-card')!;
-  expect(missing.querySelector('.pill.status-needs-you')).toBeTruthy();
-  expect(missing.querySelector('.pill.status-not-started')).toBeNull();
+  expect(await screen.findByText(/Couldn't read clusters just now/)).toBeTruthy();
+  const remote = screen.getByRole('region', { name: 'team-two' });
+  expect(within(remote).getByText('Result unknown')).toBeTruthy(); expect(within(remote).queryByText('Passed')).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'No agents yet' })).toBeNull();
 });
 
-test('cluster inventory refresh works while the local VM is busy and ignores replies after hiding', async () => {
+test('without saved Send summaries cluster cards say they could not check, and Earlier Sends never appears', async () => {
+  ipc(places([two], { historyState: 'unavailable', unobserved: [{ ...record, agentUid: null, verdict: 'unknown' }] })); render(<Overview {...props} />);
+  const remote = await group('team-two');
+  expect(within(remote).getByText("Couldn't check")).toBeTruthy();
+  expect(remote.querySelector('.pill.status-needs-you')).toBeTruthy();
+  expect(screen.getByRole('alert').textContent).toContain('Saved Send results are unavailable');
+  expect(screen.queryByText('Earlier Sends')).toBeNull(); expect(screen.queryByRole('region', { name: 'Earlier Sends' })).toBeNull();
+});
+
+test('cluster Details hold the generated identity; nothing generated is on the card face', async () => {
+  ipc(places([two])); render(<Overview {...props} />);
+  const c = within(await group('team-two')).getByRole('article', { name: /^reader/ });
+  expect(c.textContent).not.toMatch(/uid-three|same-name/);
+  await userEvent.click(within(c).getByRole('button', { name: 'Details' }));
+  expect(within(c).getByText('same-name')).toBeTruthy(); expect(within(c).getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy();
+});
+
+test('unlinked local Agent and a cluster with no agents', async () => {
+  ipc(places([place('empty', 'team-empty', [])]), saved([]), { ...local, agents: [{ name: 'mine', namespace: 'orka-system', uid: 'mine-uid' }] });
+  render(<Overview {...props} />);
+  expect(await screen.findByText('No agents in agents yet.')).toBeTruthy();
+  expect(within(await group('This computer')).getByRole('heading', { level: 3, name: 'mine' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'No agents yet' })).toBeNull();
+});
+
+test('replies after hiding are ignored', async () => {
   let resolve!: (value: unknown) => void; ipc();
-  mockIPC(command => command === 'overview_places' ? new Promise(r => { resolve = r; }) : { state: 'complete', files: [file], runActive: true });
-  const view = render(<Overview {...props} runBusy />);
-  await screen.findByRole('heading', { name: 'reader' });
-  expect(resolve).toBeTypeOf('function');
-  view.rerender(<Overview {...props} active={false} runBusy />);
-  await act(async () => { resolve(places); await Promise.resolve(); });
-  expect(view.container.querySelector('section[aria-label="team-one · agents · control/orka"]')).toBeNull();
+  mockIPC(command => command === 'overview_places' ? new Promise(r => { resolve = r; }) : command === 'overview_files' ? saved() : local);
+  const view = render(<Overview {...props} />);
+  await waitFor(() => expect(resolve).toBeTypeOf('function'));
+  view.rerender(<Overview {...props} active={false} />);
+  await act(async () => { resolve(places()); await Promise.resolve(); });
+  expect(view.container.querySelector('section[aria-label="team-one"]')).toBeNull();
 });

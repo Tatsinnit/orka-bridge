@@ -15,6 +15,24 @@ const unconfirmed: RunSnapshot = { ...done, cancellation: 'unconfirmed', canRetr
 function native(value: RunSnapshot = running) { vi.stubGlobal('isTauri', true); mockIPC(() => value); }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 
+test('an Overview-started run can be cancelled without replaying its start request', async () => {
+  vi.stubGlobal('isTauri', true);
+  let value: RunSnapshot = { ...running, state: 'idle', stage: null, busy: null, canRun: true, canCancel: false };
+  const handled = vi.fn();
+  const ipc = vi.fn(command => {
+    if (command === 'agent_run') value = running;
+    if (command === 'agent_run_cancel') value = done;
+    return value;
+  }); mockIPC(ipc);
+  const view = render(<Run startRequest={1} onStartRequestHandled={handled} />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Cancel tests' }));
+  await screen.findByText('Cancelled', { selector: '.pill' });
+  view.rerender(<Run startRequest={1} onStartRequestHandled={handled} />);
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toEqual([['agent_run', { documentId }]]);
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run_cancel')).toEqual([['agent_run_cancel', { documentId }]]);
+  expect(handled).toHaveBeenCalledTimes(1);
+});
+
 test('Cancel is explicit, document-bound, single-flight and becomes a status, not a disabled button', async () => {
   vi.stubGlobal('isTauri', true); const reply = deferred<RunSnapshot>(); let value = running;
   const ipc = vi.fn(command => command === 'agent_run_cancel' ? reply.promise : value); mockIPC(ipc);
