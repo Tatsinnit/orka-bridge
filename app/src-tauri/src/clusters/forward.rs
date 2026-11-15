@@ -235,6 +235,28 @@ impl RunTransport for OrkaStreamTransport {
                 .await
         })
     }
+    fn update_agent<'a>(
+        &'a self,
+        name: &'a str,
+        body: &'a Value,
+        deadline: Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async move {
+            if self.read_only
+                || !crate::engine::run::valid_cancel_identity(
+                    name,
+                    body["expectedUID"].as_str().unwrap_or(""),
+                )
+                || body["expectedGeneration"].as_u64().is_none_or(|g| g == 0)
+                || !body["spec"].is_object()
+            {
+                return Err(ErrorKind::Configuration);
+            }
+            // request() revalidates the frozen destination immediately before this PUT.
+            self.request(&format!("agents/{name}/spec"), None, Some(body), deadline)
+                .await
+        })
+    }
     fn request<'a>(
         &'a self,
         path: &'a str,
@@ -411,8 +433,15 @@ impl Connection {
             let mut authorization = HeaderValue::from_str(&format!("Bearer {bearer}"))
                 .map_err(|_| ErrorKind::Configuration)?;
             authorization.set_sensitive(true);
+            let update = body.is_some() && path.starts_with("agents/") && path.ends_with("/spec");
             let request = Request::builder()
-                .method(if body.is_some() { "POST" } else { "GET" })
+                .method(if update {
+                    "PUT"
+                } else if body.is_some() {
+                    "POST"
+                } else {
+                    "GET"
+                })
                 .uri(uri)
                 .header(header::HOST, "orka")
                 .header(header::AUTHORIZATION, authorization)
@@ -463,12 +492,19 @@ impl Connection {
             match status {
                 401 => return Err(ErrorKind::Authentication),
                 403 => return Err(ErrorKind::Permission),
-                404 if body.is_none() || cancel => return Err(ErrorKind::NotFound),
-                405 if cancel => return Err(ErrorKind::Unsupported),
-                409 if cancel => return Err(ErrorKind::Conflict),
+                400 if body.is_some() => return Err(ErrorKind::Invalid),
+                404 => return Err(ErrorKind::NotFound),
+                405 if body.is_some() => return Err(ErrorKind::Unsupported),
+                409 if body.is_some() => return Err(ErrorKind::Conflict),
                 _ => (),
             }
-            if status != if body.is_some() && !cancel { 201 } else { 200 } {
+            if status
+                != if body.is_some() && !cancel && !update {
+                    201
+                } else {
+                    200
+                }
+            {
                 return Err(ErrorKind::Response);
             }
             let mut value: Value =
@@ -493,6 +529,7 @@ impl Connection {
                 && matches!(
                     result,
                     Err(ErrorKind::Response
+                        | ErrorKind::Invalid
                         | ErrorKind::NotFound
                         | ErrorKind::Conflict
                         | ErrorKind::Unsupported

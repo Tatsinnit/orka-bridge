@@ -8,8 +8,10 @@ export type SendView = Pick<RunSnapshot, 'acknowledged' | 'pending' | 'report'> 
   documentId: string; id: string; targetId: string; providerId: string; targetName: string | null;
   source: SourceId | null; model: string | null; agentName: string | null;
   state: 'running' | 'complete' | 'unknown';
-  stage: 'capture' | 'access' | 'preflight' | 'submit' | 'storage' | 'observe' | 'stopped' | 'done';
+  stage: 'capture' | 'access' | 'preflight' | 'submit' | 'submitRejected' | 'storage' | 'observe' | 'stopped' | 'done'
+    | 'updateConflict' | 'updateUnsupported' | 'updateMissing' | 'updateDenied' | 'updateInvalid' | 'updateUnconfirmed' | 'earlierWork';
   error: string | null; storageError: boolean; cancellation?: Cancellation | null;
+  agentAction?: 'create' | 'update' | 'unchanged' | null;
 };
 const uuid = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
 const text = (v: unknown) => v === null || typeof v === 'string' && v.length > 0 && v.length <= 4096;
@@ -19,19 +21,28 @@ export const sendErrors = {
   preflight: 'The cluster, tools or AI connection could not be confirmed. Check your cluster and try again.',
   storage: 'Nothing was sent because Bridge could not save a summary. Check local storage before trying again.',
   submit: 'Sending was not confirmed. Named resources may still exist. Nothing was retried.',
+  submitRejected: 'Orka did not accept the resource. Check cluster access and try again.',
   observe: 'The result could not be confirmed. The cluster may still be running checks.',
   stopped: 'Stopped watching. The cluster may still be running checks.',
+  updateConflict: 'This agent changed outside Bridge. Your files are unchanged.',
+  updateUnsupported: "This Orka can't safely update this agent",
+  updateMissing: 'The linked agent is no longer available on this cluster. Your files are unchanged.',
+  updateDenied: 'Cannot update this agent with this cluster identity.',
+  updateInvalid: 'Orka did not accept the agent update. Your files are unchanged.',
+  updateUnconfirmed: 'Outcome not confirmed. Check this cluster before trying again. Nothing was retried.',
+  earlierWork: 'An earlier Send is not finished or its outcome is not confirmed. Check its status or cancel its tests before updating this agent.',
 } as const;
 function valid(v: unknown): v is SendView {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   const row = v as Record<string, unknown>;
-  return Object.keys(row).filter(key => key !== 'cancellation').sort().join(',') === 'acknowledged,agentName,documentId,error,id,model,pending,providerId,report,source,stage,state,storageError,targetId,targetName'
+  return Object.keys(row).filter(key => key !== 'cancellation' && key !== 'agentAction').sort().join(',') === 'acknowledged,agentName,documentId,error,id,model,pending,providerId,report,source,stage,state,storageError,targetId,targetName'
     && (!('cancellation' in row) || isCancellation(row.cancellation))
+    && (!('agentAction' in row) || row.agentAction === null || ['create', 'update', 'unchanged'].includes(row.agentAction as string))
     && typeof row.storageError === 'boolean'
     && isDocumentId(row.documentId) && uuid(row.id) && uuid(row.targetId) && uuid(row.providerId) && text(row.targetName)
     && (row.source === null || isSourceId(row.source)) && text(row.model) && text(row.agentName)
     && ['running', 'complete', 'unknown'].includes(row.state as string)
-    && ['capture', 'access', 'preflight', 'submit', 'storage', 'observe', 'stopped', 'done'].includes(row.stage as string)
+    && (row.stage === 'done' || typeof row.stage === 'string' && Object.hasOwn(sendErrors, row.stage))
     && (row.error === null || typeof row.error === 'string' && Object.hasOwn(sendErrors, row.error))
     && isRunSnapshot({ state: row.state, canRun: false, report: row.report, acknowledged: row.acknowledged, pending: row.pending, error: null });
 }
@@ -39,11 +50,15 @@ export type SendCheck = {
   documentId: string; source: SourceId | null; targetId: string; providerId: string; model: string | null;
   rows: { label: string; status: 'allowed' | 'blocked' | 'cannotCheck' | 'unverified'; message: string }[];
   canSend: boolean;
+  action?: 'create' | 'update' | 'unchanged' | 'blocked'; canSeparate?: boolean;
 };
 function isCheck(v: unknown): v is SendCheck {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   const row = v as Record<string, unknown>;
-  return Object.keys(row).sort().join(',') === 'canSend,documentId,model,providerId,rows,source,targetId'
+  return Object.keys(row).filter(key => key !== 'action' && key !== 'canSeparate').sort().join(',') === 'canSend,documentId,model,providerId,rows,source,targetId'
+    && ((!('action' in row) && !('canSeparate' in row))
+      || ['create', 'update', 'unchanged', 'blocked'].includes(row.action as string) && typeof row.canSeparate === 'boolean'
+        && (row.action !== 'blocked' || row.canSend === false))
     && isDocumentId(row.documentId) && uuid(row.targetId) && uuid(row.providerId) && text(row.model)
     && (row.source === null || isSourceId(row.source))
     && Array.isArray(row.rows) && row.rows.length > 0 && row.rows.length <= 1024

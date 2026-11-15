@@ -83,6 +83,7 @@ async fn late_intent_after_failed_drive_is_serviced_before_atomic_finalization()
                 source: None,
                 model: None,
                 agent_name: Some("agent".into()),
+                agent_action: None,
                 state: SendState::Running,
                 stage: Stage::Observe,
                 acknowledged: vec![Receipt {

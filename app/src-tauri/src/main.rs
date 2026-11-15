@@ -375,12 +375,19 @@ async fn send_start(
     target_id: String,
     provider_id: String,
     expected_source: bridge_runtime_protocol::SnapshotId,
+    separate_agent: Option<bool>,
     agents: tauri::State<'_, Arc<Agents>>,
     state: tauri::State<'_, Arc<SendOwner>>,
 ) -> Result<SendStatus, &'static str> {
     let folder = document_folder(agents.inner().clone(), document_id).await?;
     Ok(state
-        .start_document(folder, &target_id, &provider_id, expected_source)
+        .start_document_separate(
+            folder,
+            &target_id,
+            &provider_id,
+            expected_source,
+            separate_agent.unwrap_or(false),
+        )
         .await)
 }
 #[tauri::command]

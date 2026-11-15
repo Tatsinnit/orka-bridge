@@ -34,7 +34,7 @@ function CancellationNotice({ cancellation, report }: { cancellation?: Cancellat
     {cancellation === 'denied' && <p>Work may still be running.</p>}</>;
 }
 const cancellationDetails = 'Orka marked these tests cancelled. Worker cleanup can continue; actions already taken are not undone.';
-function SavedSend({ attempt, revision }: { attempt: AttemptSummary; revision: string }) {
+function SavedSend({ attempt, revision, onChanged }: { attempt: AttemptSummary; revision: string; onChanged?: () => void }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<SendHistoryDetail>();
   const [checkedVerdict, setCheckedVerdict] = useState<AttemptSummary['verdict']>();
@@ -72,6 +72,7 @@ function SavedSend({ attempt, revision }: { attempt: AttemptSummary; revision: s
       if (request === epoch.current) {
         setDetail(value); setError(undefined); setConfirmRemove(false);
         if (command !== 'send_history_remove') setCheckedVerdict(value.interrupted ? 'unknown' : value.report?.verdict ?? 'unknown');
+        onChanged?.();
       }
     } catch (failure) { if (request === epoch.current) setError((failure as Error).message); }
     finally { operation.current = false; if (request === epoch.current) { setBusy(false); setCancelling(false); } }
@@ -120,7 +121,7 @@ function SavedSend({ attempt, revision }: { attempt: AttemptSummary; revision: s
     </Disclosure>
   </li>;
 }
-export function SendHistory({ revision }: { revision: string }) {
+export function SendHistory({ revision, onChanged }: { revision: string; onChanged?: () => void }) {
   const [history, setHistory] = useState<AttemptSummary[]>();
   const [error, setError] = useState<string>();
   const [retry, setRetry] = useState(0);
@@ -136,7 +137,7 @@ export function SendHistory({ revision }: { revision: string }) {
     <p>Earlier Sends and their test results. An interrupted Send may still be running on the cluster.</p>
     <Details hint="Saved results and limits"><p>Up to 256 Sends, 64 MiB total and 4 MiB per Send. Old terminal details are evicted first. Interrupted Sends are not resumed. Checking their status never sends tests again. Removing saved details changes only this computer, not the cluster. Removed or evicted answers may not be recoverable.</p></Details>
     {error ? <><p role="alert">{error}</p><Button type="button" kind="secondary" onClick={() => setRetry(v => v + 1)}>Retry saved Sends</Button></>
-      : history ? history.length ? <ol>{history.map(attempt => <SavedSend key={attempt.id} attempt={attempt} revision={revision} />)}</ol> : <p>No saved Sends yet.</p> : <p role="status">Reading saved Sends…</p>}
+      : history ? history.length ? <ol>{history.map(attempt => <SavedSend key={attempt.id} attempt={attempt} revision={revision} onChanged={onChanged} />)}</ol> : <p>No saved Sends yet.</p> : <p role="status">Reading saved Sends…</p>}
   </section>;
 }
 export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, model, local, stale, blocked, visible, remote, onChooseCluster, onReloadSource }: {
@@ -172,6 +173,17 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
   const [reloadError, setReloadError] = useState<string>();
   const targetId = target?.id;
   const agentHash = source?.agent; const testsHash = source?.tests;
+  const previousSend = useRef<{ id: string; state: string } | undefined>(undefined);
+  const previousBusy = useRef<string | undefined>(undefined);
+  const busyDocumentId = foreignBusy?.documentId;
+  const sendId = snapshot?.id; const sendState = snapshot?.state;
+  useEffect(() => {
+    const previous = previousSend.current;
+    previousSend.current = sendId && sendState ? { id: sendId, state: sendState } : undefined;
+    const foreignFinished = !!previousBusy.current && !busyDocumentId;
+    previousBusy.current = busyDocumentId;
+    if (foreignFinished || (previous?.id === sendId && previous?.state === 'running' && sendState !== 'running')) setRefresh(value => value + 1);
+  }, [sendId, sendState, busyDocumentId]);
   const checkKey = JSON.stringify([documentId, targetId, providerId, agentHash, testsHash, refresh]);
   const checkingEnabled = (visible || remote) && !blocked && !!targetId && !!providerId && !!agentHash && !!testsHash;
   useEffect(() => {
@@ -188,12 +200,16 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
   const reason = blocked ?? (foreignBusy ? `${foreignBusy.name} is sending tests.` : undefined) ?? (!target || !provider ? 'Choose a cluster and AI connection in Clusters first'
     : !checked ? 'Checking this destination…' : checked.error ?? (mismatched ? 'Your saved files changed. Reload them to check this destination.'
     : !checked.value?.canSend ? 'Resolve the destination checks before sending.' : undefined));
-  async function mutate(command: 'send_start' | 'send_cancel') {
+  const canSeparate = !blocked && !foreignBusy && matched && !!checked?.value?.canSeparate && !!target && !!provider;
+  const sendLabel = checked?.value?.action === 'update' || checked?.value?.action === 'blocked' ? 'Update agent and run tests'
+    : checked?.value?.action === 'unchanged' ? 'Run cluster tests again'
+    : checked?.value?.action === 'create' || visible ? 'Send and run tests' : 'Run all tests';
+  async function mutate(command: 'send_start' | 'send_cancel', separateAgent = false) {
     if (admitted.current) return;
     let args: Record<string, unknown>;
     if (command === 'send_start') {
-      if (reason || !target || !providerId || !checked?.value?.source) return;
-      args = { targetId: target.id, providerId, expectedSource: checked.value.source };
+      if ((separateAgent ? !canSeparate : !!reason) || !target || !providerId || !checked?.value?.source) return;
+      args = { targetId: target.id, providerId, expectedSource: checked.value.source, ...(separateAgent ? { separateAgent: true } : {}) };
     } else {
       if (!snapshot) return;
       args = { sendId: snapshot.id };
@@ -212,6 +228,7 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
     try {
       await sendHistoryDetail(command, snapshot.id);
       setHistoryRevision(value => value + 1);
+      setRefresh(value => value + 1);
       const result = await sendCall('send_status', { documentId });
       if (request === epoch.current) { setSnapshot(result); setMessage(undefined); }
     } catch (error) { if (request === epoch.current) setMessage((error as Error).message); }
@@ -234,10 +251,10 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
   const revisionExplanation = snapshot?.source && !current ? changedFiles(editorCurrent ? resultSource : source, snapshot.source, stale) : undefined;
   const uncertain = snapshot?.state === 'unknown' || snapshot?.report?.verdict === 'unknown';
   const resultState: Status = outdated ? 'stale' : running || busy || (checkingEnabled && !checked) ? 'running' : uncertain ? 'stale' : snapshot?.report?.verdict === 'passed' ? 'passed' : snapshot?.report?.verdict === 'failed' || snapshot?.error ? 'failed' : reason ? 'needs-you' : 'not-started';
-  const stages = { capture: 'Reading your saved files', access: 'Confirming cluster access', preflight: 'Checking the AI connection and tools', storage: 'Saving the Send summary', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', stopped: 'Stopped watching', done: 'Tests finished' };
+  const stages: Record<string, string> = { ...sendErrors, capture: 'Reading your saved files', access: 'Confirming cluster access', preflight: 'Checking the AI connection and tools', storage: 'Saving the Send summary', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', stopped: 'Stopped watching', done: 'Tests finished' };
   return <><section tabIndex={-1} className="send-panel" aria-label="Send and cluster tests" hidden={!visible && !remote && !running}>
-    <LongCard title={visible ? 'Send your agent' : 'Tests on your cluster'} status={<><StatusPill state={resultState} /><span className="status-description">{outdated ? unconfirmed ? 'Revision not confirmed' : 'Not run since your edit' : running || resultState === 'running' ? undefined : cancellation && cancellation !== 'confirmed' ? cancellationLabels[cancellation] : uncertain ? snapshot?.stage === 'stopped' && !cancellation ? 'Stopped watching' : 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>The saved agent and test files go together{snapshot?.model && <> · <code>{snapshot.model}</code></>}{targetName && <> · <code>{targetName}</code></>}. Each Send creates a new agent, kept on the cluster even if a test fails.</>}
-      action={<div className="workspace-step-actions">{!running && <Button type="button" kind="primary" disabled={!!reason || busy || !!message} title={reason} onClick={() => { void mutate('send_start'); }}>{visible ? 'Send and run tests' : 'Run all tests'}</Button>}
+    <LongCard title={visible ? 'Send your agent' : 'Tests on your cluster'} status={<><StatusPill state={resultState} /><span className="status-description">{outdated ? unconfirmed ? 'Revision not confirmed' : 'Not run since your edit' : running || resultState === 'running' ? undefined : cancellation && cancellation !== 'confirmed' ? cancellationLabels[cancellation] : uncertain ? snapshot?.stage === 'stopped' && !cancellation ? 'Stopped watching' : 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>The saved agent and test files go together{snapshot?.model && <> · <code>{snapshot.model}</code></>}{targetName && <> · <code>{targetName}</code></>}. Repeated Sends use the same linked agent, kept on the cluster even if a test fails.</>}
+      action={<div className="workspace-step-actions">{!running && <Button type="button" kind="primary" disabled={!!reason || busy || !!message} title={reason} onClick={() => { void mutate('send_start'); }}>{sendLabel}</Button>}
       {running && <Button type="button" kind="secondary" disabled={busy || cancelling} onClick={() => { void mutate('send_cancel'); }}>Cancel tests</Button>}
     </div>}>
     <p className="sr-only test-announcement" role="status" aria-live="polite" aria-atomic="true">{!running ? outdated ? revisionExplanation : cancellation && cancellation !== 'confirmed' ? `${cancellationLabels[cancellation]}.` : snapshot?.stage === 'stopped' && !cancellation ? 'Stopped watching.' : uncertain ? 'Test result unknown.' : resultAnnouncement(snapshot?.report) : undefined}</p>
@@ -247,6 +264,10 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
       <div><dt>Destination</dt><dd>{target ? <><code>{target.context_name}</code> · <code>{target.watched_namespace}</code></> : 'Choose a cluster'}</dd></div>
       {provider && <div><dt>AI connection</dt><dd>{(checked?.value?.model ?? model) && <><code>{checked?.value?.model ?? model}</code> through </>}<code>{provider.name}</code> · {provider.ready ? 'AI connection ready; the model is checked when tests run' : 'AI connection not ready'}</dd></div>}
     </dl>
+    {!running && canSeparate && <div>
+      <Button type="button" kind="secondary" disabled={busy} onClick={() => { void mutate('send_start', true); }}>Send as a separate agent</Button>
+      <p>Creates a new agent here. Previous work may still run; this does not stop or replace it.</p>
+    </div>}
     {(!target || !provider) && <Button type="button" kind="secondary" onClick={onChooseCluster} disabled={!onChooseCluster}>Choose a cluster</Button>}
     {checkingEnabled && <section className="send-preflight" aria-label="Before Send" aria-busy={!checked}>
       <h4>Before Send</h4>
@@ -268,6 +289,7 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
     {message && <p role="alert">{message}</p>}
     {snapshot?.storageError && snapshot.error !== 'storage' && <p role="alert">Bridge could not save this Send. Its saved summary may be missing or unknown.</p>}
     {(running || controlCancelling) && <TestProgress stage={cancelling ? 'Cancelling tests…' : stages[snapshot!.stage]} />}
+    {snapshot?.agentAction && snapshot.acknowledged.some(resource => resource.kind === 'Agent') && <p role="status">{{ create: 'Agent created on the cluster.', update: 'Agent updated on the cluster.', unchanged: 'Using the same agent without changing its configuration.' }[snapshot.agentAction]}</p>}
     <CancellationNotice cancellation={cancelling ? 'cancelling' : cancellation} report={snapshot?.report ?? null} />
     {checkCancellation && <div className="workspace-step-actions">
       <Button type="button" kind="secondary" disabled={busy} onClick={() => { void control('send_history_check'); }}>Check cluster status</Button>
@@ -287,9 +309,9 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
       {snapshot.source && <><GeneratedValue label="Agent file hash" value={snapshot.source.agent} /><GeneratedValue label="Test file hash" value={snapshot.source.tests} /></>}
       {snapshot.acknowledged.map(r => <GeneratedValue key={`${r.kind}-${r.uid}`} label={r.kind} value={r.name} />)}
       {snapshot.pending && <GeneratedValue label={`Possibly created ${snapshot.pending.kind}`} value={snapshot.pending.name} />}
-      <p>Sending requires permission to create an agent and run its tests. Saved answers and test receipts remain in Past Sends on this computer, within its retention limits. Cancel tests requests cancellation of this Send's unfinished tests. It keeps the agent, tests and completed answers. Closing Bridge only ends watching.
+      <p>Sending requires permission to create an agent and run its tests. Updating a changed agent also requires permission to patch that agent; unchanged tests do not. Saved answers and test receipts remain in Past Sends on this computer, within its retention limits. Cancel tests requests cancellation of this Send's unfinished tests. It keeps the agent, tests and completed answers. Closing Bridge only ends watching.
         {snapshot?.report?.cases.some(c => c.verdict === 'cancelled') && <> {cancellationDetails}</>}</p>
     </Details>}
     </LongCard>
-  </section><SendHistory revision={`${historyRevision}:${documentId}:${status?.busy?.documentId ?? ''}:${snapshot?.id ?? ''}:${snapshot?.state ?? ''}:${snapshot?.stage ?? ''}:${snapshot?.cancellation ?? ''}:${snapshot?.storageError ?? false}`} /></>;
+  </section><SendHistory onChanged={() => setRefresh(value => value + 1)} revision={`${historyRevision}:${documentId}:${status?.busy?.documentId ?? ''}:${snapshot?.id ?? ''}:${snapshot?.state ?? ''}:${snapshot?.stage ?? ''}:${snapshot?.cancellation ?? ''}:${snapshot?.storageError ?? false}`} /></>;
 }

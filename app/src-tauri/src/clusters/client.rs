@@ -525,6 +525,62 @@ impl RemoteAccess {
     pub fn fresh_client(&self, kubeconfig: Kubeconfig) -> ClusterClient {
         ClusterClient::new(kubeconfig, self.orka.clone())
     }
+    pub(crate) async fn check_agent_patch(
+        &self,
+        current: &ClusterClient,
+        stream: &OrkaStreamTransport,
+        name: &str,
+    ) -> Result<(), ClusterError> {
+        // Orka's direct OIDC users are not Kubernetes TokenReview identities.
+        // They retain the endpoint's authorization contract, never a creator SAR.
+        match self.identity_via(stream).await.map_err(cluster_error)? {
+            Identity::Oidc => return Ok(()),
+            Identity::NeedAccount => return Err(ClusterError::Denied),
+            Identity::TokenReview => (),
+        }
+        let check = async {
+            let config = selected_config(
+                &current.kubeconfig,
+                &self.binding.context_name,
+                &self.bearer,
+            )
+            .await?;
+            let client = Client::try_from(config).map_err(|_| AccessOutcome::Unavailable)?;
+            let review = SelfSubjectAccessReview {
+                spec: SelfSubjectAccessReviewSpec {
+                    resource_attributes: Some(ResourceAttributes {
+                        namespace: Some(self.binding.watched_namespace.clone()),
+                        group: Some("core.orka.ai".into()),
+                        resource: Some("agents".into()),
+                        verb: Some("patch".into()),
+                        name: Some(name.into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let result = Api::<SelfSubjectAccessReview>::all(client)
+                .create(&PostParams::default(), &review)
+                .await
+                .map_err(|e| kube_error(Check::Permissions, e))?;
+            let status = result.status.ok_or(AccessOutcome::Unavailable)?;
+            if status
+                .evaluation_error
+                .as_ref()
+                .is_some_and(|s| !s.is_empty())
+            {
+                return Err(AccessOutcome::Unavailable);
+            }
+            if !status.allowed || status.denied == Some(true) {
+                return Err(Check::Permissions.fail(CheckResult::PermissionDenied));
+            }
+            Ok(())
+        };
+        within(Instant::now() + REQUEST_TIMEOUT, Check::Permissions, check)
+            .await
+            .map_err(cluster_error)
+    }
     pub async fn require_builtins(&self, required: &[String]) -> Result<(), ClusterError> {
         self.builtins(&*self.orka, required).await
     }

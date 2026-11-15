@@ -20,6 +20,7 @@ pub(super) struct Wire {
     objects: Mutex<HashMap<String, Value>>,
     after_post: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     before_cancel: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    before_result: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     lose_task_reply: AtomicUsize,
 }
 impl Wire {
@@ -150,6 +151,60 @@ impl Wire {
                         status,
                         json!({"name":task["metadata"]["name"],"namespace":"agents","requested":mode != "cancel-already","phase":task["status"]["phase"],"message":"caller creator-fixture issued-fixture"}),
                     )
+                } else if method == "PUT" {
+                    assert!(
+                        route.starts_with("/api/v1/agents/") && route.ends_with("/spec"),
+                        "unsafe update route: {route}"
+                    );
+                    let path = route.trim_end_matches("/spec");
+                    let current = objects.get(path).unwrap().clone();
+                    assert_eq!(body["expectedUID"], current["metadata"]["uid"]);
+                    assert_eq!(
+                        body["expectedGeneration"],
+                        current["metadata"]["generation"]
+                    );
+                    if mode == "update-missing" {
+                        objects.remove(path);
+                    }
+                    let status = match mode {
+                        "update400" => 400,
+                        "update403" => 403,
+                        "update404" | "update-missing" => 404,
+                        "update405" => 405,
+                        "update409" => 409,
+                        _ => 200,
+                    };
+                    if status == 200 && mode != "update-lost-old" {
+                        let object = objects.get_mut(path).unwrap();
+                        object["spec"] = body["spec"].clone();
+                        object["metadata"]["generation"] = json!(
+                            current["metadata"]["generation"].as_u64().unwrap()
+                                + if mode == "update-noop" { 0 } else { 1 }
+                        );
+                    }
+                    if matches!(mode, "update-lost" | "update-lost-old") {
+                        return;
+                    }
+                    (
+                        status,
+                        if status == 200 {
+                            objects[path].clone()
+                        } else {
+                            json!({"error":"rejected"})
+                        },
+                    )
+                } else if method == "POST"
+                    && ((route == "/api/v1/agents" && mode.starts_with("reject-agent"))
+                        || (route == "/api/v1/tasks" && mode == "reject-task403"))
+                {
+                    let status = if mode.ends_with("400") {
+                        400
+                    } else if mode.ends_with("409") {
+                        409
+                    } else {
+                        403
+                    };
+                    (status, json!({"error":"rejected before creation"}))
                 } else if method == "POST" {
                     let kind = if route.ends_with("agents") {
                         "Agent"
@@ -188,7 +243,7 @@ impl Wire {
                     } else {
                         (
                             200,
-                            json!({"authenticated":true,"authType":"oidc","namespace":"agents"}),
+                            json!({"authenticated":true,"authType":if mode == "token-review" { "tokenReview" } else { "oidc" },"namespace":"agents"}),
                         )
                     }
                 } else if route.ends_with("/providers") && mode == "paged" {
@@ -236,6 +291,9 @@ impl Wire {
                 } else if route.ends_with("/agents") {
                     (200, json!({"items":[],"metadata":{}}))
                 } else if route.ends_with("/result") {
+                    if let Some(hook) = self.before_result.lock().unwrap().take() {
+                        hook();
+                    }
                     if mode == "result-404" {
                         (404, json!({"error":"missing"}))
                     } else if mode == "result-403" {
@@ -266,6 +324,9 @@ impl Wire {
                 };
                 let task_count = objects.values().filter(|o| o["kind"] == "Task").count();
                 drop(objects);
+                if mode == "lose-agent" && method == "POST" && route == "/api/v1/agents" {
+                    return;
+                }
                 if method == "POST" && route == "/api/v1/tasks" {
                     if self.lose_task_reply.load(Ordering::SeqCst) != 0 {
                         return;

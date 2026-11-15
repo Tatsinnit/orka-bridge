@@ -105,6 +105,15 @@ pub trait RunTransport: Send + Sync {
     ) -> RunFuture<'a> {
         Box::pin(async { Err(ErrorKind::Unsupported) })
     }
+    /// Only the remote native transport opts into UID/generation-fenced replacement.
+    fn update_agent<'a>(
+        &'a self,
+        _name: &'a str,
+        _body: &'a Value,
+        _deadline: Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async { Err(ErrorKind::Unsupported) })
+    }
     fn request<'a>(
         &'a self,
         path: &'a str,

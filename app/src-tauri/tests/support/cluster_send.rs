@@ -7,10 +7,14 @@ use bridge_engine::{
 };
 use bridge_runtime_protocol::SnapshotId;
 
+#[path = "cluster_barrier.rs"]
+mod barrier;
 #[path = "cluster_cancel.rs"]
 mod cancel;
 #[path = "created_agent.rs"]
 mod created_agent;
+#[path = "cluster_update.rs"]
+mod update;
 
 #[tokio::test]
 async fn document_send_binds_preview_admission_stop_and_session_results() {
@@ -572,8 +576,8 @@ async fn history_preserves_answers_on_404_denial_and_agent_revision_change() {
     s.finish(&send).await;
     let before = s.api.wire.posts();
     for (mode, availability) in [
-        ("agent-replaced", "missing"),
-        ("agent-generation", "missing"),
+        ("agent-replaced", "available"),
+        ("agent-generation", "available"),
         ("result-404", "missing"),
         ("task-404", "missing"),
         ("result-403", "unavailable"),
@@ -588,7 +592,11 @@ async fn history_preserves_answers_on_404_denial_and_agent_revision_change() {
             Some("expected answer"),
             "{mode}"
         );
-        assert_ne!(report.verdict, Verdict::Passed, "{mode}");
+        if mode.starts_with("agent-") {
+            assert_eq!(report.verdict, Verdict::Passed, "{mode}");
+        } else {
+            assert_ne!(report.verdict, Verdict::Passed, "{mode}");
+        }
         s.idle_forwards().await;
     }
     assert_eq!(s.api.wire.posts(), before);
@@ -946,7 +954,7 @@ async fn unknown_explicit_resend_fresh_agent() {
     assert_eq!(first["pending"]["name"], first["agentName"]);
     assert!(first["acknowledged"].as_array().unwrap().is_empty());
     *s.api.wire.mode.lock().unwrap() = "";
-    let second = s.finish(&id(&s.start().await)).await;
+    let second = s.finish(&id(&update::separate(&s).await)).await;
     assert_ne!(second["id"], first["id"]);
     assert_eq!(second["state"], "complete");
     assert_ne!(second["agentName"], first["agentName"]);
@@ -1094,7 +1102,7 @@ async fn explicit_resend_new_attempt_preserves_old_unknown() {
     s.idle_forwards().await;
     let old_name = s.view(None)["agentName"].clone();
     *s.api.wire.mode.lock().unwrap() = "normal";
-    let second = s.start().await;
+    let second = update::separate(&s).await;
     let done = s.finish(&id(&second)).await;
     assert_ne!(first["id"], second["id"]);
     assert_ne!(old_name, done["agentName"]);

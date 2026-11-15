@@ -15,6 +15,8 @@ pub use saved::{cancel_identity as valid_cancel_identity, Cancellation, Recovery
 pub enum RunCheckpoint {
     Before(SavedResource),
     Acknowledged(SavedResource),
+    /// Durable deployment acknowledgement must precede the per-attempt receipt.
+    AgentAcknowledged(ResourceId),
     Case(usize, CaseReport),
     /// Positive evidence before grace polling finishes; not a finalized case.
     Evidence(CaseReport),
@@ -40,6 +42,7 @@ pub enum ErrorKind {
     Storage,
     NotFound,
     Unsupported,
+    Invalid,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,6 +159,11 @@ impl ResourceId {
             spec: value["spec"].clone(),
             kind,
         })
+    }
+    #[cfg_attr(test, allow(dead_code))] // Direct-source chat/example harnesses omit SendOwner.
+    pub(crate) fn value(&self) -> Value {
+        json!({"apiVersion":"core.orka.ai/v1alpha1","kind":self.kind,
+            "metadata":{"name":self.name,"namespace":self.namespace,"uid":self.uid,"generation":self.generation},"spec":self.spec})
     }
     pub(crate) fn unchanged(&self, value: &Value) -> Result<(), ErrorKind> {
         if value["apiVersion"] != "core.orka.ai/v1alpha1" || value["kind"] != self.kind {
@@ -386,8 +394,42 @@ impl<'a> NativeRunner<'a> {
     /// Map and validate every identical whole create body before the first POST.
     /// No I/O occurs here; a caller can record the planned Agent before mutation.
     pub fn prepare(&self, pair: ParsedPair) -> Result<PreparedRun, ErrorKind> {
+        self.prepare_agent(pair, None)
+    }
+    #[cfg_attr(test, allow(dead_code))] // Direct-source chat/example harnesses omit SendOwner.
+    pub(crate) fn prepare_named(
+        &self,
+        pair: ParsedPair,
+        name: &str,
+    ) -> Result<PreparedRun, ErrorKind> {
+        let mut prepared = self.prepare(pair)?;
+        prepared.creates[0]["name"] = json!(name);
+        for task in prepared.creates.iter_mut().skip(1) {
+            task["spec"]["agentRef"]["name"] = json!(name);
+        }
+        Ok(prepared)
+    }
+    /// Fresh Tasks for an acknowledged deployment; local Run remains create-only.
+    pub fn prepare_reuse(
+        &self,
+        pair: ParsedPair,
+        agent: ResourceId,
+    ) -> Result<PreparedRun, ErrorKind> {
+        if agent.kind != "Agent" || agent.namespace != self.http.namespace() {
+            return Err(ErrorKind::Identity);
+        }
+        self.prepare_agent(pair, Some(agent))
+    }
+    fn prepare_agent(
+        &self,
+        pair: ParsedPair,
+        agent: Option<ResourceId>,
+    ) -> Result<PreparedRun, ErrorKind> {
         let namespace = self.http.namespace();
-        let name = format!("bridge-run-{}", Uuid::new_v4().simple());
+        let name = agent
+            .as_ref()
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| format!("bridge-run-{}", Uuid::new_v4().simple()));
         let spec = pair.agent().spec(self.http.provider());
         let mut creates = vec![json!({"name":name,"namespace":namespace,"spec":spec})];
         for case in pair.cases() {
@@ -410,7 +452,7 @@ impl<'a> NativeRunner<'a> {
             handle: RunHandle {
                 pair,
                 target: self.id,
-                agent: None,
+                agent,
                 tasks: Vec::new(),
             },
             creates,
@@ -490,6 +532,15 @@ impl<'a> NativeRunner<'a> {
                 ("tasks", "Task")
             };
             let name = body["name"].as_str().unwrap();
+            if index == 0 {
+                if let Some(agent) = &handle.agent {
+                    let receipt = SavedResource::acknowledged(agent);
+                    checkpoint(RunCheckpoint::Before(receipt.clone()))?;
+                    checkpoint(RunCheckpoint::AgentAcknowledged(agent.clone()))?;
+                    checkpoint(RunCheckpoint::Acknowledged(receipt))?;
+                    continue;
+                }
+            }
             checkpoint(RunCheckpoint::Before(SavedResource::planned(
                 kind,
                 name,
@@ -510,7 +561,8 @@ impl<'a> NativeRunner<'a> {
                 ResourceId::acknowledge(&value, &body["spec"], name, self.http.namespace(), kind)?;
             let receipt = SavedResource::acknowledged(&resource);
             if index == 0 {
-                handle.agent = Some(resource);
+                handle.agent = Some(resource.clone());
+                checkpoint(RunCheckpoint::AgentAcknowledged(resource))?;
             } else {
                 handle.tasks.push(resource);
             }

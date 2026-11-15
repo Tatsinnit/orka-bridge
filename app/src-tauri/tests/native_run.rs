@@ -163,6 +163,7 @@ async fn durable_checkpoints_bracket_each_post_and_failure_bars_next_mutation() 
                         assert!(r.uid.is_some());
                         order.push(format!("ack:{}", r.kind));
                     }
+                    RunCheckpoint::AgentAcknowledged(_) => return Ok(()),
                     _ => panic!("unexpected case during submission"),
                 }
                 if order.len() - 1 == fail_at {
@@ -641,6 +642,41 @@ fn two_cases() -> ParsedPair {
     let tests = format!("{TESTS}\n```yaml agent-test\nid: second\ninput: next\nassertions:\n - id: next-answer\n   type: contains\n   value: next\n```\n");
     ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).unwrap()
 }
+#[tokio::test]
+async fn reused_agent_checkpoints_its_revision_and_only_creates_fresh_tasks() {
+    let (runner, stop, posts) = stopping_runner(usize::MAX, usize::MAX, None);
+    let first = runner
+        .submit_prepared(runner.prepare(pair()).unwrap(), stop.clone())
+        .await
+        .unwrap();
+    let agent = first.agent().unwrap().clone();
+    let mut receipts = Vec::new();
+    let second = runner
+        .submit_checkpointed(
+            runner.prepare_reuse(pair(), agent.clone()).unwrap(),
+            stop,
+            &mut |event| {
+                match event {
+                    RunCheckpoint::Before(r) => receipts.push((r.kind, r.uid)),
+                    RunCheckpoint::Acknowledged(r) => receipts.push((r.kind, r.uid)),
+                    _ => (),
+                }
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.agent().unwrap().uid, "uid-1");
+    assert_eq!(posts.lock().unwrap().len(), 3);
+    assert_eq!(
+        posts.lock().unwrap()[2]["spec"]["agentRef"]["name"],
+        agent.name
+    );
+    assert_ne!(first.tasks()[0].name, second.tasks()[0].name);
+    assert_eq!(receipts[0], ("Agent".into(), Some("uid-1".into())));
+    assert_eq!(receipts[1], ("Agent".into(), Some("uid-1".into())));
+}
+
 #[tokio::test]
 async fn planned_agent_before_post() {
     let fixture = Fixture::start(Behavior::default()).await;

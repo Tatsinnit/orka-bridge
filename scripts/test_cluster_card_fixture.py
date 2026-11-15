@@ -20,8 +20,99 @@ class SendFixtureTest(unittest.TestCase):
         fixture.Discovery.agents = {}
         fixture.Discovery.offline = set()
         fixture.Discovery.lose_receipt = set()
+        fixture.Discovery.unconfirmed_agents = set()
         fixture.Discovery.cancel_modes = {}
+        fixture.Discovery.task_counts = {}
+        fixture.Discovery.update_modes = {}
         fixture.Discovery.cancel_ready = threading.Event()
+
+    def fixture_control(self, value):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        self.addCleanup(connection.close)
+        connection.request("POST", "/fixture-control", json.dumps(value))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        return json.loads(response.read())
+
+    def test_named_patch_permission_uses_update_denial_mode(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        self.addCleanup(connection.close)
+        for mode, allowed in [("supported", True), ("denied", False)]:
+            self.fixture_control({"action": "update-mode", "place": "fixture-cluster", "mode": mode})
+            connection.request("POST", "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", json.dumps({
+                "spec": {"resourceAttributes": {"namespace": "agents", "group": "core.orka.ai",
+                         "resource": "agents", "verb": "patch", "name": "probe"}},
+            }))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read())["status"]["allowed"], allowed)
+
+    def test_conditional_spec_update_fences_uid_generation_namespace_and_method(self):
+        handler = object.__new__(fixture.Discovery)
+        handler.orka("POST", "/api/v1/agents", {"name": "probe", "spec": {"model": {"name": "old"}}})
+        route = "/api/v1/agents/probe/spec?namespace=agents"
+        body = {"expectedUID": "uid-probe", "expectedGeneration": 1, "spec": {"model": {"name": "new"}}}
+        for method, path, payload, expected in [
+            ("PUT", route, {}, 400),
+            ("PUT", route, {**body, "expectedGeneration": True}, 400),
+            ("PUT", route, {**body, "spec": None}, 400),
+            ("PUT", route, {**body, "expectedUID": "replacement"}, 409),
+            ("PUT", route, {**body, "expectedGeneration": 2}, 409),
+            ("PUT", route.replace("probe/", "missing/"), body, 404),
+            ("PUT", route.replace("namespace=agents", "namespace=other"), body, 404),
+            ("POST", route, body, 405), ("GET", route, None, 405),
+            ("PUT", "/api/v1/agents/probe", body, 405),
+        ]:
+            with self.subTest(method=method, path=path, payload=payload):
+                self.assertEqual(handler.orka(method, path, payload)[0], expected)
+                self.assertEqual(handler.orka("GET", "/api/v1/agents/probe", None)[1]["spec"], {"model": {"name": "old"}})
+        status, updated = handler.orka("PUT", route, body)
+        self.assertEqual(status, 200)
+        self.assertEqual(updated["metadata"], {"name": "probe", "namespace": "agents", "uid": "uid-probe", "generation": 2})
+        self.assertEqual(updated["spec"], {"model": {"name": "new"}})
+        self.assertEqual(self.fixture_control({"action": "snapshot", "place": "fixture-cluster"}), {
+            "agents": [{"name": "probe", "namespace": "agents", "uid": "uid-probe", "generation": 2}], "tasks": 0,
+        })
+        self.assertEqual(handler.orka("PUT", route, body)[0], 409)
+        self.assertEqual(handler.orka("PUT", route, {**body, "expectedGeneration": 2})[1]["metadata"]["generation"], 2)
+
+    def test_update_controls_preserve_agent_on_old_orka_conflict_and_denial(self):
+        handler = object.__new__(fixture.Discovery)
+        handler.orka("POST", "/api/v1/agents", {"name": "probe", "spec": {"model": {"name": "old"}}})
+        route = "/api/v1/agents/probe/spec?namespace=agents"
+        body = {"expectedUID": "uid-probe", "expectedGeneration": 1, "spec": {"model": {"name": "new"}}}
+        for mode, expected in [("old-404", 404), ("old-405", 405), ("conflict", 409), ("denied", 403)]:
+            with self.subTest(mode=mode):
+                self.fixture_control({"action": "update-mode", "place": "fixture-cluster", "mode": mode})
+                self.assertEqual(handler.orka("PUT", route, body)[0], expected)
+                self.assertEqual(handler.orka("GET", "/api/v1/agents/probe", None)[1]["metadata"]["generation"], 1)
+                self.assertEqual(handler.orka("GET", "/api/v1/agents/probe", None)[1]["spec"], {"model": {"name": "old"}})
+                self.assertEqual(handler.orka("PUT", "/api/v1/agents/probe", body)[0], 405)
+        self.fixture_control({"action": "update-mode", "place": "fixture-cluster", "mode": "unconfirmed"})
+        self.assertIsNone(handler.orka("PUT", route, body)[0])
+        self.assertEqual(handler.orka("GET", "/api/v1/agents/probe", None)[1]["spec"], {"model": {"name": "new"}})
+        self.fixture_control({"action": "reset"})
+        self.assertEqual(fixture.Discovery.update_modes, {})
+
+    def test_cancellation_tasks_are_counted_per_attempt_not_agent_identity(self):
+        handler, control = self.cancel_fixture("confirmed")
+        for mode in ["cancelling", "completed"]:
+            control(mode)
+            for index, phase in enumerate(["Succeeded", "Running"]):
+                status, task = handler.orka("POST", "/api/v1/tasks", {
+                    "name": f"{mode}-{index}", "spec": {"agentRef": {"name": "probe"}},
+                })
+                self.assertEqual(status, 201)
+                self.assertEqual(task["status"]["phase"], phase)
+        self.assertEqual(fixture.Discovery.agents["fixture-cluster"], 1)
 
     def cancel_fixture(self, mode):
         server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
@@ -234,9 +325,9 @@ class SendFixtureTest(unittest.TestCase):
             self.assertEqual(frame(), b"\x00\x90\x1f")
             self.assertEqual(frame(), b"\x01\x90\x1f")
 
-            def request(path, body=None, authorization="Bearer ci-fixture-not-a-credential", expected_status=200):
+            def request(path, body=None, authorization="Bearer ci-fixture-not-a-credential", expected_status=200, method=None):
                 data = json.dumps(body).encode() if body is not None else b""
-                method = "POST" if body is not None else "GET"
+                method = method or ("POST" if body is not None else "GET")
                 http = f"{method} /api/v1/{path}?namespace=agents HTTP/1.1\r\nHost: fixture\r\nAuthorization: {authorization}\r\nContent-Length: {len(data)}\r\n\r\n".encode() + data
                 payload = b"\x00" + http
                 mask = b"1234"
@@ -252,6 +343,11 @@ class SendFixtureTest(unittest.TestCase):
             created = request("agents", {"name": "probe", "namespace": "agents", "spec": {"model": {"name": "exact"}}}, expected_status=201)
             self.assertEqual(created["metadata"]["name"], "probe")
             self.assertEqual(created["spec"]["model"]["name"], "exact")
+            updated = request("agents/probe/spec", {"expectedUID": created["metadata"]["uid"], "expectedGeneration": 1,
+                                                    "spec": {"model": {"name": "updated"}}}, method="PUT")
+            self.assertEqual(updated["metadata"]["uid"], created["metadata"]["uid"])
+            self.assertEqual(request("agents/probe")["metadata"]["generation"], 2)
+            request("agents/probe", {"spec": {}}, expected_status=405, method="PUT")
             task = request("tasks", {"name": "check", "namespace": "agents", "spec": {"agentRef": {"name": "probe"}, "timeout": "120s", "retryPolicy": {"maxRetries": 0}}}, expected_status=201)
             self.assertEqual(task["status"]["phase"], "Succeeded")
             self.assertEqual(request("tasks/check")["metadata"]["uid"], task["metadata"]["uid"])
@@ -262,7 +358,7 @@ class SendFixtureTest(unittest.TestCase):
             self.assertEqual(second["status"]["phase"], "Succeeded")
             request("agents", {"name": "probe3", "namespace": "agents", "spec": {}}, expected_status=201)
             third = request("tasks", {"name": "check3", "namespace": "agents", "spec": {"agentRef": {"name": "probe3"}}}, expected_status=201)
-            self.assertEqual(third["status"]["phase"], "Running")
+            self.assertEqual(third["status"]["phase"], "Succeeded")
             control = http.client.HTTPConnection(*server.server_address, timeout=2)
             self.addCleanup(control.close)
             control.request("POST", "/fixture-control", json.dumps({"action": "lose-agent-receipt", "place": "fixture-cluster"}))
@@ -271,6 +367,9 @@ class SendFixtureTest(unittest.TestCase):
             response.read()
             lost = request("agents", {"name": "unacknowledged", "spec": {}}, expected_status=503)
             self.assertNotIn("metadata", lost)
+            # Keep ownership unconfirmed even after B3's automatic readback;
+            # inventory alone must never associate a UID-less attempt by name.
+            request("agents/unacknowledged", expected_status=503)
             inventory = request("agents")
             self.assertEqual({agent["metadata"]["name"] for agent in inventory["items"]},
                              {"probe", "probe2", "probe3", "unacknowledged", "runtime-reader"})

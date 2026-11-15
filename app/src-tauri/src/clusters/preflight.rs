@@ -37,6 +37,14 @@ impl CheckRow {
         matches!(self.status, CheckStatus::Allowed | CheckStatus::Unverified)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SendAction {
+    Create,
+    Update,
+    Unchanged,
+    Blocked,
+}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendCheck {
@@ -47,10 +55,15 @@ pub struct SendCheck {
     pub model: Option<String>,
     pub rows: Vec<CheckRow>,
     pub can_send: bool,
+    pub action: SendAction,
+    pub can_separate: bool,
 }
 impl SendCheck {
     pub(crate) fn finish(mut self) -> Self {
         self.can_send = !self.rows.is_empty() && self.rows.iter().all(CheckRow::permits);
+        if !self.can_send {
+            self.action = SendAction::Blocked;
+        }
         self
     }
 }

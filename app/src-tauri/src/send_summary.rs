@@ -113,7 +113,7 @@ impl Default for Ledger {
 
 pub struct SummaryStore {
     app_local_data: Option<PathBuf>,
-    lock: Mutex<()>,
+    pub(crate) lock: Mutex<()>,
 }
 impl SummaryStore {
     pub fn new(app_local_data: Option<PathBuf>) -> Self {
@@ -141,7 +141,7 @@ impl SummaryStore {
         let root = self.root(false).map_err(|_| SummaryError::Unavailable)?;
         Ok(Self::read_ledger(root.as_ref())?.attempts)
     }
-    fn root(&self, create: bool) -> io::Result<Option<Dir>> {
+    pub(crate) fn root(&self, create: bool) -> io::Result<Option<Dir>> {
         let parent = self.app_local_data.as_ref().ok_or_else(invalid)?;
         match fs::symlink_metadata(parent) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => {

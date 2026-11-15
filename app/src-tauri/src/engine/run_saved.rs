@@ -40,7 +40,7 @@ pub struct SavedResource {
     pub terminal: bool,
 }
 impl SavedResource {
-    pub(super) fn planned(kind: &str, name: &str, namespace: &str, spec: &Value) -> Self {
+    pub(crate) fn planned(kind: &str, name: &str, namespace: &str, spec: &Value) -> Self {
         Self {
             kind: kind.into(),
             name: name.into(),
@@ -51,7 +51,7 @@ impl SavedResource {
             terminal: false,
         }
     }
-    pub(super) fn acknowledged(resource: &ResourceId) -> Self {
+    pub(crate) fn acknowledged(resource: &ResourceId) -> Self {
         let mut saved = Self::planned(
             resource.kind,
             &resource.name,
@@ -110,6 +110,13 @@ impl NativeRunner<'_> {
         cases: &[RunCase],
         previous: Option<RunReport>,
     ) -> Recovery {
+        // Availability/verdict can change after a failed read; terminal UID-bound
+        // Task receipts remain tied to the captured Agent revision.
+        let archived = resources.iter().any(|r| r.kind == "Task")
+            && resources
+                .iter()
+                .filter(|r| r.kind == "Task")
+                .all(|r| r.terminal && r.uid.is_some());
         let mut report = previous.unwrap_or(RunReport {
             cases: Vec::new(),
             verdict: Verdict::Unknown,
@@ -125,7 +132,7 @@ impl NativeRunner<'_> {
             seen += 1;
             let read=async {
                 let agent=agent.as_ref().filter(|a| a.uid.is_some()).ok_or(ErrorKind::Identity)?;
-                self.read_saved(agent, deadline).await?;
+                if !archived { self.read_saved(agent, deadline).await?; }
                 if task.namespace!=self.http.namespace() { return Err(ErrorKind::Identity); }
                 let path=format!("tasks/{}",task.name);
                 let value=self.http.request(&path,None,None,deadline).await?;
@@ -141,7 +148,6 @@ impl NativeRunner<'_> {
                 let phase=value["status"]["phase"].as_str().ok_or(ErrorKind::Response)?;
                 if matches!(phase,"Pending"|"Running"|"Finalizing"|"Scheduled") { task.terminal=false; return Ok(None); }
                 if !matches!(phase,"Succeeded"|"Failed"|"Cancelled") { return Err(ErrorKind::Response); }
-                task.terminal=true;
                 let old=report.cases.iter().find(|r| r.id==case.id);
                 let needs_answer=case.assertions().iter().any(|a|matches!(a,Assertion::Contains{..}));
                 let answer=match self.http.request(&format!("{path}/result"),None,None,deadline).await {
@@ -157,7 +163,8 @@ impl NativeRunner<'_> {
                 };
                 let after=self.http.request(&path,None,None,deadline).await?;
                 if !task.matches(&after) || after["status"]["phase"]!=phase {return Err(ErrorKind::Identity);}
-                self.read_saved(agent, deadline).await?;
+                if !archived { self.read_saved(agent, deadline).await?; }
+                task.terminal=true;
                 let assertions=if phase=="Cancelled" {Vec::new()} else {case.evaluate(answer.as_deref(),&tools)};
                 let verdict=if phase=="Cancelled" {Verdict::Cancelled} else if phase=="Succeeded" {aggregate(assertions.iter().map(|r|r.verdict))} else {Verdict::Failed};
                 Ok(Some((CaseReport {id:case.id.clone(),question:case.input().into(),phase:phase.into(),answer,completed_tools:tools,assertions,verdict},captured)))

@@ -32,7 +32,10 @@ class Discovery(BaseHTTPRequestHandler):
     agents = {}
     offline = set()
     lose_receipt = set()
+    unconfirmed_agents = set()
     cancel_modes = {}
+    task_counts = {}
+    update_modes = {}
     cancel_ready = threading.Event()
     lock = threading.Lock()
 
@@ -53,7 +56,8 @@ class Discovery(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # Fixture controls live only on this loopback server, never in the app.
-        if self.path != "/fixture-control" or self.client_address[0] != "127.0.0.1":
+        review = self.path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews"
+        if (self.path != "/fixture-control" and not review) or self.client_address[0] != "127.0.0.1":
             self.send_error(404)
             return
         try:
@@ -61,6 +65,16 @@ class Discovery(BaseHTTPRequestHandler):
             if not 0 < length <= 4096:
                 raise ValueError()
             control = json.loads(self.rfile.read(length))
+            if review:
+                attrs = control["spec"]["resourceAttributes"]
+                place = self.place(self.headers.get("Authorization", ""))
+                with self.lock:
+                    allowed = (attrs.get("namespace") == "agents" and attrs.get("group") == "core.orka.ai"
+                               and attrs.get("resource") == "agents" and attrs.get("verb") == "patch"
+                               and bool(attrs.get("name")) and self.update_modes.get(place) != "denied")
+                self.reply(200, {"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
+                                 "metadata": {}, "spec": control["spec"], "status": {"allowed": allowed}})
+                return
             action = control["action"]
             with self.lock:
                 if action == "reset":
@@ -69,13 +83,25 @@ class Discovery(BaseHTTPRequestHandler):
                     self.offline.clear()
                     self.lose_receipt.clear()
                     self.cancel_modes.clear()
+                    self.task_counts.clear()
+                    self.update_modes.clear()
+                    self.unconfirmed_agents.clear()
                     self.cancel_ready.set()
                 elif action == "cancel-mode" and control["place"] in ["fixture-cluster", "fixture-secondary"] and control["mode"] in ["cancelling", "requested", "confirmed", "denied", "unsupported", "unconfirmed", "completed"]:
                     self.cancel_modes[control["place"]] = control["mode"]
+                    if control["mode"] in ["cancelling", "completed"]:
+                        self.task_counts[control["place"]] = 0
                     if control["mode"] == "cancelling":
                         self.cancel_ready.clear()
                     else:
                         self.cancel_ready.set()
+                elif action == "snapshot" and control["place"] in ["fixture-cluster", "fixture-secondary"]:
+                    items = [item for (scope, _), item in self.objects.items() if scope == control["place"]]
+                    self.reply(200, {"agents": [item["metadata"] for item in items if item["kind"] == "Agent"],
+                                     "tasks": sum(item["kind"] == "Task" for item in items)})
+                    return
+                elif action == "update-mode" and control["place"] in ["fixture-cluster", "fixture-secondary"] and control["mode"] in ["supported", "old-404", "old-405", "conflict", "denied", "unconfirmed"]:
+                    self.update_modes[control["place"]] = control["mode"]
                 elif action == "lose-agent-receipt" and control["place"] in ["fixture-cluster", "fixture-secondary"]:
                     self.lose_receipt.add(control["place"])
                 elif action == "offline" and control["place"] in ["fixture-cluster", "fixture-secondary"] and isinstance(control["offline"], bool):
@@ -210,6 +236,28 @@ class Discovery(BaseHTTPRequestHandler):
         with self.lock:
             if place in self.offline:
                 return 503, {"error": "Synthetic place offline"}
+            if route.startswith("/api/v1/agents/") and route.endswith("/spec"):
+                if method != "PUT":
+                    return 405, {}
+                mode = self.update_modes.get(place, "supported")
+                if mode in ["old-404", "old-405", "conflict", "denied"]:
+                    return {"old-404": 404, "old-405": 405, "conflict": 409, "denied": 403}[mode], {}
+                if (not isinstance(body, dict) or not isinstance(body.get("expectedUID"), str)
+                        or not body["expectedUID"] or type(body.get("expectedGeneration")) is not int
+                        or body["expectedGeneration"] < 1 or not isinstance(body.get("spec"), dict)):
+                    return 400, {}
+                agent = self.objects.get((place, route.removesuffix("/spec")))
+                if agent is None or query.get("namespace", ["agents"]) != ["agents"]:
+                    return 404, {}
+                if (body["expectedUID"], body["expectedGeneration"]) != (agent["metadata"]["uid"], agent["metadata"]["generation"]):
+                    return 409, {}
+                if agent["spec"] != body["spec"]:
+                    agent["metadata"]["generation"] += 1
+                    agent["spec"] = body["spec"]
+                return (None if mode == "unconfirmed" else 200), agent
+            # Never let an accidental legacy PUT fall through to a successful GET.
+            if method == "PUT":
+                return 405, {}
             if cancel:
                 task = self.objects.get((place, route.removesuffix("/cancel")))
                 if task is None:
@@ -234,18 +282,19 @@ class Discovery(BaseHTTPRequestHandler):
                     self.agents[place] = self.agents.get(place, 0) + 1
                 value = {"apiVersion": "core.orka.ai/v1alpha1", "kind": kind,
                          "metadata": {"name": body["name"], "namespace": "agents", "uid": "uid-" + body["name"], "generation": 1},
-                         "spec": body["spec"], "status": {"phase": "Succeeded" if self.agents.get(place, 0) % 3 else "Running"}}
+                         "spec": body["spec"], "status": {"phase": "Succeeded"}}
                 if kind == "Task" and place in self.cancel_modes:
-                    agent = body["spec"].get("agentRef")
-                    earlier = any(scope == place and item["kind"] == "Task" and item["spec"].get("agentRef") == agent
-                                  for (scope, _), item in self.objects.items())
-                    value["status"]["phase"] = "Running" if earlier else "Succeeded"
+                    # A new cancel walk resets the Task index, even on a reused Agent.
+                    index = self.task_counts.get(place, 0)
+                    self.task_counts[place] = index + 1
+                    value["status"]["phase"] = "Running" if index else "Succeeded"
                 if kind == "Task" and "timeout" in value["spec"]:
                     value["spec"]["timeout"] = "2m0s"
                     value["spec"]["retryPolicy"].pop("maxRetries", None)
                 self.objects[place, route + "/" + body["name"]] = value
                 if kind == "Agent" and place in self.lose_receipt:
                     self.lose_receipt.remove(place)
+                    self.unconfirmed_agents.add((place, route + "/" + body["name"]))
                     return 503, {"error": "Synthetic lost create receipt"}
                 return 201, value
             if route.endswith("/auth/whoami"):
@@ -267,6 +316,8 @@ class Discovery(BaseHTTPRequestHandler):
                 agent = self.objects[place, route.rsplit("/", 1)[0]]["spec"]["agentRef"]["name"]
                 event = {"namespace": "agents", "streamType": "task", "streamID": task, "seq": 1, "type": "ToolCallCompleted", "taskName": task, "agentName": agent, "toolName": "web_fetch", "toolCallID": "fixture-call"}
                 value = {"namespace": "agents", "streamType": "task", "streamID": task, "afterSeq": 0, "latestSeq": 1, "events": [event]}
+            elif (place, route) in self.unconfirmed_agents:
+                return 503, {"error": "Synthetic unconfirmed Agent readback"}
             elif (place, route) in self.objects:
                 value = self.objects[place, route]
             else:
