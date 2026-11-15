@@ -157,6 +157,53 @@ try {
       console.log(`Captured native WebView2 renderer fixture: ${theme}/${name}`);
     }
   }
+  async function checkLayout(theme, size, name) {
+    await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+    const layout = await evaluate(`(() => {
+      const shown = selector => [...document.querySelectorAll(selector)].filter(node => node.getClientRects().length);
+      const rect = node => { if (!node) return null; const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width }; };
+      const main = document.querySelector('main');
+      return {
+        width: innerWidth, scrollWidth: main.scrollWidth, clientWidth: main.clientWidth,
+        forms: shown('.cluster-card > :not(.cluster-actions):not([role="group"]), .local-preflight > .card').map(node => ({ ...rect(node), limit: node.matches('.local-preflight > .card') ? 554 : 520 })),
+        rows: shown('.place-row').map(row => ({ name: rect(row.querySelector('.place-summary')), pill: rect(row.querySelector('.pill')), action: rect(row.querySelector('button')), row: rect(row) })),
+        checks: shown('.cluster-checks li').map(row => ({ row: rect(row), card: rect(row.closest('.cluster-card')) })),
+        setup: (() => { const root = shown('.workspace-setup-grid')[0]; if (!root) return null; const get = selector => rect(root.querySelector(selector)); return { priority: root.classList.contains('setup-action-model'), progress: get('.setup-progress'), model: get('.setup-model-slot'), history: get('.setup-history'), meet: get('.workspace-meet') }; })(),
+        designer: (() => { const root = shown('.designer-work')[0]; if (!root) return null; const get = selector => rect([...root.querySelectorAll(selector)].find(node => node.getClientRects().length)); return { tests: get('.designer-tests:not([hidden])'), editor: get('.designer-file'), send: get('.send-panel[data-send-open="true"]:not([hidden])'), history: get('.send-history') }; })(),
+        fallback: { file: rect(shown('.designer > .designer-file')[0]), history: rect(shown('.designer > .designer-checks .send-history')[0]) },
+      };
+    })()`);
+    const fail = reason => { throw Error(`${name}/${size}: ${reason}: ${JSON.stringify(layout)}`); };
+    if (layout.scrollWidth > layout.clientWidth + 2) fail('page overflows horizontally');
+    // Preflight card includes its 16px padding and 1px border on both sides.
+    if (layout.forms.some(rect => rect.width > rect.limit + 2)) fail('form exceeds its content width');
+    for (const { row, card } of layout.checks) {
+      if (row.x < card.x + 16 || row.right > card.right - 16) fail('check border escapes card padding');
+    }
+    for (const { name: title, pill, action, row } of layout.rows) {
+      if (layout.width <= 820 && (Math.abs(pill.y - action.y) > 2 || Math.abs(pill.x - title.x) > 2 || action.right > row.right - 16)) fail('compact pill/action row is not aligned below the name');
+    }
+    if (layout.rows.some(row => Math.abs(row.name.x - layout.rows[0].name.x) > 2)) fail('list names do not align');
+    const setup = layout.setup;
+    if (setup?.progress && setup.model) {
+      if (layout.width <= 820) {
+        if (setup.priority && setup.model.bottom > setup.progress.y + 2) fail('AI action does not lead compact setup');
+      } else {
+        if (setup.meet && Math.abs(setup.meet.y - setup.model.bottom - 16) > 2) fail('side cards share the other column height');
+        if (setup.history && Math.abs(setup.history.y - setup.progress.bottom - 16) > 2) fail('progress stack has a shared row gap');
+      }
+    }
+    if (name === 'designer-loading' && (!layout.fallback.file || layout.fallback.history)) fail('loading must show only the editor skeleton');
+    if (name === 'designer-open-error' && (!layout.fallback.file || !layout.fallback.history)) fail('failed-open fallback cards are not visible');
+    if (layout.fallback.file && layout.fallback.history && Math.abs(layout.fallback.history.y - layout.fallback.file.bottom - 16) > 2) fail('fallback cards lose their spacing');
+    const designer = layout.designer;
+    if (designer?.editor && designer.tests) {
+      if (layout.width > 820 ? Math.abs(designer.tests.y - designer.editor.y) > 2 || designer.tests.x <= designer.editor.x : designer.tests.y < designer.editor.bottom - 2) fail('editor/test column priority is wrong');
+      if (designer.history && designer.history.y < Math.max(designer.editor.bottom, layout.width <= 820 ? designer.tests.bottom : 0) - 2) fail('history precedes current work');
+    }
+    if (designer?.send && layout.width <= 820 && designer.send.bottom > designer.editor.y + 2) fail('Send does not lead compact work');
+    await writeFile(join(output, `${theme}-${size}-${name}-layout.json`), JSON.stringify(layout, null, 2));
+  }
   // Setup-progress states: renderer fixtures for transfer, startup, ready and a queued model choice.
   // Fixture IPC only: nothing here exercises real downloads, the VM or credentials.
   const GiB = 1024 ** 3;
@@ -217,6 +264,7 @@ try {
       await writeFile(join(output, `${theme}-${size}-${name}${suffix}.png`), Buffer.from(image.data, 'base64'));
       console.log(`Captured native WebView2 renderer fixture: ${theme}/${size}/${name}${suffix}`);
     };
+    await checkLayout(theme, size, name);
     await shoot('');
     if (localVm === 'failed') {
       await evaluate(`document.querySelector('.workspace-failure summary').click()`);
@@ -229,7 +277,7 @@ try {
     }
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
-  const actionFixtures = ['places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'ai-idle', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'switch-place', 'designer', 'designer-connected', 'designer-file', 'designer-failed', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
+  const actionFixtures = ['places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'ai-idle', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-file', 'designer-failed', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
@@ -309,13 +357,16 @@ try {
         if (command === 'setup_preflight') return { platform: 'windows', virtualization: 'ready', memory: 'ready', installedMemoryBytes: ${16 * GiB}, requiredMemoryBytes: ${4 * GiB} };
         if (command === 'cluster_places') return name === 'places-populated' ? { selectedKey: null, persistenceState: 'complete', places: [
           { key: 'fixture-a', context: 'fixture-cluster', service: 'control / orka', namespace: 'agents', stale: false, observedAt: Date.now() - 600000, agents: [] },
-          { key: 'fixture-b', context: 'fixture-secondary', service: 'control / orka', namespace: 'agents', stale: true, observedAt: null, agents: [] }] }
+          { key: 'fixture-b', context: 'fixture-secondary-with-a-long-cluster-name-to-wrap-without-clipping', service: 'control / orka', namespace: 'agents', stale: true, observedAt: null, agents: [] }] }
           : { places: [], selectedKey: null, persistenceState: 'complete' };
         if (command === 'setup_example') return pair;
         if (command === 'setup_connect_model') {
           if (name === 'ai-connecting') return new Promise(() => {});
+          if (name === 'ai-cli-missing') throw { kind: 'modelCaptureUnavailable' };
           connected = true; return { ready: true };
         }
+        if (command === 'agent_open' && name === 'designer-loading') return new Promise(() => {});
+        if (command === 'agent_open' && name === 'designer-open-error') throw Error('Synthetic agent open failure');
         if (designer && command === 'agent_select') {
           if (args?.documentId !== documentId) throw Error('Wrong selected document');
           return null;
@@ -346,7 +397,7 @@ try {
     if (first || name.startsWith('local-preflight')) await clickAction('Set up');
     else if (!places) await clickAction('Connect the AI');
     if (first) await clickAction('Continue');
-    if (first || ['ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry'].includes(name)) await clickAction('Connect the AI');
+    if (first || ['ai-cli-missing', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry'].includes(name)) await clickAction('Connect the AI');
     if (name === 'local-stopped') {
       await clickAction('Stop the local cluster');
       await until(() => evaluate(`document.querySelector('h1')?.textContent === 'Set up this computer' && window.__bridgeStops === 1`), 'Stop returns to local preflight');
@@ -375,12 +426,12 @@ try {
       await clickAction('Use this cluster');
       await clickAction('Open your agent');
     } else if (name.startsWith('designer') || name.startsWith('local-cancel-')) await clickAction('Read its instructions');
-    if (name.startsWith('designer')) {
+    if (name.startsWith('designer') && name !== 'designer-loading' && name !== 'designer-open-error') {
       await until(() => evaluate(`!!document.querySelector('.instructions-editor')`), 'Designer editor');
       if (name !== 'designer') await until(() => evaluate(`!document.querySelector('.model-select').disabled`), 'connected Designer catalog');
       if (name === 'designer-file') await clickAction('File');
       if (name === 'designer-failed') await until(() => evaluate(`!!document.querySelector('.test-next-step')`), 'failure next action');
-      const state = await evaluate(`({ historyHidden: !document.querySelector('.designer-checks').getClientRects().length, catalog: window.__bridgeCatalogCalls, runPrimary: [...document.querySelectorAll('.example-run button')].some(button => button.textContent === 'Run tests' && button.classList.contains('button-primary')) })`);
+      const state = await evaluate(`({ historyHidden: !document.querySelector('.designer-checks .send-history')?.getClientRects().length, catalog: window.__bridgeCatalogCalls, runPrimary: [...document.querySelectorAll('.example-run button')].some(button => button.textContent === 'Run tests' && button.classList.contains('button-primary')) })`);
       if (await evaluate(`document.body.innerText.includes('Your agent selection could not be saved')`)) throw Error('Designer fixture failed to acknowledge document selection');
       if (name === 'designer' && (state.catalog.length || state.runPrimary)) throw Error('Disconnected Designer presents a runnable primary/catalog: ' + JSON.stringify(state));
       if (name !== 'designer-remote' && !state.historyHidden) throw Error('Unopened local Send/history card is visible');
@@ -455,8 +506,8 @@ try {
       if (await evaluate('window.__bridgeRuns') !== 1) throw Error('A sample state submitted a run other than the automatic test');
       return;
     }
-    const expected = { 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Data disk, up to', 'local-preflight-missing': 'Data disk, up to', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'local-stopped': 'Set up this computer', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-remote': 'Instructions and settings' };
-    await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])})`), `${name} action state`).catch(async error => {
+    const expected = { 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Data disk, up to', 'local-preflight-missing': 'Data disk, up to', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'local-stopped': 'Set up this computer', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-remote': 'Instructions and settings' };
+    await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
     if (places) {
@@ -473,7 +524,8 @@ try {
       if (name === 'local-preflight' && !probe.text.includes('GiB')) fail('known sizes were not shown');
       if (name === 'local-preflight-missing' && !probe.text.includes('Not available yet')) fail('missing sizes need plain explanatory copy');
     }
-    if (name === 'first-test-result' || name.startsWith('designer')) {
+    await checkLayout(theme, size, name);
+    if (name === 'first-test-result' || name.startsWith('designer') && name !== 'designer-loading' && name !== 'designer-open-error') {
       await until(() => evaluate(`!!document.querySelector('.designer-work')`), 'Designer columns');
       const layout = await evaluate(`(() => {
         const tests = document.querySelector('.designer-tests').getBoundingClientRect();
@@ -483,7 +535,7 @@ try {
       })()`);
       if (name !== 'designer-remote' && (size === 'wide' ? Math.abs(layout.tests.y - layout.editor.y) > 2 || layout.tests.x <= layout.editor.x : layout.editor.bottom > layout.tests.y + 2)) throw Error(`Editor-first layout failed: ${JSON.stringify(layout)}`);
       if (layout.scrollWidth > layout.width + 2) throw Error(`Designer overflow: ${JSON.stringify(layout)}`);
-      await writeFile(join(output, `${theme}-${size}-${name}-layout.json`), JSON.stringify(layout, null, 2));
+      await writeFile(join(output, `${theme}-${size}-${name}-columns.json`), JSON.stringify(layout, null, 2));
     }
     if (name === 'designer-failed') await evaluate(`document.querySelector('.example-run').scrollIntoView({ block: 'start' })`);
     if (name.startsWith('ai-removal-')) await evaluate(`document.querySelector('.setup-model').scrollIntoView({ block: 'center' })`);
@@ -552,7 +604,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     for (const name of actionFixtures) await captureActions(theme, 'compact', name);
   }
   await writeFile(join(output, 'compact-window.txt'), notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. Designer layout JSON records test/editor/Send geometry. compact-window.txt says whether 540x900 was a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. compact-window.txt says whether 540x900 was a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

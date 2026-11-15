@@ -50,6 +50,8 @@ test('Places passively lists this computer and retained identities with truthful
   expect(within(row('This computer')).getAllByRole('button')).toHaveLength(1);
   expect(within(row('This computer')).getByRole('button', { name: 'Set up' })).toBeTruthy();
   expect(within(row('team-dev')).getByText('Selected for Designer')).toBeTruthy();
+  expect(row('team-dev').querySelectorAll('.place-summary > p')).toHaveLength(1);
+  expect(within(row('team-dev')).getByText('Selected for Designer').closest('p')).toBe(within(row('team-dev')).getByText(/^Last checked /).closest('p'));
   expect(within(row('team-dev')).getByRole('button', { name: 'Manage' })).toBeTruthy();
   expect(within(row('team-dev')).queryByRole('button', { name: 'Connect' })).toBeNull();
   expect(within(row('team-dev')).getByText(/^Last checked /).closest('.pill')).toBeNull();
@@ -141,6 +143,25 @@ test('Add stays blank while remembered Connect resolves a fresh target without c
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_reconnect')).toEqual([['cluster_reconnect', { key: primary.key }]]);
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_discover')).toHaveLength(1);
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('setup_select_local');
+});
+
+test('Manage Change context focuses its selector after a delayed kubeconfig read', async () => {
+  const { ipc } = native(); const contexts = deferred<unknown>(); const user = userEvent.setup();
+  mockIPC(command => command === 'cluster_contexts' ? contexts.promise : ipc(command));
+  render(<Host initial={connected} />);
+  await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Manage' }));
+  const change = await screen.findByRole('button', { name: 'Change context' });
+  change.focus(); await user.keyboard('{Enter}');
+  const select = await screen.findByRole('combobox', { name: 'kubectl context' });
+  expect(select.matches(':disabled')).toBe(true);
+  const remove = screen.getByRole('button', { name: 'Remove' });
+  remove.focus(); await user.keyboard('{Enter}');
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep cluster' }));
+  await user.keyboard('{Enter}');
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove' }));
+  await act(async () => contexts.resolve([context]));
+  await waitFor(() => expect(select.matches(':disabled')).toBe(false));
+  expect(document.activeElement).toBe(select);
 });
 
 test('Manage rechecks the same installation with its already-entered ServiceAccount', async () => {
@@ -243,7 +264,7 @@ test('Back preserves a queued local Model and its one eventual connection while 
   expect(observe).toHaveBeenLastCalledWith({ kind: 'thisComputer' });
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
-  expect(within(row('This computer')).getByText('Getting the local cluster ready', { selector: 'p' })).toBeTruthy();
+  expect(within(row('This computer')).getByText('Getting the local cluster ready', { selector: '.place-meta span' })).toBeTruthy();
   expect(observe).toHaveBeenCalledTimes(1);
   sim.status = { ...sim.status, localVm: 'ready', model: 'available' };
   await act(async () => window.dispatchEvent(new Event('focus')));
@@ -313,6 +334,8 @@ test('Manage refreshes confirmed agents and offers cancellable removal, finite f
   await screen.findByRole('heading', { name: 'Agents on this cluster' });
   expect(await screen.findByText('reader')).toBeTruthy();
   expect(screen.getByText('Last checked ' + new Date(fresh.observedAt).toLocaleString())).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Change context' }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'kubectl context' })));
   await user.click(screen.getByRole('button', { name: 'Remove' }));
   const confirmation = screen.getByRole('group', { name: 'Remove cluster confirmation' });
   expect(confirmation.textContent).toMatch(/only forgets.*Bridge/);
@@ -323,6 +346,8 @@ test('Manage refreshes confirmed agents and offers cancellable removal, finite f
   await user.click(screen.getByRole('button', { name: 'Remove' }));
   await user.click(screen.getByRole('button', { name: 'Remove cluster' }));
   expect((await screen.findByRole('alert')).textContent).toContain("Couldn't confirm removal");
+  expect(confirmation.contains(document.activeElement)).toBe(true);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Keep cluster' }));
   expect(document.body.textContent).not.toContain('SECRET_MARKER');
   expect(observe).not.toHaveBeenCalled();
   fail = false;

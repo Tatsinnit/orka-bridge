@@ -242,8 +242,11 @@ test('interrupted evidence is unknown without a live spinner and requires an exp
 });
 
 test('remove saved details removes the local answer only and does not check or delete cluster work', async () => {
-  const ipc = detailed(); await openSaved();
+  const ipc = detailed({ ...saved, canCancel: true }); await openSaved();
   await screen.findByText('Saved on this computer');
+  const remove = screen.getByRole('button', { name: 'Remove saved details' });
+  expect(remove.classList.contains('button-quiet')).toBe(true);
+  expect(remove.parentElement!.querySelectorAll('.button-secondary')).toHaveLength(2);
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: 'Remove saved details' }));
   expect(ipc.mock.calls.some(([command]) => command === 'send_history_remove')).toBe(false);

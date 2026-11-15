@@ -176,6 +176,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
     else timer.current = setTimeout(() => setCheck(value => value + 1), 1000);
   }
 
+  const continueAction = <Button type="button" kind={preflightUncertain ? 'secondary' : 'primary'} aria-describedby={requirements ? 'preflight-reason' : undefined} disabled={busy || !status || !!error || (status.localVm !== 'notIntegrated' && requirements !== null && preflightBlocked)} onClick={() => { void chooseLocal(); }}>Continue</Button>;
   useImperativeHandle(ref, () => ({ stop() { setPanel('local'); void chooseLocal('change'); } }));
   const titleId = active ? 'page-title' : undefined;
   if (!status && !error) return <h1 id={titleId}>Checking the local cluster…</h1>;
@@ -194,7 +195,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
     {view === 'places' && <Places snapshot={snapshot} unavailable={snapshotUnavailable} status={error ? undefined : status} view={presentation} place={currentPlace} onLocal={openLocal} onCluster={chooseCluster} />}
     <div hidden={view !== 'local'}>
       {cluster && <Button type="button" kind="secondary" onClick={chooseComputer}>Use this computer</Button>}
-      <div className={selected ? `setup workspace-setup-grid${status?.localVm === 'failed' ? ' workspace-setup-failed' : ''}` : 'workspace-choice local-preflight'}>
+      <div className={selected ? `setup workspace-setup-grid${status?.localVm === 'failed' ? ' workspace-setup-failed' : ''}${modelMounted && !['connected', 'removing'].includes(modelState) && !error && !sending ? ' setup-action-model' : ''}` : 'workspace-choice local-preflight'}>
         {!selected && <>
           <section className="card">
             <h2>This computer</h2>
@@ -204,19 +205,22 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
               <div><dt>Cluster download</dt><dd>{requirements ? formatSize(requirements.imageBytes) : requirements === undefined ? 'Reading…' : 'Not available yet'}</dd></div>
               <div><dt>Data disk, up to</dt><dd>{requirements ? formatSize(requirements.stateDiskBytes) : requirements === undefined ? 'Reading…' : 'Not available yet'}</dd></div>
             </dl>
-            {view === 'local' && !error && status && requirements && status.localVm !== 'notIntegrated' && <Preflight requiredMemoryBytes={requirements.memoryBytes} onBlocked={setPreflightBlocked} onUncertain={setPreflightUncertain} />}
             <Disclosure label="What's inside" open={inside} controls="workspace-inside" onOpenChange={setInside}>
             <p id="workspace-inside" hidden={!inside}>The local cluster includes Orka and the tools your agents use. Bridge checks the download before starting it.</p></Disclosure>
-          </section>
-          <div className="workspace-choice-footer"><span className="muted">Set up on this computer</span>
-            <Button type="button" kind={preflightUncertain ? 'secondary' : 'primary'} aria-describedby={requirements ? 'preflight-reason' : undefined} disabled={busy || !status || !!error || (status.localVm !== 'notIntegrated' && requirements !== null && preflightBlocked)} onClick={() => { void chooseLocal(); }}>Continue</Button>
-          </div>
+          {view === 'local' && !error && status && requirements && status.localVm !== 'notIntegrated'
+            ? <Preflight requiredMemoryBytes={requirements.memoryBytes} onBlocked={setPreflightBlocked} onUncertain={setPreflightUncertain} action={continueAction} />
+            : <div className="workspace-step-actions">{continueAction}</div>}
           {status?.localVm === 'notIntegrated' && <p className="muted">{runtimeCopy.notIntegrated}</p>}
+          </section>
         </>}
+        <div className="setup-column setup-main">
         {selected && status && <SetupProgress status={status} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={onCheckFirstTest} busy={sending} stopping={sending && pendingAction !== 'start'} error={error} modelState={modelMounted ? modelState : 'idle'} onCancel={() => { void chooseLocal('cancel'); }} onRestart={() => { void chooseLocal(); }} onCluster={() => chooseCluster()} onChange={() => { void chooseLocal('change'); }} onOpenExample={openExample} />}
-        {status && modelMounted && <div className="setup-model-slot"><Model enabled={status.model === 'available'} queueable={canQueueModel(status)} paused={!!error || sending} away={cluster} primary={status.localVm === 'ready'} onConnectRequest={chooseComputer} onState={observeModel} onSettled={() => setCheck(value => value + 1)} /></div>}
         {selected && status && <SetupSteps status={status} firstCheck={firstCheck} initialAutomatic={initialAutomatic} busy={sending} stopping={sending && pendingAction !== 'start'} error={error} modelState={modelMounted ? modelState : 'idle'} onRestart={() => { void chooseLocal(); }} onCluster={() => chooseCluster()} />}
+        </div>
+        <div className="setup-column setup-side">
+        {status && modelMounted && <div className="setup-model-slot"><Model enabled={status.model === 'available'} queueable={canQueueModel(status)} paused={!!error || sending} away={cluster} primary={status.localVm === 'ready'} onConnectRequest={chooseComputer} onState={observeModel} onSettled={() => setCheck(value => value + 1)} /></div>}
         {selected && status && status.localVm !== 'ready' && status.localVm !== 'failed' && <Meet onRead={openExample} onName={onExampleName} />}
+        </div>
       </div>
     </div>
     {entry && <ClusterCard active={active && view === 'cluster'} entry={entry} selection={currentPlace} onPlace={publishPlace} onOpenAgent={onOpenAgent ?? onOpenExample} onDone={back} onRemoved={removed} />}

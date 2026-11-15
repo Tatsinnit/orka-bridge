@@ -37,6 +37,7 @@ fn access(read: Arc<Read>) -> RemoteAccess {
         creator_bearer: "fixture-creator".into(),
         expiry: None,
         binding: TargetBinding {
+            cluster_identity: "fixture-cluster".into(),
             context_id: ContextId(Uuid::new_v4()),
             context_name: "test".into(),
             server_address: "https://127.0.0.1:1".into(),

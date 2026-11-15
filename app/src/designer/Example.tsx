@@ -251,7 +251,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
         </div>
         {error && <div className="save-error"><p role="alert">{error}</p><Button kind="primary" className="action-spaced" type="button" onClick={() => { void flush(true); }}>Try saving again</Button></div>}
       </div>
-      <div className="designer-checks card" hidden={!remote && !sendOpen && !sendVisible}>
+      <div className="designer-checks" hidden={!remote && !sendOpen && !sendVisible}>
         <Send onVisibilityChange={setSendVisible} documentId={boundDocument} place={place} source={pair.source} model={readForm(draft).model} local={localRun} stale={stale} blocked={sendBlocked} visible={sendOpen} remote={remote} onChooseCluster={onChooseCluster} onReloadSource={reloadSource} />
         {remote && testSource}
       </div>
@@ -263,6 +263,6 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
       </div>
       </div>
     </>}
-    {!pair && (remote || error && isTauri()) && <div className="designer-checks card"><SendHistory revision={boundDocument} /></div>}
+    {!pair && (remote || error && isTauri()) && <div className="designer-checks"><SendHistory revision={boundDocument} /></div>}
   </section></>;
 }

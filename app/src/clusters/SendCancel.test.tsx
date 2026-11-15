@@ -51,6 +51,12 @@ test.each([
   expect(screen.getByRole('button', { name: 'Check cluster status' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Retry cancellation' })).toBeTruthy();
   await waitFor(() => expect((screen.getByRole('button', { name: 'Send and run tests' }) as HTMLButtonElement).disabled).toBe(false));
+  const actions = screen.getByRole('button', { name: 'Send and run tests' }).parentElement!;
+  expect(screen.getByRole('button', { name: 'Retry cancellation' }).parentElement).toBe(actions);
+  expect(screen.getByRole('button', { name: 'Check cluster status' }).parentElement).toBe(actions);
+  expect(actions.querySelectorAll('.button-primary')).toHaveLength(1);
+  expect(actions.querySelectorAll('.button-secondary')).toHaveLength(2);
+  expect(screen.getByRole('button', { name: 'Check again' }).classList.contains('button-quiet')).toBe(true);
   expect(screen.queryByText('Stopped watching. The cluster may still be running checks.')).toBeNull();
   expect(ipc.mock.calls.some(([cmd]) => cmd === 'send_history_cancel')).toBe(false);
 });

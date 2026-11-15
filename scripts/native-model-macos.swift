@@ -379,7 +379,7 @@ func fillMessage(_ text: String, secure: Bool = false) {
     }
 }
 // Controls use the compiled frontend with a synthetic catalog, not real tools.
-for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
+for (width, height, size) in [(1280, 800, "wide"), (900, 800, "medium"), (540, 900, "compact")] {
     localSize(CGFloat(width), CGFloat(height))
     scroll(4000)
     _ = try seek("Instructions and settings", -150)
@@ -402,6 +402,19 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
     click("Close picker", [])
     require(enabledButton("Close picker") == nil, "X did not dismiss picker")
     require(attribute(enabledButton("Add a tool")!, "AXFocused") as? Bool == true, "X did not return focus")
+    if size == "compact" {
+        // Responsive placement must not trap focus in the editor/picker stack.
+        for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 48, keyDown: down)?.post(tap: .cghidEventTap) }
+        Thread.sleep(forTimeInterval: 0.3)
+        require(attribute(enabledButton("Add a tool")!, "AXFocused") as? Bool != true, "Tab stayed on Add a tool")
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: 48, keyDown: down)
+            event?.flags = .maskShift
+            event?.post(tap: .cghidEventTap)
+        }
+        Thread.sleep(forTimeInterval: 0.3)
+        require(attribute(enabledButton("Add a tool")!, "AXFocused") as? Bool == true, "Shift-Tab did not return to Add a tool")
+    }
     click("Add a tool", [])
     for down in [true, false] { CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap) }
     Thread.sleep(forTimeInterval: 0.3)

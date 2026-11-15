@@ -491,7 +491,7 @@ func capture(_ name: String, _ page: String, afterFrame: (() throws -> Void)? = 
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         // Vision can read the capital I in AI as lowercase l. Match the rest of the heading.
         let welcome = text.contains("Build an") && text.contains("does a real job")
-        let places = text.contains("Choose where agents run")
+        let places = text.contains("Choose where agents run") || nativeTextIsVisible("Choose where agents run")
         let detail = text.contains("Back to clusters")
         require(welcome || places || detail, "Places heading or subview not visible; observed: \(text)")
         // The old chooser and its radios were replaced by Places and its subviews.
@@ -563,7 +563,7 @@ func clickSendControl(_ label: String, scrolling pixels: Int32) throws {
         let seen = try capture("send-probe", "Designer")
         observed = seen.compactMap { $0.topCandidates(1).first?.string }
         // Vision includes the native disclosure triangle as a bullet in this label.
-        if let control = observed.first(where: { $0 == label || (label == "published-checksum" && $0.range(of: #"^\W*published-checksum\b"#, options: .regularExpression) != nil) || (label == "Details" && $0.lowercased().range(of: #"^\W*details\b"#, options: .regularExpression) != nil) }) {
+        if let control = observed.first(where: { $0 == label || (label == "published-checksum" && $0.range(of: #"^\W*published-checksum\b"#, options: [.regularExpression, .caseInsensitive]) != nil) || (label == "Details" && $0.lowercased().range(of: #"^\W*details\b"#, options: .regularExpression) != nil) }) {
             if ["Send and run tests", "Update agent and run tests", "Run cluster tests again", "Send as a separate agent", "Cancel tests", "Retry cancellation", "Check cluster status", "Check again", "Reload saved files", "Send to a cluster"].contains(label) {
                 let enabled = nativeElements().contains { element in
                     attribute(element, "AXRole") as? String == "AXButton"
@@ -984,7 +984,10 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
             // Preserve a visible transient state before doing any search work.
             let seen = try capture("send-probe", "Designer")
             let text = seen.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-            if text.contains(expected) {
+            // Vision can capitalize the lowercase l in this fixed fixture ID.
+            // Validate only this captured frame, never later accessibility state.
+            let checksumVisible = expected == "published-checksum" && text.localizedCaseInsensitiveContains(expected)
+            if text.contains(expected) || checksumVisible {
                 // Keep the frame we verified. A transient state can end between
                 // two screenshots; a second OCR pass would test a different frame.
                 if name != "send-probe" {
@@ -1007,6 +1010,17 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
             Thread.sleep(forTimeInterval: 0.3)
         }
         fail("Preflight state missing: \(expected)")
+    }
+    func captureRecoveryActions(_ name: String) throws {
+        // The layout keeps recovery actions in the header, not beside the result
+        // message. Verify their real hit regions after bringing the header back.
+        let controls = nativeButtons("Send and run tests") + nativeButtons("Check cluster status") + nativeButtons("Retry cancellation")
+        if let bounds = controls.compactMap({ nativeBounds($0) }).min(by: { $0.minY < $1.minY }) {
+            scrollMain(Int32((bodyBounds().minY + 64 - bounds.minY).rounded()))
+        }
+        require(visibleButtons("Check cluster status").count == 1 && visibleButtons("Retry cancellation").count == 1,
+                "Unresolved cancellation lost its explicit recovery actions")
+        try capture(name, "Designer")
     }
     let normal = try chooseFixture(1)
     // Closing a native select popup can return focus to navigation. Activate the
@@ -1195,8 +1209,10 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     require(cancellingFrame.contains { ($0.topCandidates(1).first?.string ?? "").contains("Cancelling tests") }, "Native cancellation progress missing from captured frame")
     Thread.sleep(forTimeInterval: 0.5)
     try capturePreflight("send-cancel-requested-wide", "Cancellation requested. Waiting for the cluster.")
+    try captureRecoveryActions("send-cancel-requested-actions-wide")
     try resultSize(540, 900)
     let requested = try capturePreflight("send-cancel-requested", "Cancellation requested. Waiting for the cluster.")
+    try captureRecoveryActions("send-cancel-requested-actions")
     clickTab("Clusters", requested); clickTab("Designer", requested)
     try focusSend()
     let returnedResult = try capturePreflight("send-page-return", "Cancellation requested. Waiting for the cluster.")
@@ -1287,7 +1303,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         try clickSendControl("Retry cancellation", scrolling: -250)
         Thread.sleep(forTimeInterval: 0.5)
         try capturePreflight("send-cancel-\(mode)", expected)
-        require(visibleButtons("Check cluster status").count == 1 && visibleButtons("Retry cancellation").count == 1, "Unresolved cancellation lost its explicit recovery actions")
+        try captureRecoveryActions("send-cancel-\(mode)-actions")
     }
     try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "confirmed"])
     try clickSendControl("Retry cancellation", scrolling: -250)

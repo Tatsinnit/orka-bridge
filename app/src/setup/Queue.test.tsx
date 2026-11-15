@@ -53,7 +53,9 @@ async function observe(ipc: { mock: { calls: unknown[][] } }) {
 
 test('a choice during transfer connects exactly once at readiness, with no second click and no disabled status buttons', async () => {
   const { ipc, sim, connects } = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
-  await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
+  const model = (await screen.findByRole('heading', { name: 'Connect the AI' })).closest('section');
+  await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  expect(model?.closest('.setup-column')).toBeTruthy();
   expect(screen.getByText('Queued', { selector: '.pill' }).closest('button')).toBeNull();
   expect(screen.getByText('Queued', { selector: '.step-result' })).toBeTruthy();
   expect(connects()).toBe(0);
@@ -67,6 +69,8 @@ test('a choice during transfer connects exactly once at readiness, with no secon
   await observe(ipc);
   await screen.findByText('Connected', { selector: '.model-state .pill' });
   expect(connects()).toBe(1);
+  expect(screen.getByRole('heading', { name: 'Connect the AI' }).closest('section')).toBe(model);
+  expect(model?.closest('.workspace-setup-grid')?.classList.contains('setup-action-model')).toBe(false);
   await observe(ipc);
   expect(connects()).toBe(1);
   expect(within(screen.getByRole('contentinfo')).getByText('Local cluster ready')).toBeTruthy();

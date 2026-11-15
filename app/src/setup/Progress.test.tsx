@@ -91,13 +91,19 @@ test('tab, footer and card agree on one step index and the model action is avail
   expect(screen.getByText('Pick any time')).toBeTruthy();
 });
 
-test('compact order puts the model action before the long step history, with completed rows as single lines', async () => {
+test('setup keeps progress and history in one stack, with the AI and introduction in the other', async () => {
   native(); render(<App />); await openLocalSetup();
   const model = (await screen.findByRole('heading', { name: 'Connect the AI' })).closest('section')!;
   const history = screen.getByRole('list', { name: 'Setup steps' });
   const progress = screen.getByRole('region', { name: 'Local cluster setup' });
-  expect(progress.compareDocumentPosition(model) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(model.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const primary = progress.closest('.setup-column');
+  const side = model.closest('.setup-column');
+  expect(primary).toBeTruthy();
+  expect(side).toBeTruthy();
+  expect(side).not.toBe(primary);
+  expect(history.closest('.setup-column')).toBe(primary);
+  expect(document.querySelector('.workspace-meet')?.closest('.setup-column')).toBe(side);
+  expect(model.closest('.workspace-setup-grid')?.classList.contains('setup-action-model')).toBe(true);
   expect(history.querySelectorAll('button, a')).toHaveLength(0);
 });
 

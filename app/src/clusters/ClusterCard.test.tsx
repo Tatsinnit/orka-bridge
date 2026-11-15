@@ -35,6 +35,24 @@ async function discover(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => localStorage.clear());
 afterEach(() => { cleanup(); clearMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+test('cluster actions share the footer with retry first and reload quiet', async () => {
+  native(); const user = await open(); await discover(user);
+  const use = screen.getByRole('button', { name: 'Use this cluster' });
+  const reload = screen.getByRole('button', { name: 'Reload kubeconfig' });
+  expect(use.parentElement).toBe(reload.parentElement);
+  expect(reload.classList.contains('button-quiet')).toBe(true);
+  await user.click(use);
+  const openAgent = await screen.findByRole('button', { name: 'Open your agent' });
+  const row = openAgent.parentElement!;
+  expect(screen.getByRole('button', { name: 'Check access again' }).parentElement).toBe(row);
+  expect(screen.getByRole('button', { name: 'Reload kubeconfig' }).parentElement).toBe(row);
+  expect(screen.getByRole('button', { name: 'Change context' }).parentElement).toBe(row);
+  expect(row.querySelectorAll('.button-primary')).toHaveLength(1);
+  expect(row.querySelectorAll('.button-secondary')).toHaveLength(2);
+  await user.click(screen.getByRole('button', { name: 'Change context' }));
+  expect(document.activeElement).toBe(await screen.findByRole('combobox', { name: 'kubectl context' }));
+});
+
 test('local readiness never enables unconfirmed remote checks, and changing places keeps the VM', async () => {
   const ipc = native({ selected: 'localVm', localVm: 'ready', model: 'available' });
   ipc.mockImplementation(command => {

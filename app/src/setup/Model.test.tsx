@@ -69,6 +69,7 @@ test('failed removal retries cleanup rather than Connect and copies its own oper
   expect((await screen.findByRole('alert')).textContent).toContain('Retry removal');
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Retry removal' }).className).toContain('button button-primary');
+  expect(screen.getByRole('button', { name: 'Retry removal' }).parentElement?.querySelector('button')?.textContent).toBe('Retry removal');
   await user.click(screen.getByRole('button', { name: 'Copy details for help' }));
   expect(copy.mock.calls[0][0]).toBe('Bridge AI connection\nOperation: Removing sign-in\nCategory: modelStore\nOS code: 5');
   invoke.mockResolvedValue({ ready: false });
@@ -95,6 +96,21 @@ test.each(['paused', 'locked'])('removal confirmation cannot bypass the %s crede
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(invoke).toHaveBeenCalledExactlyOnceWith('setup_connect_model');
 });
+test('CLI recovery puts retry before copy and quiet help in one action row', async () => {
+  invoke.mockRejectedValue({ kind: 'modelCaptureUnavailable' });
+  render(<Model enabled />);
+  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  await screen.findByRole('alert');
+  const retry = screen.getByRole('button', { name: 'Check again' });
+  const row = retry.closest('.workspace-step-actions')!;
+  const buttons = [...row.querySelectorAll('button')];
+  expect(buttons.map(button => button.textContent)).toEqual(['Check again', 'Copy details for help', 'Install GitHub CLI', 'Sign-in help']);
+  expect(row.querySelectorAll('.button-primary')).toHaveLength(1);
+  expect(row.querySelectorAll('.button-secondary')).toHaveLength(1);
+  expect(screen.getByRole('button', { name: 'Install GitHub CLI' }).classList.contains('button-quiet')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Sign-in help' }).classList.contains('button-quiet')).toBe(true);
+});
+
 test('locked model cannot invoke credentials', () => {
   render(<Model enabled={false} />);
   expect(screen.getByRole('button', { name: 'Connect the AI' }).hasAttribute('disabled')).toBe(true);

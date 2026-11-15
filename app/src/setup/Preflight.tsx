@@ -1,12 +1,12 @@
 import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readPreflight, type HostPreflight } from './preflight-state';
 import { formatSize } from './requirements';
 import { StatusIcon } from '../components/DesignSystem';
 
-export default function Preflight({ requiredMemoryBytes, onBlocked, onUncertain }: { requiredMemoryBytes: number; onBlocked: (blocked: boolean) => void; onUncertain?: (uncertain: boolean) => void }) {
+export default function Preflight({ requiredMemoryBytes, onBlocked, onUncertain, action }: { requiredMemoryBytes: number; onBlocked: (blocked: boolean) => void; onUncertain?: (uncertain: boolean) => void; action?: ReactNode }) {
   const [result, setResult] = useState<HostPreflight | null>();
   const [checking, setChecking] = useState(true);
   const [attempt, setAttempt] = useState(0);
@@ -64,7 +64,9 @@ export default function Preflight({ requiredMemoryBytes, onBlocked, onUncertain 
     </div>
     <p className="muted" id="preflight-reason" role="status">{checking ? 'Checking this computer before setup.' : failedVirtualization || memory === 'insufficient' ? 'Fix the computer requirements above before continuing.' : uncertain ? 'Some requirements could not be checked. Check again, or continue to try starting the local cluster.' : 'These checks do not change this computer.'}</p>
     <div className="workspace-step-actions">
+      {!uncertain && action}
       <Button type="button" kind={uncertain ? 'primary' : 'secondary'} disabled={checking} onClick={() => { onBlocked(true); setChecking(true); setNotice(''); setAttempt(value => value + 1); }}>Check again</Button>
+      {uncertain && action}
       <Button type="button" kind="secondary" disabled={checking} onClick={() => { void copy(); }}>Copy details for help</Button>
     </div>
     {notice && <p role="status">{notice}</p>}

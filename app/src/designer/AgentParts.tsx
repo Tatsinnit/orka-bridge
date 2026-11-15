@@ -116,8 +116,8 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
         <input className="field" id={`${id}-search`} type="search" autoFocus value={query} onChange={event => setQuery(event.target.value)} />
         <p className="muted">Choose a tool to add to your agent.</p>
         <ul aria-label="Cluster tools">{choices?.map(tool => <li key={`${tool.kind}:${tool.name}`}><button type="button" onClick={() => { change(addTool(source, tool.name, tool.kind)); close(); }}>
-          <span>{tool.kind === 'builtin' ? labelFor(tool.name) : tool.name}</span><code>{tool.name}</code>
-          <span className="muted">{tool.kind === 'builtin' ? 'Built-in' : 'Cluster tool'}</span>
+          <span className="tool-option-heading"><span>{tool.kind === 'builtin' ? labelFor(tool.name) : tool.name}</span><span className="muted">{tool.kind === 'builtin' ? 'Built-in' : 'Cluster tool'}</span></span>
+          {tool.kind === 'builtin' && labelFor(tool.name) !== tool.name && <code>{tool.name}</code>}
           <span className="tool-description">{toolDescription(tool)}</span>
           {tool.available === false && <span className="muted">Observed unavailable</span>}
         </button></li>)}</ul>

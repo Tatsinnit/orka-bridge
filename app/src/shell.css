@@ -47,7 +47,8 @@
   .page-nav { flex: 1; }
   .page-tab { width: auto; }
   .tab-copy small, .tab-copy small:has(.tab-agent-name) { display: none; }
-  .host-chip { max-width: 140px; }
+  .host-chip { max-width: 192px; }
+  .host-label { max-width: 160px; }
 }
 @media (max-width: 600px) {
   .tab-bar { padding-inline: var(--space-2); }

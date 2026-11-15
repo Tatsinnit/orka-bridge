@@ -28,8 +28,12 @@ test('key stays only in its password field and is cleared as soon as native take
   expect(JSON.stringify(localStorage)).not.toContain(key);
   await act(async () => finish({ ready: true, connection: anthropic }));
   expect(screen.getByText(/Anthropic with your API key/)).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Remove key' })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Change' })).toBeTruthy();
+  const change = screen.getByRole('button', { name: 'Change' });
+  const remove = screen.getByRole('button', { name: 'Remove key' });
+  const row = change.closest('.workspace-step-actions')!;
+  expect([...row.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Change', 'Remove key']);
+  expect(change.classList.contains('button-secondary')).toBe(true);
+  expect(remove.classList.contains('button-quiet')).toBe(true);
 });
 test('retry without a pasted key requests only a saved key, never implicit Copilot capture', async () => {
   invoke.mockRejectedValue({ kind: 'modelConnect' });
@@ -108,7 +112,10 @@ test.each([
   fireEvent.change(field(), { target: { value: key } }); fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect((await screen.findByRole('alert')).textContent).toContain(message);
   if (kind === 'modelKeyCleanup') {
-    expect(screen.getByRole('button', { name: 'Retry removal' })).toBeTruthy();
+    const retry = screen.getByRole('button', { name: 'Retry removal' });
+    const row = retry.closest('.workspace-step-actions')!;
+    expect([...row.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Retry removal', 'Copy details for help']);
+    expect(retry.classList.contains('button-primary')).toBe(true);
     expect(screen.queryByLabelText('API key')).toBeNull();
   } else expect(field().value).toBe('');
   expect(document.body.textContent).not.toContain(key);

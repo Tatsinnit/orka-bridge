@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import Example from './Example';
+import AgentParts from './AgentParts';
 import { agentCall } from './agent-api';
 const agent = '---\nname: reader\ndescription: "Reads a page"\nmodel: file-model\nfuture: {keep: yes}\nkmx:\n  schemaVersion: 1\n  runtime: orka\n  tools:\n    - kind: builtin\n      name: web_fetch\n---\n\nRead a page.\n';
 const path = '/home/creator/Orka/agents/web-reader/web-reader.agent.md';
@@ -89,6 +90,25 @@ test('keyboard picker adds and removes built-ins, keeping original bytes and foc
   await waitFor(() => expect(writes.at(-1)).toBe(agent));
   await user.click(add); await user.keyboard('{Escape}'); expect(document.activeElement).toBe(add);
 });
+test('picker rows lead with one name, retain distinct built-in ids and availability', async () => {
+  const user = userEvent.setup(); const change = vi.fn();
+  render(<AgentParts source={agent} readOnly={false} onChange={change} catalog={{ defaultModel: 'file-model', models: { state: 'ready', items: [] }, tools: { state: 'ready', items: [
+    { kind: 'builtin', name: 'file_read', description: 'Read a file' },
+    { kind: 'tool', name: 'team_lookup', description: 'Looks up team data', available: false },
+  ] } }} />);
+  await user.click(screen.getByRole('button', { name: 'Add a tool' }));
+  const builtin = screen.getByRole('button', { name: /Read a file.*file_read/ });
+  expect(builtin.querySelector('.tool-option-heading')?.textContent).toBe('Read a fileBuilt-in');
+  expect(builtin.querySelector('code')?.textContent).toBe('file_read');
+  const custom = screen.getByRole('button', { name: /team_lookup/ });
+  expect(custom.textContent?.match(/team_lookup/g)).toHaveLength(1);
+  expect(custom.querySelector('.tool-description')?.textContent).toBe('Looks up team data');
+  expect(custom.textContent).toContain('Observed unavailable');
+  await user.click(custom);
+  expect(change).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/name: "?team_lookup"?/));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add a tool' }));
+});
+
 test('picker closes with a labeled X and returns focus without saving', async () => {
   const writes = native(); const user = userEvent.setup(); render(<Example catalogKey={1} />);
   const add = await screen.findByRole('button', { name: 'Add a tool' });

@@ -28,6 +28,18 @@ async function native(preflight: unknown = ready, integrated = true) {
 }
 afterEach(() => { cleanup(); clearMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 
+test('Continue stays inside the computer card after its disclosure', async () => {
+  await native();
+  const action = await screen.findByRole('button', { name: 'Continue' });
+  const card = action.closest('.card');
+  expect(card).toBeTruthy();
+  expect(within(card as HTMLElement).getByRole('heading', { name: 'This computer' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Check again' }).parentElement).toBe(action.parentElement);
+  expect(screen.getByRole('button', { name: 'Copy details for help' }).parentElement).toBe(action.parentElement);
+  const inside = within(card as HTMLElement).getByRole('button', { name: "What's inside" });
+  expect(inside.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 test('insufficient installed memory blocks preparation, explains RAM, and can be rechecked without starting', async () => {
   const { ipc, update } = await native({ ...ready, memory: 'insufficient', installedMemoryBytes: 4294967296 });
   const user = userEvent.setup();

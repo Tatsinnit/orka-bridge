@@ -105,7 +105,7 @@ function SavedSend({ attempt, revision, onChanged }: { attempt: AttemptSummary; 
             </> : <>
               {detail.canCheck && <Button type="button" kind="secondary" disabled={busy} onClick={() => { void act('send_history_check'); }}>Check cluster status</Button>}
               {detail.canCancel && <Button type="button" kind="secondary" disabled={busy} onClick={() => { void act('send_history_cancel'); }}>{detail.cancellation ? 'Retry cancellation' : 'Cancel tests'}</Button>}
-              {detail.canRemove && <Button ref={removeInvoker} type="button" kind="secondary" className="send-history-remove" disabled={busy} onClick={() => setConfirmRemove(true)}>Remove saved details</Button>}
+              {detail.canRemove && <Button ref={removeInvoker} type="button" kind="quiet" className="send-history-remove" disabled={busy} onClick={() => setConfirmRemove(true)}>Remove saved details</Button>}
             </>}
           </div>
           {busy && <p role="status">Updating saved details…</p>}
@@ -132,7 +132,7 @@ export function SendHistory({ revision, onChanged }: { revision: string; onChang
     }, (failure: Error) => { if (mounted) setError(failure.message); });
     return () => { mounted = false; };
   }, [revision, retry]);
-  return <section className="send-history" aria-label="Past Sends">
+  return <section className="send-history card" aria-label="Past Sends">
     <h4>Past Sends</h4>
     <p>Earlier Sends and their test results. An interrupted Send may still be running on the cluster.</p>
     <Details hint="Saved results and limits"><p>Up to 256 Sends, 64 MiB total and 4 MiB per Send. Old terminal details are evicted first. Interrupted Sends are not resumed. Checking their status never sends tests again. Removing saved details changes only this computer, not the cluster. Removed or evicted answers may not be recoverable.</p></Details>
@@ -256,10 +256,20 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
   const resultState: Status = outdated ? 'stale' : running || busy || (checkingEnabled && !checked) ? 'running' : uncertain ? 'stale' : snapshot?.report?.verdict === 'passed' ? 'passed' : snapshot?.report?.verdict === 'failed' || snapshot?.error ? 'failed' : reason ? 'needs-you' : 'not-started';
   const stages: Record<string, string> = { ...sendErrors, capture: 'Reading your saved files', access: 'Confirming cluster access', preflight: 'Checking the AI connection and tools', storage: 'Saving the Send summary', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', stopped: 'Stopped watching', done: 'Tests finished' };
   useEffect(() => { onVisibilityChange?.(!!panelVisible); }, [panelVisible, onVisibilityChange]);
-  return <><section tabIndex={-1} className="send-panel" aria-label="Send and cluster tests" hidden={!panelVisible}>
+  return <><section tabIndex={-1} className="send-panel card" data-send-open={visible} aria-label="Send and cluster tests" hidden={!panelVisible}>
     <LongCard title={visible ? 'Send your agent' : 'Tests on your cluster'} status={<><StatusPill state={resultState} /><span className="status-description">{outdated ? unconfirmed ? 'Revision not confirmed' : 'Not run since your edit' : running || resultState === 'running' ? undefined : cancellation && cancellation !== 'confirmed' ? cancellationLabels[cancellation] : uncertain ? snapshot?.stage === 'stopped' && !cancellation ? 'Stopped watching' : 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>The saved agent and test files go together{snapshot?.model && <> · <code>{snapshot.model}</code></>}{targetName && <> · <code>{targetName}</code></>}. Repeated Sends use the same linked agent, kept on the cluster even if a test fails.</>}
       action={<div className="workspace-step-actions">{!running && <Button type="button" kind="primary" disabled={!!reason || busy || !!message} title={reason} onClick={() => { void mutate('send_start'); }}>{sendLabel}</Button>}
       {running && <Button type="button" kind="secondary" disabled={busy || cancelling} onClick={() => { void mutate('send_cancel'); }}>Cancel tests</Button>}
+      {checkCancellation && <>
+        <Button type="button" kind="secondary" disabled={busy} onClick={() => { void control('send_history_check'); }}>Check cluster status</Button>
+        {retryCancel && <Button type="button" kind="secondary" disabled={busy} onClick={() => { void control('send_history_cancel'); }}>Retry cancellation</Button>}
+      </>}
+      {!running && canSeparate && <Button type="button" kind={checkCancellation ? 'quiet' : 'secondary'} disabled={busy} onClick={() => { void mutate('send_start', true); }}>Send as a separate agent</Button>}
+      {(!target || !provider) && <Button type="button" kind={checkCancellation ? 'quiet' : 'secondary'} onClick={onChooseCluster} disabled={!onChooseCluster}>Choose a cluster</Button>}
+      {checkingEnabled && checked && (mismatched ? <Button type="button" kind={checkCancellation ? 'quiet' : 'secondary'} disabled={busy || running || !onReloadSource} onClick={() => {
+        setReloadError(undefined);
+        void onReloadSource?.().catch(() => setReloadError('Your saved files could not be reloaded. Your draft is still here.'));
+      }}>Reload saved files</Button> : <Button type="button" kind={checkCancellation ? 'quiet' : 'secondary'} disabled={busy || running} onClick={() => setRefresh(v => v + 1)}>Check again</Button>)}
     </div>}>
     <p className="sr-only test-announcement" role="status" aria-live="polite" aria-atomic="true">{!running ? outdated ? revisionExplanation : cancellation && cancellation !== 'confirmed' ? `${cancellationLabels[cancellation]}.` : snapshot?.stage === 'stopped' && !cancellation ? 'Stopped watching.' : uncertain ? 'Test result unknown.' : resultAnnouncement(snapshot?.report) : undefined}</p>
     <CardSection title="What you send">
@@ -268,11 +278,7 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
       <div><dt>Destination</dt><dd>{target ? <><code>{target.context_name}</code> · <code>{target.watched_namespace}</code></> : 'Choose a cluster'}</dd></div>
       {provider && <div><dt>AI connection</dt><dd>{(checked?.value?.model ?? model) && <><code>{checked?.value?.model ?? model}</code> through </>}<code>{provider.name}</code> · {provider.ready ? 'AI connection ready; the model is checked when tests run' : 'AI connection not ready'}</dd></div>}
     </dl>
-    {!running && canSeparate && <div>
-      <Button type="button" kind="secondary" disabled={busy} onClick={() => { void mutate('send_start', true); }}>Send as a separate agent</Button>
-      <p>Creates a new agent here. Previous work may still run; this does not stop or replace it.</p>
-    </div>}
-    {(!target || !provider) && <Button type="button" kind="secondary" onClick={onChooseCluster} disabled={!onChooseCluster}>Choose a cluster</Button>}
+    {!running && canSeparate && <p>Creates a new agent here. Previous work may still run; this does not stop or replace it.</p>}
     {checkingEnabled && <section className="send-preflight" aria-label="Before Send" aria-busy={!checked}>
       <h4>Before Send</h4>
       {!mismatched && checked?.value && <ul>{checked.value.rows.map(row => <li key={`${row.label}-${row.message}`} data-state={row.status}>
@@ -281,10 +287,6 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
       </li>)}</ul>}
       {reason && <p role={checked ? 'alert' : 'status'}>{reason}</p>}
       {!checked && <Elapsed />}
-      {checked && (mismatched ? <Button type="button" kind="secondary" disabled={busy || running || !onReloadSource} onClick={() => {
-        setReloadError(undefined);
-        void onReloadSource?.().catch(() => setReloadError('Your saved files could not be reloaded. Your draft is still here.'));
-      }}>Reload saved files</Button> : <Button type="button" kind="secondary" disabled={busy || running} onClick={() => setRefresh(v => v + 1)}>Check again</Button>)}
       {reloadError && <p role="alert">{reloadError}</p>}
     </section>}
     </CardSection>
@@ -295,10 +297,6 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
     {(running || controlCancelling) && <TestProgress stage={cancelling ? 'Cancelling tests…' : stages[snapshot!.stage]} />}
     {snapshot?.agentAction && snapshot.acknowledged.some(resource => resource.kind === 'Agent') && <p role="status">{{ create: 'Agent created on the cluster.', update: 'Agent updated on the cluster.', unchanged: 'Using the same agent without changing its configuration.' }[snapshot.agentAction]}</p>}
     <CancellationNotice cancellation={cancelling ? 'cancelling' : cancellation} report={snapshot?.report ?? null} />
-    {checkCancellation && <div className="workspace-step-actions">
-      <Button type="button" kind="secondary" disabled={busy} onClick={() => { void control('send_history_check'); }}>Check cluster status</Button>
-      {retryCancel && <Button type="button" kind="secondary" disabled={busy} onClick={() => { void control('send_history_cancel'); }}>Retry cancellation</Button>}
-    </div>}
     {snapshot?.stage === 'stopped' && !cancellation && <p role="status">Stopped watching. The cluster may still be running checks.</p>}
     {snapshot?.error && snapshot.stage !== 'stopped' && !cancellation && <p role="alert">{sendErrors[snapshot.error as keyof typeof sendErrors]}</p>}
     {snapshot && !samePlace && <p role="status">This result belongs to another cluster or AI connection, not your current selection.</p>}

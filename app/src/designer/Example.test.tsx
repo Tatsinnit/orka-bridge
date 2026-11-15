@@ -107,6 +107,12 @@ test('the editor leads local tests in reading order and hides unopened Send hist
   await user.click(screen.getByRole('button', { name: 'File' }));
   expect(screen.getByRole('textbox', { name: 'Agent file' })).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Tests on the local cluster' })).toBe(run);
+  await user.click(screen.getByRole('button', { name: 'Send to a cluster' }));
+  const history = screen.getByRole('region', { name: 'Past Sends' });
+  expect(editor.closest('.designer-editing')).toBe(history.closest('.designer-editing'));
+  expect(run.closest('.designer-editing')).toBeNull();
+  expect(history.classList.contains('card')).toBe(true);
+  expect(editor.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 test('setup-pending editor leads tests and remote places keep the Send history', async () => {
   native(); const { container, rerender } = render(<Example setupPending />);
