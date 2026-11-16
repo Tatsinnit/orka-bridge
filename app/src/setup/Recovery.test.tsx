@@ -138,5 +138,5 @@ test('AI failure marks its setup step and every shell status without losing the 
   expect(screen.getByRole('contentinfo').textContent).toContain('AI needs attention');
   expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('Check the AI connection in Clusters');
   expect(document.querySelector('.host-chip .live-dot')?.className).toContain('bad');
-  expect(screen.getByRole('alert').textContent).toContain('local cluster and your agent files are kept');
+  expect(screen.getByRole('alert').textContent).toContain('Your workspace and agent files are kept');
 });

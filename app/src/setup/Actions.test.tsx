@@ -33,7 +33,8 @@ test('AI connection is the only next primary and its prerequisite is visible bef
   await user.click(connect);
   expect(await screen.findByText('Connected', { selector: '.model-state .pill' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Open your first agent' }).className).toBe('button button-primary');
-  expect(document.body.textContent).not.toMatch(/guest|\bVM\b|inference|gpt-5.6-terra/);
+  expect(document.body.textContent).not.toMatch(/guest|\bVM\b|inference/);
+  expect(screen.getByText('gpt-5.6-terra', { selector: 'code' })).toBeTruthy();
   expect(screen.queryByText('Engine diagnostics')).toBeNull();
   expect(ipc.mock.calls.some(([command]) => command === 'engine_call')).toBe(false);
 });

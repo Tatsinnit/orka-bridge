@@ -1,20 +1,24 @@
-import { Disclosure } from '../components/Disclosure';
-import { Button } from '../components/Button';
 import { type ReactNode, useEffect, useState } from 'react';
+import { Button } from '../components/Button';
+import { type Status, StatusIcon, StatusPill } from '../components/DesignSystem';
+import { Disclosure } from '../components/Disclosure';
 import { agentInfo } from '../designer/agent-api';
-import { type ExamplePair, loadExample, type SetupStatus } from './state';
-import Recovery from './Recovery';
-import { StatusIcon, StatusPill, type Status } from '../components/DesignSystem';
 import type { ModelState } from './Model';
 import { canQueueModel, infraProgress, setupView } from './progress';
+import Recovery from './Recovery';
 import { modelDetails } from './recovery-info';
+import { type ExamplePair, loadExample, type SetupStatus } from './state';
 import './steps.css';
+import { readForm } from '../designer/agent-form';
+import { builtInTools } from '../designer/built-in-tools';
+import { testDefinitions } from '../designer/test-definitions';
 
 export type CheckStepState = 'running' | 'passed' | 'failed' | 'unknown' | 'stale';
 
 type Props = {
   status: SetupStatus; busy: boolean; stopping: boolean; error?: string; modelState?: ModelState; firstCheck?: CheckStepState;
-  firstTestResult?: { failed: number }; initialAutomatic?: boolean; onCheckFirstTest?: () => void;
+  modelUnavailable?: boolean;
+  firstTestResult?: { failed: number }; initialAutomatic?: boolean; onCheckFirstTest?: () => void; onChooseProvider?: () => void;
   onCancel: () => void; onRestart: () => void; onCluster?: () => void; onChange: (button: HTMLButtonElement) => void; onOpenExample: () => void;
 };
 const rowClass: Record<Status, string> = { passed: 'step-done', failed: 'step-failed', running: 'step-current', 'needs-you': 'step-current', stale: 'step-waiting', 'not-started': 'step-waiting' };
@@ -50,9 +54,10 @@ export function SetupProgress(props: Props) {
   const { view, failed: failedStatus, paused, infra } = stepRows(props);
   const failed = failedStatus && !error;
   const ready = status.localVm === 'ready';
+  const needsModel = props.modelState === 'connected' && props.modelUnavailable && props.firstCheck === 'unknown';
   const progress = status.workspaceProgress;
   const copying = !stopping && status.localVm === 'installing' && progress?.phase === 'materializing';
-  const stateLine = error ? 'Local cluster status is unavailable.' : stopping ? 'Stopping the local cluster…' : ready ? 'The local cluster is running on this computer.'
+  const stateLine = error ? 'Local cluster status is unavailable.' : stopping ? 'Stopping the local cluster…' : ready ? 'Your workspace is ready on this computer.'
     : paused ? 'Setup is paused. Choose Start again to resume.' : status.localVm === 'starting' ? 'Starting the local cluster…'
     : status.localVm === 'closing' ? 'Stopping the local cluster…'
     : status.localVm === 'notIntegrated' ? 'Local cluster setup is not included in this build. Nothing will be downloaded or started.'
@@ -73,21 +78,28 @@ export function SetupProgress(props: Props) {
       </div>}</Disclosure>
   </>;
   return <section className="card workspace-steps setup-progress" aria-label="Local cluster setup">
-    {view.done && <div className="steps-head"><h2>Local cluster</h2><StatusPill state={pill}>{pill === 'passed' ? 'Ready' : undefined}</StatusPill><span className="status-description">{error ? 'Unavailable' : view.line}</span></div>}
+    {view.done && <div className="steps-head"><h2>This computer</h2><StatusPill state={pill}>{pill === 'passed' ? 'Ready' : undefined}</StatusPill><span className="status-description">{error ? 'Unavailable' : view.line}</span></div>}
     <p role="status" className={view.done || paused || error || status.localVm === 'notIntegrated' ? undefined : 'sr-only'}>{view.done || paused || error || ready || stopping || status.localVm === 'notIntegrated' ? stateLine : failed ? 'Setup needs attention' : view.line}</p>
     {ready && !error && props.modelState === 'connected' && props.firstCheck === 'failed' && !!props.firstTestResult?.failed && <p>Its test failed</p>}
     <SetupSteps {...props} workspaceDetails={workspaceDetails} />
+    {ready && !error && props.onChooseProvider && props.modelState === 'connected' && needsModel && <div className="first-test-recovery">
+      <p>The first test could not be confirmed. If the AI could not be reached, check your connection or choose another provider.</p>
+      <p className="muted">Changing provider first asks you to remove the current sign-in or key. Your agent files are kept.</p>
+      <div className="workspace-step-actions"><Button type="button" kind="primary" disabled={busy} onClick={onOpenExample}>Try again in Designer</Button>
+        {props.onChooseProvider && <Button type="button" kind="secondary" disabled={busy} onClick={props.onChooseProvider}>Choose another provider</Button>}</div>
+    </div>}
     {!failed && <div className="workspace-step-actions">
       {['preparing', 'installing', 'starting'].includes(status.localVm) && <><Button type="button" kind="secondary" disabled={busy || !!error} onClick={onCancel}>Cancel</Button><span className="muted">Cancel pauses setup. Your downloaded files are kept.</span></>}
       {status.localVm === 'notIntegrated' && onCluster && <Button type="button" kind="quiet" disabled={busy} onClick={onCluster}>Use a cluster you already have instead</Button>}
       {paused && <Button type="button" kind="primary" disabled={busy || !!error} onClick={onRestart}>Start again</Button>}
-      {ready && <>{props.modelState === 'connected' && <>
+      {ready && <>{props.modelState === 'connected' && !needsModel && <>
         {props.firstCheck === 'stale' ? <Button type="button" kind="primary" disabled={busy || !!error} onClick={onOpenExample}>Run it again</Button>
           : (props.firstCheck === 'unknown' || ((props.firstCheck === 'passed' || props.firstCheck === 'failed') && !props.firstTestResult)) ? <Button type="button" kind="primary" disabled={busy || !!error || !props.onCheckFirstTest} onClick={props.onCheckFirstTest}>Check again</Button>
           : !props.firstCheck && <Button type="button" kind="primary" disabled={busy || !!error} onClick={onOpenExample}>Open your first agent</Button>}
         {props.firstTestResult && <Button type="button" kind={props.firstCheck === 'stale' || props.firstCheck === 'unknown' || props.firstCheck === 'running' ? 'secondary' : 'primary'} disabled={busy || !!error} onClick={onOpenExample}>See what it answered</Button>}
-      </>}<Button type="button" kind="quiet" disabled={busy || !!error} onClick={onOpenExample}>Read its instructions</Button><Button type="button" kind="quiet" disabled={busy || !!error} onClick={event => onChange(event.currentTarget)}>Stop the local cluster</Button></>}
+      </>}{!needsModel && <Button type="button" kind="quiet" disabled={busy || !!error} onClick={onOpenExample}>Read its instructions</Button>}</>}
     </div>}
+    {ready && !failed && <div className="workspace-management"><Button type="button" kind="quiet" disabled={busy || !!error} onClick={event => onChange(event.currentTarget)}>Stop the local cluster</Button></div>}
   </section>;
 }
 
@@ -111,13 +123,15 @@ export function Meet({ onRead, onName }: { onRead: () => void; onName?: (name: s
   useEffect(() => { let mounted = true; void loadExample().then(result => { if (!mounted) return; if (result.ok) setPair(result.pair); else setFailed(true); }); return () => { mounted = false; }; }, []);
   const info = agentInfo(pair?.agent);
   useEffect(() => { if (pair) onName?.(info.name); }, [pair, info.name, onName]);
-  const webReader = info.name === 'web-reader' && /name: web_fetch(?:\r?\n|$)/.test(pair?.agent ?? '');
+  const form = readForm(pair?.agent ?? '');
+  const tools = form.tools.filter((tool): tool is typeof tool & { name: string } => !!tool.name);
+  const tests = testDefinitions(pair?.tests ?? '');
   return <section className="card workspace-meet" aria-labelledby="meet-title">
     <span className="workspace-kicker">Meet your first agent</span><h2 id="meet-title">{info.name ?? 'Your first agent'}</h2>
     {pair ? <>{info.description && <p className="meet-description">{info.description}</p>}
-      <dl>{webReader && <><div><dt>What it can do</dt><dd><span className="workspace-tool">Read a web page <code>web_fetch</code></span></dd></div>
-        <div><dt>How we'll check it</dt><dd>We'll ask for a checksum published on a web page. The check looks for the exact value in the answer.</dd></div></>}
-        <div><dt>Whose is it</dt><dd>Yours. You can start a new agent in Designer now. After setup, choose its model and tools and run its checks.</dd></div></dl>
+      <dl><div><dt>It can use</dt><dd>{tools.length ? tools.map(tool => <span className="workspace-tool" key={tool.index}>{tool.builtin && Object.hasOwn(builtInTools, tool.name) ? builtInTools[tool.name] : 'Tool'} <code>{tool.name}</code></span>) : !form.toolsEditable || tools.length !== form.tools.length ? 'The tool list could not be read. Open its instructions to see the file.' : 'No tools are configured.'}</dd></div>
+        {tests && <div><dt>How we'll test it</dt><dd>{tests.map(test => <p key={test.id}>{test.title ?? test.question}</p>)}</dd></div>}
+        <div><dt>Whose is it</dt><dd>Yours. After setup, change its instructions and tests, or start a new agent.</dd></div></dl>
       <Button type="button" kind="secondary" onClick={onRead}>Read its instructions</Button></>
       : <p className="muted">{failed ? 'The example could not be opened. Try opening Designer.' : "Opening the example's introduction…"}</p>}
   </section>;

@@ -7,17 +7,17 @@ const errors = {
   modelCaptureInvalid: 'The stored GitHub sign-in returned invalid credential data.',
   modelCaptureTimedOut: 'Reading the stored GitHub sign-in timed out.',
   modelStore: 'Bridge could not save or load your sign-in.',
-  modelGuest: 'The local cluster is not ready to connect the AI.',
-  modelDelivery: 'Bridge could not confirm that the local cluster received the sign-in.',
+  modelGuest: 'The workspace is not ready to connect the AI.',
+  modelDelivery: 'Bridge could not confirm that the workspace received the sign-in.',
   modelConnect: 'Bridge could not confirm the AI connection. Check again to reconnect.',
-  modelBusy: 'Another operation is using the local cluster. Wait for it to finish.',
-  modelSession: 'The local cluster is not available to connect the AI.',
+  modelBusy: 'Another operation is using the workspace. Wait for it to finish.',
+  modelSession: 'The workspace is not available to connect the AI.',
   modelUnavailable: 'The AI connection is unavailable or could not be confirmed.',
-  modelReconnect: 'Bridge could not clean up the previous model connection. The local cluster may need a newer image. The saved sign-in was kept.',
+  modelReconnect: 'Bridge could not clean up the previous model connection. The workspace may need a newer image. The saved sign-in was kept.',
   modelKeyInvalid: 'Paste the whole key.',
   modelAlreadyAssociated: 'Change or remove the current AI connection before adding a key.',
   modelCredentialRejected: 'GitHub Copilot did not accept the saved sign-in. Check your GitHub CLI sign-in.',
-  modelProviderUnreachable: 'The local cluster could not reach GitHub Copilot. Check your internet connection.',
+  modelProviderUnreachable: 'The workspace could not reach GitHub Copilot. Check your internet connection.',
   modelModelUnavailable: 'The default model is not listed for this Copilot sign-in. Check your Copilot plan.',
   modelKeyCleanup: 'Key removal has not been confirmed. Retry removal before adding another key.',
 };
@@ -26,11 +26,19 @@ export const companies = {
   openai: { name: 'OpenAI', model: 'gpt-4.1', prefix: 'sk-', site: 'platform.openai.com' },
   anthropic: { name: 'Anthropic', model: 'claude-sonnet-5-5', prefix: 'sk-ant-', site: 'console.anthropic.com' },
 } as const;
-export type ModelConnection = { kind: 'copilot'; model: 'gpt-5.6-terra' } | { kind: 'key'; vendor: KeyVendor; model: string };
+export const copilotModel = 'gpt-5.6-terra';
+// `account` is the GitHub login verified when this sign-in was saved; absent means unavailable.
+export type ModelConnection = { kind: 'copilot'; model: typeof copilotModel; account?: string } | { kind: 'key'; vendor: KeyVendor; model: string };
+const githubLogin = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 function connectionInfo(value: unknown): ModelConnection | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return;
   const c = value as Record<string, unknown>;
-  if (Object.keys(c).sort().join(',') === 'kind,model' && c.kind === 'copilot' && c.model === 'gpt-5.6-terra') return { kind: 'copilot', model: c.model };
+  const keys = Object.keys(c).sort().join(',');
+  if (c.kind === 'copilot' && c.model === copilotModel) {
+    if (keys === 'kind,model') return { kind: 'copilot', model: c.model };
+    if (keys === 'account,kind,model' && typeof c.account === 'string' && githubLogin.test(c.account)) return { kind: 'copilot', model: c.model, account: c.account };
+    return;
+  }
   if (Object.keys(c).sort().join(',') === 'kind,model,vendor' && c.kind === 'key' && (c.vendor === 'openai' || c.vendor === 'anthropic') && c.model === companies[c.vendor].model) return { kind: 'key', vendor: c.vendor, model: companies[c.vendor].model };
 }
 export function validKey(vendor: KeyVendor, key: string) {
@@ -42,7 +50,7 @@ export function keyFailure(error: ModelFailure, vendor: KeyVendor): string {
   switch (error.category) {
     case 'modelKeyInvalid': return `Paste the whole key. ${c.name} keys start with ${c.prefix}.`;
     case 'modelCredentialRejected': return `${c.name} didn't accept this key. Copy it again from ${c.site}, or create a new one.`;
-    case 'modelProviderUnreachable': return `Your local cluster couldn't reach ${c.name}. Check this computer's internet connection, then try again.`;
+    case 'modelProviderUnreachable': return `Your workspace couldn't reach ${c.name}. Check this computer's internet connection, then try again.`;
     case 'modelModelUnavailable': return `${c.model} isn't listed for this key. Check your ${c.name} plan, or choose Copilot.`;
     default: return error.message.replaceAll('sign-in', 'key');
   }

@@ -13,6 +13,8 @@ use std::{
 
 const SECRET: &[u8] = b"synthetic-model-only";
 
+#[path = "setup_model_account_tests.rs"]
+mod account_tests;
 #[path = "setup_model_key_tests.rs"]
 mod key_tests;
 

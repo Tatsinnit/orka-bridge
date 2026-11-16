@@ -15,6 +15,12 @@ test('only automatic first-test admission opts into the bundled-source check', a
     ['agent_run', { documentId: SAMPLE_DOCUMENT_ID, bundledExample: true }],
   ]);
 });
+test('optional native attempt correlation is validated without breaking older snapshots', () => {
+  expect(isRunSnapshot({ ...base, attemptId: SAMPLE_DOCUMENT_ID })).toBe(true);
+  expect(isRunSnapshot({ ...base, attemptId: null })).toBe(true);
+  expect(isRunSnapshot({ ...base, attemptId: 'not-an-attempt' })).toBe(false);
+  expect(isRunSnapshot(base)).toBe(true);
+});
 test('optional title metadata cannot hide valid run evidence and older reports remain readable', () => {
   const withTitle = (title: unknown) => ({ ...base, report: { ...base.report, cases: [{ ...base.report.cases[0], title }] } });
   expect(isRunSnapshot(withTitle('Says the answer'))).toBe(true);

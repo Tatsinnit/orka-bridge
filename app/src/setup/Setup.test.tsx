@@ -38,7 +38,7 @@ test('reopen observes a lost workspace immediately without replaying setup, Conn
   lost = true;
   await act(async () => { window.dispatchEvent(new Event('focus')); });
   expect(screen.getByText("The local cluster couldn't start")).toBeTruthy();
-  expect(screen.queryByText('The local cluster is running on this computer.')).toBeNull();
+  expect(screen.queryByText('Your workspace is ready on this computer.')).toBeNull();
   expect(ipc.mock.calls.filter(([name]) => name === 'setup_connect_model')).toHaveLength(1);
   expect(ipc.mock.calls.some(([name]) => ['setup_select_local', 'agent_run'].includes(name))).toBe(false);
 });
@@ -73,7 +73,7 @@ test('failed Connect refreshes retained guest details without locking the runnin
   expect(screen.queryByText(detail)).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Show details' }));
   expect(await screen.findByText(detail)).toBeTruthy();
-  expect(screen.getByText('The local cluster is running on this computer.')).toBeTruthy();
+  expect(screen.getByText('Your workspace is ready on this computer.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Check again' }).matches(':disabled')).toBe(false);
   expect(document.body.textContent).not.toContain('SECRET_MARKER');
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_connect_model')).toHaveLength(1);
@@ -121,10 +121,10 @@ test.each([null, 'attempted'])('a lost selection reply preserves durable intent 
   await user.click(await screen.findByRole('button', { name: 'Continue' }));
   expect(intentAtSelection).toBe(previous ?? 'pending');
   await act(async () => { loseReply(); });
-  await screen.findByText('The local cluster is running on this computer.', {}, { timeout: 2000 });
+  await screen.findByText('Your workspace is ready on this computer.', {}, { timeout: 2000 });
   view.unmount(); render(<Setup onOpenExample={vi.fn()} />);
   await openLocalSetup(user);
-  await screen.findByText('The local cluster is running on this computer.');
+  await screen.findByText('Your workspace is ready on this computer.');
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe(previous ?? 'pending');
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
   expect(ipc.mock.calls.every(([command]) => ['setup_status', 'setup_requirements', 'setup_example', 'setup_select_local', 'cluster_places'].includes(command))).toBe(true);
@@ -185,8 +185,8 @@ test('Continue shows real startup states and a ready session can open the owned 
   await screen.findByRole('button', { name: 'Continue' });
   expect(screen.queryByRole('button', { name: 'Read its instructions' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Continue' }));
-  expect(screen.queryByText('The local cluster is running on this computer.')).toBeNull();
-  expect(await screen.findByText('The local cluster is running on this computer.')).toBeTruthy();
+  expect(screen.queryByText('Your workspace is ready on this computer.')).toBeNull();
+  expect(await screen.findByText('Your workspace is ready on this computer.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Connect the AI' }).matches(':disabled')).toBe(true);
   expect(ipc.mock.calls.filter(([name]) => name === 'setup_select_local')).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));

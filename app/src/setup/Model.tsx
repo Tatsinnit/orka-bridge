@@ -2,14 +2,15 @@ import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import { StatusPill } from '../components/DesignSystem';
-import { companies, connectKey, connectModel, type KeyVendor, keyFailure, type ModelConnection, type ModelFailure, removeModel, validKey } from './modelState';
+import { companies, connectKey, connectModel, copilotModel, type KeyVendor, keyFailure, type ModelConnection, type ModelFailure, removeModel, validKey } from './modelState';
 import type { HelpTopic } from './recovery-info';
 
 export type ModelState = 'idle' | 'queued' | 'connecting' | 'removing' | 'connected' | 'failed';
 // `enabled` is native permission to touch credentials. `queueable` only permits remembering the
 // creator's choice while the workspace is still arriving. `away` means another place was chosen.
-export default function Model({ enabled, queueable = false, paused = false, away = false, primary = true, onState, onSettled, onConnectRequest }: {
-  enabled: boolean; queueable?: boolean; paused?: boolean; away?: boolean; primary?: boolean; onState?: (state: ModelState) => void; onSettled?: () => void; onConnectRequest?: () => void;
+// Each increase of `changeRequest` is an explicit request to change the AI provider.
+export default function Model({ enabled, queueable = false, paused = false, away = false, primary = true, changeRequest = 0, onState, onSettled, onConnectRequest }: {
+  enabled: boolean; queueable?: boolean; paused?: boolean; away?: boolean; primary?: boolean; changeRequest?: number; onState?: (state: ModelState) => void; onSettled?: () => void; onConnectRequest?: () => void;
 }) {
   // In-memory consent only. It never carries a credential and is consumed once.
   const [queued, setQueued] = useState(false);
@@ -25,6 +26,10 @@ export default function Model({ enabled, queueable = false, paused = false, away
   const removal = useRef<HTMLButtonElement>(null);
   const cancelRemoval = useRef<HTMLButtonElement>(null);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // An explicit change moves focus once rendered: to the confirmation, else the connection choice.
+  const changeFocus = useRef<'confirm' | 'choice'>(undefined);
+  const handledChange = useRef(changeRequest);
   // Focus follows the keyboard user's operation, then its retry or next available action.
   const refocus = useRef<'connect' | 'remove'>(undefined);
   const [busy, setBusy] = useState<'connect' | 'remove'>();
@@ -36,6 +41,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
   const [error, setError] = useState<ModelFailure>();
   const [notice, setNotice] = useState('');
   const [failedAction, setFailedAction] = useState<'connect' | 'remove'>('connect');
+  const removalFailed = !!error && (failedAction === 'remove' || error.category === 'modelKeyCleanup');
   const epoch = useRef(0);
   const active = useRef(false);
   useEffect(() => {
@@ -72,6 +78,26 @@ export default function Model({ enabled, queueable = false, paused = false, away
     if (document.activeElement === document.body) status.current?.focus();
     refocus.current = undefined;
   }, [busy, queued, ready, error, confirmRemoval]);
+  // Never replaces a saved sign-in directly: the creator confirms removal first, then chooses again.
+  useEffect(() => {
+    if (changeRequest === handledChange.current) return;
+    handledChange.current = changeRequest;
+    if (changeRequest <= 0) return;
+    const confirm = hasSignIn && enabled && !paused && !busy && !removalFailed;
+    changeFocus.current = confirm ? 'confirm' : 'choice';
+    if (confirm) setConfirmRemoval(true);
+  }, [changeRequest, hasSignIn, enabled, paused, busy, removalFailed]);
+  useEffect(() => {
+    // A confirmation focuses once it renders; a hidden card never takes focus.
+    if (!changeFocus.current || (changeFocus.current === 'confirm' && !confirmRemoval)) return;
+    changeFocus.current = undefined;
+    if (root.current?.closest('[hidden]')) return;
+    const target = confirmRemoval ? cancelRemoval.current
+      : busy ? heading.current
+      : removalFailed ? removal.current
+      : root.current?.querySelector<HTMLElement>('.model-choice:not(:disabled) input:checked');
+    (target ?? heading.current)?.focus();
+  });
   async function perform(action: 'connect' | 'remove') {
     if (!enabled || paused || active.current || (action === 'connect' && ready)) return;
     const key = action === 'connect' && choice === 'key' ? keyField.current?.value ?? '' : '';
@@ -91,7 +117,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
     if (result.ok) {
       setConnected(action === 'connect'); setRemoved(action === 'remove');
       if (action === 'connect') {
-        const info = result.connection ?? { kind: 'copilot', model: 'gpt-5.6-terra' };
+        const info = result.connection ?? { kind: 'copilot', model: copilotModel };
         setConnection(info); setChoice(info.kind);
         if (info.kind === 'key') setVendor(info.vendor);
       } else setConnection(undefined);
@@ -121,7 +147,6 @@ export default function Model({ enabled, queueable = false, paused = false, away
     refocus.current = document.activeElement === retry.current ? 'connect' : undefined;
     if (enabled) void perform('connect'); else if (choice === 'copilot' && queueable && !paused) setQueued(true);
   }
-  const removalFailed = !!error && (failedAction === 'remove' || error.category === 'modelKeyCleanup');
   const cliUnavailable = !removalFailed && error?.category === 'modelCaptureUnavailable';
   const signInCheck = !removalFailed && error && ['modelCaptureFailed', 'modelCaptureInvalid', 'modelCaptureTimedOut'].includes(error.category);
   function chooseKind(kind: 'copilot' | 'key') { clearKey(); setQueued(false); setChoice(kind); setError(undefined); }
@@ -133,7 +158,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
               if (removalFailed) void perform('remove'); else setConfirmRemoval(true);
             }}>{removalFailed ? 'Retry removal' : keyMode ? 'Remove key' : 'Remove sign-in'}</Button>;
   return <section ref={root} className="card setup-model" aria-labelledby="model-title" aria-busy={!!busy}>
-    <h2 id="model-title">Connect the AI</h2>
+    <h2 id="model-title" ref={heading} tabIndex={-1}>Connect the AI</h2>
     {!ready && busy !== 'remove' && !removalFailed && <>
       <fieldset className="model-choice" disabled={!!busy || hasSignIn}>
         <legend className="sr-only">AI connection</legend>
@@ -146,15 +171,20 @@ export default function Model({ enabled, queueable = false, paused = false, away
         </fieldset>
         <label htmlFor="model-api-key">API key</label>
         <input ref={keyField} id="model-api-key" type="password" autoComplete="off" spellCheck={false} autoCapitalize="none" disabled={!enabled || paused || !!busy} aria-describedby="model-key-help" aria-invalid={error?.category === 'modelKeyInvalid' || error?.category === 'modelCredentialRejected'} />
-        <p id="model-key-help" className="muted">Saved in this computer’s Keychain or Windows Credential Manager and given only to the local cluster. Never written to your agent files.</p>
+        <p id="model-key-help" className="muted">Saved in this computer’s credential store and given only to your workspace. Never written to your agent files.</p>
         <Button type="button" kind="quiet" onClick={() => { void help(vendor === 'openai' ? 'openaiKey' : 'anthropicKey'); }}>Where do I get a key?</Button>
-        <p>Model <code>{company.model}</code>, a good default.</p>
       </div> : <p className="muted">Use GitHub Copilot. GitHub CLI must be installed and signed in to github.com.</p>}
-      {!enabled && !keyMode && (queueable || queued) ? <p className="muted">Choose now to connect automatically when the local cluster is ready.</p>
-        : !enabled ? <p className="muted">Start the local cluster before connecting the AI.</p>
-        : !keyMode && <p className="muted">Your sign-in is shared only with the local cluster.</p>}
+      <p>Model <code>{keyMode ? company.model : copilotModel}</code>, a good default.</p>
+      {!enabled && keyMode ? <p className="muted">Bridge can't queue a key. Enter it once the workspace is ready.</p>
+        : !enabled && (queueable || queued) ? <p className="muted">Choose now to connect automatically when the workspace is ready.</p>
+        : !enabled ? <p className="muted">Start the workspace before connecting the AI.</p>
+        : !keyMode && <p className="muted">Your sign-in is shared only with your workspace.</p>}
     </>}
-    {ready && connection?.kind === 'key' && <><p>{companies[connection.vendor].name} with your API key · <code>{connection.model}</code></p><p className="muted">Each agent can choose another model in Designer.</p></>}
+    {ready && connection && <>
+      <p>{connection.kind === 'key' ? `${companies[connection.vendor].name} with your API key` : 'GitHub Copilot'} · <code>{connection.model}</code></p>
+      {connection.kind === 'copilot' && <p>Saved GitHub sign-in: {connection.account ?? 'account unavailable'}</p>}
+      <p className="muted">Each agent can choose another model in Designer.</p>
+    </>}
     <div className={error ? 'workspace-failure' : undefined} role={error ? 'alert' : undefined}>
       <div className={error ? 'workspace-failure-explanation' : undefined}>
         {error && <><p className="failure-summary">{removalFailed && error.category === 'unknown' ? `Bridge could not confirm ${keyMode ? 'key' : 'sign-in'} removal.` : keyMode ? keyFailure(error, vendor) : error.message}</p>
@@ -164,7 +194,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
           : error.category === 'modelBusy' ? 'Wait for the other operation to finish, then press Check again.'
           : 'Press Check again to reconnect. If it happens again, copy the details for help.'}</p>
         {(cliUnavailable || signInCheck) && <pre>{cliUnavailable ? 'gh auth login --hostname github.com --web' : 'gh auth status --hostname github.com'}</pre>}
-        <p>The local cluster and your agent files are kept. {removalFailed ? 'Removal has not been confirmed.' : 'A sign-in may already have been saved.'}</p>
+        <p>Your workspace and agent files are kept. {removalFailed ? 'Removal has not been confirmed.' : 'A sign-in may already have been saved.'}</p>
         {!removalFailed && <p className="muted">Check again reconnects the AI using your saved sign-in when available.</p>}</>}
         </>}
         <div className="workspace-step-actions">
@@ -181,16 +211,16 @@ export default function Model({ enabled, queueable = false, paused = false, away
               }}>{keyMode ? 'Remove key' : 'Remove sign-in'}</Button>
             </div>
           </div> : <>
-          {queued || busy || ready ? <div ref={status} role={ready ? 'status' : undefined} tabIndex={-1} className="model-state">
+          {queued || busy || ready ? <div ref={status} role={ready || queued ? 'status' : undefined} tabIndex={-1} className="model-state">
             <StatusPill state={ready ? 'passed' : queued ? 'not-started' : 'running'}>{busy === 'remove' ? 'Removing' : ready ? 'Connected' : queued ? 'Queued' : keyMode ? 'Checking' : 'Connecting'}</StatusPill>
             {busy && (busy === 'remove' || !keyMode) && <span className="status-description">{busy === 'remove' ? keyMode ? 'Removing key…' : 'Removing sign-in…' : 'Connecting the AI…'}</span>}
-            {queued && <><span className="muted">Connects when the local cluster is ready.</span>
-              <Button type="button" kind="quiet" onClick={() => setQueued(false)}>Cancel queued connection</Button></>}
+            {queued && <><span className="status-description">Connects when the workspace is ready.</span>
+              <Button type="button" kind="secondary" aria-label="Cancel queued connection" onClick={() => setQueued(false)}>Cancel</Button></>}
           </div>
           : !removalFailed && <Button key="model-connect" ref={retry} type="button" kind={primary ? 'primary' : 'secondary'} disabled={(!enabled && (!queueable || keyMode)) || paused || !!busy} onClick={choose}>
             {error && failedAction === 'connect' ? 'Check again' : 'Connect the AI'}
           </Button>}
-          {ready && <Button type="button" kind="secondary" disabled={paused || !!busy} onClick={() => { refocus.current = 'connect'; void perform('remove'); }}>Change</Button>}
+          {ready && <Button type="button" kind="secondary" disabled={paused || !!busy} onClick={event => { if (document.activeElement === event.currentTarget) changeFocus.current = 'confirm'; setConfirmRemoval(true); }}>Change</Button>}
           {removalFailed && removalAction}
           {error && <Button type="button" kind="secondary" onClick={() => { void copy(); }}>Copy details for help</Button>}
           {cliUnavailable && <Button type="button" kind="quiet" onClick={() => { void help('githubCliInstall'); }}>Install GitHub CLI</Button>}

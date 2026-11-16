@@ -53,6 +53,16 @@
 .workspace-meet dd { margin: 0; font: var(--type-body); max-width: 65ch; }
 .workspace-tool { display: inline-flex; align-items: center; gap: var(--space-1); border-radius: var(--radius-control); padding: var(--space-1) var(--space-2); background: var(--color-tint-stale); }
 .workspace-tool code { color: var(--color-text-secondary); font-size: .92em; }
+.workspace-heading[hidden] { display: none; }
+.first-test-recovery { margin-top: 16px; }
+.first-pass { max-width: 700px; padding: 24px 0; }
+.first-pass > .status-icon { width: 32px; height: 32px; margin-bottom: 16px; }
+.first-pass h1 { font: var(--type-title); margin: 0 0 12px; }
+.first-pass > p { font: var(--type-body); max-width: 65ch; }
+.first-pass .test-answer { border: 0; padding: 16px 0; }
+.first-pass .reading { overflow-wrap: anywhere; }
+.workspace-management { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+.workspace-tool { margin: 0 8px 8px 0; }
 .workspace-change { flex-basis: 100%; padding: 16px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-row); background: var(--color-chrome); }
 .workspace-change h2 { font: var(--type-card); margin-top: 0; }
 @media (max-width: 820px) {

@@ -63,6 +63,9 @@ pub struct RunSnapshot {
     pub acknowledged: Vec<Receipt>,
     pub pending: Option<PendingRef>,
     pub error: Option<&'static str>,
+    /// Renderer correlation, recorded only by the admission that accepted it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt_id: Option<Uuid>,
 }
 impl RunSnapshot {
     fn claim_end(&mut self, stop: &watch::Receiver<bool>, phase: RunState) -> bool {
@@ -91,6 +94,7 @@ impl RunSnapshot {
             acknowledged: Vec::new(),
             pending: None,
             error: None,
+            attempt_id: None,
         }
     }
 }
@@ -361,18 +365,22 @@ impl ExampleRun {
         vm: Arc<LocalVm>,
         id: DocumentId,
     ) -> Result<RunSnapshot, &'static str> {
-        self.start_first_test_with_model(vm, id, "gpt-5.6-terra".into())
+        self.start_first_test_with_model(vm, id, "gpt-5.6-terra".into(), None)
     }
     pub fn start_first_test_with_model(
         self: &Arc<Self>,
         vm: Arc<LocalVm>,
         id: DocumentId,
         model: String,
+        attempt_id: Option<Uuid>,
     ) -> Result<RunSnapshot, &'static str> {
-        if id != DocumentId::SAMPLE || example_for_model(&model).is_none() {
+        if id != DocumentId::SAMPLE
+            || example_for_model(&model).is_none()
+            || attempt_id.is_some_and(|attempt| attempt.is_nil())
+        {
             return Err("The automatic first test requires the connected bundled example.");
         }
-        Ok(self.start_checked(vm, self.3.clone(), Some(model)))
+        Ok(self.start_checked(vm, self.3.clone(), Some(model), attempt_id))
     }
     pub fn start(self: &Arc<Self>, vm: Arc<LocalVm>) -> RunSnapshot {
         self.start_document(vm, self.3.clone())
@@ -382,13 +390,14 @@ impl ExampleRun {
         vm: Arc<LocalVm>,
         folder: Arc<AgentFolder>,
     ) -> RunSnapshot {
-        self.start_checked(vm, folder, None)
+        self.start_checked(vm, folder, None, None)
     }
     fn start_checked(
         self: &Arc<Self>,
         vm: Arc<LocalVm>,
         folder: Arc<AgentFolder>,
         expected_model: Option<String>,
+        attempt_id: Option<Uuid>,
     ) -> RunSnapshot {
         let id = folder.document_id();
         if !self.2 {
@@ -422,6 +431,8 @@ impl ExampleRun {
             snapshot.stage = Some("capture");
             snapshot.model = None;
             snapshot.vendor = None;
+            // Only this admission may answer for the request; denials keep the old one.
+            snapshot.attempt_id = attempt_id;
             // Keep this document's receipts through preflight failures.
         }
         let owner = self.clone();

@@ -40,9 +40,12 @@ let child = Process()
 child.executableURL = URL(fileURLWithPath: CommandLine.arguments[2])
 let keyCheckRelease = URL(fileURLWithPath: output).appendingPathComponent("key-check-release-\(UUID().uuidString)")
 let setupProgress = URL(fileURLWithPath: output).appendingPathComponent("setup-progress-\(UUID().uuidString)")
+// Written only for the fresh-profile first-test outcomes; absent keeps the fixed failed report.
+let firstTestOutcome = URL(fileURLWithPath: output).appendingPathComponent("first-test-outcome-\(UUID().uuidString)")
+defer { try? FileManager.default.removeItem(at: firstTestOutcome) }
 try "installing".write(to: setupProgress, atomically: true, encoding: .utf8)
 defer { try? FileManager.default.removeItem(at: setupProgress) }
-child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path, "BRIDGE_SETUP_PROGRESS": setupProgress.path]) { _, fixture in fixture }
+child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path, "BRIDGE_SETUP_PROGRESS": setupProgress.path, "BRIDGE_FIRST_TEST_OUTCOME": firstTestOutcome.path]) { _, fixture in fixture }
 try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
@@ -105,9 +108,16 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         else { fatalError("Cannot sample native theme") }
     let brightness = (colour.redComponent + colour.greenComponent + colour.blueComponent) / 3
     require(theme == "dark" ? brightness < 0.25 : brightness > 0.8, "Wrong system theme")
-    if ["local-result", "local-answer", "local-story", "local-running", "local-stopping"].contains(where: { name.hasPrefix($0) }) {
+    // Setup frames 1c, 1d (cropped) and 1e exist only in light; dark captures use them as layout references.
+    let frame: (file: String, label: String)? =
+        ["local-result", "local-answer", "local-story", "local-running", "local-stopping"].contains(where: { name.hasPrefix($0) }) ? ("designer-reference-\(theme)", "Approved Designer frame (wide reference)")
+        : name.hasPrefix("local-first-pass") ? ("setup-reference-first-pass", "Approved frame 1e, light (wide reference)")
+        : name.hasPrefix("local-setup-installing") || name.hasPrefix("local-setup-meet") ? ("setup-reference-meet", "Approved frame 1c, light (wide reference)")
+        : ["before-connect", "connected"].contains(name) || name.hasPrefix("local-setup-ai") || name.hasPrefix("local-setup-queued") || name.hasPrefix("local-setup-connected") || name.hasPrefix("local-key-anthropic-empty") ? ("setup-reference-ai", "Approved frame 1d, light (wide reference, cropped)")
+        : nil
+    if let frame {
         guard let actual = NSImage(contentsOfFile: file),
-            let reference = NSImage(contentsOfFile: "../docs/images/designer-reference-\(theme).png") else {
+            let reference = NSImage(contentsOfFile: "../docs/images/\(frame.file).png") else {
             fatalError("Missing Designer comparison image")
         }
         let width = actual.size.width
@@ -121,7 +131,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         reference.draw(in: NSRect(x: width + 32, y: height - 42 - referenceHeight, width: width, height: referenceHeight))
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]
         ("Native Bridge, synthetic test data" as NSString).draw(at: NSPoint(x: 16, y: height - 26), withAttributes: attributes)
-        ("Approved Designer frame (wide reference)" as NSString).draw(at: NSPoint(x: width + 32, y: height - 26), withAttributes: attributes)
+        (frame.label as NSString).draw(at: NSPoint(x: width + 32, y: height - 26), withAttributes: attributes)
         comparison.unlockFocus()
         guard let tiff = comparison.tiffRepresentation,
             let bitmap = NSBitmapImageRep(data: tiff),
@@ -161,10 +171,26 @@ for (phase, expected) in [("installing", "Installing, 1 GiB of 2 GiB"), ("starti
         localSize(width, height)
         scroll(4000)
         _ = try capture("local-setup-\(phase)-\(size)", ["Getting your workspace ready", "Where agents run", "Get your workspace ready", expected])
+        if phase == "installing" {
+            // Show the file-derived tool/test rows, not just the card heading at the fold.
+            scroll(-4000)
+            require(nativeChatTextIsVisible("web_fetch"), "Meet tool name must be visible")
+            _ = try capture("local-setup-meet-\(size)", ["Meet your first agent", "web-reader", "Read a web page"])
+        }
     }
 }
 localSize(1280, 800)
 scroll(4000)
+click("Connect the AI", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("Connects when", -200)
+    reveal("Cancel queued connection")
+    _ = try capture("local-setup-queued-\(size)", ["Queued", "Cancel"])
+}
+reveal("Cancel queued connection")
+click("Cancel queued connection", [])
+localSize(1280, 800); scroll(4000)
 click("Show details", [])
 _ = try capture("local-setup-starting-details", ["45 seconds elapsed", "Starting the local cluster"])
 try FileManager.default.removeItem(at: setupProgress)
@@ -186,13 +212,18 @@ localSize(1280, 800)
 scroll(4000)
 require(enabledButton("Remove sign-in") == nil, "Remove must be absent before the first sign-in attempt")
 click("Connect the AI", rows)
-rows = try capture("local-completed", ["Local cluster", "Local cluster ready", "Stop the local cluster", "Run your first test"])
+rows = try capture("local-completed", ["This computer", "Local cluster ready", "Stop the local cluster", "Run your first test"])
 require(!rows.contains { ($0.topCandidates(1).first?.string ?? "").range(of: "[Ss]tep [0-9]+ of [45]", options: .regularExpression) != nil },
         "Completed local page must not keep a setup counter")
 click("Remove sign-in", rows)
 rows = try capture("local-remove-confirmation", ["saved sign-in?", "Cancel", "Remove sign-in"])
 click("Cancel", rows)
 rows = try capture("connected", ["Connected", "Remove sign-in"])
+require(nativeChatTextIsVisible("synthetic-user") && nativeChatTextIsVisible("gpt-5.6-terra"), "Connected Copilot must show the verified account and fixed model")
+localSize(540, 640); scroll(4000)
+_ = try seek("Saved GitHub sign-in", -200)
+_ = try capture("local-setup-connected-minimum", ["GitHub Copilot", "gpt-5.6-terra"])
+localSize(1280, 800); scroll(4000)
 click("Remove sign-in", rows)
 rows = try capture("local-remove-confirmed", ["saved sign-in?", "Cancel", "Remove sign-in"])
 click("Remove sign-in", rows)
@@ -273,7 +304,59 @@ _ = try seek("Tests on the local cluster", -200)
 let firstResult = try capture("local-first-test-result", ["Tests on the local cluster", "1 of 2 passed"])
 require(!firstResult.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").contains("Your agent selection could not be saved"), "Fixture rejected its owned agent selection")
 click("Clusters", [])
-rows = try capture("local-first-test-failed", ["Local cluster", "Its test failed", "See what it answered"])
+rows = try capture("local-first-test-failed", ["This computer", "Its test failed", "See what it answered"])
+func reveal(_ label: String) {
+    for _ in 0..<8 {
+        let frame = window()!.1
+        // The fixed 32px footer is inside the window but covers page controls.
+        if let bounds = enabledButton(label).flatMap(nativeBounds), frame.contains(bounds), bounds.maxY <= frame.maxY - 32 { return }
+        scroll(-200)
+    }
+    require(false, "Native control not visible: \(label)")
+}
+func waitForNativeText(_ text: String) {
+    for _ in 0..<40 {
+        if nativeElements().contains(where: { (attribute($0, "AXValue") as? String)?.contains(text) == true }) { return }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    require(false, "Native text did not appear: \(text)")
+}
+// Fresh-profile automatic outcomes. With an outcome selected, the fixture's Stop restores
+// only its sample and reloads the renderer without its first-test claim; no VM or files.
+for outcome in ["passed", "unknown"] {
+    try outcome.write(to: firstTestOutcome, atomically: true, encoding: .utf8)
+    localSize(1280, 800); scroll(4000)
+    reveal("Stop the local cluster")
+    click("Stop the local cluster", [])
+    waitForButton("Set up"); click("Set up", [])
+    waitForButton("Continue"); scroll(-4000); click("Continue", [])
+    waitForButton("Connect the AI"); click("Connect the AI", [])
+    if outcome == "passed" {
+        waitForButton("Open web-reader")
+        for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+            localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+            _ = try capture("local-first-pass-\(size)", ["Your first agent passed its test", "What did the page say?"])
+            reveal("Open web-reader")
+            _ = try capture("local-first-pass-\(size)-action", ["Open web-reader"])
+        }
+        require(enabledButton("Stop the local cluster") == nil, "The first-pass story must not offer Stop")
+        localSize(1280, 800); scroll(4000); reveal("Open web-reader")
+        click("Open web-reader", [])
+        click("Clusters", [])
+        require(enabledButton("Open web-reader") == nil, "The first-pass story replayed")
+    } else {
+        waitForNativeText("Result unknown")
+        click("Clusters", []); scroll(4000)
+        for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+            localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+            _ = try seek("Result unknown", -200)
+            _ = try capture("local-first-test-unknown-\(size)", ["Result unknown"])
+        }
+        require(enabledButton("Open web-reader") == nil && !nativeChatTextIsVisible("Your first agent passed its test"), "An unknown result must not celebrate")
+    }
+}
+try FileManager.default.removeItem(at: firstTestOutcome)
+localSize(1280, 800); scroll(4000)
 func scroll(_ pixels: Int32) {
     let rect = window()!.1
     let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: pixels, wheel2: 0, wheel3: 0)
@@ -329,10 +412,19 @@ func keyCapture(_ state: String, _ expected: [String], compact: Bool = false) th
     }
     if compact { localSize(1280, 800); scroll(4000) }
 }
+// Change confirms removal of the saved sign-in before another choice.
 click("Change", [])
+click("Remove sign-in", [])
+waitForButton("Connect the AI")
 chooseConnection("Your own API key")
 waitForButton("Anthropic")
 try keyCapture("anthropic-empty", ["Your own API key", "OpenAI", "Anthropic", "API key", "claude-sonnet-5-5"], compact: true)
+localSize(540, 640); scroll(4000)
+_ = try seek("API key", -200)
+_ = try capture("local-key-anthropic-empty-minimum", ["API key"])
+_ = try seek("claude-sonnet-5-5", -200)
+_ = try capture("local-key-anthropic-empty-minimum-model", ["claude-sonnet-5-5"])
+localSize(1280, 800); scroll(4000)
 click("OpenAI", [])
 try keyCapture("openai-empty", ["OpenAI", "Anthropic", "API key", "gpt-4.1"])
 click("Anthropic", [])
@@ -344,7 +436,7 @@ try keyCapture("checking", ["Checking", "Asking Anthropic"])
 try Data().write(to: keyCheckRelease, options: .atomic)
 waitForButton("Check again")
 for (state, message) in [("rejected", "Anthropic didn't accept this key"),
-                         ("unreachable", "local cluster couldn't reach Anthropic"),
+                         ("unreachable", "workspace couldn't reach Anthropic"),
                          ("model-unavailable", "isn't listed for this key")] {
     try keyCapture(state, [message])
     fillMessage("sk-ant-synthetic-only-not-a-real-key", secure: true)
@@ -367,6 +459,7 @@ click("Clusters", [])
 scroll(4000)
 _ = try seek("Change", -200)
 click("Change", [])
+click("Remove key", [])
 try keyCapture("change-failed", ["Key removal has not been confirmed", "Retry removal"])
 require(enabledButton("Anthropic") == nil, "Change must not permit replacement before cleanup")
 click("Retry removal", [])

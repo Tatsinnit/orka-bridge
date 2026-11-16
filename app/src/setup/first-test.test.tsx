@@ -31,7 +31,7 @@ test('first completion submits the sample once, waits for release, then opens it
   expect(ipc).not.toHaveBeenCalled();
   view.rerender({ ready: true });
   await waitFor(() => expect(view.result.current).toBe('running'));
-  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([['agent_run', { documentId: sample, bundledExample: true }]]);
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([['agent_run', { documentId: sample, bundledExample: true, attemptId: expect.any(String) }]]);
   expect(onOpen).not.toHaveBeenCalled();
   finish(true);
   await new Promise(resolve => setTimeout(resolve, 550));
@@ -47,6 +47,33 @@ test('first completion submits the sample once, waits for release, then opens it
   armFirstTest();
   await new Promise(resolve => setTimeout(resolve, 550));
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
+});
+
+test.each(['submitted', 'existing', 'changed', 'changed-after-run', 'unreadable-after-run', 'raced', 'lost-reply', 'left', 'failed', 'unknown', 'cancelled'] as const)('only current successful owned completion offers the first-pass moment (%s)', async scenario => {
+  const existing = scenario === 'existing';
+  vi.stubGlobal('isTauri', true); armFirstTest();
+  const source = { agent: 'a'.repeat(64), tests: 'b'.repeat(64) };
+  const passed = { ...idle, source: scenario === 'changed' ? { ...source, agent: 'c'.repeat(64) } : source, state: 'complete', report: { verdict: ['failed', 'unknown', 'cancelled'].includes(scenario) ? scenario : 'passed', cases: [{ id: 'checksum', question: 'Read the checksum', phase: 'Succeeded', answer: 'checksum', completedTools: ['web_fetch'], assertions: [{ id: 'a', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] } };
+  let attemptId: unknown;
+  const ipc = vi.fn((command: string, payload?: unknown) => {
+    const args = payload as Record<string, unknown> | undefined;
+    if (command === 'setup_example') return pair;
+    if (command === 'agent_open') {
+      const finished = ipc.mock.calls.some(([c]) => c === 'agent_run');
+      if (finished && scenario === 'unreadable-after-run') throw Error('Files unreadable');
+      return { ...pair, source: finished && scenario === 'changed-after-run' ? { ...source, tests: 'd'.repeat(64) } : source, documentId: sample, name: 'web-reader' };
+    }
+    if (command === 'agent_run_status') return existing || scenario === 'lost-reply' && ipc.mock.calls.some(([c]) => c === 'agent_run') ? { ...passed, ...(attemptId ? { attemptId } : {}) } : idle;
+    if (command === 'agent_run') { attemptId = scenario === 'raced' ? '12345678-1234-1234-1234-123456789abc' : args?.attemptId; if (scenario === 'lost-reply') throw Error('Lost reply'); return { ...passed, ...(attemptId ? { attemptId } : {}) }; }
+  });
+  mockIPC(ipc); const onOpen = vi.fn(); const onPassed = vi.fn(); const onSource = vi.fn();
+  const view = renderHook(() => useFirstTest({ ready: true, canOpen: scenario !== 'left', sampleDirty: false, onOpen, onPassed, onSource }));
+  await waitFor(() => expect(view.result.current).toBe(['failed', 'unknown'].includes(scenario) ? scenario : scenario === 'cancelled' ? 'unknown' : 'passed'));
+  if (scenario === 'changed-after-run') expect(onSource.mock.lastCall?.[0]?.tests).toBe('d'.repeat(64));
+  if (scenario === 'unreadable-after-run') expect(onSource).toHaveBeenLastCalledWith(null);
+  expect(onPassed).toHaveBeenCalledTimes(scenario === 'submitted' ? 1 : 0);
+  expect(onOpen).toHaveBeenCalledTimes(scenario === 'submitted' || scenario === 'left' ? 0 : 1);
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(existing ? 0 : 1);
 });
 
 test('setup prepares the connected example before opening its saved bytes', async () => {

@@ -27,6 +27,7 @@ async fn restart_cannot_reuse_the_previous_sessions_model_acknowledgment() {
         ready: true,
         unknown: false,
         connection: None,
+        account: None,
     }));
     assert!(vm.model_connected());
     vm.inner
@@ -110,6 +111,7 @@ fn model_failure_details_survive_generic_retry_without_failing_the_running_vm() 
         ready: true,
         unknown: false,
         connection: None,
+        account: None,
     });
     vm.inner.model_result(&success);
     let ready = serde_json::to_value(vm.snapshot(store.status().unwrap())).unwrap();

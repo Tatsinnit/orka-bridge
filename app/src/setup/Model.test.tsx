@@ -177,7 +177,7 @@ test('failed CLI recovery offers install and sign-in help and explicitly reconne
   fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   const alert = await screen.findByRole('alert');
   expect(alert.textContent).toContain('gh auth login --hostname github.com --web');
-  expect(alert.textContent).toContain('local cluster and your agent files are kept');
+  expect(alert.textContent).toContain('Your workspace and agent files are kept');
   expect(screen.getByRole('button', { name: 'Install GitHub CLI' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Sign-in help' })).toBeTruthy();
   expect(alert.textContent).not.toContain('SECRET');
@@ -250,7 +250,7 @@ test('a choice while the workspace is starting is queued without any credential 
   fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(invoke).not.toHaveBeenCalled();
   expect(screen.getByText('Queued').closest('button')).toBeNull();
-  expect(screen.getByText(/connects when the local cluster is ready/i)).toBeTruthy();
+  expect(screen.getByText(/connects when the workspace is ready/i)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   expect(onState).toHaveBeenLastCalledWith('queued');
 });

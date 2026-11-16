@@ -255,6 +255,7 @@ fn reopened_key_failure_carries_only_the_saved_company_for_recovery() {
             install,
             KEY.as_bytes(),
             Some(ModelVendor::Anthropic),
+            None,
             &vault,
         )
         .unwrap();
@@ -445,6 +446,7 @@ fn pending_key_disconnect_validation_failure_never_reports_credential_removal() 
                 install,
                 KEY.as_bytes(),
                 Some(ModelVendor::Anthropic),
+                None,
                 &vault,
             )
             .unwrap();

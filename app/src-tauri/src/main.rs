@@ -284,9 +284,13 @@ struct ConnectionInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     vendor: Option<bridge_runtime_protocol::ModelVendor>,
     model: String,
+    /// Verified GitHub login of a saved Copilot sign-in; omitted when unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
 }
 impl From<bridge_engine::setup::ModelSetupState> for ModelReply {
     fn from(state: bridge_engine::setup::ModelSetupState) -> Self {
+        let account = state.account;
         Self {
             ready: state.ready,
             connection: state
@@ -299,6 +303,7 @@ impl From<bridge_engine::setup::ModelSetupState> for ModelReply {
                         "copilot"
                     },
                     vendor: c.selection.vendor,
+                    account: account.filter(|_| c.selection.vendor.is_none()),
                     model: c.selection.model,
                 }),
         }
@@ -370,6 +375,7 @@ fn agent_run_check_cancellation(
 async fn agent_run(
     document_id: DocumentId,
     bundled_example: Option<bool>,
+    attempt_id: Option<bridge_runtime_protocol::Uuid>,
     setup: tauri::State<'_, Arc<SetupStore>>,
     agents: tauri::State<'_, Arc<Agents>>,
     state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
@@ -394,7 +400,12 @@ async fn agent_run(
         })
         .await
         .map_err(|_| "The AI connection is unavailable.")??;
-        return state.start_first_test_with_model(vm.inner().clone(), document_id, model);
+        return state.start_first_test_with_model(
+            vm.inner().clone(),
+            document_id,
+            model,
+            attempt_id,
+        );
     }
     let folder = document_folder(agents.inner().clone(), document_id).await?;
     Ok(state.start_document(vm.inner().clone(), folder))

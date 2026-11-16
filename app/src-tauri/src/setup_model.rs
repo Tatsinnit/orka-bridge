@@ -13,6 +13,8 @@ pub struct ModelSetupState {
     pub ready: bool,
     pub unknown: bool,
     pub connection: Option<ModelConnection>,
+    /// GitHub login verified when this Copilot sign-in was saved. Ready connections only.
+    pub account: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +113,13 @@ fn read_binding(root: &Path) -> Result<Option<Binding>, SetupError> {
     Ok(Some(b))
 }
 fn write_binding(root: &Path, b: &Binding) -> Result<(), SetupError> {
+    write_file(
+        root,
+        "model-v1",
+        &serde_json::to_vec(b).map_err(|_| unavailable())?,
+    )
+}
+fn write_file(root: &Path, name: &str, bytes: &[u8]) -> Result<(), SetupError> {
     let path = root.join(format!("model-next-{}", Uuid::new_v4()));
     let mut file = OpenOptions::new()
         .write(true)
@@ -118,11 +127,10 @@ fn write_binding(root: &Path, b: &Binding) -> Result<(), SetupError> {
         .open(&path)
         .map_err(|_| unavailable())?;
     let result = (|| {
-        file.write_all(&serde_json::to_vec(b).map_err(|_| unavailable())?)
-            .map_err(|_| unavailable())?;
+        file.write_all(bytes).map_err(|_| unavailable())?;
         file.sync_all().map_err(|_| unavailable())?;
         drop(file);
-        crate::runtime::journal::replace(&path, &root.join("model-v1")).map_err(|_| unavailable())
+        crate::runtime::journal::replace(&path, &root.join(name)).map_err(|_| unavailable())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&path);
@@ -157,12 +165,58 @@ fn discard_absent_reservation(
         _ => Ok(()),
     }
 }
-fn state(b: Option<&Binding>, ready: bool) -> ModelSetupState {
+// Separate from the strict Binding schema so older builds still read their binding.
+const ACCOUNT_FILE: &str = "model-account-v1";
+const MAX_ACCOUNT_FILE: u64 = 256;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountRecord {
+    slot: Uuid,
+    login: String,
+}
+// Best effort: missing or failed metadata means "account unavailable", never a failed sign-in.
+fn save_account(root: &Path, slot: Uuid, login: Option<&str>) {
+    let saved = login.is_some_and(|login| {
+        let record = AccountRecord {
+            slot,
+            login: login.into(),
+        };
+        serde_json::to_vec(&record)
+            .ok()
+            .is_some_and(|bytes| write_file(root, ACCOUNT_FILE, &bytes).is_ok())
+    });
+    if !saved {
+        let _ = fs::remove_file(root.join(ACCOUNT_FILE));
+    }
+}
+fn read_account(root: &Path, b: &Binding) -> Option<String> {
+    if b.kind != CredentialKind::Copilot {
+        return None;
+    }
+    let path = root.join(ACCOUNT_FILE);
+    let meta = fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_ACCOUNT_FILE {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_ACCOUNT_FILE + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    let record: AccountRecord = serde_json::from_slice(&bytes).ok()?;
+    (bytes.len() as u64 <= MAX_ACCOUNT_FILE
+        && record.slot == b.slot
+        && crate::runtime::credentials::valid_login(&record.login))
+    .then_some(record.login)
+}
+fn state(root: &Path, b: Option<&Binding>, ready: bool) -> ModelSetupState {
     ModelSetupState {
         associated: b.is_some_and(|b| b.phase != Phase::Storing),
         ready,
         unknown: b.is_some_and(|b| matches!(b.phase, Phase::Storing | Phase::Pending)),
         connection: b.and_then(|b| b.connection.clone()),
+        account: b.filter(|_| ready).and_then(|b| read_account(root, b)),
     }
 }
 fn cleanup_acknowledged(remote: &ModelState, known: &ModelConnection) -> bool {
@@ -186,7 +240,7 @@ fn finish_connect(
     }
     b.phase = Phase::Connected;
     write_binding(root, b)?;
-    Ok(state(Some(b), true))
+    Ok(state(root, Some(b), true))
 }
 // Explicit intent only, under both ownership locks. A fresh guest has no token,
 // but kmx's owned model resources survive on the state disk and must be stopped.
@@ -336,7 +390,7 @@ impl SetupStore {
         if before.phase != ModelPhase::Idle || before.credential.installed {
             return Err(SetupError::model("modelGuest"));
         }
-        self.associate_secret_for_vendor(installation, key.as_bytes(), Some(vendor), store)?;
+        self.associate_secret_for_vendor(installation, key.as_bytes(), Some(vendor), None, store)?;
         self.connect_model(installation, default_selection(Some(vendor)), client, store)
             .map_err(|mut error| {
                 error.vendor = Some(vendor);
@@ -350,21 +404,29 @@ impl SetupStore {
         capture: &CapturedGithubToken,
         store: &impl CredentialStore,
     ) -> Result<ModelSetupState, SetupError> {
-        self.associate_secret(installation, capture.as_bytes(), store)
+        self.associate_secret_for_vendor(
+            installation,
+            capture.as_bytes(),
+            None,
+            capture.account(),
+            store,
+        )
     }
+    #[cfg(test)]
     fn associate_secret(
         &self,
         installation: Uuid,
         secret: &[u8],
         store: &impl CredentialStore,
     ) -> Result<ModelSetupState, SetupError> {
-        self.associate_secret_for_vendor(installation, secret, None, store)
+        self.associate_secret_for_vendor(installation, secret, None, None, store)
     }
     fn associate_secret_for_vendor(
         &self,
         installation: Uuid,
         secret: &[u8],
         vendor: Option<KeyVendor>,
+        account: Option<&str>,
         store: &impl CredentialStore,
     ) -> Result<ModelSetupState, SetupError> {
         let _access = self.access.lock().map_err(|_| unavailable())?;
@@ -400,7 +462,8 @@ impl SetupStore {
         b.phase = Phase::Stored;
         // Publication can be visible even when the final directory flush fails.
         write_binding(root, &b)?;
-        Ok(state(Some(&b), false))
+        save_account(root, b.slot, account);
+        Ok(state(root, Some(&b), false))
     }
     /// Reports an association, not live model readiness; never reads the OS store.
     /// Read under the same ownership as Connect/Disconnect, never loading a secret.
@@ -437,7 +500,7 @@ impl SetupStore {
         let _access = self.access.lock().map_err(|_| unavailable())?;
         let root = self.root.as_deref().ok_or_else(unavailable)?;
         selected(root)?;
-        Ok(state(read_binding(root)?.as_ref(), false))
+        Ok(state(root, read_binding(root)?.as_ref(), false))
     }
     fn finish_model_connect(
         &self,
@@ -516,7 +579,7 @@ impl SetupStore {
                 b.connection = remote.connection;
                 b.phase = Phase::Connected;
                 write_binding(root, &b)?;
-                return Ok(state(Some(&b), true));
+                return Ok(state(root, Some(&b), true));
             }
             if let Some(connection) = &remote.connection {
                 // Persist the acknowledged identity before cleanup, never guess one.
@@ -574,7 +637,7 @@ impl SetupStore {
                 write_binding(root, &b)?;
                 return Err(unavailable());
             }
-            return Ok(state(Some(&b), true));
+            return Ok(state(root, Some(&b), true));
         }
         // An older image must be rejected before retrieving any secret.
         let before = client
@@ -616,7 +679,7 @@ impl SetupStore {
             return Err(unavailable());
         }
         let Some(mut b) = read_binding(root)? else {
-            return Ok(state(None, false));
+            return Ok(state(root, None, false));
         };
         if b.installation != installation {
             return Err(unavailable());
@@ -671,7 +734,9 @@ impl SetupStore {
         }
         store.delete(b.slot).map_err(SetupError::store)?;
         fs::remove_file(root.join("model-v1")).map_err(|_| unavailable())?;
-        Ok(state(None, false))
+        // Only after acknowledged removal; a stale record cannot match a new slot anyway.
+        let _ = fs::remove_file(root.join(ACCOUNT_FILE));
+        Ok(state(root, None, false))
     }
 }
 

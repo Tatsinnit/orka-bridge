@@ -32,8 +32,48 @@ fn exact_raw_output_bound_is_accepted() {
 
 #[test]
 fn credential_debug_never_contains_bytes() {
-    let token = CapturedGithubToken(b"FIXTURE_ONLY_credential".to_vec());
+    let token = CapturedGithubToken(b"FIXTURE_ONLY_credential".to_vec(), Some("octocat".into()));
     assert_eq!(format!("{token:?}"), "CapturedGithubToken([REDACTED])");
+}
+
+#[test]
+fn account_output_is_one_github_login_or_unavailable() {
+    assert_eq!(parse_account(b"octo-cat1\n").as_deref(), Some("octo-cat1"));
+    assert_eq!(parse_account(b"octocat\r\n").as_deref(), Some("octocat"));
+    let longest = "a".repeat(39);
+    assert_eq!(
+        parse_account(longest.as_bytes()).as_deref(),
+        Some(longest.as_str())
+    );
+    for raw in [
+        &b""[..],
+        b"\n",
+        b"-leading\n",
+        b"two words\n",
+        b"first\nsecond\n",
+        b"under_score\n",
+        b"\xff\n",
+        "ünicode\n".as_bytes(),
+        &[b'a'; 40],
+        &[b'a'; MAX_ACCOUNT + 1],
+    ] {
+        assert_eq!(parse_account(raw), None, "{raw:?}");
+    }
+}
+
+#[test]
+fn account_command_has_fixed_argv_and_removes_ambient_token_overrides() {
+    let path = Path::new("/fixture only/not installed gh");
+    let cmd = account_command(path);
+    let std = cmd.as_std();
+    assert_eq!(std.get_program(), path);
+    assert_eq!(
+        std.get_args().collect::<Vec<_>>(),
+        ["config", "get", "user", "--host", "github.com"]
+    );
+    for key in ["GH_TOKEN", "GITHUB_TOKEN"] {
+        assert!(std.get_envs().any(|(k, v)| k == key && v.is_none()));
+    }
 }
 
 use std::{
@@ -185,7 +225,45 @@ async fn actual_child_captures_private_stdout_and_discards_large_stderr() {
     let (_dir, exe) = executable("valid");
     let result = run_capture(&exe, CAPTURE_TIMEOUT).await.unwrap();
     assert_eq!(result.as_bytes(), b"FIXTURE_ONLY_credential");
+    assert_eq!(result.account(), Some("fixture-login"));
+    let token_pid = std::fs::read_to_string(exe.with_extension("pid")).unwrap();
+    let account_pid = std::fs::read_to_string(exe.with_extension("account-pid")).unwrap();
+    assert_ne!(
+        token_pid, account_pid,
+        "token and account proofs must name distinct children"
+    );
     assert_eq!(format!("{result:?}"), "CapturedGithubToken([REDACTED])");
+}
+
+#[tokio::test]
+async fn account_read_failure_or_change_around_capture_is_unavailable_without_failing_capture() {
+    for (mode, timeout) in [
+        ("account-fail", CAPTURE_TIMEOUT),
+        ("account-invalid", CAPTURE_TIMEOUT),
+        ("account-switch", CAPTURE_TIMEOUT),
+        ("account-hang", Duration::from_millis(300)),
+    ] {
+        let (_dir, exe) = executable(mode);
+        let result = run_capture(&exe, timeout).await.unwrap();
+        assert_eq!(result.as_bytes(), b"FIXTURE_ONLY_credential", "{mode}");
+        assert_eq!(result.account(), None, "{mode}");
+    }
+    // The switch fixture really answered twice: once before and once after the token read.
+    let (dir, exe) = executable("account-switch");
+    run_capture(&exe, CAPTURE_TIMEOUT).await.unwrap();
+    assert_eq!(std::fs::read(exe.with_extension("count")).unwrap().len(), 2);
+    drop(dir);
+}
+
+#[tokio::test]
+async fn optional_account_lookup_cannot_consume_the_token_capture_budget() {
+    let (_dir, exe) = executable("account-hang");
+    let result = tokio::time::timeout(Duration::from_secs(2), run_capture(&exe, CAPTURE_TIMEOUT))
+        .await
+        .expect("optional account lookup held up credential capture")
+        .unwrap();
+    assert_eq!(result.as_bytes(), b"FIXTURE_ONLY_credential");
+    assert_eq!(result.account(), None);
 }
 
 #[tokio::test]
@@ -252,22 +330,24 @@ async fn wait_for_exit(pid: i32) {
 #[cfg(unix)]
 #[tokio::test]
 async fn dropping_capture_kills_the_observed_owned_direct_child() {
-    let (_dir, exe) = executable("hang");
-    let pid_path = exe.with_extension("pid");
-    let task = tokio::spawn(async move { run_capture(&exe, Duration::from_secs(60)).await });
-    let pid: i32 = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if let Ok(text) = std::fs::read_to_string(&pid_path) {
-                break text.parse().unwrap();
+    for (mode, extension) in [("hang", "pid"), ("account-hang", "account-pid")] {
+        let (_dir, exe) = executable(mode);
+        let pid_path = exe.with_extension(extension);
+        let task = tokio::spawn(async move { run_capture(&exe, Duration::from_secs(60)).await });
+        let pid: i32 = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pid_path) {
+                    break text.parse().unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("fixture did not start");
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
-    wait_for_exit(pid).await;
+        })
+        .await
+        .expect("fixture did not start");
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        wait_for_exit(pid).await;
+    }
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]

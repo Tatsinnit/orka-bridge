@@ -7,7 +7,8 @@ unsafe extern "C" {
 }
 fn main() {
     let a: Vec<_> = std::env::args().skip(1).collect();
-    assert!(a == ["version"] || a == ["auth", "token", "--hostname", "github.com"]);
+    let account = a == ["config", "get", "user", "--host", "github.com"];
+    assert!(account || a == ["version"] || a == ["auth", "token", "--hostname", "github.com"]);
     let path = std::env::current_exe().unwrap();
     let name = path.file_name().unwrap().to_str().unwrap();
     let (fd, marker) = name
@@ -32,6 +33,8 @@ fn main() {
     }
     if inherited {
         print!("INHERITED_PRIVATE_FD");
+    } else if account {
+        print!("fixture-login");
     } else {
         print!("FIXTURE_ONLY_clean");
     }

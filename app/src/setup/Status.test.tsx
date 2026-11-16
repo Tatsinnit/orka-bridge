@@ -67,7 +67,7 @@ test('unfinished local row, shell and card agree; finished local page owns Stop 
   expect(screen.getByRole('button', { name: 'Connect the AI' }).className).toBe('button button-primary');
   expect(screen.queryByRole('button', { name: 'Change where agents run' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
-  expect(await screen.findByRole('heading', { name: 'Local cluster', level: 1 })).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: 'This computer', level: 1 })).toBeTruthy();
   expect(screen.queryByText(/Setting up, step 4 of 4/)).toBeNull();
   expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('button button-quiet');
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));

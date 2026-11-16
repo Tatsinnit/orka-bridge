@@ -211,20 +211,25 @@ try {
   const setupFixtures = [
     ['setup-failed', 'failed', null, false, "couldn't determine"],
     ['setup-transfer', 'installing', transfer, false, 'Installing, 1.1 GiB of 2.8 GiB'],
-    ['setup-transfer-queued', 'installing', transfer, true, 'Connects when the local cluster is ready.'],
+    ['setup-transfer-queued', 'installing', transfer, true, 'Connects when the workspace is ready.'],
     // A valid first observation, then every later read fails: the card must say unavailable, not keep the old bar.
     ['setup-unavailable', 'installing', transfer, false, 'Local cluster status is unavailable.', true],
     // A platform without native model support (reported by the snapshot) offers no early choice: a Waiting row, no action.
     ['setup-transfer-unsupported', 'installing', transfer, false, 'Installing, 1.1 GiB of 2.8 GiB', false, false],
     ['setup-startup', 'starting', startup(12000), false, '12 seconds elapsed'],
     ['setup-startup-slow', 'starting', startup(45000), false, '45 seconds elapsed'],
-    ['setup-ready', 'ready', null, false, 'The local cluster is running on this computer.'],
+    ['setup-ready', 'ready', null, false, 'Your workspace is ready on this computer.'],
   ];
+  // The ready card title and frame references that setup and first-pass captures are compared with.
+  const readyCardTitle = 'This computer';
+  const fixtureAccount = 'synthetic-user';
   const pair = { agent: '---\nname: web-reader\ndescription: Answers from the web page named in the request\n---\nFetch before answering.', tests: '---\nschemaVersion: 1\n---\n```yaml agent-test\nid: page-checksum\ntitle: Copies the checksum from the page\ninput: What checksum does the page show?\nassertions: [{id: checksum, type: contains, value: fixture-checksum}]\n```\n' };
+  // Meet derives its rows from the file, so setup captures use the sample's real tool declaration.
+  const samplePair = { ...pair, agent: '---\nname: web-reader\ndescription: Answers from the web page named in the request\nmodel: gpt-5.6-terra\nkmx:\n  schemaVersion: 1\n  runtime: orka\n  tools:\n    - kind: builtin\n      name: web_fetch\n---\nFetch before answering.' };
   async function captureSetup(theme, size, [name, localVm, progress, queue, expected, failLater, modelSupported = true]) {
     ({ executionContextId: contextId } = await call('Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: `setup-${theme}-${size}-${name}` }));
     await evaluate(`(() => {
-      const pair = ${JSON.stringify(pair)};
+      const pair = ${JSON.stringify(samplePair)};
       let reads = 0;
       localStorage.setItem('bridge.welcomeSeen.v1', '1');
       window.isTauri = true;
@@ -267,9 +272,22 @@ try {
       const image = await call('Page.captureScreenshot', { format: 'png' });
       await writeFile(join(output, `${theme}-${size}-${name}${suffix}.png`), Buffer.from(image.data, 'base64'));
       console.log(`Captured native WebView2 renderer fixture: ${theme}/${size}/${name}${suffix}`);
+      return image.data;
     };
+    if (name === 'setup-transfer') {
+      const meet = await evaluate(`(() => { const card = document.querySelector('.workspace-meet'); return { tools: [...card.querySelectorAll('.workspace-tool code')].map(code => code.textContent), text: card.innerText }; })()`);
+      if (meet.tools.join('|') !== 'web_fetch' || !meet.text.includes('Copies the checksum from the page')) throw Error(`${name}: Meet must list the file's tools and tests: ${JSON.stringify(meet)}`);
+    }
+    if (queue) {
+      const queued = await evaluate(`(() => { const status = [...document.querySelectorAll('.setup-model [role=status]')].find(item => item.textContent.includes('Queued')); const cancel = document.querySelector('button[aria-label="Cancel queued connection"]'); return { status: !!status, inChoice: !!status?.closest('fieldset'), cancel: cancel?.textContent, secondary: !!cancel?.classList.contains('button-secondary'), text: document.querySelector('.setup-model').innerText }; })()`);
+      if (!queued.status || queued.inChoice || queued.cancel !== 'Cancel' || !queued.secondary || /local cluster/.test(queued.text)) throw Error(`${name}: queued AI must be a status row with a secondary Cancel: ${JSON.stringify(queued)}`);
+    }
     await checkLayout(theme, size, name);
-    await shoot('');
+    const image = await call('Page.captureScreenshot', { format: 'png' });
+    await writeFile(join(output, `${theme}-${size}-${name}.png`), Buffer.from(image.data, 'base64'));
+    console.log(`Captured native WebView2 renderer fixture: ${theme}/${size}/${name}`);
+    if (name === 'setup-transfer') await compareReference(image.data, theme, size, name, 'meet');
+    if (name === 'setup-transfer-queued') await compareReference(image.data, theme, size, name, 'ai');
     if (localVm === 'failed') {
       await evaluate(`document.querySelector('.workspace-failure summary').click()`);
       await until(() => evaluate(`!!document.querySelector('.workspace-failure summary[aria-expanded="true"]')`), 'expanded recovery details');
@@ -277,22 +295,34 @@ try {
     }
     if (size === 'compact') { // Also show controls below the fixed step list.
       await evaluate(`document.querySelector('main').scrollTop = document.querySelector('main').scrollHeight`);
-      await shoot('-end');
+      const end = await shoot('-end');
+      if (name === 'setup-transfer' || name === 'setup-transfer-queued') {
+        await compareReference(end, theme, size, `${name}-end`, name === 'setup-transfer' ? 'meet' : 'ai');
+      }
     }
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
-  const actionFixtures = ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-cluster', 'ai-idle', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-file', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
+  // first-test-passed, -unknown and -lost-reply each own one fresh automatic attempt after a page reload.
+  const actionFixtures = ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-file', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
     await evaluate(`${action}.click()`);
   }
-  const designerReferences = Object.fromEntries(await Promise.all(['light', 'dark'].map(async theme => [theme,
-    (await readFile(new URL(`../docs/images/designer-reference-${theme}.png`, import.meta.url))).toString('base64')])));
-  async function compareDesigner(data, theme, size, name) {
+  // Approved frames: Designer has both themes; setup frames 1c, 1d (cropped) and 1e exist only in light.
+  const referenceImage = async file => (await readFile(new URL(`../docs/images/${file}`, import.meta.url))).toString('base64');
+  const references = {
+    designer: { light: await referenceImage('designer-reference-light.png'), dark: await referenceImage('designer-reference-dark.png'), label: 'Approved Designer frame (wide reference)' },
+    meet: { light: await referenceImage('setup-reference-meet.png'), label: 'Approved frame 1c, light (wide reference)' },
+    ai: { light: await referenceImage('setup-reference-ai.png'), label: 'Approved frame 1d, light (wide reference, cropped)' },
+    'first-pass': { light: await referenceImage('setup-reference-first-pass.png'), label: 'Approved frame 1e, light (wide reference)' },
+  };
+  const compareDesigner = (data, theme, size, name) => compareReference(data, theme, size, name, 'designer');
+  async function compareReference(data, theme, size, name, kind) {
+    const frame = references[kind];
     const comparison = await evaluate(`(async () => {
       const decode = async text => createImageBitmap(new Blob([Uint8Array.from(atob(text), c => c.charCodeAt(0))], { type: 'image/png' }));
-      const actual = await decode(${JSON.stringify(data)}), reference = await decode(${JSON.stringify(designerReferences[theme])});
+      const actual = await decode(${JSON.stringify(data)}), reference = await decode(${JSON.stringify(frame[theme] ?? frame.light)});
       const width = actual.width, referenceHeight = Math.round(reference.height * width / reference.width);
       const canvas = document.createElement('canvas');
       canvas.width = width * 2 + 48; canvas.height = Math.max(actual.height, referenceHeight) + 58;
@@ -301,7 +331,7 @@ try {
       ctx.drawImage(actual, 16, 42); ctx.drawImage(reference, width + 32, 42, width, referenceHeight);
       ctx.fillStyle = ${JSON.stringify(theme === 'dark' ? '#e6e4df' : '#1b2026')}; ctx.font = '14px sans-serif';
       ctx.fillText('Native Bridge, synthetic test data', 16, 26);
-      ctx.fillText('Approved Designer frame (wide reference)', width + 32, 26);
+      ctx.fillText(${JSON.stringify(frame.label)}, width + 32, 26);
       actual.close(); reference.close();
       return canvas.toDataURL('image/png').split(',')[1];
     })()`);
@@ -337,6 +367,7 @@ try {
       if (designer) pair.agent = ${JSON.stringify('---\nname: web-reader\nmodel: fixture-model\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools: []\n---\nFetch before answering.')};
       let connected = designer && name !== 'designer';
       let submitted = false;
+      let attemptId = null;
       const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev' };
       const target = { id: '00000000-0000-4000-8000-000000000002', context_id: context.id, context_name: context.name, service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'fixture-image' };
       const provider = { id: '00000000-0000-4000-8000-000000000003', name: 'team-ai', ready: true };
@@ -350,7 +381,8 @@ try {
       window.__bridgeStops = 0;
       window.__bridgeLocalSelections = 0;
       window.__bridgeClusterUses = 0;
-      window.__bridgeBadgeState = 'passed';
+      // The badge walk needs Designer's automatic failure path; a passed submission would stay on its first-pass story.
+      window.__bridgeBadgeState = name === 'first-test-badges' ? 'failed' : 'passed';
       window.__bridgeRuns = 0;
       const source = { agent: 'a'.repeat(64), tests: 'b'.repeat(64) };
       const status = () => ({ selected: selected ? 'localVm' : null, localVm: selected ? 'ready' : window.__bridgeStops ? 'cancelled' : 'idle', model: selected ? 'available' : 'locked' });
@@ -363,14 +395,16 @@ try {
           return { documentId, source, busy: running ? { documentId, name: 'web-reader' } : null, state: running ? 'running' : 'complete', stage: running ? state === 'running' ? 'observe' : 'cancel' : 'done', canRun: !running, modelConnected: true, model: 'fixture-model', cancellation, canCancel: state === 'running', canRetryCancellation: state === 'unconfirmed', canCheckCancellation: state === 'unconfirmed', report: { verdict: state === 'unconfirmed' || state === 'running' || state === 'cancelling' ? 'unknown' : 'cancelled', cases: state === 'before-start' ? [] : state === 'cancelled' ? [cancelled, finished] : [finished] }, acknowledged: [], pending: null, error: null };
         }
         const running = name === 'designer-running' || submitted && name === 'first-test-running';
-        const complete = ['designer-failed', 'designer-passed', 'designer-stale'].includes(name) || submitted && (name === 'first-test-result' || name === 'first-test-badges');
-        if (name === 'designer-passed') { report.verdict = report.cases[0].verdict = report.cases[0].assertions[0].verdict = 'passed'; report.cases[0].answer = 'fixture-checksum'; }
+        const outcome = ['first-test-passed', 'first-test-unknown', 'first-test-lost-reply'].includes(name);
+        const complete = ['designer-failed', 'designer-passed', 'designer-stale'].includes(name) || submitted && (name === 'first-test-result' || name === 'first-test-badges' || outcome);
+        if (name === 'designer-passed' || name === 'first-test-passed' || name === 'first-test-lost-reply') { report.verdict = report.cases[0].verdict = report.cases[0].assertions[0].verdict = 'passed'; report.cases[0].answer = 'fixture-checksum'; }
+        if (name === 'first-test-unknown') { report.verdict = report.cases[0].verdict = report.cases[0].assertions[0].verdict = 'unknown'; report.cases[0].phase = 'Unknown'; report.cases[0].answer = null; }
         const badge = window.__bridgeBadgeState;
         if (name === 'first-test-badges') {
           report.verdict = report.cases[0].verdict = report.cases[0].assertions[0].verdict = badge === 'failed' ? 'failed' : 'passed';
           if (submitted && badge === 'unknown') throw Error('Lost sample status');
         }
-        return { documentId, canCancel: running, ...(name === 'designer-stale' ? { source: { ...source, tests: 'c'.repeat(64) } } : {}), ...(name === 'first-test-badges' ? { source: badge === 'stale' ? { ...source, agent: 'c'.repeat(64) } : source } : {}), busy: running ? { documentId, name: 'web-reader' } : null, state: running ? 'running' : complete ? 'complete' : 'idle', canRun: !running, modelConnected: connected, stage: running ? 'observe' : complete ? 'done' : null, model: connected ? 'fixture-model' : null, report: complete ? report : null, acknowledged: [], pending: null, error: null };
+        return { documentId, ...(attemptId ? { attemptId } : {}), canCancel: running, ...(name === 'designer-stale' ? { source: { ...source, tests: 'c'.repeat(64) } } : {}), ...(name === 'first-test-badges' ? { source: badge === 'stale' ? { ...source, agent: 'c'.repeat(64) } : source } : {}), ...(outcome ? { source } : {}), busy: running ? { documentId, name: 'web-reader' } : null, state: running ? 'running' : complete ? 'complete' : 'idle', canRun: !running, modelConnected: connected, stage: running ? 'observe' : complete ? 'done' : null, model: connected ? 'fixture-model' : null, report: complete ? report : null, acknowledged: [], pending: null, error: null };
       };
       if (name === 'welcome') localStorage.removeItem('bridge.welcomeSeen.v1');
       else localStorage.setItem('bridge.welcomeSeen.v1', '1');
@@ -392,7 +426,7 @@ try {
         if (command === 'setup_connect_model') {
           if (name === 'ai-connecting') return new Promise(() => {});
           if (name === 'ai-cli-missing') throw { kind: 'modelCaptureUnavailable' };
-          connected = true; return { ready: true };
+          connected = true; return { ready: true, connection: { kind: 'copilot', model: 'gpt-5.6-terra', account: ${JSON.stringify(fixtureAccount)} } };
         }
         if (command === 'agent_open' && name === 'designer-loading') return new Promise(() => {});
         if (command === 'agent_open' && name === 'designer-open-error') throw Error('Synthetic agent open failure');
@@ -409,12 +443,17 @@ try {
         if (name === 'designer-remote' && command === 'cluster_discover') return [target];
         if (command === 'cluster_use') { window.__bridgeClusterUses++; if (name === 'designer-remote') return { status: 'connected', providers: [provider], failure: null }; }
         if (command === 'send_status') return { documentId, view: null, busy: null };
-        if (command === 'agent_open') return { ...pair, documentId, name: 'web-reader', ...(name === 'first-test-badges' || name === 'designer-stale' || localCancel ? { source } : {}) };
+        if (command === 'agent_open') return { ...pair, documentId, name: 'web-reader', ...(name.startsWith('first-test-') && name !== 'first-test-result' && name !== 'first-test-running' || name === 'designer-stale' || localCancel ? { source } : {}) };
         if (localCancel && (command === 'agent_run_cancel' || command === 'agent_run_check_cancellation')) {
           if (args?.documentId !== documentId) throw Error('Wrong cancellation document');
           window.__bridgeCancelCalls.push(command); window.__bridgeCancellation = 'cancelling'; return snapshot();
         }
-        if (command === 'agent_run') { if (args?.bundledExample !== true) throw Error('Fixture automatic test requires native source guard'); if (submitted) throw Error('Fixture automatic test replayed'); submitted = true; window.__bridgeRuns++; return snapshot(); }
+        if (command === 'agent_run') {
+          if (args?.bundledExample !== true) throw Error('Fixture automatic test requires native source guard'); if (submitted) throw Error('Fixture automatic test replayed'); submitted = true; attemptId = args?.attemptId ?? null; window.__bridgeRuns++;
+          // Native accepted the run, but its reply never reached the renderer.
+          if (name === 'first-test-lost-reply') throw Error('Synthetic lost run reply');
+          return snapshot();
+        }
         if (command === 'agent_run_status') return snapshot();
         if (command === 'send_history' || command === 'cluster_contexts') return [];
         throw Error('Unmocked action fixture command: ' + command);
@@ -505,6 +544,55 @@ try {
       console.log(`Captured native WebView2 local cancellation fixture: ${theme}/${size}/${name}`);
       return;
     }
+    const settle = () => evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+    const visibleText = text => `[...document.querySelectorAll('h1, p, span, button')].some(node => node.getClientRects().length && node.textContent === ${JSON.stringify(text)})`;
+    if (name === 'first-test-passed') {
+      await until(() => evaluate(visibleText('Your first agent passed its test')), 'first-pass moment').catch(async error => { throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`); });
+      const probe = await evaluate(`(() => {
+        const card = document.querySelector('.first-pass');
+        const shown = [...document.querySelectorAll('button')].filter(button => button.getClientRects().length);
+        return { page: document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current'), primary: shown.filter(button => button.classList.contains('button-primary')).map(button => button.textContent), stop: shown.some(button => button.textContent === 'Stop the local cluster'), text: card?.innerText ?? '', runs: window.__bridgeRuns, width: innerWidth, scrollWidth: document.querySelector('main').scrollWidth };
+      })()`);
+      const fail = reason => { throw Error(`${name}: ${reason}: ${JSON.stringify(probe)}`); };
+      if (probe.page !== 'page') fail('a passed automatic test stays in Clusters');
+      if (probe.primary.join('|') !== 'Open web-reader' || probe.stop) fail('the payoff has one primary Open web-reader and no Stop');
+      if (!['What checksum does the page show?', 'fixture-checksum', 'The test passed.'].every(text => probe.text.includes(text))) fail('the recorded TestStory is missing');
+      if (probe.runs !== 1 || probe.scrollWidth > probe.width + 2) fail('one run, no horizontal overflow');
+      await checkLayout(theme, size, name);
+      await settle();
+      const image = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(output, `${theme}-${size}-${name}.png`), Buffer.from(image.data, 'base64'));
+      await compareReference(image.data, theme, size, name, 'first-pass');
+      await clickAction('Open web-reader');
+      await until(() => evaluate(`document.querySelector('button[aria-label="Designer"]').getAttribute('aria-current') === 'page'`), 'explicit Open web-reader');
+      await evaluate(`document.querySelector('button[aria-label="Clusters"]').click()`);
+      await until(() => evaluate(`document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current') === 'page'`), 'back to Clusters');
+      if (await evaluate(`!!document.querySelector('.first-pass')?.getClientRects().length || window.__bridgeRuns !== 1`)) throw Error(`${name}: the first-pass moment or run replayed`);
+      console.log(`Captured native WebView2 first-pass fixture: ${theme}/${size}/${name}`);
+      return;
+    }
+    if (name === 'first-test-unknown' || name === 'first-test-lost-reply') {
+      // Unknown is never green; a lost reply may pass but cannot prove this attempt owned the result.
+      const label = name === 'first-test-unknown' ? 'Result unknown' : 'Its test passed';
+      await until(() => evaluate(`[...document.querySelectorAll('[aria-label="Setup steps"] > li')].find(row => row.querySelector('b')?.textContent === 'Run your first test')?.querySelector('.step-result')?.textContent === ${JSON.stringify(label)}`), `${name} settled`);
+      await evaluate(`document.querySelector('button[aria-label="Clusters"]').click()`);
+      await until(() => evaluate(`document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current') === 'page'`), 'Clusters after automatic test');
+      const probe = await evaluate(`({ payoff: !!document.querySelector('.first-pass'), green: !!document.querySelector('.setup-progress .steps-head .status-passed') && ${JSON.stringify(name === 'first-test-unknown')}, runs: window.__bridgeRuns, text: document.querySelector('[aria-label="Local cluster setup"]')?.innerText })`);
+      if (probe.payoff || probe.green || probe.runs !== 1) throw Error(`${name}: must not celebrate or replay: ${JSON.stringify(probe)}`);
+      await evaluate(`document.querySelector('[aria-label="Local cluster setup"]').scrollIntoView({ block: 'start' })`);
+      await settle();
+      const image = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(output, `${theme}-${size}-${name}.png`), Buffer.from(image.data, 'base64'));
+      console.log(`Captured native WebView2 first-test fixture: ${theme}/${size}/${name}`);
+      return;
+    }
+    if (name === 'ai-key') {
+      // Choose the key surface only; no key is typed, stored or checked.
+      await evaluate(`[...document.querySelectorAll('.setup-model label')].find(label => label.textContent.trim().startsWith('Your own API key')).querySelector('input').click()`);
+      await until(() => evaluate(`!!document.querySelector('#model-key-help')`), 'key custody copy');
+      const key = await evaluate(`({ help: document.querySelector('#model-key-help').textContent, model: [...document.querySelectorAll('.setup-model code')].map(code => code.textContent), text: document.querySelector('.setup-model').innerText, pickers: document.querySelectorAll('.setup-model select, .setup-model [role=combobox]').length })`);
+      if (!key.help.includes('credential store') || !key.model.includes('claude-sonnet-5-5') || key.pickers || /Keychain|Credential Manager|Azure|local cluster/.test(key.text)) throw Error(`${name}: key copy must be neutral, name the fixed model and offer no picker: ${JSON.stringify(key)}`);
+    }
     if (name === 'first-test-badges') {
       await until(() => evaluate(`!!document.querySelector('.designer-work')`), 'sample result before badge recovery');
       await evaluate(`document.querySelector('button[aria-label="Clusters"]').click()`);
@@ -534,7 +622,7 @@ try {
       if (await evaluate('window.__bridgeRuns') !== 1) throw Error('A sample state submitted a run other than the automatic test');
       return;
     }
-    const expected = { welcome: 'About 5 minutes, mostly a download', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': 'Not checked', 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'local-stopped': 'Where should your agents run?', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    const expected = { welcome: 'About 5 minutes, mostly a download', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': 'Not checked', 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'local-stopped': 'Where should your agents run?', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -624,6 +712,7 @@ try {
       if (await evaluate('window.__bridgeLocalSelections || window.__bridgeClusterUses')) throw Error(name + ': navigation started local setup or admitted a cluster');
     }
     if (['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale'].includes(name)) await compareDesigner(image.data, theme, size, name);
+    if (['ai-idle', 'ai-key', 'ai-connected'].includes(name)) await compareReference(image.data, theme, size, name, 'ai');
     if (name === 'designer-passed') {
       await evaluate(`document.querySelector('.example-run .test-result > summary').click()`);
       await until(() => evaluate(`document.querySelector('.example-run').innerText.includes('Read a web page')`), 'passed story opens recorded tool evidence');
@@ -632,8 +721,13 @@ try {
       await compareDesigner(story.data, theme, size, name + '-story');
     }
     if (['ai-connected', 'local-completed'].includes(name)) {
-      const complete = await evaluate(`({ heading: document.querySelector('h1').textContent, pill: document.querySelector('.setup-progress .pill')?.textContent, rows: document.querySelectorAll('[aria-label="Setup steps"] > li').length, text: document.body.innerText, model: document.querySelector('.setup-model').innerText })`);
-      if (complete.heading !== 'Local cluster' || complete.pill !== 'Ready' || /step \d+ of [45]/i.test(complete.text) || complete.rows !== 4 || !complete.text.includes('Stop the local cluster') || complete.model.includes('GitHub CLI must be installed')) throw Error(`Completed local page is not collapsed: ${JSON.stringify(complete)}`);
+      const complete = await evaluate(`({ heading: document.querySelector('h1').textContent, card: document.querySelector('.setup-progress .steps-head h2')?.textContent, pill: document.querySelector('.setup-progress .pill')?.textContent, rows: document.querySelectorAll('[aria-label="Setup steps"] > li').length, text: document.body.innerText, model: document.querySelector('.setup-model').innerText })`);
+      if (complete.heading !== readyCardTitle || complete.card !== readyCardTitle || complete.pill !== 'Ready' || /step \d+ of [45]/i.test(complete.text) || complete.rows !== 4 || !complete.text.includes('Stop the local cluster') || complete.model.includes('GitHub CLI must be installed')) throw Error(`Completed local page is not collapsed: ${JSON.stringify(complete)}`);
+      if (!complete.model.includes(fixtureAccount) || !complete.model.includes('gpt-5.6-terra')) throw Error(`Connected AI must show the verified account and fixed model: ${JSON.stringify(complete)}`);
+    }
+    if (name === 'ai-idle') {
+      const idle = await evaluate(`({ model: [...document.querySelectorAll('.setup-model code')].map(code => code.textContent), text: document.querySelector('.setup-model').innerText, pickers: document.querySelectorAll('.setup-model select, .setup-model [role=combobox]').length })`);
+      if (!idle.model.includes('gpt-5.6-terra') || idle.pickers || /Azure|signed in as|Saved GitHub sign-in/i.test(idle.text)) throw Error(`AI choice must show the fixed model without a picker or an unverified account: ${JSON.stringify(idle)}`);
     }
     if (name === 'ai-idle' && await evaluate(`document.querySelector('.setup-model').innerText.includes('Remove sign-in')`)) throw Error('Unused sign-in removal is visible before connecting');
     if (await evaluate(`document.body.innerText.includes('Change where agents run')`)) throw Error('Removed change panel is still visible');
@@ -788,7 +882,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     for (const name of ['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale']) await captureActions(theme, 'minimum', name);
   }
   await writeFile(join(output, 'compact-window.txt'), notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. compact-window.txt says whether 540x640 compact and minimum captures were a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. compact-window.txt says whether 540x640 compact and minimum captures were a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

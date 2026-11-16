@@ -58,6 +58,7 @@ test('malformed replacement after Change keeps the field and Connect action avai
   invoke.mockResolvedValueOnce({ ready: true, connection: anthropic }).mockResolvedValue({ ready: false });
   render(<Model enabled />); fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   await screen.findByRole('button', { name: 'Change' }); fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
   await screen.findByLabelText('API key'); fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(field()).toBeTruthy(); expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
 });
@@ -103,7 +104,7 @@ test('key cannot be queued or retained when a mounted card is hidden or the clus
 });
 test.each([
   ['modelCredentialRejected', "Anthropic didn't accept this key"],
-  ['modelProviderUnreachable', "local cluster couldn't reach Anthropic"],
+  ['modelProviderUnreachable', "workspace couldn't reach Anthropic"],
   ['modelModelUnavailable', "isn't listed for this key"],
   ['modelKeyCleanup', 'removal has not been confirmed'],
 ])('finite %s error cannot echo the company response or key', async (kind, message) => {
@@ -141,6 +142,8 @@ test('Change disconnects first, blocks replacement until acknowledgment and keep
   let reject!: (e: unknown) => void;
   invoke.mockImplementation(() => new Promise((_, no) => { reject = no; }));
   fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+  expect(invoke).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
   expect(invoke.mock.calls[1]).toEqual(['setup_remove_model']);
   expect(screen.queryByRole('radio', { name: /Your own API key/ })).toBeNull();
   await act(async () => reject({ kind: 'modelKeyCleanup' }));
