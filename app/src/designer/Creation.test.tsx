@@ -9,7 +9,8 @@ import { SAMPLE_DOCUMENT_ID } from './agent-api';
 
 const id = '12345678-1234-4234-8234-123456789abc';
 const pair = { documentId: SAMPLE_DOCUMENT_ID, name: 'web-reader', agent: '---\nname: web-reader\nmodel: shipped\n---\nRead a page.', tests: '# Checks', path: '/home/creator/Orka/agents/web-reader/web-reader.agent.md' };
-const other = { ...pair, documentId: id, name: 'helper', agent: pair.agent.replaceAll('web-reader', 'helper') };
+const draftTests = '---\nschemaVersion: 1\n---\n\n# helper tests\n\n```yaml agent-test\nid: first-test\ninput: ""\nassertions: []\n```\n';
+const other = { ...pair, documentId: id, name: 'helper', agent: '---\nname: "helper"\nmodel: "gpt-5.6-terra"\nkmx:\n  schemaVersion: 1\n  runtime: orka\n---\n\n', tests: draftTests };
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 function native(extra?: (command: string, args: Record<string, unknown>) => unknown) {
   vi.stubGlobal('isTauri', true);
@@ -51,6 +52,77 @@ test('creates during setup, previews the native location and both files, and ope
   expect(await screen.findByRole('heading', { name: 'helper', level: 1 })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
   expect(calls).not.toContain('agent_run'); expect(calls).not.toContain('workspace_catalog');
+});
+
+test.each(['Chat', 'File'])('creation from %s opens empty Instructions with an incomplete test, never a format error', async previousView => {
+  const calls: string[] = [];
+  native((command, args) => {
+    calls.push(command);
+    if (command === 'agent_create') return id;
+    if (command === 'agent_chat_status') return { documentId: args.documentId, state: 'ready', busy: false, canSend: true, versions: [], error: null };
+  });
+  const user = userEvent.setup(); render(<Example />);
+  await user.click(await screen.findByRole('button', { name: previousView }));
+  await user.click(screen.getByRole('button', { name: 'New agent' }));
+  await user.type(screen.getByRole('textbox', { name: 'Name' }), 'helper');
+  await user.click(screen.getByRole('button', { name: 'Create' }));
+  await screen.findByRole('heading', { name: 'helper', level: 1 });
+  expect(screen.getByRole('button', { name: 'Agent' }).getAttribute('aria-pressed')).toBe('true');
+  expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value.trim()).toBe('');
+  expect(screen.getByText(/test is incomplete/i)).toBeTruthy();
+  expect(screen.queryByText(/test list could not be read/i)).toBeNull();
+  expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Send to a cluster' }).matches(':disabled')).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Chat' }));
+  expect(screen.getByText(/write instructions in Agent view before chatting/i)).toBeTruthy();
+  await screen.findByText('Chat is unavailable.');
+  await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Hello{Enter}');
+  expect(calls).not.toContain('agent_run');
+  expect(calls).not.toContain('agent_chat_send');
+});
+
+test('an incomplete draft reloads a completed test file and keeps instructions on a read failure', async () => {
+  let disk = { ...other, agent: other.agent + 'Answer briefly.\n' }; let fail = false;
+  native(command => { if (command === 'agent_open') { if (fail) throw Error('/private/read/failure'); return disk; } });
+  const user = userEvent.setup(); render(<Example documentId={id} />);
+  await screen.findByText(/test is incomplete/i);
+  const editor = screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement;
+  fail = true; await user.click(screen.getByRole('button', { name: 'Reload saved files' }));
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('saved files could not be read'));
+  expect(editor.value).toBe('Answer briefly.\n');
+  expect(screen.queryByText('/private/read/failure')).toBeNull();
+  fail = false; disk = { ...disk, tests: '---\nschemaVersion: 1\n---\n\n```yaml agent-test\nid: first-test\ntitle: Checks the greeting\ninput: Hi\nassertions:\n  - id: greeting\n    type: contains\n    value: Hi\n```\n' };
+  await user.click(screen.getByRole('button', { name: 'Reload saved files' }));
+  expect(await screen.findByText('Checks the greeting')).toBeTruthy();
+  expect(screen.queryByText(/test is incomplete/i)).toBeNull();
+  expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value).toBe('Answer briefly.\n');
+});
+test('an Overview Run request is consumed when its test is still incomplete', async () => {
+  native(); const handled = vi.fn();
+  render(<Example documentId={id} actionRequest={{ id: 99, documentId: id, action: 'run' }} onActionHandled={handled} />);
+  await screen.findByText(/test is incomplete/i);
+  await waitFor(() => expect(handled.mock.calls).toEqual([[99]]));
+});
+test('draft saved-file reload is disabled while instructions have unsaved edits', async () => {
+  let opens = 0;
+  native(command => { if (command === 'agent_open') { opens++; return other; } });
+  const user = userEvent.setup(); render(<Example documentId={id} />);
+  const editor = await screen.findByRole('textbox', { name: 'Instructions' });
+  fireEvent.change(editor, { target: { value: 'Keep my draft.' } });
+  const reload = screen.getByRole('button', { name: 'Reload saved files' });
+  expect(reload.matches(':disabled')).toBe(true);
+  await user.click(reload); expect(opens).toBe(1);
+  expect((editor as HTMLTextAreaElement).value).toBe('Keep my draft.');
+});
+
+test('naming details are available on request without hiding either storage choice', async () => {
+  native(); const user = userEvent.setup(); render(<Example />);
+  await user.click(await screen.findByRole('button', { name: 'New agent' }));
+  const naming = screen.getByText('Naming details').closest('details')!;
+  expect(naming.open).toBe(false);
+  expect(screen.getAllByRole('radio')).toHaveLength(2);
+  await user.click(screen.getByText('Naming details'));
+  expect(naming.open).toBe(true);
 });
 
 test('cancel preserves the mounted draft and creates nothing', async () => {

@@ -363,7 +363,14 @@ try {
         [System.Windows.Forms.SendKeys]::SendWait('^{END}')
         [System.Windows.Forms.SendKeys]::SendWait($script:marker)
         $owned = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Orka/agents/web-reader/web-reader.agent.md'
-        Wait-For 'Native editor change not saved' { (Test-Path $owned) -and [IO.File]::ReadAllText($owned).Contains($script:marker) } | Out-Null
+        Wait-For 'Native editor change not saved' {
+            try { (Test-Path $owned) -and [IO.File]::ReadAllText($owned).Contains($script:marker) }
+            catch [IO.IOException] {
+                # Autosave can hold an exclusive writer; only sharing/lock violations are transient.
+                if (($_.Exception.GetBaseException().HResult -band 0xffff) -notin 32, 33) { throw }
+                $false
+            }
+        } | Out-Null
         # SC_CLOSE follows the native titlebar Close route, unlike process termination.
         [NativeWalk]::PostMessage($script:hwnd, 0x112, [IntPtr]0xf060, [IntPtr]::Zero) | Out-Null
         Wait-For 'Native Close did not hide' { ![NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
@@ -446,7 +453,26 @@ try {
             $explanation = Find-Control $script:window $copy $null
             (Test-Path $agent) -and (Test-Path $tests) -and $editor -and !$editor.Current.IsOffscreen -and $explanation -and !(Find-Control $script:window 'Create' $button)
         } | Out-Null
-        if (![IO.File]::ReadAllText($agent).Contains('name: "web-reader"') -or ![IO.File]::ReadAllText($tests).Contains('web_fetch')) { throw 'Own-repo starter pair has incorrect contents' }
+        $draft = [IO.File]::ReadAllText($agent).Replace("`r`n", "`n")
+        $checks = [IO.File]::ReadAllText($tests).Replace("`r`n", "`n")
+        if (!$draft.Contains('name: "web-reader"') -or $draft.Contains('tools:') -or $draft -notmatch '(?s)\A---\n.*?\n---\n\s*\z' -or $draft.Contains('web_fetch')) { throw 'Own-repo draft must have empty instructions and no tools' }
+        $expectedChecks = @'
+---
+schemaVersion: 1
+---
+
+# web-reader tests
+
+```yaml agent-test
+id: first-test
+input: ""
+assertions: []
+```
+'@
+        if ($checks.Trim() -cne $expectedChecks.Replace("`r`n", "`n").Trim()) { throw 'Own-repo empty test skeleton has incorrect contents' }
+        $instructions = Find-Control $script:window 'Instructions' ([System.Windows.Automation.ControlType]::Edit)
+        $value = $instructions.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+        if ($value -cne '') { throw 'Created agent must open blank Instructions, not the previous File view' }
         if ((@(Get-ChildItem -Force $folder | Sort-Object Name | ForEach-Object Name) -join ',') -cne 'web-reader.agent.md,web-reader.agent.test.md') { throw 'Own-repo agent folder must contain only the pair, no nested .git or marker' }
         if ((@(Get-ChildItem -Force $repo | Sort-Object Name | ForEach-Object Name) -join ',') -cne '.git,web-reader') { throw 'Creation added unexpected repo-root files or markers' }
         Capture 'new-agent-repo-created'
@@ -461,7 +487,7 @@ try {
         # File > Quit is exercised by the native menu/failed-stop subprocess test,
         # not by a duplicate GUI lookup through this runner's incomplete UIA tree.
         if ((Test-Path $selected) -or (Test-Path $vmData)) { throw 'Saved local selection or VM data appeared' }
-        "PASS $theme`: native own-repo chooser, selected path/copy, web-reader starter pair only (no nested Git/marker); native Close/hide, tray menu/Open, same PID $script:originalPid/window $script:hwnd, File view/edited text retained, hidden/minimized second launches, menu stop. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof. OS popup theme is captured as drawn, not forced by product hooks." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
+        "PASS $theme`: native own-repo chooser, selected path/copy, blank web-reader-named draft pair only (no nested Git/marker); native Close/hide, tray menu/Open, same PID $script:originalPid/window $script:hwnd, File view/edited text retained, hidden/minimized second launches, menu stop. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof. OS popup theme is captured as drawn, not forced by product hooks." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
     }
 } catch {
     $failure = $_

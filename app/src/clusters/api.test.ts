@@ -59,6 +59,16 @@ test.each([null, {}, [{ id, name: 'team', token: 'SECRET_MARKER' }], [{ id: 'end
   vi.stubGlobal('isTauri', true); mockIPC(() => value);
   await expect(contexts()).rejects.toThrow('Cluster information could not be read');
 });
+test.each([contexts, reloadContexts])('context reads require native current-context metadata and reject extra fields', async read => {
+  vi.stubGlobal('isTauri', true);
+  for (const current of [true, false]) {
+    mockIPC(() => [{ id, name: 'team', current }]);
+    await expect(read()).resolves.toEqual([{ id, name: 'team', current }]);
+  }
+  for (const value of [{ id, name: 'team' }, { id, name: 'team', current: 'true' }, { id, name: 'team', current: true, token: 'SECRET_MARKER' }]) {
+    mockIPC(() => [value]); await expect(read()).rejects.toThrow('Cluster information could not be read');
+  }
+});
 test('native diagnostics cannot be echoed through the adapter', async () => {
   vi.stubGlobal('isTauri', true); mockIPC(() => Promise.reject({ token: 'SECRET_MARKER', message: 'SECRET_MARKER' }));
   await expect(discover(id)).rejects.toThrow('Cluster information could not be read');
@@ -71,8 +81,8 @@ test.each([{ status: 'connected', providers: [] }, { status: 'needServiceAccount
   vi.stubGlobal('isTauri', true); mockIPC(() => value); await expect(connectCluster(id, null)).rejects.toThrow();
 });
 test('reload invokes the offline native command', async () => {
-  vi.stubGlobal('isTauri', true); const ipc = vi.fn(() => [{ id, name: 'fixed' }]); mockIPC(ipc);
-  await expect(reloadContexts()).resolves.toEqual([{ id, name: 'fixed' }]);
+  vi.stubGlobal('isTauri', true); const ipc = vi.fn(() => [{ id, name: 'fixed', current: false }]); mockIPC(ipc);
+  await expect(reloadContexts()).resolves.toEqual([{ id, name: 'fixed', current: false }]);
   expect(ipc).toHaveBeenCalledWith('cluster_reload', {});
 });
 test('finite failure retains its check but private diagnostics are not exported', async () => {

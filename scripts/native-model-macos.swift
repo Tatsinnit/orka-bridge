@@ -47,7 +47,10 @@ let firstTestOutcome = URL(fileURLWithPath: output).appendingPathComponent("firs
 defer { try? FileManager.default.removeItem(at: firstTestOutcome) }
 try "installing".write(to: setupProgress, atomically: true, encoding: .utf8)
 defer { try? FileManager.default.removeItem(at: setupProgress) }
-child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path, "BRIDGE_SETUP_PROGRESS": setupProgress.path, "BRIDGE_FIRST_TEST_OUTCOME": firstTestOutcome.path, "BRIDGE_CATALOG_RELEASE": catalogRelease.path]) { _, fixture in fixture }
+let chatPhase = URL(fileURLWithPath: output).appendingPathComponent("chat-phase-\(UUID().uuidString)")
+try "pending".write(to: chatPhase, atomically: true, encoding: .utf8)
+defer { try? FileManager.default.removeItem(at: chatPhase) }
+child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path, "BRIDGE_SETUP_PROGRESS": setupProgress.path, "BRIDGE_FIRST_TEST_OUTCOME": firstTestOutcome.path, "BRIDGE_CHAT_PHASE": chatPhase.path, "BRIDGE_CATALOG_RELEASE": catalogRelease.path]) { _, fixture in fixture }
 try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
@@ -83,7 +86,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     // Vision can interleave the adjacent setup column between wrapped lines.
     // Check phrases within the model panel, not the whole window's reading order.
     let visible: String
-    if name.hasPrefix("local-") || name.hasPrefix("chat-") {
+    if name.hasPrefix("local-") || name.hasPrefix("chat-") || name.hasPrefix("cluster-") {
         visible = rows.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
     } else {
         guard let panel = rows.filter({
@@ -105,7 +108,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         // Recovery copy has apostrophes and "AI" that Vision misreads; require visible native text instead.
         let lenient = ["local-key-", "local-reset-", "local-remove-"].contains { name.hasPrefix($0) }
         let nativeText = !found && name.hasPrefix("local-") && (nativeResultTextIsVisible(value) || lenient && nativeChatTextIsVisible(value))
-        let chatText = !found && name.hasPrefix("chat-") && nativeChatTextIsVisible(value)
+        let chatText = !found && (name.hasPrefix("chat-") || name.hasPrefix("cluster-")) && nativeChatTextIsVisible(value)
         let workspaceControl = !found && name.hasPrefix("local-workspace-") && nativeWorkspaceButtonIsVisible(value)
         require(found || nativeText || chatText || workspaceControl, "Missing \(value) in \(name): \(text)")
     }
@@ -117,7 +120,9 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     // Setup frames 1c, 1d (cropped) and 1e exist only in light; dark captures use them as layout references.
     // Frames 1g (AI connection failed) and 1h (AI reset) are approved in both themes.
     let frame: (file: String, label: String)? =
-        name.hasPrefix("local-workspace-") || name == "local-stopped" ? ("workspace-reference-\(theme)", "Approved workspace frame (wide reference)")
+        name.hasPrefix("chat-") ? ("designer-reference-\(theme)", "Designer design system (no dedicated Chat frame)")
+        : name.hasPrefix("cluster-") ? ("cluster-reference-light", "Approved cluster cards (wide reference)")
+        : name.hasPrefix("local-workspace-") || name == "local-stopped" ? ("workspace-reference-\(theme)", "Approved workspace frame (wide reference)")
         : ["local-result", "local-answer", "local-story", "local-running", "local-stopping", "local-shell"].contains(where: { name.hasPrefix($0) }) ? ("designer-reference-\(theme)", "Approved Designer frame (wide reference)")
         : name.hasPrefix("local-first-pass") ? ("setup-reference-first-pass", "Approved frame 1e, light (wide reference)")
         : name.hasPrefix("local-setup-installing") || name.hasPrefix("local-setup-meet") ? ("setup-reference-meet", "Approved frame 1c, light (wide reference)")
@@ -153,7 +158,9 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
 }
 func enabledButton(_ label: String) -> AXUIElement? {
     let buttons = nativeElements().filter { element in
-        ["AXButton", "AXCheckBox"].contains(attribute(element, "AXRole") as? String ?? "")
+        guard let role = attribute(element, "AXRole") as? String else { return false }
+        // Keep ordinary controls distinct from the context's native popup trigger.
+        return (["AXButton", "AXCheckBox"].contains(role) || label == "kubectl context" && role == "AXPopUpButton")
             && attribute(element, "AXEnabled") as? Bool == true
             && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == label })
     }
@@ -497,11 +504,21 @@ func localSize(_ width: CGFloat, _ height: CGFloat) {
     let app = AXUIElementCreateApplication(child.processIdentifier)
     var windows: CFTypeRef?
     require(AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &windows) == .success, "Cannot read fixture window")
-    let native = (windows as! [AXUIElement])[0]
+    guard let frame = window()?.1 else { fatalError("Cannot find the captured fixture window") }
+    // AXWindows also includes transient auxiliary windows; never resize the first one blindly.
+    let matches = (windows as! [AXUIElement]).filter { element in
+        guard let bounds = nativeBounds(element) else { return false }
+        return abs(bounds.minX - frame.minX) < 3 && abs(bounds.minY - frame.minY) < 3
+            && abs(bounds.width - frame.width) < 3 && abs(bounds.height - frame.height) < 3
+    }
+    require(matches.count == 1, "Expected one native window matching the captured frame, found \(matches.count)")
+    let native = matches[0]
     var origin = CGPoint(x: 0, y: 40)
     require(AXUIElementSetAttributeValue(native, kAXPositionAttribute as CFString, AXValueCreate(.cgPoint, &origin)!) == .success, "Cannot position fixture window")
     var size = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .closable, .miniaturizable, .resizable]).size
-    require(AXUIElementSetAttributeValue(native, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!) == .success, "Cannot resize fixture window")
+    let before = nativeBounds(native)
+    let result = AXUIElementSetAttributeValue(native, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!)
+    require(result == .success, "Cannot resize fixture window: AX=\(result.rawValue), title=\(attribute(native, "AXTitle") as? String ?? "unnamed"), windows=\((windows as! [AXUIElement]).count), before=\(String(describing: before)), requested=\(size)")
     Thread.sleep(forTimeInterval: 0.3)
     require(abs(window()!.1.width - size.width) < 3 && abs(window()!.1.height - size.height) < 3, "Fixture content size not applied")
 }
@@ -992,16 +1009,36 @@ localSize(1280, 800)
 localSize(1280, 800)
 scroll(4000)
 click("Chat", [])
-_ = try capture("chat-empty-wide", ["Chat on local cluster", "Message"])
-localSize(540, 900)
-_ = try capture("chat-empty-compact", ["Chat on local cluster", "Message"])
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("Ask your agent a question", -100)
+    _ = try capture("chat-empty-\(size)", ["Ask your agent a question"])
+}
 fillMessage("Remember the checksum ALPHA.")
 waitForButton("Send message")
 click("Send message", [])
+localSize(1280, 800); scroll(4000)
+_ = try seek("Waiting for your agent to start…", -100)
+waitForChatText("Waiting for your agent to start…")
+for (phase, expected) in [("pending", "Waiting for your agent to start…"), ("running", "Waiting for your agent’s reply…")] {
+    try phase.write(to: chatPhase, atomically: true, encoding: .utf8)
+    waitForChatText(expected)
+    for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+        localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+        _ = try seek(expected, -100)
+        _ = try capture("chat-\(phase)-\(size)", [expected])
+        require(!nativeChatTextIsVisible("This turn is not confirmed in later context."), "Waiting Chat must not show a context fault")
+    }
+}
+try "answer".write(to: chatPhase, atomically: true, encoding: .utf8)
 waitForChatText("The checksum is ALPHA.")
-_ = try capture("chat-first-compact", ["You", "Agent", "The checksum is ALPHA.", "<script>fixture</script>"])
+try FileManager.default.removeItem(at: chatPhase)
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("The checksum is ALPHA.", -100)
+    _ = try capture("chat-answer-\(size)", ["The checksum is ALPHA.", "<script>fixture</script>"])
+}
 localSize(1280, 800)
-_ = try capture("chat-first-wide", ["The checksum is ALPHA.", "<script>fixture</script>"])
 fillMessage("What checksum did I ask you to remember?")
 waitForButton("Send message")
 click("Send message", [])
@@ -1074,10 +1111,45 @@ _ = try capture("local-remove-confirmation-compact", ["saved sign-in?", "Cancel"
 click("Cancel", [])
 click("Clusters", [])
 _ = try capture("local-places-compact", ["Choose where agents run", "This computer"])
+// Explicit context actions only: opening the picker never starts discovery.
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try capture("cluster-list-\(size)", ["Choose where agents run", "This computer", "team-dev"])
+}
+localSize(1280, 800); scroll(4000)
+click("Add a cluster", [])
+click("kubectl context", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height))
+    _ = try capture("cluster-picker-open-\(size)", ["Find a context", "team-dev", "team-west"])
+}
+click("Close picker", [])
+localSize(1280, 800); scroll(4000)
+click("kubectl context", [])
+try "cluster-checking".write(to: setupProgress, atomically: true, encoding: .utf8)
+click("team-west", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try capture("cluster-checking-\(size)", ["Checking"])
+}
+try "cluster-failure".write(to: setupProgress, atomically: true, encoding: .utf8)
+waitForChatText("Couldn't reach this cluster. The connection could not be opened.")
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try capture("cluster-failure-\(size)", ["Couldn't reach this cluster."])
+    if size == "minimum" {
+        _ = try seek("Check again", -100)
+        guard let bounds = enabledButton("Check again").flatMap(nativeBounds) else { fatalError("Missing recovery action") }
+        require(window()!.1.contains(bounds) && bounds.maxY <= window()!.1.maxY - 32, "Recovery action overlaps the footer")
+        _ = try capture("cluster-failure-minimum-end", ["Check again"])
+    }
+}
+
 // Stop/restart uses real UI actions. The existing selector settles only pending
 // synthetic IPC; no VM, credentials or provider is accessed.
 localSize(1280, 800)
 scroll(4000)
+click("Clusters", [])
 click("Manage", [])
 func workspacePhase(_ phase: String) throws {
     try phase.write(to: setupProgress, atomically: true, encoding: .utf8)

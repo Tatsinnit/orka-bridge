@@ -496,7 +496,7 @@ fn repo_pair_roundtrips_all_entry_points_without_touching_git() {
     assert_eq!(pair.document_id, id);
     let saved = folder
         .save_with_source(
-            pair.agent.replace("fetch", "retrieve"),
+            format!("{}Answer briefly.\n", pair.agent),
             Some(pair.source.clone()),
         )
         .unwrap();
@@ -788,8 +788,23 @@ async fn send_preflight_captures_repo_document_and_revalidates_its_pair() {
         .create_with_repo("helper", None, Some(selected.id))
         .unwrap();
     let folder = agents.get(id).unwrap();
-    let source = folder.open().unwrap().source;
     let send = SendOwner::new(agents.sample(), ClusterSession::default());
+    let draft = folder.open().unwrap();
+    let check = send.preflight_document(folder.clone(), "", "").await;
+    assert!(check.source.is_none());
+    assert!(!check.can_send);
+    folder
+        .save_with_source(
+            format!("{}Answer briefly.\n", draft.agent),
+            Some(draft.source),
+        )
+        .unwrap();
+    fs::write(
+        path.join("helper/helper.agent.test.md"),
+        "---\nschemaVersion: 1\n---\n\n```yaml agent-test\nid: greeting\ninput: Say hi\nassertions:\n  - id: says-hi\n    type: contains\n    value: hi\n```\n",
+    )
+    .unwrap();
+    let source = folder.open().unwrap().source;
     let check = send.preflight_document(folder.clone(), "", "").await;
     assert_eq!(check.document_id, id);
     assert_eq!(check.source, Some(source));

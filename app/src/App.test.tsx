@@ -5,8 +5,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import App from './App';
 
-beforeEach(() => { localStorage.setItem('bridge.welcomeSeen.v1', '1'); });
-afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
+beforeEach(() => { localStorage.setItem('bridge.welcomeSeen.v1', '1'); Object.defineProperty(HTMLDivElement.prototype, 'showPopover', { configurable: true, value() { this.style.display = 'grid'; } }); });
+afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); Reflect.deleteProperty(HTMLDivElement.prototype, 'showPopover'); });
 
 test.each(['Agent', 'File'] as const)('a pending %s draft survives setup readiness without reopening the document', async view => {
   const pair = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', name: 'web-reader', agent: '---\nname: reader\n---\nOriginal instructions.', tests: 'Checks', path: '/owned/reader.agent.md' };
@@ -503,7 +503,7 @@ test('a transient setup read failure does not invalidate an admitted model conne
 test.each(['saved file', 'cluster Agent'])('%s Open keeps the selected cluster and shows local tests beside Send, without a second Use or a Send', async origin => {
   vi.stubGlobal('isTauri', true);
   const id = '12345678-1234-1234-1234-123456789abc';
-  const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev' };
+  const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev', current: true };
   const target = { id: '00000000-0000-4000-8000-000000000002', context_id: context.id, context_name: context.name, service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'ghcr.io/orka:0.9.4' };
   const provider = { id: '00000000-0000-4000-8000-000000000003', name: 'team-model', ready: true };
   const connected = { status: 'connected', providers: [provider], failure: null };
@@ -532,7 +532,8 @@ test.each(['saved file', 'cluster Agent'])('%s Open keeps the selected cluster a
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await user.click(await screen.findByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
-  await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
+  await user.click(await screen.findByRole('button', { name: 'kubectl context' }));
+  await user.click(screen.getByRole('button', { name: context.name }));
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await screen.findByRole('button', { name: 'Open your agent' });
   await user.click(screen.getByRole('button', { name: 'Overview' }));

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
+import { Disclosure } from '../components/Disclosure';
 import { storageCopy } from './agent-api';
 import { createDocument, creationRoot, pickRepo, type RepoSelection } from './documents-api';
 
@@ -39,7 +40,8 @@ export default function NewAgent({ active, model, onRegistered, onCreated, onCan
     }}>
       <label htmlFor="new-agent-name">Name</label>
       <input id="new-agent-name" className="field" ref={input} autoCapitalize="none" autoCorrect="off" spellCheck={false} required minLength={1} maxLength={63} pattern="[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?" aria-describedby="new-agent-name-hint" value={name} disabled={disabled} onChange={event => { setName(event.target.value); setError(undefined); }} />
-      <p className="muted" id="new-agent-name-hint">Use 1–63 lowercase letters, digits or hyphens. Begin and end with a letter or digit. Windows device names{storage === 'bridge' ? ' and web-reader are' : ' are'} reserved. The name is used in the files, not as the Kubernetes resource name.</p>
+      <p className="muted" id="new-agent-name-hint">Use lowercase letters, numbers and hyphens.</p>
+      <Disclosure label="Naming details"><p className="muted">Use 1–63 characters. Begin and end with a letter or number. Windows device names{storage === 'bridge' ? ' and web-reader are' : ' are'} reserved. This names your files, not the agent on a cluster.</p></Disclosure>
       <fieldset disabled={disabled}><legend>Keep it in</legend>
         <label><input type="radio" name="agent-storage" checked={storage === 'bridge'} onChange={() => { setStorage('bridge'); setError(undefined); }} /> Bridge's folder</label>
         <label><input type="radio" name="agent-storage" checked={storage === 'repo'} onChange={() => { setStorage('repo'); setError(undefined); }} /> Your own repo</label>
@@ -51,7 +53,7 @@ export default function NewAgent({ active, model, onRegistered, onCreated, onCan
         <ul><li>{stem}.agent.md</li><li>{stem}.agent.test.md</li></ul>
       </div>
       <p className="muted">{storageCopy[storage]}</p>
-      <p>Starts with instructions and a check that fetches a web page. Change instructions in Designer; edit the check file on disk.</p>
+      <p>Starts blank, with one empty test. Write instructions in Designer, then complete the test file on disk before running tests or sending to a cluster.</p>
       {error && <p role="alert">{error}</p>}
       <div className="heading-actions"><Button kind="primary" type="submit" disabled={disabled || storage === 'repo' && !repo}>{busy ? 'Creating…' : 'Create'}</Button><Button kind="secondary" type="button" disabled={disabled} onClick={onCancel}>Cancel</Button></div>
     </form>

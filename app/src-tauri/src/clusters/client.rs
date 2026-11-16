@@ -68,6 +68,7 @@ impl ClusterClient {
             .map(|c| ContextView {
                 id: ContextId(Uuid::new_v4()),
                 name: c.name.clone(),
+                current: kubeconfig.current_context.as_deref() == Some(c.name.as_str()),
             })
             .collect();
         Self {

@@ -20,8 +20,8 @@ function native() {
   mockIPC(ipc);
   return ipc;
 }
-beforeEach(() => { localStorage.setItem('bridge.welcomeSeen.v1', '1'); });
-afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
+beforeEach(() => { localStorage.setItem('bridge.welcomeSeen.v1', '1'); Object.defineProperty(HTMLDivElement.prototype, 'showPopover', { configurable: true, value() { this.style.display = 'grid'; } }); });
+afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); Reflect.deleteProperty(HTMLDivElement.prototype, 'showPopover'); });
 
 test('reopen observes a lost workspace immediately without replaying setup, Connect or Test', async () => {
   vi.stubGlobal('isTauri', true);
@@ -237,7 +237,7 @@ function nativeDirect() {
   const ipc = vi.fn((command: string) => {
     if (command === 'setup_status') return { selected: null, localVm: 'idle', model: 'locked' };
     if (command === 'setup_requirements') return null;
-    if (command === 'cluster_contexts') return [{ id: '00000000-0000-4000-8000-000000000001', name: 'team-dev' }];
+    if (command === 'cluster_contexts') return [{ id: '00000000-0000-4000-8000-000000000001', name: 'team-dev', current: true }];
     throw Error('Unsupported');
   });
   mockIPC(ipc);
@@ -250,10 +250,10 @@ test('standalone Setup navigates through Places without implicit destination or 
   await screen.findByRole('button', { name: 'Set up' });
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('cluster_contexts');
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
-  expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'kubectl context' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
   await openLocalSetup(user);
-  expect(screen.queryByRole('combobox', { name: 'kubectl context' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'kubectl context' })).toBeNull();
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('setup_select_local');
 });
 
@@ -261,17 +261,17 @@ test('controlled destination changes do not navigate; visited ClusterCard stays 
   const ipc = nativeDirect(); const user = userEvent.setup(); const onPlace = vi.fn();
   const view = render(<Setup onOpenExample={vi.fn()} place={{ kind: 'thisComputer' }} onPlace={onPlace} />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
-  await waitFor(() => expect(screen.getByRole('combobox', { name: 'kubectl context' }).matches(':disabled')).toBe(false));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'kubectl context' }).matches(':disabled')).toBe(false));
   const card = document.querySelector('.cluster-card');
   view.rerender(<Setup onOpenExample={vi.fn()} place={{ kind: 'cluster' }} onPlace={onPlace} />);
-  expect(screen.getByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'kubectl context' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
-  expect(screen.queryByRole('combobox', { name: 'kubectl context' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'kubectl context' })).toBeNull();
   expect(document.querySelector('.cluster-card')).toBe(card);
   view.rerender(<Setup onOpenExample={vi.fn()} place={{ kind: 'thisComputer' }} onPlace={onPlace} />);
   expect(screen.getByRole('heading', { name: 'Clusters' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
-  expect(screen.getByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'kubectl context' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_contexts')).toHaveLength(1);
   expect(onPlace).not.toHaveBeenCalled();
 });
@@ -290,7 +290,7 @@ test('a shared place change alone never admits setup, starts the workspace or op
 
 test('cluster configuration survives tab navigation without automatically using the cluster again', async () => {
   vi.stubGlobal('isTauri', true);
-  const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev' };
+  const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev', current: true };
   const target = { id: '00000000-0000-4000-8000-000000000002', context_id: context.id, context_name: context.name,
     service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'ghcr.io/orka:0.9.4' };
   const ipc = vi.fn((command: string) => {
@@ -305,14 +305,15 @@ test('cluster configuration survives tab navigation without automatically using 
   const props = { onOpenExample: vi.fn(), onPlace: vi.fn(), place: { kind: 'thisComputer' } as const };
   const view = render(<Setup {...props} />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
-  await waitFor(() => expect(screen.getByRole('combobox', { name: 'kubectl context' }).matches(':disabled')).toBe(false));
-  await user.selectOptions(screen.getByRole('combobox', { name: 'kubectl context' }), context.id);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'kubectl context' }).matches(':disabled')).toBe(false));
+  await user.click(screen.getByRole('button', { name: 'kubectl context' }));
+  await user.click(screen.getByRole('button', { name: context.name }));
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await user.type(await screen.findByRole('textbox', { name: 'ServiceAccount name' }), 'remembered-account');
   view.rerender(<Setup {...props} active={false} />);
-  expect(screen.queryByRole('combobox', { name: 'kubectl context' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'kubectl context' })).toBeNull();
   view.rerender(<Setup {...props} active />);
-  expect((screen.getByRole('combobox', { name: 'kubectl context' }) as HTMLSelectElement).value).toBe(context.id);
+  expect(screen.getByRole('button', { name: 'kubectl context' }).textContent).toContain(context.name);
   expect((screen.getByRole('textbox', { name: 'ServiceAccount name' }) as HTMLInputElement).value).toBe('remembered-account');
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_use')).toHaveLength(1);
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_contexts')).toHaveLength(1);

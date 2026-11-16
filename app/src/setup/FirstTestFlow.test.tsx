@@ -360,5 +360,5 @@ test('Add retires an automatic first test awaiting its initial observation witho
   await new Promise(done => setTimeout(done, 600));
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(0);
   expect(screen.getByRole('button', { name: 'Clusters' }).getAttribute('aria-current')).toBe('page');
-  expect(screen.getByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'kubectl context' })).toBeTruthy();
 });

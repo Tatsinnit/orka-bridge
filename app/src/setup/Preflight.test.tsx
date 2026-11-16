@@ -60,13 +60,13 @@ test.each([
   await user.keyboard('{ArrowDown}');
   expect(screen.getByRole<HTMLInputElement>('radio', { name: 'On a cluster you already have' }).checked).toBe(true);
   expect(screen.queryByRole('region', { name: 'Computer requirements' })).toBeNull();
-  expect(screen.queryByRole('combobox', { name: 'kubectl context' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'kubectl context' })).toBeNull();
   expect(onPlace).not.toHaveBeenCalled();
   expect(ipc.mock.calls.some(([c]) => ['setup_select_local', 'cluster_admit', 'cluster_contexts'].includes(c))).toBe(false);
   const next = screen.getByRole('button', { name: 'Continue' });
   expect(next.matches(':disabled')).toBe(false);
   await user.click(next);
-  expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'kubectl context' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_preflight')).toHaveLength(reads);
   expect(ipc.mock.calls.some(([c]) => ['setup_select_local', 'cluster_admit'].includes(c))).toBe(false);
   expect(onPlace).not.toHaveBeenCalled();

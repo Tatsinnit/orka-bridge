@@ -118,8 +118,9 @@ while Date() < rendererDeadline {
         // Navigation/footer controls can render before setup_status settles.
         // Observe the welcome or the actual release setup result, not a button
         // that merely happens to be below the header.
-        let bodyReady = names.contains("Get started") || nativeTextIsVisible("Choose where agents run")
-        if Set(["Overview", "Designer", "Clusters"]).isSubset(of: names) && bodyReady { found = true; break }
+        // The text viewport also needs the tab bar; do not query it during renderer startup.
+        if Set(["Overview", "Designer", "Clusters"]).isSubset(of: names)
+            && (names.contains("Get started") || nativeTextIsVisible("Choose where agents run")) { found = true; break }
     }
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
 }
@@ -194,7 +195,9 @@ func clickDesignerView(_ name: String) {
 // Places actions are native buttons; a row action may carry the row name after its verb.
 func nativeButtons(_ label: String) -> [AXUIElement] {
     nativeElements().filter { element in
-        attribute(element, "AXRole") as? String == "AXButton"
+        guard let role = attribute(element, "AXRole") as? String else { return false }
+        // WebKit exposes the context's aria-haspopup trigger as a popup button.
+        return (role == "AXButton" || label == "kubectl context" && role == "AXPopUpButton")
             && ["AXTitle", "AXDescription"].contains { key in
                 guard let value = attribute(element, key) as? String else { return false }
                 return value == label || value.hasPrefix(label + " ")
@@ -236,10 +239,10 @@ func nativeStrings() -> [String] {
     }
 }
 func nativeTextBounds(_ expected: String, heading: Bool = false, visibleOnly: Bool = true, exact: Bool = false) -> [CGRect] {
-    guard let rect = window()?.1 else { return [] }
-    // Destination chips and footer mirrors are not evidence of a visible card.
+    guard window() != nil else { return [] }
+    // Use the same native viewport as controls: compact tabs are shorter than wide tabs.
     // Below-the-fold bounds can guide scrolling, but never prove visibility.
-    let body = CGRect(x: rect.minX, y: rect.minY + 110, width: rect.width, height: max(0, rect.height - 142))
+    let body = bodyBounds()
     var matches: [CGRect] = []
     for element in nativeElements() {
         guard let role = attribute(element, "AXRole") as? String else { continue }
@@ -328,6 +331,24 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
     try command.run(); command.waitUntilExit()
     require(command.terminationStatus == 0, "Cannot capture Bridge")
     try afterFrame?()
+    if name.hasPrefix("new-agent-") && name != "new-agent-probe" || name.hasPrefix("cluster-") && name != "cluster-probe" || name.hasPrefix("places-") {
+        let designer = name.hasPrefix("new-agent-")
+        let referenceFile = designer ? "designer-reference-\(theme)" : "cluster-reference-light"
+        guard let actual = NSImage(contentsOfFile: file), let reference = NSImage(contentsOfFile: "../docs/images/\(referenceFile).png") else { fail("Missing native comparison reference") }
+        let width = actual.size.width, referenceHeight = reference.size.height * actual.size.width / reference.size.width
+        let height = max(actual.size.height, referenceHeight) + 42
+        let comparison = NSImage(size: NSSize(width: width * 2 + 48, height: height + 16))
+        comparison.lockFocus()
+        NSColor.windowBackgroundColor.setFill(); NSRect(origin: .zero, size: comparison.size).fill()
+        actual.draw(in: NSRect(x: 16, y: height - 42 - actual.size.height, width: width, height: actual.size.height))
+        reference.draw(in: NSRect(x: width + 32, y: height - 42 - referenceHeight, width: width, height: referenceHeight))
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]
+        ("Native Bridge, disposable fixture" as NSString).draw(at: NSPoint(x: 16, y: height - 26), withAttributes: attributes)
+        ((designer ? "Designer design system (no dedicated New agent frame)" : "Approved cluster cards (wide reference)") as NSString).draw(at: NSPoint(x: width + 32, y: height - 26), withAttributes: attributes)
+        comparison.unlockFocus()
+        guard let tiff = comparison.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else { fail("Cannot compose native comparison") }
+        try png.write(to: URL(fileURLWithPath: "\(output)/\(name)-comparison.png"))
+    }
     // Render the PNG's profile into sRGB bytes; NSColor calibration changed the sampled values.
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
         let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
@@ -343,7 +364,12 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         return true
     }
     require(sampled, "Cannot sample screenshot in sRGB")
-    let expected: [CGFloat] = theme == "dark" ? [26, 29, 33] : [228, 226, 219]
+    var expected: [CGFloat] = theme == "dark" ? [26, 29, 33] : [228, 226, 219]
+    if name.hasPrefix("cluster-picker-open") || name == "cluster-reload-options" {
+        require(visibleButtons("Close picker").count == 1, "Context picker must be visibly open")
+        // Its 12% black backdrop composites over the footer; the theme check still applies.
+        expected = expected.map { $0 * 0.88 }
+    }
     let actual = rgba.prefix(3).map { CGFloat($0) }
     require(zip(actual, expected).allSatisfy { abs($0 - $1) < 8 },
             "Native screenshot does not show the expected \(theme) Estuary chrome: \(actual)")
@@ -356,10 +382,14 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
     }.joined(separator: "\n")
     try recognized.write(toFile: "\(output)/\(name).ocr.txt", atomically: true, encoding: .utf8)
     if name == "new-agent-probe" || name == "send-probe" || name == "cluster-probe" || name == "overview-probe" || name.hasPrefix("overview-fixture-") { return observations }
+    if name.hasPrefix("new-agent-") && name.hasSuffix("-end") {
+        require(visibleButtons("Create").count == 1 && visibleButtons("Cancel").count == 1, "Creation actions overlap the fixed chrome")
+        return observations
+    }
     if name.hasPrefix("new-agent-") {
-        let expected = name == "new-agent-created" ? "native-helper" : name == "new-agent-repo-created" ? "web-reader" : "New agent"
+        let expected = name.hasPrefix("new-agent-created") ? "native-helper" : name == "new-agent-repo-created" ? "web-reader" : "New agent"
         let heading: Bool
-        if name.hasPrefix("new-agent-repo-") {
+        if name.hasPrefix("new-agent-repo-") || name.hasSuffix("minimum") {
             // These captures use 900pt content: bind the actual visible page heading,
             // not a normalized band inherited from the 800pt creation screenshots.
             heading = nativeTextBounds(expected, heading: true).count == 1
@@ -401,7 +431,7 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         if name == "cluster-conditional" {
             require(accountName && text.contains("existing account in agents"), "Conditional name-only access prompt missing: \(text)")
         } else {
-            require(text.contains("Orka identity") && text.contains("Access was denied") && !accountName, "Denial incorrectly offered identity substitution: \(text)")
+            require(text.contains("account and namespace") && text.contains("Access was denied") && !accountName, "Denial incorrectly offered identity substitution: \(text)")
             guard let explanation = nativeTextBounds("Access was denied").first,
                 let retry = nativeButtons("Check again").compactMap({ nativeBounds($0) }).first else {
                 fail("Access error or its retry action is missing")
@@ -474,10 +504,26 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         // Add opens a blank context choice and keeps the Designer destination,
         // so only a confirmation inside the page body would make this entry non-blank.
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        let bodyConfirmed = nativeTextBounds("Access confirmed").contains { bodyBounds().intersects($0) }
-        require(text.contains("Back to clusters") && !text.contains("Cluster found") && !bodyConfirmed
-            && nativeButtons("Open your agent").isEmpty && nativeButtons("Check access again").isEmpty
-            && nativeStrings().contains { $0.contains("Choose a context") }, "Add a cluster did not open a blank Places subview: \(text)")
+        let headings = nativeTextBounds("Add a cluster", heading: true)
+        require(headings.count == 1, "Add a cluster heading must be visible")
+        let frame = window()!.1
+        func centre(_ row: VNRecognizedTextObservation) -> CGPoint {
+            CGPoint(x: frame.minX + row.boundingBox.midX * frame.width,
+                    y: frame.minY + (1 - row.boundingBox.midY) * frame.height)
+        }
+        // Header AT descriptions and popup AX values are not proof of rendered page text.
+        let bodyConfirmed = observations.contains {
+            $0.topCandidates(1).first?.string.contains("Access confirmed") == true
+                && bodyBounds().contains(centre($0)) && centre($0).y >= headings[0].maxY
+        }
+        let pickers = visibleButtons("kubectl context")
+        let blank = pickers.count == 1 && observations.contains {
+            $0.topCandidates(1).first?.string.contains("Choose a context") == true && pickers[0].contains(centre($0))
+        }
+        let checks = ["back": text.contains("Back to clusters"), "no discovery": !text.contains("Cluster found"),
+            "no body confirmation": !bodyConfirmed, "no open": nativeButtons("Open your agent").isEmpty,
+            "no recheck": nativeButtons("Check access again").isEmpty, "blank picker": blank]
+        require(checks.values.allSatisfy { $0 }, "Add a cluster did not open a blank Places subview: \(checks): \(text)")
         print("PASS \(name): native Places subview with blank kubectl context")
         return observations
     }
@@ -643,6 +689,15 @@ func localPreflight(_ name: String) throws {
     require(visibleButtons("Back to clusters").isEmpty, "Local setup must not have a header Back link")
     clickTab("Clusters", [])
 }
+func requireBlankPair(_ agent: URL, _ tests: URL, _ name: String) throws {
+    let content = try String(contentsOf: agent, encoding: .utf8)
+    let parts = content.components(separatedBy: "---")
+    require(parts.count == 3 && parts[2].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !content.contains("web_fetch") && !content.contains("tools:"), "Created draft must have empty instructions and no tools")
+    let expected = "---\nschemaVersion: 1\n---\n\n# \(name) tests\n\n```yaml agent-test\nid: first-test\ninput: \"\"\nassertions: []\n```"
+    let checks = try String(contentsOf: tests, encoding: .utf8).replacingOccurrences(of: "\r\n", with: "\n")
+    require(checks.trimmingCharacters(in: .whitespacesAndNewlines) == expected, "Created empty test skeleton differs from the draft contract")
+}
 try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
 setContent(1280, 800)
 var initial = try capture("initial", "Clusters")
@@ -682,6 +737,15 @@ do {
     }
     // Blur the identifier before submission so macOS text correction cannot hide in focus.
     key(48)
+    for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+        setContent(width, height); scrollMain(4000)
+        try capture("new-agent-form-\(size)", "Designer")
+        if size == "minimum" {
+            scrollMain(-4000)
+            try capture("new-agent-form-\(size)-end", "Designer")
+        }
+    }
+    setContent(1280, 800); scrollMain(4000)
     let creationForm = try capture("new-agent-form", "Designer")
     clickText("Create", in: creationForm)
     let folder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Orka/agents/native-helper")
@@ -697,7 +761,12 @@ do {
         fail("Creation did not publish its pair; native screen: \(text)")
     }
     require(try String(contentsOf: agent, encoding: .utf8).contains("name: \"native-helper\"\n"), "Created agent metadata missing")
-    require(try String(contentsOf: checks, encoding: .utf8).contains("web_fetch"), "Created starter lost its tool assertion")
+    try requireBlankPair(agent, checks, "native-helper")
+    for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+        setContent(width, height); scrollMain(4000)
+        try capture("new-agent-created-\(size)", "Designer")
+    }
+    setContent(1280, 800); scrollMain(4000)
     let created = try capture("new-agent-created", "Designer")
     requireNoLocalWorkspace()
     clickTab("Overview", created)
@@ -935,17 +1004,10 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     // No local selection exists in this no-VM walk. Add a cluster offers only an existing cluster.
     clickButton("Add a cluster")
     Thread.sleep(forTimeInterval: 1)
-    // The label focuses its native select. Choose the first synthetic context.
-    let chooserFile = "\(output)/cluster-chooser.png"
-    let command = Process()
-    command.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    command.arguments = ["-x", "-o", "-l", String(window()!.0), chooserFile]
-    try command.run(); command.waitUntilExit()
-    let request = VNRecognizeTextRequest()
-    try VNImageRequestHandler(url: URL(fileURLWithPath: chooserFile)).perform([request])
-    clickText("kubectl context", in: request.results ?? [])
-    // Move past the placeholder whether the first Down opens the popup or advances it.
-    key(125); key(125); key(36)
+    // Context choices are ordinary buttons in the accessible popover, not native select options.
+    clickButton("kubectl context")
+    try capture("cluster-picker-open-compact", "Clusters")
+    clickButton("fixture-cluster")
     Thread.sleep(forTimeInterval: 2)
     // Capture discovery before the explicit access confirmation.
     try capture("cluster-card-compact", "Clusters")
@@ -964,7 +1026,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         scrollMain(-200)
     }
     require(detailsOpened, "Discovered Orka has no visible Details control")
-    // Keep the current select while a result stage shows it; otherwise go back through Places and Add a cluster.
+    // Keep the current picker while a result stage shows it; otherwise reopen Add a cluster.
     func showContextSelect() {
         scrollMain(1000)
         if nativeTextIsVisible("kubectl context") { return }
@@ -975,11 +1037,10 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     // Exercise the existing conditional field and a denial, without issuing a token.
     func chooseFixture(_ index: Int) throws -> [VNRecognizedTextObservation] {
         showContextSelect()
-        let chooser = try capture("cluster-probe", "Clusters")
-        clickText("kubectl context", in: chooser)
-        key(49); key(115) // Open the native select; Home selects its placeholder.
-        for _ in 0..<index { key(125) }
-        key(36)
+        let names = ["fixture-cluster", "conditional-fixture", "denied-fixture", "missing-tools-fixture", "unreadable-tools-fixture", "fixture-secondary"]
+        require((1...names.count).contains(index), "Unknown fixture context index")
+        clickButton("kubectl context")
+        clickButton(names[index - 1])
         Thread.sleep(forTimeInterval: 1)
         return try capture("cluster-card-selected", "Clusters")
     }
@@ -995,6 +1056,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     let configURL = URL(fileURLWithPath: ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"]!)
     let originalConfig = try Data(contentsOf: configURL)
     func reloadFixture() throws {
+        // Failed checks mount Reload only inside their expanded error Details.
+        if nativeButtons("Reload kubeconfig").isEmpty { clickButton("Details") }
         for _ in 0..<6 {
             let seen = try capture("cluster-probe", "Clusters")
             if seen.contains(where: { $0.topCandidates(1).first?.string == "Reload kubeconfig" }) {
@@ -1010,6 +1073,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         defer { try? originalConfig.write(to: configURL, options: .atomic) }
         try Data("invalid kubeconfig: [".utf8).write(to: configURL, options: .atomic)
         try reloadFixture()
+        // Reload resets Details; expose the new configuration error's copy action.
+        clickButton("Details")
         try capture("cluster-reload-failed", "Clusters")
         var corrected = try JSONSerialization.jsonObject(with: originalConfig) as! [String: Any]
         var configuredContexts = corrected["contexts"] as! [[String: Any]]
@@ -1019,11 +1084,10 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         try JSONSerialization.data(withJSONObject: corrected).write(to: configURL, options: .atomic)
         try reloadFixture()
         showContextSelect()
-        let reread = try capture("cluster-reload-cleared", "Clusters")
-        clickText("kubectl context", in: reread)
-        key(49)
+        try capture("cluster-reload-cleared", "Clusters")
+        clickButton("kubectl context")
         try capture("cluster-reload-options", "Clusters")
-        key(53) // Close the native context popup without selecting or using it.
+        clickButton("Close picker")
         try originalConfig.write(to: configURL, options: .atomic)
         try reloadFixture()
     }
@@ -1328,19 +1392,28 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     }
     func recordShot(_ name: String, _ checks: String) throws -> String {
         try overviewShot("overview-probe", [checks])
-        let anchor = visibleTextBounds(checks)[0]
-        guard let disclosure = visibleButtons("Details").filter({ $0.minY > anchor.minY }).min(by: { $0.minY < $1.minY }) else {
-            fail("Details disclosure not visible below \(checks)")
+        let viewport = bodyBounds()
+        let cards = nativeElements().compactMap { element -> (AXUIElement, CGRect)? in
+            guard attribute(element, "AXRole") as? String == "AXGroup",
+                ["AXTitle", "AXDescription"].contains(where: { (attribute(element, $0) as? String)?.hasSuffix(", \(checks)") == true }),
+                let bounds = nativeBounds(element), viewport.contains(bounds) else { return nil }
+            return (element, bounds)
         }
+        guard let selected = cards.min(by: { $0.1.minY < $1.1.minY }) else { fail("No visible Overview card for \(checks)") }
+        let card = selected.0
+        // Another column's Details can be closer vertically; keep every action inside this card.
+        func cardButton(_ label: String) -> CGRect? {
+            guard let bounds = nativeBounds(card) else { return nil }
+            let matches = visibleButtons(label).filter { bounds.contains($0) }
+            return matches.count == 1 ? matches[0] : nil
+        }
+        guard let disclosure = cardButton("Details") else { fail("Details not visible inside the \(checks) card") }
         let point = CGPoint(x: disclosure.midX, y: disclosure.midY)
         mouse(.leftMouseDown, point); mouse(.leftMouseUp, point)
         Thread.sleep(forTimeInterval: 0.5)
         // Generated IDs are shortened on screen; exercise Copy instead of requiring a raw UID in the layout.
         try overviewShot("overview-probe", [checks, "Agent ID"])
-        guard let currentAnchor = visibleTextBounds(checks).first,
-            let copy = visibleButtons("Copy Agent ID").filter({ $0.minY > currentAnchor.minY }).min(by: { $0.minY < $1.minY }) else {
-            fail("Agent ID Copy not visible below \(checks)")
-        }
+        guard let copy = cardButton("Copy Agent ID") else { fail("Agent ID Copy not visible inside the \(checks) card") }
         NSPasteboard.general.clearContents()
         let copyPoint = CGPoint(x: copy.midX, y: copy.midY)
         mouse(.leftMouseDown, copyPoint); mouse(.leftMouseUp, copyPoint)
@@ -1349,7 +1422,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         require(uid.hasPrefix("uid-bridge-run-"), "Copy did not retain the full synthetic Agent UID")
         NSPasteboard.general.clearContents()
         try capture(name, "Overview")
-        if let close = visibleButtons("Details").filter({ $0.minY > currentAnchor.minY }).min(by: { $0.minY < $1.minY }) {
+        if let close = cardButton("Details") {
             let p = CGPoint(x: close.midX, y: close.midY)
             mouse(.leftMouseDown, p); mouse(.leftMouseUp, p)
         }
@@ -1734,7 +1807,7 @@ do {
         Thread.sleep(forTimeInterval: 0.1)
     }
     require(try String(contentsOf: agent, encoding: .utf8).contains("name: \"web-reader\"\n"), "Own-repo web-reader was not created")
-    require(try String(contentsOf: tests, encoding: .utf8).contains("web_fetch"), "Own-repo starter check missing")
+    try requireBlankPair(agent, tests, "web-reader")
     require(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() == ["web-reader.agent.md", "web-reader.agent.test.md"],
             "Own-repo agent folder must contain only the pair, no nested .git or marker")
     require(try FileManager.default.contentsOfDirectory(atPath: selectedRepo.path).sorted() == [".git", "web-reader"],

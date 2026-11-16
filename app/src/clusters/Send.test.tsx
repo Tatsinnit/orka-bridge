@@ -332,7 +332,7 @@ test('a confirmed cluster opens the owned editor after failed local setup and ke
   mockIPC((command, args) => {
     if (command === 'setup_status') return { selected: 'localVm', localVm: 'failed', localVmError: 'boot', model: 'locked' };
     if (command === 'setup_requirements') return null;
-    if (command === 'cluster_contexts') return [{ id: target.context_id, name: target.context_name }];
+    if (command === 'cluster_contexts') return [{ id: target.context_id, name: target.context_name, current: true }];
     if (command === 'cluster_discover') return [target];
     if (command === 'cluster_use') return { status: 'connected', providers: [provider, other], failure: null };
     if (command === 'agent_open') return pair;
@@ -345,7 +345,8 @@ test('a confirmed cluster opens the owned editor after failed local setup and ke
   });
   const user = userEvent.setup(); render(<App />);
   await user.click(await screen.findByRole('button', { name: 'Use a cluster you already have instead' }));
-  await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), target.context_id);
+  await user.click(await screen.findByRole('button', { name: 'kubectl context' }));
+  await user.click(screen.getByRole('button', { name: target.context_name }));
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await user.selectOptions(await screen.findByRole('combobox', { name: 'AI connection' }), other.id);
   await user.click(screen.getByRole('button', { name: 'Open your agent' }));

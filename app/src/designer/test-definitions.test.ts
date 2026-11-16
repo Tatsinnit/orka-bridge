@@ -1,7 +1,24 @@
 import { expect, test } from 'vitest';
-import { testDefinitions, validTestTitle } from './test-definitions';
+import { isTestDraft, testDefinitions, validTestTitle } from './test-definitions';
 const file = (body: string) => `---\nschemaVersion: 1\n---\n${body}`;
 const block = (title = '', id = 'page') => '```yaml agent-test\n' + `id: ${id}\n${title}input: What did the page say?\nassertions: [{id: text, type: contains, value: checksum}]\n` + '```\n';
+const draft = '---\nschemaVersion: 1\n---\n\n# helper tests\n\n```yaml agent-test\nid: first-test\ninput: ""\nassertions: []\n```\n';
+test('the generated empty skeleton is an incomplete draft, not executable tests', () => {
+  for (const source of [draft, draft.replaceAll('\n', '\r\n')]) {
+    expect(isTestDraft(source)).toBe(true);
+    expect(testDefinitions(source)).toBeUndefined();
+  }
+});
+test.each([
+  draft.replace('schemaVersion: 1', 'schemaVersion: 2'),
+  draft.replace('input: ""', 'input: Ask something'),
+  draft.replace('assertions: []', 'assertions: [{id: answer, type: contains, value: yes}]'),
+  draft.replace('id: first-test', 'id: another-test'),
+  draft.replace('```yaml', '```yml'),
+  draft + '```yaml agent-test\nid: unexpected\n```\n',
+])('malformed or edited tests never masquerade as the generated draft', source => {
+  expect(isTestDraft(source)).toBe(false);
+});
 test('saved tests show authored titles with ids, preserving exact decoded text and CRLF', () => {
   expect(testDefinitions(file(block('title: "  é 🙂  "\n') + block('', 'second')).replaceAll('\n', '\r\n'))).toEqual([
     { id: 'page', title: '  é 🙂  ', question: 'What did the page say?' },

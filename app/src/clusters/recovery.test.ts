@@ -4,7 +4,7 @@ import { clusterDetails, clusterRecovery } from './recovery';
 
 test.each(clusterChecks)('unknown at %s admits uncertainty without inventing a cause', check => {
   const recovery = clusterRecovery({ check, result: 'unknown' });
-  expect(recovery.cause).toMatch(check === 'configuration' ? /kubeconfig could not be read/ : /cause could not be established/);
+  expect(recovery.cause).toMatch(check === 'configuration' ? /kubeconfig could not be read/ : /reason is unknown/);
   expect(recovery.cause).not.toMatch(/was denied|was rejected|VPN/);
   expect(recovery.next.length).toBeGreaterThan(10);
 });

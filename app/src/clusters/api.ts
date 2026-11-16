@@ -1,7 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { isPlaces, type Place } from '../overview/api';
 
-export type ContextView = { id: string; name: string };
+export type ContextView = { id: string; name: string; current: boolean };
 export type TargetView = { id: string; context_id: string; context_name: string; service_name: string; service_namespace: string; watched_namespace: string; image: string };
 export type ProviderView = { id: string; name: string; ready: boolean };
 export type AccessStatus = 'connected' | 'needServiceAccount' | 'denied' | 'unavailable' | 'unsupportedCredential';
@@ -18,7 +18,7 @@ const object = (v: unknown): v is Record<string, unknown> => typeof v === 'objec
 const keys = (v: Record<string, unknown>, names: string[]) => Object.keys(v).sort().join(',') === names.sort().join(',');
 const text = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 2048 && Array.from(v).every(c => c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127);
 const id = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(v);
-const context = (v: unknown): v is ContextView => object(v) && keys(v, ['id', 'name']) && id(v.id) && text(v.name);
+const context = (v: unknown): v is ContextView => object(v) && keys(v, ['id', 'name', 'current']) && id(v.id) && text(v.name) && typeof v.current === 'boolean';
 const target = (v: unknown): v is TargetView => object(v) && keys(v, ['id', 'context_id', 'context_name', 'service_name', 'service_namespace', 'watched_namespace', 'image'])
   && id(v.id) && id(v.context_id) && ['context_name', 'service_name', 'service_namespace', 'watched_namespace', 'image'].every(k => text(v[k]));
 const provider = (v: unknown): v is ProviderView => object(v) && keys(v, ['id', 'name', 'ready']) && id(v.id) && text(v.name) && typeof v.ready === 'boolean';

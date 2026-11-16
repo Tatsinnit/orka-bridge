@@ -1,15 +1,28 @@
 .cluster-card { display: grid; gap: 12px; min-width: 0; width: 100%; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-card); }
 .places-workspace { width: 100%; }
 .places-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.places-heading > p { flex-basis: 100%; }
+.places-heading > h1 { flex-basis: 100%; }
+.places-heading > p { margin: 0; }
 .places-back { margin-bottom: 16px; }
 .places-list { display: grid; gap: 16px; }
 .place-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) 112px 144px; align-items: center; gap: 16px; padding: 16px; }
 .place-summary { min-width: 0; overflow-wrap: anywhere; }
 .place-summary h2 { margin: 0 0 4px; }
 .place-summary p { margin: 4px 0 0; }
+.place-meta { font-size: var(--size-small); }
 .place-meta > span + span::before { content: ' · '; }
 .cluster-actions { margin-top: 0; gap: 8px; }
+.context-trigger { width: 100%; justify-content: space-between; text-align: left; overflow-wrap: anywhere; }
+.context-picker { position: fixed; inset: 80px 24px auto; width: min(520px, calc(100vw - 48px)); max-height: calc(100dvh - 128px); overflow: auto; margin: 0 auto; padding: 16px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-row); background: var(--color-card); color: var(--color-text); box-shadow: 0 8px 32px rgb(0 0 0 / .2); }
+.context-picker:popover-open { display: grid; height: fit-content; align-content: start; gap: 12px; }
+.context-picker::backdrop { background: rgb(0 0 0 / .12); }
+.context-picker ul { margin: 0; padding: 0; list-style: none; }
+.context-picker li button { width: 100%; display: grid; gap: 4px; padding: 8px; text-align: left; overflow-wrap: anywhere; border: 0; border-radius: var(--radius-row); background: transparent; color: var(--color-text); font: inherit; }
+.context-picker li button:hover, .context-picker li button[aria-current] { background: var(--color-hover); }
+.context-markers { display: flex; flex-wrap: wrap; gap: 12px; font-size: var(--size-small); }
+.cluster-checking { display: flex; align-items: center; gap: 8px; }
+.cluster-failure .workspace-failure-explanation { background: var(--color-tint-failed); }
+.cluster-error-details { display: grid; gap: 8px; }
 .place-row > button { justify-self: end; }
 .place-row .pill { justify-self: start; white-space: normal; grid-column: 3; grid-row: 1; }
 .place-row > button { grid-column: 4; grid-row: 1; }

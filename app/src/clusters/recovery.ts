@@ -1,13 +1,13 @@
 import type { ClusterFailure } from './api';
 
 const checks: Record<ClusterFailure['check'], string> = {
-  configuration: 'Kubeconfig reading', credentials: 'Credential resolution', clusterApi: 'Cluster API reachability',
-  compatibility: 'Orka compatibility and watch namespace', serviceAccount: 'ServiceAccount token issuance',
-  permissions: 'Cluster permission review', orkaIdentity: 'Orka identity and namespace', orkaConnection: 'Orka connection',
-  agents: 'Reading agents', providers: 'Reading AI connections',
+  configuration: 'Your kubeconfig could not be read.', credentials: "Couldn't sign in to this cluster.", clusterApi: "Couldn't reach this cluster.",
+  compatibility: "Couldn't confirm this Orka installation is supported.", serviceAccount: "Couldn't use the service account.",
+  permissions: "Couldn't confirm your access to this cluster.", orkaIdentity: "Couldn't verify your account and namespace.", orkaConnection: "Couldn't connect to Orka.",
+  agents: "Couldn't read agents from this cluster.", providers: "Couldn't read AI connections from this cluster.",
 };
 const results: Record<ClusterFailure['result'], string> = {
-  unknown: 'The cause could not be established.', connectionFailed: 'The connection could not be opened.',
+  unknown: 'The reason is unknown.', connectionFailed: 'The connection could not be opened.',
   authenticationRejected: 'The sign-in was rejected.', permissionDenied: 'Access was denied.',
   unsupportedCredential: 'This credential method could not be used.', incompatible: 'The Orka schema or watch namespace is incompatible.',
   identityRejected: 'The cluster rejected the account or namespace.', noProviders: 'No AI connections are configured on this cluster.',
@@ -30,7 +30,7 @@ export function clusterRecovery(failure: ClusterFailure) {
     : check === 'orkaIdentity' ? 'Ask your cluster administrator to check this Orka identity and watched namespace, then check again.'
     : check === 'providers' && result === 'noProviders' ? 'Ask your cluster administrator to configure an AI connection, then check again.'
     : 'Check again. If it still fails, copy the details for help.';
-  return { cause: check === 'configuration' ? 'Your kubeconfig could not be read.' : `${checks[check]} failed. ${results[result]}`, next };
+  return { cause: check === 'configuration' ? checks.configuration : `${checks[check]} ${results[result]}`, next };
 }
 export function clusterDetails(failure: ClusterFailure, operation: string) {
   return ['Bridge cluster connection', `Operation: ${operation}`, `Check: ${failure.check}`, `Result: ${failure.result}`].join('\n');

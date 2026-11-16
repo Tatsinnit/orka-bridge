@@ -23,7 +23,7 @@ function native(localVm = 'installing', extra: Partial<Sim> = {}) {
       case 'setup_connect_model': if (sim.connect === 'hang') return new Promise(() => {}); if (sim.connect === 'fail') throw { kind: 'modelConnect' }; return { ready: true };
       case 'setup_remove_model': if (sim.remove === 'hang') return new Promise(() => {}); if (sim.remove === 'fail') throw { kind: 'modelStore' }; return { ready: false };
       case 'setup_requirements': return null;
-      case 'cluster_contexts': return [{ id: '00000000-0000-4000-8000-000000000001', name: 'team-dev' }];
+      case 'cluster_contexts': return [{ id: '00000000-0000-4000-8000-000000000001', name: 'team-dev', current: true }];
       case 'cluster_discover': return [];
       case 'setup_example': return pair;
       case 'agent_open': return { ...pair, documentId: doc, name: 'web-reader' };
@@ -38,8 +38,8 @@ function native(localVm = 'installing', extra: Partial<Sim> = {}) {
 }
 const settle = (ms = 1300) => act(async () => { await new Promise(resolve => setTimeout(resolve, ms)); });
 const wait = { timeout: 3000 };
-beforeEach(() => localStorage.setItem('bridge.welcomeSeen.v1', '1'));
-afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
+beforeEach(() => { localStorage.setItem('bridge.welcomeSeen.v1', '1'); Object.defineProperty(HTMLDivElement.prototype, 'showPopover', { configurable: true, value() { this.style.display = 'grid'; } }); });
+afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); Reflect.deleteProperty(HTMLDivElement.prototype, 'showPopover'); });
 
 // One explicit native observation: the window-focus event is Setup's own refresh path. The setup_status call count proves the
 // refresh was requested, and a macrotask flush lets its reply and the resulting React updates land before anything is asserted.
@@ -171,7 +171,8 @@ test('using a cluster clears the held intent even though the view stays mounted'
   expect(within(screen.getByRole('navigation')).getByText('AI unavailable')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
-  await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), '00000000-0000-4000-8000-000000000001');
+  await user.click(await screen.findByRole('button', { name: 'kubectl context' }));
+  await user.click(screen.getByRole('button', { name: 'team-dev' }));
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await screen.findAllByText('Access confirmed');
   sim.model = 'available';

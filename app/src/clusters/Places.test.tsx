@@ -1,3 +1,4 @@
+import { chooseContext, contextChoice, reloadConfig } from './test-context';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -7,7 +8,7 @@ import Setup from '../setup/SetupHarness';
 import type { SelectedPlace } from './api';
 import type { Place } from '../overview/api';
 
-const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev' };
+const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev', current: false };
 const target = { id: '00000000-0000-4000-8000-000000000002', context_id: context.id, context_name: context.name,
   service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'ghcr.io/orka:0.9.4' };
 const provider = { id: '00000000-0000-4000-8000-000000000003', name: 'team-model', ready: true };
@@ -126,19 +127,19 @@ test('installations sharing a context retain distinguishing details before choos
 test('Add stays blank while remembered Connect resolves a fresh target without choosing a context', async () => {
   const { ipc } = native(); const observe = vi.fn(); const user = userEvent.setup(); render(<Host initial={connected} observe={observe} />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
-  expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'kubectl context' })).toBeTruthy();
   expect(screen.queryByRole('radio')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Set up' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Existing cluster' })).toBeNull();
   expect(observe).not.toHaveBeenCalled();
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('cluster_discover');
-  await user.selectOptions(screen.getByRole('combobox', { name: 'kubectl context' }), context.id);
+  await chooseContext(user, context.name);
   await screen.findByText('Cluster found');
   expect(observe).toHaveBeenLastCalledWith({ kind: 'cluster' });
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Connect' }));
   await screen.findByRole('button', { name: 'Use this cluster' });
-  expect(screen.queryByRole('combobox', { name: 'kubectl context' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'kubectl context' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Change context' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_reconnect')).toEqual([['cluster_reconnect', { key: primary.key }]]);
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_discover')).toHaveLength(1);
@@ -152,7 +153,7 @@ test('Manage Change context focuses its selector after a delayed kubeconfig read
   await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Manage' }));
   const change = await screen.findByRole('button', { name: 'Change context' });
   change.focus(); await user.keyboard('{Enter}');
-  const select = await screen.findByRole('combobox', { name: 'kubectl context' });
+  const select = await screen.findByRole('button', { name: 'kubectl context' });
   expect(select.matches(':disabled')).toBe(true);
   const remove = screen.getByRole('button', { name: 'Remove' });
   remove.focus(); await user.keyboard('{Enter}');
@@ -176,7 +177,7 @@ test('Manage rechecks the same installation with its already-entered ServiceAcco
   });
   render(<Host />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
-  await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
+  await chooseContext(user, context.name);
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await user.type(await screen.findByRole('textbox', { name: 'ServiceAccount name' }), 'team-runner');
   await user.click(screen.getByRole('button', { name: 'Use this cluster' }));
@@ -225,7 +226,7 @@ test.each([['closed', 'Local cluster stopped'], ['cancelled', 'Setup paused'], [
   expect(within(local).getByText(label).closest('.pill')).toBeNull();
   expect(local.querySelector('.pill')?.className).toContain('status-not-started');
   expect(within(local).queryByText('Setup in progress')).toBeNull();
-  expect(within(local).getByRole('button', { name: 'Continue setup' })).toBeTruthy();
+  expect(within(local).getByRole('button', { name: 'Continue setup' }).classList.contains('button-primary')).toBe(true);
 });
 
 test('snapshot failure retains known rows but does not invent a selected row or empty inventory', async () => {
@@ -236,7 +237,7 @@ test('snapshot failure retains known rows but does not invent a selected row or 
   await screen.findByText("Couldn't read your clusters. Try opening Clusters again.");
   expect(row('team-dev')).toBeTruthy();
   expect(screen.queryByText('Selected for Designer')).toBeNull();
-  expect(screen.queryByText('No other clusters added yet. Add a Kubernetes cluster with Orka installed.')).toBeNull();
+  expect(screen.queryByText(/No other clusters added yet/)).toBeNull();
 });
 
 test('a Use recheck clears the frontend target before native replies and Back cannot restore it', async () => {
@@ -335,7 +336,7 @@ test('Manage refreshes confirmed agents and offers cancellable removal, finite f
   expect(await screen.findByText('reader')).toBeTruthy();
   expect(screen.getByText('Last checked ' + new Date(fresh.observedAt).toLocaleString())).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Change context' }));
-  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'kubectl context' })));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'kubectl context' })));
   await user.click(screen.getByRole('button', { name: 'Remove' }));
   const confirmation = screen.getByRole('group', { name: 'Remove cluster confirmation' });
   expect(confirmation.textContent).toMatch(/only forgets.*Bridge/);
@@ -367,14 +368,14 @@ test.each([{ check: 'configuration', result: 'unknown' }, { check: 'orkaIdentity
   expect(screen.queryByRole('button', { name: 'Use this cluster' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Remove' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Change context' }));
-  expect(await screen.findByRole('option', { name: context.name })).toBeTruthy();
-  expect((screen.getByRole('combobox', { name: 'kubectl context' }) as HTMLSelectElement).value).toBe('');
+  expect(await contextChoice(user, context.name)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'kubectl context' }).textContent).toContain('Choose a context');
 });
 
 test('Manage after an unused Add keeps its already confirmed target', async () => {
   const { ipc } = native(); const user = userEvent.setup(); render(<Host initial={connected} />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
-  await screen.findByRole('combobox', { name: 'kubectl context' });
+  await screen.findByRole('button', { name: 'kubectl context' });
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(within(row('team-dev')).getByRole('button', { name: 'Manage' }));
   expect(ipc.mock.calls.filter(([command]) => command === 'cluster_reconnect')).toHaveLength(0);
@@ -408,13 +409,13 @@ test('returning to Add after reconnect replaces obsolete cached context handles'
   });
   const user = userEvent.setup(); render(<Host />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
-  expect((await screen.findByRole('option', { name: context.name }) as HTMLOptionElement).value).toBe(context.id);
+  expect((await contextChoice(user, context.name) as HTMLButtonElement).value).toBe(context.id);
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(within(row('team-dev')).getByRole('button', { name: 'Connect' }));
   await screen.findByRole('button', { name: 'Use this cluster' });
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
-  expect((await screen.findByRole('option', { name: context.name }) as HTMLOptionElement).value).toBe(freshContext.id);
+  expect((await contextChoice(user, context.name) as HTMLButtonElement).value).toBe(freshContext.id);
 });
 
 test('Remove on an unselected remembered entry fences its late reconnect reply', async () => {
@@ -437,9 +438,9 @@ test('a remembered cluster can reload kubeconfig and choose a fresh context manu
   const user = userEvent.setup(); render(<Host />);
   await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Connect' }));
   await screen.findByRole('button', { name: 'Use this cluster' });
-  await user.click(screen.getByRole('button', { name: 'Reload kubeconfig' }));
-  expect(await screen.findByRole('option', { name: context.name })).toBeTruthy();
-  expect((screen.getByRole('combobox', { name: 'kubectl context' }) as HTMLSelectElement).value).toBe('');
+  await reloadConfig(user);
+  expect(await contextChoice(user, context.name)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'kubectl context' }).textContent).toContain('Choose a context');
 });
 
 test('removing a remembered cluster survives a failed passive snapshot and fences late agent inventory', async () => {
@@ -530,4 +531,19 @@ test('loading local requirements stays explicit and keeps Continue gated', async
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   expect(await screen.findByRole('region', { name: 'Local cluster setup' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
+});
+
+
+test('Clusters puts its subtitle before Add a cluster', async () => {
+  native(); render(<Host />);
+  const add = await screen.findByRole('button', { name: 'Add a cluster' });
+  const subtitle = within(add.parentElement!).getByText('Choose where agents run');
+  expect(subtitle.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+test('observed row metadata states the agent count once without repeating the check label', async () => {
+  const { sim } = native(); sim.snapshot.places = [{ ...primary, stale: false }];
+  render(<Host />);
+  const remote = await screen.findByRole('region', { name: 'team-dev' });
+  expect(within(remote).getByText('0 agents')).toBeTruthy();
+  expect(within(remote).getByText(/^Last checked /)).toBeTruthy();
 });

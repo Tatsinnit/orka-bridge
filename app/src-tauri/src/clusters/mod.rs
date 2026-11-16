@@ -1,6 +1,8 @@
 pub mod catalog;
 mod client;
 mod credentials;
+#[cfg(test)]
+mod tests;
 pub use credentials::{Credential, ResolvedCreator};
 pub mod commands;
 mod destination;
@@ -24,6 +26,7 @@ pub struct ProviderId(pub(crate) Uuid);
 pub struct ContextView {
     pub id: ContextId,
     pub name: String,
+    pub current: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct TargetView {

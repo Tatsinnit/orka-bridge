@@ -11,6 +11,7 @@ struct ChatFixture {
     started: Option<std::time::Instant>,
     fresh: bool,
     wait_for_stop: bool,
+    phase_file: Option<std::path::PathBuf>,
 }
 #[cfg(all(target_os = "macos", feature = "custom-protocol"))]
 impl ChatFixture {
@@ -27,6 +28,7 @@ impl ChatFixture {
             started: None,
             fresh: true,
             wait_for_stop: false,
+            phase_file: std::env::var_os("BRIDGE_CHAT_PHASE").map(std::path::PathBuf::from),
         }
     }
     fn call(
@@ -40,7 +42,13 @@ impl ChatFixture {
             return Err(ChatError::Source);
         }
         if let Some(started) = self.started {
-            if started.elapsed().as_millis() >= 1500 {
+            let phase = self
+                .phase_file
+                .as_ref()
+                .and_then(|path| std::fs::read_to_string(path).ok());
+            if phase.as_deref() == Some("answer")
+                || phase.is_none() && started.elapsed().as_millis() >= 1500
+            {
                 let first = self.view.versions[0].turns.len() == 1;
                 let turn = self
                     .view
@@ -66,8 +74,21 @@ impl ChatFixture {
                 self.view.busy = false;
                 self.view.can_send = true;
                 self.started = None;
-            } else if self.view.state == ChatState::Preparing {
+            } else if self.view.state == ChatState::Preparing || phase.is_some() {
                 self.view.state = ChatState::Working;
+                self.view
+                    .versions
+                    .last_mut()
+                    .unwrap()
+                    .turns
+                    .last_mut()
+                    .unwrap()
+                    .phase = if phase.as_deref() == Some("pending") {
+                    "Pending"
+                } else {
+                    "Running"
+                }
+                .into();
             }
         }
         match command {
@@ -94,7 +115,18 @@ impl ChatFixture {
                     }],
                     ..ChatTurn::default()
                 });
-                self.view.state = if self.wait_for_stop {
+                let held = self.phase_file.as_ref().is_some_and(|path| path.exists());
+                if held {
+                    self.view
+                        .versions
+                        .last_mut()
+                        .unwrap()
+                        .turns
+                        .last_mut()
+                        .unwrap()
+                        .phase = "Pending".into();
+                }
+                self.view.state = if self.wait_for_stop || held {
                     ChatState::Working
                 } else {
                     ChatState::Preparing
@@ -320,7 +352,22 @@ fn main() {
                         "model":"gpt-5.6-terra", "canSend":true, "action":"create", "canSeparate":false,
                         "rows":[{"label":"Destination", "status":"allowed", "message":"Synthetic destination ready"}]})
                 }
-                "cluster_contexts" => json!([]),
+                "cluster_contexts" => json!([
+                    {"id":"52345678-1234-4234-8234-123456789abc", "name":"team-dev", "current":true},
+                    {"id":"72345678-1234-4234-8234-123456789abc", "name":"team-west", "current":false}
+                ]),
+                "cluster_discover" => {
+                    // A UI-action-only synthetic discovery held until the driver captures Checking.
+                    let selector = setup_progress.clone();
+                    let resolver = invoke.resolver;
+                    tauri::async_runtime::spawn(async move {
+                        while selector.as_ref().and_then(|path| std::fs::read_to_string(path).ok()).as_deref() == Some("cluster-checking") {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        resolver.reject(json!({"check":"clusterApi", "result":"connectionFailed"}));
+                    });
+                    return true;
+                }
                 "send_history" => json!([]),
                 "send_status" => json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "view":null, "busy":null}),
                 command @ ("agent_chat_status" | "agent_chat_send" | "agent_chat_reconnect" | "agent_chat_stop" | "agent_chat_new") => {

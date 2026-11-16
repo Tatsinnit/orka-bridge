@@ -28,7 +28,7 @@ fn pending(home: &Path, data: &Path, name: &str, staged: bool) -> DocumentId {
 }
 
 #[test]
-fn creation_uses_shipped_pair_and_commits_it_without_editing_sample() {
+fn creation_commits_a_blank_draft_without_editing_sample() {
     let home = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let agents = owner(home.path(), data.path());
@@ -43,19 +43,11 @@ fn creation_uses_shipped_pair_and_commits_it_without_editing_sample() {
     assert_eq!(pair.name, "helper");
     assert_eq!(
         pair.agent,
-        include_str!("../example-agent/web-reader.agent.md").replacen(
-            "name: web-reader\n",
-            "name: \"helper\"\n",
-            1
-        )
+        "---\nname: \"helper\"\nmodel: \"gpt-5.6-terra\"\nkmx:\n  schemaVersion: 1\n  runtime: orka\n---\n\n"
     );
     assert_eq!(
         pair.tests,
-        include_str!("../example-agent/web-reader.agent.test.md").replacen(
-            "# web-reader tests",
-            "# helper tests",
-            1
-        )
+        "---\nschemaVersion: 1\n---\n\n# helper tests\n\n```yaml agent-test\nid: first-test\ninput: \"\"\nassertions: []\n```\n"
     );
     let root = folder(home.path(), "helper");
     let repo = git2::Repository::open(&root).unwrap();
@@ -96,6 +88,33 @@ fn creation_uses_shipped_pair_and_commits_it_without_editing_sample() {
         agents.creation_root().unwrap(),
         home.path().join("Orka").join("agents").to_str().unwrap()
     );
+}
+
+#[test]
+fn repo_creation_keeps_the_same_blank_draft_and_leaves_git_alone() {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let checkout = tempfile::tempdir().unwrap();
+    let repository = git2::Repository::init(checkout.path()).unwrap();
+    let agents = owner(home.path(), data.path());
+    let selected = agents.bind_repo(checkout.path()).unwrap();
+    let id = agents
+        .create_with_repo("true", Some("quote\"and\\slash"), Some(selected.id))
+        .unwrap();
+    let pair = agents.get(id).unwrap().open().unwrap();
+    assert_eq!(pair.storage, "repo");
+    assert_eq!(
+        pair.agent,
+        "---\nname: \"true\"\nmodel: \"quote\\\"and\\\\slash\"\nkmx:\n  schemaVersion: 1\n  runtime: orka\n---\n\n"
+    );
+    assert_eq!(
+        pair.tests,
+        "---\nschemaVersion: 1\n---\n\n# true tests\n\n```yaml agent-test\nid: first-test\ninput: \"\"\nassertions: []\n```\n"
+    );
+    assert!(!checkout.path().join("true/.git").exists());
+    assert!(!checkout.path().join("true/.bridge-agent-folder").exists());
+    assert!(repository.index().unwrap().is_empty());
+    assert!(repository.head().is_err());
 }
 
 #[test]

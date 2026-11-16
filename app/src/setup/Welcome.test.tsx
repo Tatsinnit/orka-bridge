@@ -71,7 +71,7 @@ test('expert route is available without starting a local workspace', async () =>
   expect(expert.matches(':disabled')).toBe(false);
   expect(expert.classList.contains('welcome-expert')).toBe(true);
   await user.click(expert);
-  expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'kubectl context' })).toBeTruthy();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
 });
 

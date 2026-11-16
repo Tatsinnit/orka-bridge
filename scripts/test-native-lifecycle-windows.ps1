@@ -1,4 +1,4 @@
-# Exercise the real lookup without launching Bridge or touching a user profile.
+# Exercise real lifecycle predicates without launching Bridge or touching a user profile.
 $ErrorActionPreference = 'Stop'
 if (-not ('System.Windows.Automation.PropertyCondition' -as [type])) {
     Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
@@ -31,4 +31,58 @@ foreach ($case in $cases) {
         throw "$($case.Name): wrong candidate"
     }
     Write-Host "PASS $($case.Name)"
+}
+
+$wait = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Wait-For' }, $true)
+$savedWait = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-For' -and
+        $node.CommandElements[1].Value -eq 'Native editor change not saved'
+}, $true)
+if (!$wait -or !$savedWait) { throw 'Saved-file wait missing' }
+. ([scriptblock]::Create($wait.Extent.Text))
+$savedPredicate = $savedWait.CommandElements[2].ScriptBlock.GetScriptBlock()
+$owned = [IO.Path]::GetTempFileName()
+$script:marker = ' lifecycle-sharing-regression'
+$writer = $null
+try {
+    $writer = [IO.File]::Open($owned, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    $bytes = [Text.Encoding]::UTF8.GetBytes("instructions$($script:marker)")
+    $writer.Write($bytes, 0, $bytes.Length)
+    $writer.Flush()
+    $attempts = [ref]0
+    Wait-For 'Saved-file polling did not recover after the writer released' {
+        $attempts.Value++
+        try { & $savedPredicate }
+        finally {
+            # Keep the first real read locked; release before the next polling attempt.
+            if ($attempts.Value -eq 1) { $writer.Dispose() }
+        }
+    } | Out-Null
+    if ($attempts.Value -ne 2) { throw "Expected a locked read followed by success, got $($attempts.Value) attempts" }
+    Write-Host 'PASS saved-file polling retries an exclusive writer then reads its content'
+
+    [IO.File]::WriteAllText($owned, 'instructions without the marker')
+    if (& $savedPredicate) { throw 'Saved-file polling accepted content without the marker' }
+    Write-Host 'PASS saved-file polling still requires the marker'
+
+    $readError = $null
+    try {
+        & {
+            # Reproduce deletion between existence check and read, with real filesystem calls.
+            function Test-Path($Path) {
+                $exists = Microsoft.PowerShell.Management\Test-Path $Path
+                if ($exists) { [IO.File]::Delete($Path) }
+                return $exists
+            }
+            & $savedPredicate
+        } | Out-Null
+    } catch { $readError = $_.Exception.GetBaseException() }
+    if ($readError -isnot [IO.FileNotFoundException] -or $readError.FileName -ne $owned) {
+        throw "Saved-file polling masked or replaced an unexpected I/O error: $readError"
+    }
+    Write-Host 'PASS saved-file polling preserves non-sharing I/O errors and their path'
+} finally {
+    if ($writer) { $writer.Dispose() }
+    Remove-Item -LiteralPath $owned -Force -ErrorAction SilentlyContinue
 }

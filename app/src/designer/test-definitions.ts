@@ -13,6 +13,10 @@ function yaml(source: string, strings = false): unknown {
   if (doc.errors.length) throw Error('Unsupported tests');
   return doc.toJS({ maxAliasCount: 100 });
 }
+// Only the generated empty skeleton is a known draft; execution parsing stays strict.
+export function isTestDraft(source: string): boolean {
+  return /^---\nschemaVersion: 1\n---\n\n# [a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])? tests\n\n```yaml agent-test\nid: first-test\ninput: ""\nassertions: \[\]\n```\n$/u.test(source.replaceAll('\r\n', '\n'));
+}
 // Descriptive only: native Run still validates/captures the saved pair before execution.
 // Keep fence recognition identical to engine/run_source.rs, including other_fence.
 export function testDefinitions(source: string): TestDefinition[] | undefined {

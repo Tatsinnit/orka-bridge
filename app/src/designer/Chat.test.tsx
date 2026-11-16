@@ -27,7 +27,7 @@ test('empty Chat teaches the next action and discloses bounded, memory-only hist
   await open(); expect(screen.getByText(/Ask your agent a question/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
   fireEvent.click(screen.getByText('About this conversation'));
-  expect(screen.getByText(/50 messages/)).toBeTruthy(); expect(screen.getByText(/new worker/)).toBeTruthy();
+  expect(screen.getByText(/50 messages/)).toBeTruthy(); expect(screen.queryByText(/new worker/)).toBeNull();
   expect(screen.getByText(/quit Bridge/)).toBeTruthy(); expect(screen.getByText(/remain in the local cluster/)).toBeTruthy();
 });
 test('Enter sends exactly once and only an appended turn consumes its matching composer', async () => {
@@ -162,9 +162,68 @@ test('Stop dispatches only stop and its historical notice remains after Ready an
   await poll(); expect(screen.getByText('Stop requested. Execution termination is unconfirmed.')).toBeTruthy();
   expect(screen.getByText(/not confirmed in later context/)).toBeTruthy();
 });
-test.each(['Pending', 'Queued', ''])('a working snapshot with phase %s shows waiting to start', async phase => {
+test.each(['Pending', 'Queued', 'Scheduled', ''])('a working snapshot with phase %s shows waiting to start', async phase => {
   snapshot = { ...idle, state: 'working', busy: true, canSend: false, versions: [{ turns: [{ ...turn, answer: null, phase }] }] };
   await open(); expect(screen.getByText('Waiting to start…')).toBeTruthy();
+});
+test.each(['Pending', 'Queued', 'Scheduled', 'Running', 'Finalizing'])('pending %s reply reads as waiting, not missing history', async phase => {
+  snapshot = { ...idle, state: 'working', busy: true, canSend: false, versions: [{ turns: [{ ...turn, answer: null, contextRetained: false, phase }] }] };
+  await open();
+  const conversation = screen.getByRole('region', { name: 'Conversation' });
+  expect(within(conversation).queryAllByText(/No answer (observed|was received)|not confirmed in later context/)).toHaveLength(0);
+  expect(within(conversation).getByText(['Running', 'Finalizing'].includes(phase) ? 'Waiting for your agent’s reply…' : 'Waiting for your agent to start…')).toBeTruthy();
+  expect(conversation.querySelector('.status-running')).toBeTruthy();
+});
+test('a newly admitted turn stays waiting while the saved agent is preparing', async () => {
+  snapshot = { ...idle, state: 'preparing', busy: true, canSend: false, versions: [{ turns: [{ ...turn, answer: null, contextRetained: false, phase: '' }] }] };
+  await open();
+  const conversation = screen.getByRole('region', { name: 'Conversation' });
+  expect(within(conversation).queryAllByText(/No answer was received|not confirmed in later context/)).toHaveLength(0);
+  expect(within(conversation).getByText('Waiting for your agent to start…')).toBeTruthy();
+});
+test('terminal unconfirmed history remains distinct from an in-progress reply', async () => {
+  snapshot = { ...idle, versions: [{ turns: [{ ...turn, contextRetained: false }] }] };
+  await open(); expect(screen.getByText(/not confirmed in later context/)).toBeTruthy();
+});
+test('composer grows with text and shrinks again after acceptance', async () => {
+  await open();
+  Object.defineProperty(field(), 'scrollHeight', { configurable: true, value: 144 });
+  fireEvent.change(field(), { target: { value: 'A long message' } });
+  expect(field().style.height).toBe('144px');
+  snapshot = { ...idle, versions: [{ turns: [{ ...turn, message: 'A long message' }] }] };
+  enter('A long message'); await act(async () => {});
+  expect(field().value).toBe('');
+  expect(field().style.height).toBe('auto');
+});
+test('composer remeasures an unchanged draft when window wrapping changes', async () => {
+  await open();
+  let height = 80;
+  Object.defineProperty(field(), 'scrollHeight', { configurable: true, get: () => height });
+  fireEvent.change(field(), { target: { value: 'A draft that wraps differently after resizing' } });
+  expect(field().style.height).toBe('80px');
+  height = 180; fireEvent(window, new Event('resize'));
+  expect(field().style.height).toBe('180px');
+  height = 80; fireEvent(window, new Event('resize'));
+  expect(field().style.height).toBe('80px');
+});
+test('composer waits for activation to remeasure and removes its resize listener on unmount', async () => {
+  const view = await open();
+  let height = 80; const measure = vi.fn(() => height);
+  Object.defineProperty(field(), 'scrollHeight', { configurable: true, get: measure });
+  fireEvent.change(field(), { target: { value: 'Keep this draft' } });
+  view.rerender(<Chat documentId={id} active={false} />); measure.mockClear();
+  height = 180; fireEvent(window, new Event('resize'));
+  expect(measure).not.toHaveBeenCalled();
+  view.rerender(<Chat documentId={id} active />);
+  expect(field().style.height).toBe('180px');
+  view.unmount(); measure.mockClear(); fireEvent(window, new Event('resize'));
+  expect(measure).not.toHaveBeenCalled();
+});
+test('a retained historical Finalizing turn does not look like an active reply', async () => {
+  snapshot = { ...idle, versions: [{ turns: [{ ...turn, phase: 'Finalizing', answer: null, contextRetained: false }] }] };
+  await open();
+  expect(screen.getByText('No answer was received.')).toBeTruthy();
+  expect(screen.getByText(/not confirmed in later context/)).toBeTruthy();
 });
 test('a failed turn with an observed answer does not look like a successful turn', async () => {
   snapshot = { ...idle, versions: [{ turns: [{ ...turn, phase: 'Failed' }] }] };
@@ -225,12 +284,29 @@ test('polling is single-flight even when the previous read has not replied', asy
   render(<Chat documentId={id} />); await poll(); await poll(); expect(reads).toBe(1);
   await act(async () => finish(idle)); await poll(); expect(reads).toBe(2);
 });
-test('new answers do not drag a reader away from older transcript text', async () => {
-  snapshot = { ...idle, versions: [{ turns: [turn] }] }; await open();
-  const transcript = screen.getByRole('region', { name: 'Conversation' });
-  Object.defineProperties(transcript, { scrollHeight: { value: 1000, configurable: true }, clientHeight: { value: 200, configurable: true }, scrollTop: { value: 100, writable: true } });
-  fireEvent.scroll(transcript); snapshot.versions[0].turns.push({ ...turn, message: 'Later' }); await poll();
-  expect(transcript.scrollTop).toBe(100);
+test('hidden Chat never follows or tracks the shared page scroll', async () => {
+  snapshot = { ...idle, versions: [{ turns: [turn] }] };
+  const view = render(<main className="page-content"><Chat documentId={id} active={false} /></main>); await act(async () => {});
+  const page = screen.getByRole('main');
+  Object.defineProperties(page, { scrollHeight: { value: 1000, configurable: true }, clientHeight: { value: 200, configurable: true }, scrollTop: { value: 800, writable: true } });
+  await poll(); expect(page.scrollTop).toBe(800);
+  view.rerender(<main className="page-content"><Chat documentId={id} active /></main>); await act(async () => {});
+  expect(page.scrollTop).toBe(1000);
+  view.rerender(<main className="page-content"><Chat documentId={id} active={false} /></main>);
+  page.scrollTop = 400; fireEvent.scroll(page); await poll(); expect(page.scrollTop).toBe(400);
+  view.rerender(<main className="page-content"><Chat documentId={id} active /></main>); await poll();
+  expect(page.scrollTop).toBe(1000);
+});
+test('conversation follows the page scroll only while the reader stays near its end', async () => {
+  snapshot = { ...idle, versions: [{ turns: [turn] }] };
+  render(<main className="page-content"><Chat documentId={id} /></main>); await act(async () => {});
+  const page = screen.getByRole('main');
+  Object.defineProperties(page, { scrollHeight: { value: 1000, configurable: true }, clientHeight: { value: 200, configurable: true }, scrollTop: { value: 800, writable: true } });
+  fireEvent.scroll(page); snapshot.versions[0].turns.push({ ...turn, message: 'Later' }); await poll();
+  expect(page.scrollTop).toBe(1000);
+  page.scrollTop = 100; fireEvent.scroll(page);
+  snapshot.versions[0].turns.push({ ...turn, message: 'Still later' }); await poll();
+  expect(page.scrollTop).toBe(100);
 });
 const blockedReason = 'Wait for your changes to save.';
 const newConversation = () => screen.getByRole('button', { name: 'New conversation' });

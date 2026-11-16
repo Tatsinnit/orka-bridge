@@ -72,7 +72,7 @@ test('unfinished local row, shell and card agree; finished local page owns Stop 
   expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('button button-quiet');
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
-  expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'kubectl context' })).toBeTruthy();
   expect(ipc.mock.calls.some(([cmd]) => ['setup_cancel_local', 'setup_change_local'].includes(cmd))).toBe(false);
   expect(screen.getByRole('contentinfo').textContent?.trim()).not.toBe('');
   await user.click(screen.getByRole('button', { name: 'Clusters' }));

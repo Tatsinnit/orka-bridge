@@ -69,6 +69,6 @@ test('cluster picking is explicitly separate from stopping and does not stop the
   const ipc = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
-  expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'kubectl context' })).toBeTruthy();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_change_local')).toBe(false);
 });
