@@ -79,6 +79,33 @@ async fn catalog_does_not_probe_unsupported_or_disconnected_workspaces() {
     assert_eq!(vm.model_connected(), connected);
 }
 #[test]
+fn reset_result_only_clears_acknowledgment_and_stale_failure_on_success() {
+    let vm = LocalVm::unavailable();
+    {
+        let mut state = vm.inner.state.lock().unwrap();
+        state.phase = LocalVmStatus::Ready;
+        state.model_connected = true;
+        state.failure = Some("earlier model failure".into());
+    }
+    vm.inner
+        .model_reset_result(&Err(SetupError::model("modelUnavailable")));
+    assert!(
+        vm.model_connected(),
+        "a refused current-installation reset cannot invalidate its connection"
+    );
+    assert!(vm.inner.state.lock().unwrap().failure.is_some());
+    vm.inner.model_reset_result(&Ok(ModelSetupState {
+        associated: false,
+        ready: false,
+        unknown: false,
+        connection: None,
+        account: None,
+    }));
+    assert!(!vm.model_connected());
+    assert!(vm.inner.state.lock().unwrap().failure.is_none());
+}
+
+#[test]
 fn model_failure_details_survive_generic_retry_without_failing_the_running_vm() {
     let tmp = tempfile::tempdir().unwrap();
     let store = SetupStore::new(Some(tmp.path().to_owned()));

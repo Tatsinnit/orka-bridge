@@ -77,6 +77,26 @@ fn unavailable() -> SetupError {
         vendor: None,
         diagnostic: None,
         native: None,
+        recovery: None,
+    }
+}
+fn valid_saved_connection(b: &Binding) -> bool {
+    b.connection
+        .as_ref()
+        .is_none_or(|c| !c.id.is_nil() && !c.generation.is_nil() && c.selection.valid())
+}
+fn mismatch(installation: Uuid, b: &Binding) -> SetupError {
+    if !valid_saved_connection(b) {
+        return unavailable();
+    }
+    SetupError {
+        recovery: Some(Box::new(ModelRecovery {
+            installation,
+            saved_installation: b.installation,
+            credential_slot: b.slot,
+            reset_stage: None,
+        })),
+        ..SetupError::model("modelInstallationMismatch")
     }
 }
 fn read_binding(root: &Path) -> Result<Option<Binding>, SetupError> {
@@ -270,6 +290,57 @@ fn cleanup_previous_boot(
     write_binding(root, b)
 }
 impl SetupStore {
+    // Diagnose the saved installation before association/vendor refusals or any capture.
+    // Mutating paths still check again under their own ownership guards.
+    fn check_model_installation(&self, installation: Uuid) -> Result<(), SetupError> {
+        let _access = self.access.lock().map_err(|_| unavailable())?;
+        let root = self.root.as_deref().ok_or_else(unavailable)?;
+        let _owner = model_owner(root)?;
+        if installation.is_nil() {
+            return Err(unavailable());
+        }
+        if let Some(b) = read_binding(root)? {
+            if b.installation != installation {
+                return Err(mismatch(installation, &b));
+            }
+        }
+        Ok(())
+    }
+    /// A new installation owns a new journal/state disk, not the old model route.
+    /// Explicit mismatch recovery forgets host custody only; it cannot authorize guest cleanup.
+    pub fn reset_mismatched_model(
+        &self,
+        installation: Uuid,
+        store: &impl CredentialStore,
+    ) -> Result<ModelSetupState, SetupError> {
+        let _access = self.access.lock().map_err(|_| unavailable())?;
+        let root = self.root.as_deref().ok_or_else(unavailable)?;
+        selected(root)?;
+        let _owner = model_owner(root)?;
+        if installation.is_nil() {
+            return Err(unavailable());
+        }
+        let Some(b) = read_binding(root)? else {
+            return Ok(state(root, None, false));
+        };
+        if b.installation == installation || !valid_saved_connection(&b) {
+            return Err(unavailable());
+        }
+        let failure = |mut error: SetupError, stage| {
+            let mut recovery = mismatch(installation, &b).recovery.unwrap();
+            recovery.reset_stage = Some(stage);
+            error.recovery = Some(recovery);
+            error
+        };
+        // Both native stores treat an absent slot as success. Keep the exact record
+        // until deletion is confirmed, so interrupted/failed resets can retry this slot.
+        store
+            .delete(b.slot)
+            .map_err(|e| failure(SetupError::store(e), "credentialRemovalUnconfirmed"))?;
+        fs::remove_file(root.join("model-v1"))
+            .map_err(|_| failure(unavailable(), "recordRemovalUnconfirmed"))?;
+        Ok(state(root, None, false))
+    }
     fn recover_empty_reservation(
         &self,
         installation: Uuid,
@@ -296,6 +367,7 @@ impl SetupStore {
         store: &impl CredentialStore,
         capture: impl FnOnce() -> Result<CapturedGithubToken, crate::runtime::credentials::CaptureError>,
     ) -> Result<ModelSetupState, SetupError> {
+        self.check_model_installation(installation)?;
         // Explicit sign-in also recovers an empty reservation left by an older failed save.
         self.recover_empty_reservation(installation, store)?;
         let binding = self.model_binding_status()?;
@@ -342,6 +414,7 @@ impl SetupStore {
         client: &mut VmClient,
         store: &impl CredentialStore,
     ) -> Result<ModelSetupState, SetupError> {
+        self.check_model_installation(installation)?;
         let selection = {
             let _access = self.access.lock().map_err(|_| unavailable())?;
             let root = self.root.as_deref().ok_or_else(unavailable)?;
@@ -368,6 +441,7 @@ impl SetupStore {
         client: &mut VmClient,
         store: &impl CredentialStore,
     ) -> Result<ModelSetupState, SetupError> {
+        self.check_model_installation(installation)?;
         let prefix = match vendor {
             KeyVendor::Openai => "sk-",
             KeyVendor::Anthropic => "sk-ant-",
@@ -547,10 +621,10 @@ impl SetupStore {
         }
         let _owner = model_owner(root)?;
         let mut b = read_binding(root)?.ok_or_else(unavailable)?;
-        if b.installation != installation
-            || b.vendor != selection.vendor
-            || matches!(b.phase, Phase::Storing | Phase::Cleared)
-        {
+        if b.installation != installation {
+            return Err(mismatch(installation, &b));
+        }
+        if b.vendor != selection.vendor || matches!(b.phase, Phase::Storing | Phase::Cleared) {
             return Err(unavailable());
         }
         if matches!(b.phase, Phase::Pending | Phase::Connected)
@@ -682,7 +756,7 @@ impl SetupStore {
             return Ok(state(root, None, false));
         };
         if b.installation != installation {
-            return Err(unavailable());
+            return Err(mismatch(installation, &b));
         }
         if matches!(b.phase, Phase::Pending | Phase::Connected) {
             let client = client.ok_or_else(unavailable)?;

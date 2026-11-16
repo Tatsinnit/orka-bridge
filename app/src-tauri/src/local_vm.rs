@@ -328,6 +328,16 @@ struct Inner {
     session: Arc<AsyncMutex<Option<Box<dyn LocalSession>>>>,
 }
 impl Inner {
+    fn model_reset_result(
+        &self,
+        result: &Result<crate::setup::ModelSetupState, crate::setup::SetupError>,
+    ) {
+        if result.is_ok() {
+            let mut state = self.state.lock().unwrap();
+            state.model_connected = false;
+            state.failure = None;
+        }
+    }
     fn model_result(
         &self,
         result: &Result<crate::setup::ModelSetupState, crate::setup::SetupError>,
@@ -776,6 +786,27 @@ impl LocalVm {
             } else {
                 "The local cluster is unavailable."
             }
+        })?
+    }
+    pub async fn reset_model(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+    ) -> Result<crate::setup::ModelSetupState, crate::setup::SetupError> {
+        let inner = self.inner.clone();
+        self.with_client(move |id, _client| {
+            let result = setup
+                .reset_mismatched_model(id, &crate::runtime::credential_store::OsCredentialStore);
+            // A refused reset must not invalidate a newer, current-install connection.
+            inner.model_reset_result(&result);
+            result
+        })
+        .await
+        .map_err(|error| {
+            crate::setup::SetupError::model(if matches!(error, RuntimeError::Busy) {
+                "modelBusy"
+            } else {
+                "modelSession"
+            })
         })?
     }
     pub async fn remove_model(

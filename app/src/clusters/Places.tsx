@@ -1,12 +1,14 @@
+import type { Ref } from 'react';
 import { Button } from '../components/Button';
 import { StatusPill } from '../components/DesignSystem';
+import type { Place } from '../overview/api';
 import type { SetupView } from '../setup/progress';
 import type { SetupStatus } from '../setup/state';
 import type { ClusterPlaceSnapshot, SelectedPlace } from './api';
-import type { Place } from '../overview/api';
 import './clusters.css';
 
-export default function Places({ snapshot, unavailable, status, view, place, onLocal, onCluster }: {
+export default function Places({ snapshot, unavailable, status, view, place, onLocal, onCluster, recoveryRef, modelRecovery }: {
+  recoveryRef?: Ref<HTMLDivElement>; modelRecovery?: boolean;
   snapshot?: ClusterPlaceSnapshot; unavailable: boolean; status?: SetupStatus; view: SetupView; place: SelectedPlace;
   onLocal: () => void; onCluster: (place: Place, selected: boolean) => void;
 }) {
@@ -16,6 +18,8 @@ export default function Places({ snapshot, unavailable, status, view, place, onL
     <section className="card place-row" aria-label="This computer">
       <span className="icon-tile" aria-hidden="true"><svg className="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8m-4-4v4" /></svg></span>
       <div className="place-summary"><h2>This computer</h2><p className="place-meta"><span>{!status ? 'Local cluster status could not be read' : status.localVm === 'notIntegrated' ? view.line : started ? view.detail : 'The local cluster runs here'}</span>{(started && view.line !== view.detail || !status) && <span>{view.line}</span>}</p></div>
+      {modelRecovery && status?.localVm === 'ready' && <p className="place-workspace-running">Workspace running</p>}
+      <div className="place-model-recovery" ref={recoveryRef} />
       <StatusPill state={view.status}>{view.status === 'passed' ? 'Ready' : undefined}</StatusPill>
       <Button type="button" kind={knownEmpty && !started && !!status ? 'primary' : 'secondary'} size="small" onClick={onLocal}>{!status ? 'View details' : view.action}</Button>
     </section>

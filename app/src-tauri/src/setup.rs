@@ -132,6 +132,15 @@ struct StoreDiagnostic {
     code: u32,
 }
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelRecovery {
+    installation: bridge_runtime_protocol::Uuid,
+    saved_installation: bridge_runtime_protocol::Uuid,
+    credential_slot: bridge_runtime_protocol::Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reset_stage: Option<&'static str>,
+}
+#[derive(Debug, Serialize)]
 pub struct SetupError {
     kind: &'static str,
     message: &'static str,
@@ -140,6 +149,8 @@ pub struct SetupError {
     // Only the finite call and numeric code may cross to the sign-in error UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     native: Option<StoreDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<Box<ModelRecovery>>,
     #[serde(skip)]
     diagnostic: Option<bridge_runtime_protocol::ModelDiagnostic>,
 }
@@ -174,6 +185,7 @@ impl SetupError {
     }
     pub(crate) fn model(kind: &'static str) -> Self {
         let message = match kind {
+            "modelInstallationMismatch" => "Bridge's saved AI connection is from an earlier setup.",
             "modelKeyInvalid" => "Paste the whole key with the selected company's key prefix.",
             "modelAlreadyAssociated" => "Remove the saved AI connection before connecting another.",
             "modelCredentialRejected" => "The model company did not accept this key.",
@@ -207,6 +219,7 @@ impl SetupError {
             vendor: None,
             diagnostic: None,
             native: None,
+            recovery: None,
         }
     }
 }
@@ -217,6 +230,7 @@ fn storage_error() -> SetupError {
         vendor: None,
         diagnostic: None,
         native: None,
+        recovery: None,
     }
 }
 

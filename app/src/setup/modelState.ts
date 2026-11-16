@@ -13,6 +13,7 @@ const errors = {
   modelBusy: 'Another operation is using the workspace. Wait for it to finish.',
   modelSession: 'The workspace is not available to connect the AI.',
   modelUnavailable: 'The AI connection is unavailable or could not be confirmed.',
+  modelInstallationMismatch: "Bridge's saved AI connection is from an earlier setup.",
   modelReconnect: 'Bridge could not clean up the previous model connection. The workspace may need a newer image. The saved sign-in was kept.',
   modelKeyInvalid: 'Paste the whole key.',
   modelAlreadyAssociated: 'Change or remove the current AI connection before adding a key.',
@@ -55,9 +56,20 @@ export function keyFailure(error: ModelFailure, vendor: KeyVendor): string {
     default: return error.message.replaceAll('sign-in', 'key');
   }
 }
-export type ModelFailure = { message: string; category: keyof typeof errors | 'unknown'; codes: number[]; vendor?: KeyVendor };
+export type ModelRecovery = { installation: string; savedInstallation: string; credentialSlot: string; resetStage?: 'credentialRemovalUnconfirmed' | 'recordRemovalUnconfirmed' };
+function recoveryInfo(value: unknown): ModelRecovery | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const r = value as Record<string, unknown>;
+  const uuid = (id: unknown): id is string => typeof id === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id) && id !== '00000000-0000-0000-0000-000000000000';
+  if (!uuid(r.installation) || !uuid(r.savedInstallation) || !uuid(r.credentialSlot) || r.installation.toLowerCase() === r.savedInstallation.toLowerCase()) return;
+  if (Object.keys(r).some(key => !['installation', 'savedInstallation', 'credentialSlot', 'resetStage'].includes(key))) return;
+  if (r.resetStage !== undefined && r.resetStage !== 'credentialRemovalUnconfirmed' && r.resetStage !== 'recordRemovalUnconfirmed') return;
+  return { installation: r.installation, savedInstallation: r.savedInstallation, credentialSlot: r.credentialSlot, ...(r.resetStage ? { resetStage: r.resetStage } : {}) };
+}
+export type ModelFailure = { message: string; category: keyof typeof errors | 'unknown'; codes: number[]; vendor?: KeyVendor; recovery?: ModelRecovery };
 export type ModelResult = { ok: true; connection?: ModelConnection } | ({ ok: false } & ModelFailure);
 export const connectModel = (vendor?: KeyVendor) => call('setup_connect_model', true, 'The AI connection could not be completed.', vendor ? { vendor } : undefined);
+export const resetModel = () => call('setup_reset_model', false, 'Bridge could not confirm the AI connection was reset.');
 export const removeModel = () => call('setup_remove_model', false, 'Bridge could not confirm sign-in removal. Try Remove sign-in again.');
 export const connectKey = (vendor: KeyVendor, key: string) => call('setup_connect_key', true, 'The AI connection could not be completed.', { vendor, key });
 async function call(command: string, ready: boolean, fallback: string, args?: { vendor: KeyVendor; key?: string }): Promise<ModelResult> {
@@ -78,6 +90,8 @@ async function call(command: string, ready: boolean, fallback: string, args?: { 
       && typeof error.kind === 'string' && Object.hasOwn(errors, error.kind)) {
       const category = error.kind as keyof typeof errors;
       const vendor = 'vendor' in error && (error.vendor === 'openai' || error.vendor === 'anthropic') ? error.vendor : undefined;
+      const recovery = 'recovery' in error ? recoveryInfo(error.recovery) : undefined;
+      const context: Pick<ModelFailure, 'vendor' | 'recovery'> = { ...(vendor ? { vendor } : {}), ...(recovery ? { recovery } : {}) };
       if (category === 'modelStore' && 'native' in error) {
         const detail = error.native;
         if (typeof detail === 'object' && detail !== null && 'call' in detail && 'code' in detail
@@ -87,10 +101,10 @@ async function call(command: string, ready: boolean, fallback: string, args?: { 
           const reason = detail.call === 'CredWriteW' && detail.code === 8
             ? "Windows couldn't save the sign-in. Windows Credential Manager is full"
             : `Windows couldn't ${operation} the sign-in`;
-          return { ok: false, category, codes: [detail.code], message: `${reason} (${detail.call}, error ${detail.code}).`, ...(vendor ? { vendor } : {}) };
+          return { ok: false, category, codes: [detail.code], message: `${reason} (${detail.call}, error ${detail.code}).`, ...context };
         }
       }
-      return { ok: false, category, codes: [], message: errors[category], ...(vendor ? { vendor } : {}) };
+      return { ok: false, category, codes: [], message: errors[category], ...context };
     }
   }
   return { ok: false, category: 'unknown', codes: [], message: fallback };

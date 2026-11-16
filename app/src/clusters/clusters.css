@@ -11,7 +11,11 @@
 .place-meta > span + span::before { content: ' · '; }
 .cluster-actions { margin-top: 0; gap: 8px; }
 .place-row > button { justify-self: end; }
-.place-row .pill { justify-self: start; white-space: normal; }
+.place-row .pill { justify-self: start; white-space: normal; grid-column: 3; grid-row: 1; }
+.place-row > button { grid-column: 4; grid-row: 1; }
+.place-workspace-running { grid-column: 2 / -1; grid-row: 2; margin: 0; color: var(--color-status-passed); font-size: var(--size-body); }
+.place-model-recovery { grid-column: 2 / -1; grid-row: 3; min-width: 0; }
+.place-model-recovery:empty { display: none; }
 .places-workspace .workspace-choice, .places-workspace .setup { max-width: none; width: 100%; }
 .places-workspace [hidden] { display: none; }
 .workspace-sizes { display: grid; gap: 8px; margin: 16px 0; }
@@ -65,5 +69,7 @@
   .place-summary { grid-column: 2 / -1; }
   .place-row > .pill { grid-column: 2; grid-row: 2; }
   .place-row > button { grid-column: 3; grid-row: 2; justify-self: end; }
+  .place-workspace-running { grid-row: 3; }
+  .place-model-recovery { grid-row: 4; }
   .workspace-sizes > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }

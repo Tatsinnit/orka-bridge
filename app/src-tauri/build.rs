@@ -21,6 +21,7 @@ fn main() {
             "setup_select_local",
             "setup_cancel_local",
             "setup_change_local",
+            "setup_reset_model",
             "setup_example",
             "agent_run",
             "agent_run_status",

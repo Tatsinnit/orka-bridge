@@ -43,9 +43,9 @@ export function setupView(status: SetupStatus | undefined, { checking = false, s
     case 'idle': return view(place, 0, 'Not set up', 'Not set up', 'wait');
     case 'ready': {
       if (status.model === 'locked') return view(place, 3, 'AI unavailable', 'AI connection unavailable', 'wait');
-      if (model === 'failed') return view(place, 3, 'AI needs attention', 'Check the AI connection in Clusters', 'bad');
+      if (model === 'failed' || model === 'resetFailed' || model === 'removalFailed') return view(place, 3, 'AI needs attention', 'Check the AI connection in Clusters', 'bad');
       if (model !== 'connected') {
-        const detail = { connecting: 'Connecting the AI…', removing: 'Removing the AI sign-in…', queued: 'AI queued', idle: 'Connect the AI' }[model];
+        const detail = { resetting: 'Resetting the AI connection…', connecting: 'Connecting the AI…', removing: 'Removing the AI sign-in…', queued: 'AI queued', idle: 'Connect the AI' }[model];
         return view(place, 3, detail, detail, model === 'idle' ? 'needs-you' : model === 'queued' ? 'wait' : 'busy');
       }
       // Test evidence can need attention after setup; only the initial automatic run is a setup stage.

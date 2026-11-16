@@ -123,6 +123,20 @@ impl ChatFixture {
     }
 }
 
+// Synthetic UUIDs only, in the native error's safe recovery shape.
+#[cfg(all(target_os = "macos", feature = "custom-protocol"))]
+fn fixture_recovery(stage: Option<&str>) -> serde_json::Value {
+    let mut recovery = serde_json::json!({
+        "installation":"10000000-0000-4000-8000-000000000001",
+        "savedInstallation":"20000000-0000-4000-8000-000000000002",
+        "credentialSlot":"30000000-0000-4000-8000-000000000003"
+    });
+    if let Some(stage) = stage {
+        recovery["resetStage"] = stage.into();
+    }
+    recovery
+}
+
 #[cfg(all(target_os = "macos", feature = "custom-protocol"))]
 fn main() {
     use serde_json::json;
@@ -148,6 +162,9 @@ fn main() {
             .filter(|value| ["passed", "unknown"].contains(&value.as_str()))
     };
     let key_removed_once = std::sync::atomic::AtomicBool::new(false);
+    // A synthetic saved record from an earlier installation. Only the driver's
+    // selector creates it; reset clears this flag, never a real store or file.
+    let mismatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let first_test_pending = std::sync::atomic::AtomicBool::new(false);
     let cluster_selected = std::sync::atomic::AtomicBool::new(false);
     let target = json!({"id":"42345678-1234-4234-8234-123456789abc",
@@ -369,6 +386,14 @@ fn main() {
                         "requiredMemoryBytes":4294967296_u64})
                 }
                 "setup_connect_model" => {
+                    let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+                    if phase.as_deref() == Some("model-mismatch") {
+                        mismatched.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if mismatched.load(std::sync::atomic::Ordering::SeqCst) {
+                        invoke.resolver.reject(json!({"kind":"modelInstallationMismatch", "recovery":fixture_recovery(None)}));
+                        return true;
+                    }
                     connected.store(true, std::sync::atomic::Ordering::SeqCst);
                     key_connected.store(false, std::sync::atomic::Ordering::SeqCst);
                     // A synthetic login only; no GitHub CLI or credential is read.
@@ -409,6 +434,34 @@ fn main() {
                     connected.store(true, std::sync::atomic::Ordering::SeqCst);
                     json!({"ready":true, "connection":{"kind":"key", "vendor":vendor,
                         "model":if vendor == "anthropic" {"claude-sonnet-5-5"} else {"gpt-4.1"}}})
+                }
+                // Mismatch-only reset with no renderer arguments. The driver's selector
+                // chooses a finite outcome; a pending reset waits for the selector to change.
+                "setup_reset_model" => {
+                    if !mismatched.load(std::sync::atomic::Ordering::SeqCst) {
+                        invoke.resolver.reject(json!({"kind":"modelUnavailable"}));
+                        return true;
+                    }
+                    let path = setup_progress.clone();
+                    let flag = mismatched.clone();
+                    let resolver = invoke.resolver;
+                    tauri::async_runtime::spawn(async move {
+                        let read = || path.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+                        while read().as_deref() == Some("reset-pending") {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        match read().as_deref() {
+                            Some("reset-fail-credential") => resolver.reject(json!({"kind":"modelStore",
+                                "recovery":fixture_recovery(Some("credentialRemovalUnconfirmed"))})),
+                            Some("reset-fail-record") => resolver.reject(json!({"kind":"modelUnavailable",
+                                "recovery":fixture_recovery(Some("recordRemovalUnconfirmed"))})),
+                            _ => {
+                                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                                resolver.resolve(json!({"ready":false}));
+                            }
+                        }
+                    });
+                    return true;
                 }
                 "setup_remove_model" => {
                     connected.store(false, std::sync::atomic::Ordering::SeqCst);

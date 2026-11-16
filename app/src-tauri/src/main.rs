@@ -339,6 +339,14 @@ async fn setup_connect_key(
 }
 
 #[tauri::command]
+async fn setup_reset_model(
+    state: tauri::State<'_, Arc<SetupStore>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ModelReply, SetupError> {
+    Ok(vm.reset_model(Arc::clone(state.inner())).await?.into())
+}
+
+#[tauri::command]
 async fn setup_remove_model(
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
@@ -702,6 +710,7 @@ fn main() {
             setup_connect_model,
             setup_connect_key,
             setup_remove_model,
+            setup_reset_model,
             agent_run_status,
             agent_run,
             agent_run_cancel,

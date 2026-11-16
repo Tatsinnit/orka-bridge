@@ -1,16 +1,18 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '../components/Button';
 import { StatusPill } from '../components/DesignSystem';
-import { companies, connectKey, connectModel, copilotModel, type KeyVendor, keyFailure, type ModelConnection, type ModelFailure, removeModel, validKey } from './modelState';
+import { Disclosure } from '../components/Disclosure';
+import { companies, connectKey, connectModel, copilotModel, type KeyVendor, keyFailure, type ModelConnection, type ModelFailure, type ModelRecovery, removeModel, resetModel, validKey } from './modelState';
 import type { HelpTopic } from './recovery-info';
 
-export type ModelState = 'idle' | 'queued' | 'connecting' | 'removing' | 'connected' | 'failed';
+export type ModelState = 'idle' | 'queued' | 'connecting' | 'removing' | 'resetting' | 'resetFailed' | 'removalFailed' | 'connected' | 'failed';
 // `enabled` is native permission to touch credentials. `queueable` only permits remembering the
 // creator's choice while the workspace is still arriving. `away` means another place was chosen.
-// Each increase of `changeRequest` is an explicit request to change the AI provider.
-export default function Model({ enabled, queueable = false, paused = false, away = false, primary = true, changeRequest = 0, onState, onSettled, onConnectRequest }: {
-  enabled: boolean; queueable?: boolean; paused?: boolean; away?: boolean; primary?: boolean; changeRequest?: number; onState?: (state: ModelState) => void; onSettled?: () => void; onConnectRequest?: () => void;
+// Each increase of changeRequest explicitly asks to change the AI provider.
+export default function Model({ enabled, queueable = false, paused = false, away = false, primary = true, changeRequest = 0, recoveryTarget, onPlaceCard = false, onState, onSettled, onConnectRequest }: {
+  enabled: boolean; queueable?: boolean; paused?: boolean; away?: boolean; primary?: boolean; changeRequest?: number; recoveryTarget?: HTMLElement | null; onPlaceCard?: boolean; onState?: (state: ModelState) => void; onSettled?: () => void; onConnectRequest?: () => void;
 }) {
   // In-memory consent only. It never carries a credential and is consumed once.
   const [queued, setQueued] = useState(false);
@@ -32,7 +34,14 @@ export default function Model({ enabled, queueable = false, paused = false, away
   const handledChange = useRef(changeRequest);
   // Focus follows the keyboard user's operation, then its retry or next available action.
   const refocus = useRef<'connect' | 'remove'>(undefined);
-  const [busy, setBusy] = useState<'connect' | 'remove'>();
+  const [busy, setBusy] = useState<'connect' | 'remove' | 'reset'>();
+  const [recovery, setRecovery] = useState<ModelRecovery>();
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [anotherProvider, setAnotherProvider] = useState(false);
+  const [resetDone, setResetDone] = useState(false);
+  const [cardRecovery, setCardRecovery] = useState(false);
+  const [resetAttempts, setResetAttempts] = useState(0);
+  const [details, setDetails] = useState(false);
   const [removed, setRemoved] = useState(false);
   const [connected, setConnected] = useState(false);
   const [attempted, setAttempted] = useState(false);
@@ -40,19 +49,24 @@ export default function Model({ enabled, queueable = false, paused = false, away
   const hasSignIn = !removed && attempted;
   const [error, setError] = useState<ModelFailure>();
   const [notice, setNotice] = useState('');
-  const [failedAction, setFailedAction] = useState<'connect' | 'remove'>('connect');
+  const [failedAction, setFailedAction] = useState<'connect' | 'remove' | 'reset'>('connect');
   const removalFailed = !!error && (failedAction === 'remove' || error.category === 'modelKeyCleanup');
+  // Clearing an error advances the same card flow; it must not hide that flow's next state.
+  useEffect(() => {
+    if (!onPlaceCard) setCardRecovery(false);
+    else if (error) setCardRecovery(true);
+  }, [onPlaceCard, error]);
   const epoch = useRef(0);
   const active = useRef(false);
   useEffect(() => {
     epoch.current++;
     active.current = false;
-    if (!enabled) { setBusy(undefined); setConnected(false); setRemoved(false); setError(undefined); }
+    if (!enabled) { setBusy(undefined); setConnected(false); setRemoved(false); setError(undefined); setRecovery(undefined); setConfirmReset(false); }
     return () => { epoch.current++; };
   }, [enabled]);
   useEffect(() => {
-    onState?.(!enabled ? queued ? 'queued' : 'idle' : busy === 'connect' ? 'connecting' : busy === 'remove' ? 'removing' : ready ? 'connected' : error ? 'failed' : queued ? 'queued' : 'idle');
-  }, [enabled, busy, ready, error, queued, onState]);
+    onState?.(!enabled ? queued ? 'queued' : 'idle' : busy === 'connect' ? 'connecting' : busy === 'remove' ? 'removing' : busy === 'reset' ? 'resetting' : ready ? 'connected' : error ? failedAction === 'reset' ? 'resetFailed' : failedAction === 'remove' || error.category === 'modelKeyCleanup' ? 'removalFailed' : 'failed' : queued ? 'queued' : 'idle');
+  }, [enabled, busy, ready, error, queued, failedAction, onState]);
   useEffect(() => { if (away || !enabled) clearKey(); if (away) setQueued(false); }, [away, enabled, clearKey]);
   useEffect(() => {
     // Setup can stay mounted under a hidden tab or cluster page.
@@ -73,20 +87,24 @@ export default function Model({ enabled, queueable = false, paused = false, away
     const owns = !root.current?.closest('[hidden]') && (!at || at === document.body || at === status.current || at === retry.current || at === removal.current || at === cancelRemoval.current);
     if (!owns) { refocus.current = undefined; return; }
     if (busy || queued) { status.current?.focus(); return; }
-    if (confirmRemoval) { cancelRemoval.current?.focus(); return; }
+    if (confirmRemoval || confirmReset) { cancelRemoval.current?.focus(); return; }
     (refocus.current === 'remove' ? removal.current ?? retry.current : retry.current)?.focus();
     if (document.activeElement === document.body) status.current?.focus();
     refocus.current = undefined;
-  }, [busy, queued, ready, error, confirmRemoval]);
+  }, [busy, queued, ready, error, confirmRemoval, confirmReset, recoveryTarget]);
   // Never replaces a saved sign-in directly: the creator confirms removal first, then chooses again.
   useEffect(() => {
     if (changeRequest === handledChange.current) return;
     handledChange.current = changeRequest;
     if (changeRequest <= 0) return;
+    if (recovery && enabled && !paused && !busy) {
+      setAnotherProvider(true); setConfirmReset(true); refocus.current = 'connect';
+      return;
+    }
     const confirm = hasSignIn && enabled && !paused && !busy && !removalFailed;
     changeFocus.current = confirm ? 'confirm' : 'choice';
     if (confirm) setConfirmRemoval(true);
-  }, [changeRequest, hasSignIn, enabled, paused, busy, removalFailed]);
+  }, [changeRequest, hasSignIn, enabled, paused, busy, removalFailed, recovery]);
   useEffect(() => {
     // A confirmation focuses once it renders; a hidden card never takes focus.
     if (!changeFocus.current || (changeFocus.current === 'confirm' && !confirmRemoval)) return;
@@ -98,8 +116,9 @@ export default function Model({ enabled, queueable = false, paused = false, away
       : root.current?.querySelector<HTMLElement>('.model-choice:not(:disabled) input:checked');
     (target ?? heading.current)?.focus();
   });
-  async function perform(action: 'connect' | 'remove') {
+  async function perform(action: 'connect' | 'remove' | 'reset') {
     if (!enabled || paused || active.current || (action === 'connect' && ready)) return;
+    if (action === 'reset' && !recovery) return;
     const key = action === 'connect' && choice === 'key' ? keyField.current?.value ?? '' : '';
     if (action === 'connect' && choice === 'key' && (key || !hasSignIn) && !validKey(vendor, key)) {
       clearKey(); setFailedAction('connect'); setError({ category: 'modelKeyInvalid', codes: [], message: 'Paste the whole key.' }); return;
@@ -109,13 +128,15 @@ export default function Model({ enabled, queueable = false, paused = false, away
     const request = ++epoch.current;
     const before = { attempted, removed };
     setBusy(action); setError(undefined); setRemoved(false); setNotice(''); setFailedAction(action);
-    setAttempted(true); setConfirmRemoval(false);
-    if (action === 'remove') setConnected(false);
-    const result = await (action === 'remove' ? removeModel() : choice === 'key' && key ? connectKey(vendor, key) : connectModel(choice === 'key' ? vendor : undefined));
+    setAttempted(true); setConfirmRemoval(false); setConfirmReset(false); setResetDone(false);
+    if (action === 'reset') setResetAttempts(value => value + 1);
+    if (action !== 'connect') setConnected(false);
+    const result = await (action === 'reset' ? resetModel() : action === 'remove' ? removeModel() : choice === 'key' && key ? connectKey(vendor, key) : connectModel(choice === 'key' ? vendor : undefined));
     if (request !== epoch.current) return;
     active.current = false; setBusy(undefined);
     if (result.ok) {
-      setConnected(action === 'connect'); setRemoved(action === 'remove');
+      setConnected(action === 'connect'); setRemoved(action !== 'connect');
+      if (action === 'reset') { setResetDone(true); setRecovery(undefined); setAttempted(false); setDetails(false); if (anotherProvider) setChoice('key'); }
       if (action === 'connect') {
         const info = result.connection ?? { kind: 'copilot', model: copilotModel };
         setConnection(info); setChoice(info.kind);
@@ -126,6 +147,8 @@ export default function Model({ enabled, queueable = false, paused = false, away
       if (action === 'connect' && result.category === 'modelBusy') { setAttempted(before.attempted); setRemoved(before.removed); }
       if (['modelCaptureUnavailable', 'modelCaptureFailed', 'modelCaptureInvalid', 'modelCaptureTimedOut'].includes(result.category)) setAttempted(false);
       setError(result);
+      if (result.recovery && (action === 'reset' || result.category === 'modelInstallationMismatch')) setRecovery(result.recovery);
+      else if (action === 'reset') setRecovery(value => value && { ...value, resetStage: undefined });
       if ((choice === 'key' || result.vendor) && ['modelCredentialRejected', 'modelProviderUnreachable', 'modelModelUnavailable'].includes(result.category)) setRemoved(true);
     }
     onSettled?.();
@@ -137,9 +160,10 @@ export default function Model({ enabled, queueable = false, paused = false, away
   async function copy() {
     if (!error) return;
     try {
-      await navigator.clipboard.writeText(['Bridge AI connection', `Operation: ${failedAction === 'remove' ? 'Removing sign-in' : 'Connecting AI'}`, `Category: ${error.category}`,
-        ...error.codes.map(code => `OS code: ${code}`)].join('\n'));
-      setNotice('Details copied. Private diagnostic text is not included.');
+      await navigator.clipboard.writeText(['Bridge AI connection', `Operation: ${failedAction === 'reset' ? 'Resetting AI connection' : failedAction === 'remove' ? 'Removing sign-in' : 'Connecting AI'}`, `Category: ${error.category}`,
+        ...error.codes.map(code => `OS code: ${code}`),
+        ...(recovery ? [`Installation: ${recovery.installation}`, `Saved installation: ${recovery.savedInstallation}`, `Native credential slot: ${recovery.credentialSlot}`, `Reset stage: ${recovery.resetStage ?? (failedAction === 'reset' ? 'Unconfirmed' : 'Not started')}`] : [])].join('\n'));
+      setNotice('Details copied. No keys or sign-in tokens are included.');
     } catch { setNotice("Couldn't copy. Share the visible error message for help."); }
   }
   function choose() {
@@ -152,13 +176,40 @@ export default function Model({ enabled, queueable = false, paused = false, away
   function chooseKind(kind: 'copilot' | 'key') { clearKey(); setQueued(false); setChoice(kind); setError(undefined); }
   const keyMode = choice === 'key';
   const keyProblem = keyMode && error && !removalFailed;
-  const removalAction = hasSignIn && busy !== 'remove' && <Button ref={removal} type="button" kind={removalFailed ? 'primary' : 'quiet'} className={removalFailed ? undefined : 'button-danger'} disabled={!enabled || paused || !!busy}
+  const removalAction = hasSignIn && !busy && <Button ref={removal} type="button" kind={removalFailed ? 'primary' : 'quiet'} className={removalFailed ? undefined : 'button-danger'} disabled={!enabled || paused || !!busy}
             onClick={() => {
               refocus.current = document.activeElement === removal.current ? 'remove' : undefined;
               if (removalFailed) void perform('remove'); else setConfirmRemoval(true);
             }}>{removalFailed ? 'Retry removal' : keyMode ? 'Remove key' : 'Remove sign-in'}</Button>;
-  return <section ref={root} className="card setup-model" aria-labelledby="model-title" aria-busy={!!busy}>
-    <h2 id="model-title" ref={heading} tabIndex={-1}>Connect the AI</h2>
+  if (recovery) {
+    const resetFailed = failedAction === 'reset' && !!error;
+    const custody = recovery.resetStage === 'recordRemovalUnconfirmed'
+      ? 'Native credential removed; saved record removal not confirmed.'
+      : recovery.resetStage === 'credentialRemovalUnconfirmed' ? 'Native credential removal not confirmed; saved record kept.' : resetFailed ? 'Bridge could not check what is still saved. The identifiers below are from the last confirmed record.' : 'Saved record: model-v1. Native credential removal has not been requested.';
+    const content = <section ref={root} className={recoveryTarget ? 'model-recovery' : 'card setup-model model-recovery'} aria-label="Saved AI connection" aria-busy={!!busy}>
+      {busy === 'reset' ? <div ref={status} role="status" tabIndex={-1} className="model-state"><StatusPill state="running">Resetting</StatusPill><p>Removing Bridge's saved AI connection. Your workspace and agents aren't touched.</p></div>
+        : <div className="workspace-failure" role="alert"><div className="workspace-failure-explanation">
+          {resetFailed ? <><h2 className="failure-summary">Bridge couldn't reset the AI connection</h2><p>{resetAttempts > 1 ? 'Reset failed again. Copy the details for whoever helps you with Bridge; Show details lists what Bridge could confirm.' : "Bridge couldn't confirm the saved connection was removed. Try once more. If it fails again, copy the details for whoever helps you with Bridge."}</p></>
+            : <><p className="failure-summary">Bridge's saved AI connection is from an earlier setup.</p><p>This usually happens after Bridge is reinstalled. Reset the saved connection, then choose the AI again. Your workspace and agents aren't touched.</p></>}
+          {confirmReset ? <div role="group" aria-label="Reset AI connection confirmation"><h3>Reset the AI connection?</h3><p>Bridge forgets its saved AI connection for this workspace. Your GitHub account and your agents don't change. Use another provider starts with this same reset.</p><div className="workspace-step-actions">
+            <Button ref={retry} kind="primary" disabled={!enabled || paused || !!busy} onClick={() => { refocus.current = 'connect'; void perform('reset'); }}>Reset</Button>
+            <Button ref={cancelRemoval} kind="secondary" onClick={() => { refocus.current = 'connect'; setConfirmReset(false); }}>Cancel</Button>
+          </div></div> : <div className="workspace-step-actions">
+            <Button ref={retry} kind="primary" disabled={!enabled || paused || !!busy} onClick={() => { refocus.current = 'connect'; if (resetFailed) void perform('reset'); else { setAnotherProvider(false); setConfirmReset(true); } }}>{resetFailed ? 'Reset again' : 'Reset AI connection'}</Button>
+            {!resetFailed && <Button kind="secondary" disabled={!enabled || paused || !!busy} onClick={() => { refocus.current = 'connect'; setAnotherProvider(true); setConfirmReset(true); }}>Use another provider</Button>}
+            <Button kind="secondary" onClick={() => { void copy(); }}>Copy details for help</Button>
+          </div>}
+          <Disclosure label={details ? 'Hide details' : 'Show details'} open={details} onOpenChange={setDetails} controls="model-recovery-details">
+            <div id="model-recovery-details" hidden={!details}><p>{custody}</p><dl className="model-recovery-details"><dt>Category</dt><dd>{error?.category ?? 'modelInstallationMismatch'}</dd><dt>This installation</dt><dd>{recovery.installation}</dd><dt>Saved installation</dt><dd>{recovery.savedInstallation}</dd><dt>Saved record</dt><dd>Bridge app data: model-v1</dd><dt>Native credential slot</dt><dd>{recovery.credentialSlot}</dd></dl></div>
+          </Disclosure>
+        </div></div>}
+      {notice && <p role="status">{notice}</p>}
+    </section>;
+    return recoveryTarget ? createPortal(content, recoveryTarget) : content;
+  }
+  const portaled = !!recoveryTarget && (!!error || onPlaceCard && (resetDone || cardRecovery));
+  const content = <section ref={root} className={portaled ? "setup-model" : "card setup-model"} aria-labelledby="model-title" aria-busy={!!busy}>
+    <h2 id="model-title" ref={heading} tabIndex={-1}>{removalFailed ? `Couldn't remove the saved ${keyMode ? 'key' : 'sign-in'}` : 'Connect the AI'}</h2>
     {!ready && busy !== 'remove' && !removalFailed && <>
       <fieldset className="model-choice" disabled={!!busy || hasSignIn}>
         <legend className="sr-only">AI connection</legend>
@@ -232,7 +283,9 @@ export default function Model({ enabled, queueable = false, paused = false, away
     </div>
     {busy === 'connect' && <p role="status">{keyMode ? `Asking ${company.name} to confirm the key…` : 'Connecting with your saved sign-in. This may take a few seconds…'}</p>}
     {busy === 'remove' && <p role="status">Disconnecting the AI and removing Bridge’s saved {keyMode ? 'key' : 'sign-in'}…</p>}
-    {removed && <p role="status">{keyMode ? 'No AI connection. Bridge no longer has a saved key.' : 'Bridge no longer has a saved sign-in. GitHub CLI stays signed in.'}</p>}
+    {resetDone && <p role="status">Connection reset. Choose the AI again.</p>}
+    {removed && !resetDone && <p role="status">{keyMode ? 'No AI connection. Bridge no longer has a saved key.' : 'Bridge no longer has a saved sign-in. GitHub CLI stays signed in.'}</p>}
     {notice && <p role="status">{notice}</p>}
   </section>;
+  return portaled && recoveryTarget ? createPortal(content, recoveryTarget) : content;
 }

@@ -166,9 +166,9 @@ try {
       return {
         width: innerWidth, scrollWidth: main.scrollWidth, clientWidth: main.clientWidth,
         forms: shown('.cluster-card > :not(.cluster-actions):not([role="group"]), .local-preflight > .card').map(node => ({ ...rect(node), limit: node.matches('.local-preflight > .card') ? 554 : 520 })),
-        rows: shown('.place-row').map(row => ({ name: rect(row.querySelector('.place-summary')), pill: rect(row.querySelector('.pill')), action: rect(row.querySelector('button')), row: rect(row) })),
+        rows: shown('.place-row').map(row => ({ name: rect(row.querySelector('.place-summary')), pill: rect(row.querySelector(':scope > .pill')), action: rect(row.querySelector(':scope > button')), row: rect(row) })),
         checks: shown('.cluster-checks li').map(row => ({ row: rect(row), card: rect(row.closest('.cluster-card')) })),
-        setup: (() => { const root = shown('.workspace-setup-grid')[0]; if (!root) return null; const get = selector => rect(root.querySelector(selector)); return { progress: get('.setup-progress'), model: get('.setup-model-slot'), meet: get('.workspace-meet') }; })(),
+        setup: (() => { const root = shown('.workspace-setup-grid')[0]; if (!root) return null; const get = selector => rect(root.querySelector(selector)); return { progress: get('.setup-progress'), model: get('.setup-model-slot:not(:empty)'), meet: get('.workspace-meet') }; })(),
         designer: (() => { const root = shown('.designer-work')[0]; if (!root) return null; const get = selector => rect([...root.querySelectorAll(selector)].find(node => node.getClientRects().length)); return { tests: get('.designer-tests:not([hidden])'), editor: get('.designer-file'), send: get('.send-panel:not([hidden])'), history: get('.send-history') }; })(),
         fallback: { file: rect(shown('.designer > .designer-file')[0]), history: rect(shown('.designer > .designer-checks .send-history')[0]) },
       };
@@ -303,19 +303,21 @@ try {
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
   // first-test-passed, -unknown and -lost-reply each own one fresh automatic attempt after a page reload.
-  const actionFixtures = ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-file', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
+  const actionFixtures = ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-file', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
     await evaluate(`${action}.click()`);
   }
-  // Approved frames: Designer has both themes; setup frames 1c, 1d (cropped) and 1e exist only in light.
+  // Approved frames: Designer, 1g (AI connection failed) and 1h (AI reset) have both themes; setup frames 1c, 1d (cropped) and 1e exist only in light.
   const referenceImage = async file => (await readFile(new URL(`../docs/images/${file}`, import.meta.url))).toString('base64');
   const references = {
     designer: { light: await referenceImage('designer-reference-light.png'), dark: await referenceImage('designer-reference-dark.png'), label: 'Approved Designer frame (wide reference)' },
     meet: { light: await referenceImage('setup-reference-meet.png'), label: 'Approved frame 1c, light (wide reference)' },
     ai: { light: await referenceImage('setup-reference-ai.png'), label: 'Approved frame 1d, light (wide reference, cropped)' },
     'first-pass': { light: await referenceImage('setup-reference-first-pass.png'), label: 'Approved frame 1e, light (wide reference)' },
+    failed: { light: await referenceImage('ai-connection-failed-reference-light.png'), dark: await referenceImage('ai-connection-failed-reference-dark.png'), label: 'Approved AI connection failure frame (wide reference)' },
+    reset: { light: await referenceImage('ai-reset-failed-reference-light.png'), dark: await referenceImage('ai-reset-failed-reference-dark.png'), label: 'Approved AI reset frame (wide reference)' },
   };
   const compareDesigner = (data, theme, size, name) => compareReference(data, theme, size, name, 'designer');
   async function compareReference(data, theme, size, name, kind) {
@@ -378,6 +380,13 @@ try {
       const finished = { id: 'finished-answer', question: 'What did the page say?', phase: 'Succeeded', answer: 'The page says fixture-checksum.', completedTools: ['web_fetch'], assertions: [{ id: 'checksum', kind: 'contains', expected: 'fixture-checksum', verdict: 'passed' }], verdict: 'passed' };
       const cancelled = { id: 'unfinished-test', question: 'What does the next page say?', phase: 'Cancelled', answer: null, completedTools: [], assertions: [], verdict: 'cancelled' };
       window.__bridgeRemovals = 0;
+      // Synthetic earlier-installation recovery IDs; the reset outcome is chosen by the driver.
+      const recovery = { installation: '10000000-0000-4000-8000-000000000001', savedInstallation: '20000000-0000-4000-8000-000000000002', credentialSlot: '30000000-0000-4000-8000-000000000003' };
+      window.__bridgeMismatch = name === 'ai-reset';
+      window.__bridgeResets = [];
+      window.__bridgeResetOutcome = 'credential';
+      window.__bridgeCopied = [];
+      if (name === 'ai-reset') Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.__bridgeCopied.push(text); } } });
       window.__bridgeStops = 0;
       window.__bridgeLocalSelections = 0;
       window.__bridgeClusterUses = 0;
@@ -423,6 +432,15 @@ try {
           { key: 'fixture-b', context: 'fixture-secondary-with-a-long-cluster-name-to-wrap-without-clipping', service: 'control / orka', namespace: 'agents', stale: true, observedAt: null, agents: [] }] }
           : { places: [], selectedKey: null, persistenceState: 'complete' };
         if (command === 'setup_example') return pair;
+        if (command === 'setup_connect_model' && window.__bridgeMismatch) throw { kind: 'modelInstallationMismatch', recovery, message: 'fixture-private-diagnostic' };
+        if (name === 'ai-reset' && command === 'setup_reset_model') {
+          window.__bridgeResets.push(args ?? {});
+          const outcome = window.__bridgeResetOutcome;
+          if (outcome === 'pending') return new Promise(resolve => { window.__bridgeFinishReset = () => { window.__bridgeMismatch = false; resolve({ ready: false }); }; });
+          if (outcome === 'credential') throw { kind: 'modelStore', recovery: { ...recovery, resetStage: 'credentialRemovalUnconfirmed' }, message: 'fixture-private-diagnostic' };
+          if (outcome === 'record') throw { kind: 'modelUnavailable', recovery: { ...recovery, resetStage: 'recordRemovalUnconfirmed' } };
+          window.__bridgeMismatch = false; return { ready: false };
+        }
         if (command === 'setup_connect_model') {
           if (name === 'ai-connecting') return new Promise(() => {});
           if (name === 'ai-cli-missing') throw { kind: 'modelCaptureUnavailable' };
@@ -465,7 +483,7 @@ try {
     if (first || preflight) await clickAction('Set up');
     else if (!places) await clickAction('Connect the AI');
     if (first) await clickAction('Continue');
-    if (first || ['ai-cli-missing', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry'].includes(name)) await clickAction('Connect the AI');
+    if (first || ['ai-reset', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'local-completed', 'local-stopped', 'ai-removal-confirmation', 'ai-removal-retry'].includes(name)) await clickAction('Connect the AI');
     if (name === 'local-stopped') {
       await clickAction('Stop the local cluster');
       await until(() => evaluate(`!!document.querySelector('.local-preflight #workspace-local') && window.__bridgeStops === 1`), 'Stop returns to local preflight');
@@ -622,6 +640,73 @@ try {
       if (await evaluate('window.__bridgeRuns') !== 1) throw Error('A sample state submitted a run other than the automatic test');
       return;
     }
+    if (name === 'ai-reset') {
+      // One mount walks frames 1g/1h, so the added states stay within the fixed CI budget.
+      const row = '[aria-label="Setup steps"] > li:nth-child(3) .model-recovery';
+      const probe = scope => evaluate(`(() => {
+        const root = document.querySelector(${JSON.stringify(scope)});
+        const shown = [...document.querySelectorAll('button')].filter(b => b.getClientRects().length).map(b => b.textContent.trim());
+        return { inScope: !!root?.getClientRects().length, text: root?.innerText ?? '', heading: document.querySelector('h1').textContent, page: document.body.innerText, buttons: shown,
+          primary: [...(root?.querySelectorAll('.button-primary') ?? [])].map(b => b.textContent), resets: window.__bridgeResets };
+      })()`);
+      const expect = async (state, scope, check) => {
+        let seen;
+        await until(async () => { seen = await probe(scope); return seen.inScope && check(seen); }, `ai-reset ${state}`).catch(error => { throw Error(`${error.message}: ${JSON.stringify(seen)}`); });
+        if (seen.page.includes('fixture-private-diagnostic') || seen.resets.some(args => Object.keys(args).length)) throw Error(`ai-reset ${state}: private text shown or reset given renderer arguments`);
+        return seen;
+      };
+      const shoot = async (state, frame, target) => {
+        await evaluate(`document.querySelector(${JSON.stringify(target)}).scrollIntoView({ block: 'center' })`);
+        await checkLayout(theme, size, `ai-reset-${state}`);
+        await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+        const image = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-ai-reset-${state}.png`), Buffer.from(image.data, 'base64'));
+        await compareReference(image.data, theme, size, `ai-reset-${state}`, frame);
+      };
+      const mismatch = s => s.text.includes("Bridge's saved AI connection is from an earlier setup.") && s.primary.join() === 'Reset AI connection';
+      await expect('mismatch', row, s => mismatch(s) && s.heading === "The AI couldn't connect" && s.page.includes('Your workspace is running. Nothing is lost.')
+        && ['Use another provider', 'Copy details for help'].every(b => s.buttons.includes(b)) && !['Remove sign-in', 'Check again', 'Connect the AI'].some(b => s.buttons.includes(b)));
+      await shoot('mismatch', 'failed', row);
+      await clickAction('Back to clusters');
+      await expect('place', '[aria-label="This computer"] .model-recovery', s => mismatch(s) && s.page.includes('Workspace running'));
+      await shoot('place', 'failed', '[aria-label="This computer"]');
+      await clickAction('Connect the AI');
+      await expect('return', row, mismatch);
+      await clickAction('Reset AI connection');
+      await expect('confirmation', row, s => s.text.includes('Reset the AI connection?') && s.text.includes('Use another provider starts with this same reset.') && ['Reset', 'Cancel'].every(b => s.buttons.includes(b)) && !s.resets.length);
+      await shoot('confirmation', 'reset', row);
+      await clickAction('Cancel');
+      await expect('cancelled', row, s => mismatch(s) && !s.resets.length);
+      await clickAction('Use another provider');
+      await expect('provider confirmation', row, s => s.text.includes('Reset the AI connection?') && !s.resets.length);
+      await clickAction('Cancel');
+      await expect('provider cancelled', row, s => mismatch(s) && !s.resets.length);
+      await clickAction('Reset AI connection'); await clickAction('Reset');
+      await expect('failed', row, s => s.heading === "The AI connection couldn't be reset" && s.text.includes("Bridge couldn't reset the AI connection") && s.primary.join() === 'Reset again'
+        && !['Use another provider', 'Remove sign-in'].some(b => s.buttons.includes(b)) && s.resets.length === 1);
+      await shoot('failed', 'reset', row);
+      await clickAction('Copy details for help');
+      await expect('copy-notice', row, s => s.text.includes('Details copied. No keys or sign-in tokens are included.'));
+      const copied = await evaluate('window.__bridgeCopied.join()');
+      if (!['Operation: Resetting AI connection', 'Reset stage: credentialRemovalUnconfirmed', '10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000002', '30000000-0000-4000-8000-000000000003'].every(line => copied.includes(line)) || copied.includes('fixture-private-diagnostic')) throw Error('Unsafe or incomplete copied details: ' + copied);
+      await shoot('copy-notice', 'reset', row);
+      await evaluate(`document.querySelector(${JSON.stringify(row + ' summary')}).click()`);
+      await expect('details', row, s => s.text.includes('Native credential removal not confirmed; saved record kept.') && s.text.includes('30000000-0000-4000-8000-000000000003'));
+      await shoot('details', 'reset', row);
+      await evaluate(`window.__bridgeResetOutcome = 'record'`);
+      await clickAction('Reset again');
+      await expect('failed-again', row, s => s.text.includes('Reset failed again') && s.text.includes('Native credential removed; saved record removal not confirmed.') && s.resets.length === 2);
+      await shoot('failed-again', 'reset', row);
+      await evaluate(`window.__bridgeResetOutcome = 'pending'`);
+      await clickAction('Reset again');
+      await expect('resetting', row, s => s.heading === 'Resetting the AI connection' && s.text.includes('Resetting') && !['Remove sign-in', 'Connect the AI', 'Reset again', 'Reset AI connection'].some(b => s.buttons.includes(b)));
+      await shoot('resetting', 'reset', row);
+      await evaluate('window.__bridgeFinishReset()');
+      await expect('done', '.setup-model', s => s.text.includes('Connection reset. Choose the AI again.') && s.heading === 'Connect the AI' && s.buttons.includes('Connect the AI') && !s.buttons.includes('Remove sign-in') && s.resets.length === 3);
+      await shoot('done', 'reset', '.setup-model');
+      console.log(`Captured native WebView2 AI reset fixture: ${theme}/${size}`);
+      return;
+    }
     const expected = { welcome: 'About 5 minutes, mostly a download', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': 'Not checked', 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'local-stopped': 'Where should your agents run?', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
@@ -740,6 +825,8 @@ try {
       const idle = await evaluate(`({ model: [...document.querySelectorAll('.setup-model code')].map(code => code.textContent), text: document.querySelector('.setup-model').innerText, pickers: document.querySelectorAll('.setup-model select, .setup-model [role=combobox]').length })`);
       if (!idle.model.includes('gpt-5.6-terra') || idle.pickers || /Azure|signed in as|Saved GitHub sign-in/i.test(idle.text)) throw Error(`AI choice must show the fixed model without a picker or an unverified account: ${JSON.stringify(idle)}`);
     }
+    if (name === 'ai-connecting' && await evaluate(`[...document.querySelectorAll('button')].some(button => /^Remove (sign-in|key)$/.test(button.textContent) && button.getClientRects().length)`)) throw Error('Remove is offered while Connecting');
+    if (name === 'ai-removal-retry' && !await evaluate(`document.querySelector('h1').textContent === "The saved sign-in couldn't be removed" && document.querySelector('#model-title')?.textContent === "Couldn't remove the saved sign-in" && ![...document.querySelectorAll('button')].some(button => button.textContent === 'Remove sign-in' && button.getClientRects().length)`)) throw Error('Removal failure lost its headings or still offers Remove');
     if (name === 'ai-idle' && await evaluate(`document.querySelector('.setup-model').innerText.includes('Remove sign-in')`)) throw Error('Unused sign-in removal is visible before connecting');
     if (await evaluate(`document.body.innerText.includes('Change where agents run')`)) throw Error('Removed change panel is still visible');
     console.log(`Captured native WebView2 action fixture: ${theme}/${size}/${name}`);
@@ -893,7 +980,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     for (const name of ['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale']) await captureActions(theme, 'minimum', name);
   }
   await writeFile(join(output, 'compact-window.txt'), notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. compact-window.txt says whether 540x640 compact and minimum captures were a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. compact-window.txt says whether 540x640 compact and minimum captures were a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {
