@@ -434,6 +434,8 @@ fn main() {
                                 "workspaceProgress":{"phase":"materializing", "bytes":1073741824_u64, "totalBytes":2147483648_u64, "elapsedMs":20000, "remainingMs":30000}})),
                             Some("starting") => Some(json!({"selected":"localVm", "localVm":"starting", "model":"locked", "modelSupported":true,
                                 "workspaceProgress":{"phase":"starting", "bytes":null, "totalBytes":null, "elapsedMs":45000, "remainingMs":null}})),
+                            Some("image-update" | "image-unsupported") => Some(json!({"selected":"localVm", "localVm":"failed", "model":"locked", "modelSupported":true,
+                                "workspaceFailure":{"operation":"verify", "cause":if phase.as_deref() == Some("image-update") {"workspaceUpdateRequired"} else {"workspaceVersionUnsupported"}, "codes":[]}})),
                             _ => None,
                         };
                         if let Some(progress) = progress {

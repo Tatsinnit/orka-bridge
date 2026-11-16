@@ -218,6 +218,8 @@ try {
   const startup = elapsedMs => ({ phase: 'starting', bytes: null, totalBytes: null, elapsedMs, remainingMs: null });
   const setupFixtures = runCore ? [
     ['setup-failed', 'failed', null, false, "couldn't determine"],
+    ['setup-image-update', 'failed', null, false, 'This version of Bridge needs a new workspace.', false, true, { operation: 'verify', cause: 'workspaceUpdateRequired', codes: [] }],
+    ['setup-image-unsupported', 'failed', null, false, 'This workspace uses different cluster files.', false, true, { operation: 'verify', cause: 'workspaceVersionUnsupported', codes: [] }],
     ['setup-transfer', 'installing', transfer, false, 'Installing, 1.1 GiB of 2.8 GiB'],
     ['setup-transfer-queued', 'installing', transfer, true, 'Connects when the workspace is ready.'],
     // A valid first observation, then every later read fails: the card must say unavailable, not keep the old bar.
@@ -234,7 +236,7 @@ try {
   const pair = { agent: '---\nname: web-reader\ndescription: Answers from the web page named in the request\n---\nFetch before answering.', tests: '---\nschemaVersion: 1\n---\n```yaml agent-test\nid: page-checksum\ntitle: Copies the checksum from the page\ninput: What checksum does the page show?\nassertions: [{id: checksum, type: contains, value: fixture-checksum}]\n```\n' };
   // Meet derives its rows from the file, so setup captures use the sample's real tool declaration.
   const samplePair = { ...pair, agent: '---\nname: web-reader\ndescription: Answers from the web page named in the request\nmodel: gpt-5.6-terra\nkmx:\n  schemaVersion: 1\n  runtime: orka\n  tools:\n    - kind: builtin\n      name: web_fetch\n---\nFetch before answering.' };
-  async function captureSetup(theme, size, [name, localVm, progress, queue, expected, failLater, modelSupported = true]) {
+  async function captureSetup(theme, size, [name, localVm, progress, queue, expected, failLater, modelSupported = true, failure]) {
     ({ executionContextId: contextId } = await call('Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: `setup-${theme}-${size}-${name}` }));
     await evaluate(`(() => {
       const pair = ${JSON.stringify(samplePair)};
@@ -243,7 +245,7 @@ try {
       window.isTauri = true;
       window.__TAURI_INTERNALS__ = { invoke: async command => {
         if (command === 'setup_status' && ${JSON.stringify(!!failLater)} && reads++ > 0) throw Error('Fixture status unreadable');
-        if (command === 'setup_status') return { selected: 'localVm', localVm: ${JSON.stringify(localVm)}, model: ${JSON.stringify(localVm === 'ready' ? 'available' : 'locked')}, modelSupported: ${JSON.stringify(modelSupported)}, workspaceProgress: ${JSON.stringify(progress)}, localVmError: null };
+        if (command === 'setup_status') return { selected: 'localVm', localVm: ${JSON.stringify(localVm)}, model: ${JSON.stringify(localVm === 'ready' ? 'available' : 'locked')}, modelSupported: ${JSON.stringify(modelSupported)}, workspaceProgress: ${JSON.stringify(progress)}, localVmError: null, ...${JSON.stringify(failure ? { workspaceFailure: failure } : {})} };
         if (command === 'setup_example') return pair;
         if (command === 'setup_requirements') return null;
         if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
@@ -282,6 +284,10 @@ try {
       console.log(`Captured native WebView2 renderer fixture: ${theme}/${size}/${name}${suffix}`);
       return image.data;
     };
+    if (name.startsWith('setup-image-')) {
+      const refusal = await evaluate(`(() => { const alert = [...document.querySelectorAll('.workspace-failure')].find(item => item.getClientRects().length); const retry = [...alert.querySelectorAll('button')].find(button => button.textContent === 'Try again'); return { text: alert.innerText, disabled: retry?.disabled, title: retry?.title, replace: [...document.querySelectorAll('button')].some(button => button.textContent === 'Set up new workspace') }; })()`);
+      if (!refusal.disabled || refusal.title !== 'Open the matching Bridge version.' || !refusal.text.includes('Open the matching Bridge version.') || refusal.text.includes("couldn't be verified") || refusal.replace) throw Error(`${name}: misleading or actionable image refusal ${JSON.stringify(refusal)}`);
+    }
     if (name === 'setup-transfer') {
       const meet = await evaluate(`(() => { const card = document.querySelector('.workspace-meet'); return { tools: [...card.querySelectorAll('.workspace-tool code')].map(code => code.textContent), text: card.innerText }; })()`);
       if (meet.tools.join('|') !== 'web_fetch' || !meet.text.includes('Copies the checksum from the page')) throw Error(`${name}: Meet must list the file's tools and tests: ${JSON.stringify(meet)}`);

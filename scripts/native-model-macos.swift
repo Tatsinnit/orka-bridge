@@ -1237,3 +1237,11 @@ require(enabledButton("Stop") == nil && enabledButton("Start") == nil, "Lost Sto
 try workspacePhase("workspace-stopped")
 waitForButton("Start")
 try workspaceCapture("stop-reply-recovered", ["This computer", "Stopped", "Start"])
+
+// Typed binding refusals use the existing recovery card, never an upgrade action.
+for (phase, summary) in [("image-update", "This version of Bridge needs a new workspace."), ("image-unsupported", "This workspace uses different cluster files.")] {
+    try workspacePhase(phase)
+    try workspaceCapture(phase, [summary, "Open the matching Bridge version."])
+    require(enabledButton("Try again") == nil && !anyButton("Set up new workspace"), "Image refusal must not retry or replace the workspace")
+    require(!nativeTextExists("The cluster download couldn't be verified."), "Version mismatch is not download corruption")
+}

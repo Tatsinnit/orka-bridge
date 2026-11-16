@@ -24,6 +24,17 @@ test('cause and operation select plain copy without interpreting diagnostics', (
   expect(workspaceRecovery().summary).toContain("couldn't determine");
 });
 
+test.each(['workspaceUpdateRequired', 'workspaceVersionUnsupported'] as const)('binding refusal %s stays distinct from a corrupt download', cause => {
+  const metadata = { cause, operation: 'verify' as const, codes: [] };
+  expect(isWorkspaceFailure(metadata)).toBe(true);
+  const info = workspaceRecovery(metadata);
+  expect(info.summary).not.toContain("couldn't be verified");
+  expect(info.action).toBe('Open the matching Bridge version.');
+  expect(info.retryBlocked).toBe(true);
+  expect(info.preservation).toContain('existing cluster and agent files are kept');
+  expect(helpDetails(info)).toContain(`Category: ${cause}`);
+});
+
 test('copied help is fixed labels and accepted codes, not a free-form summary or diagnostic', () => {
   const info = workspaceRecovery(failure('permission', 'start', [5]));
   const copied = helpDetails(info, [5]);

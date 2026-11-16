@@ -50,6 +50,8 @@ pub enum ImageError {
     UnsafePath,
     Busy,
     RetainedImage,
+    WorkspaceUpdateRequired,
+    WorkspaceVersionUnsupported,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchMode {

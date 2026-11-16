@@ -1,7 +1,7 @@
 export type HelpTopic = 'virtualization' | 'hypervisor' | 'workspace' | 'githubCliInstall' | 'githubSignIn' | 'openaiKey' | 'anthropicKey';
 export type RecoveryInfo = { summary: string; action: string; topic?: HelpTopic; stage: string; retryBlocked?: boolean; heading?: string; preservation?: string; category?: string };
 const operations = ['requirements', 'download', 'verify', 'prepare', 'start', 'services', 'stop'] as const;
-const causes = ['permission', 'noSpace', 'integrity', 'inUse', 'network', 'preparation', 'guestConnection', 'services', 'stopUnconfirmed', 'unknown'] as const;
+const causes = ['permission', 'noSpace', 'integrity', 'workspaceUpdateRequired', 'workspaceVersionUnsupported', 'inUse', 'network', 'preparation', 'guestConnection', 'services', 'stopUnconfirmed', 'unknown'] as const;
 export type WorkspaceFailure = { operation: typeof operations[number]; cause: typeof causes[number]; codes: number[] };
 export const isOsCode = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
 export function isWorkspaceFailure(value: unknown): value is WorkspaceFailure {
@@ -29,6 +29,8 @@ export function workspaceRecovery(failure?: WorkspaceFailure): RecoveryInfo {
     case 'permission': return { ...common, summary: operation === 'prepare' || operation === 'verify' ? 'Bridge does not have permission to prepare the local cluster.' : 'Bridge does not have permission to start the local cluster.', action: 'Check Bridge file permissions, then press Try again.', topic: 'workspace' };
     case 'noSpace': return { ...common, summary: "There isn't enough free space for the local cluster.", action: 'Free some space on this computer, then press Try again.', topic: 'workspace' };
     case 'integrity': return { ...common, summary: "The cluster download couldn't be verified.", action: 'Check that the cluster files match this Bridge build, then press Try again.', topic: 'workspace' };
+    case 'workspaceUpdateRequired': return { ...common, summary: 'This version of Bridge needs a new workspace.', action: 'Open the matching Bridge version.', retryBlocked: true };
+    case 'workspaceVersionUnsupported': return { ...common, summary: 'This workspace uses different cluster files.', action: 'Open the matching Bridge version.', retryBlocked: true };
     case 'inUse': return { ...common, summary: 'The cluster files are still in use or need checking.', action: 'Close any other Bridge window, then press Try again.', topic: 'workspace' };
     case 'network': return { ...common, summary: "The local cluster couldn't be downloaded.", action: 'Check your internet connection, then press Try again.' };
     case 'preparation': return { ...common, summary: "The local cluster couldn't be prepared.", action: 'Press Try again. If it happens again, copy the details for help.' };

@@ -2,3 +2,4 @@
 app/src-tauri/example-agent/*.md text eol=lf
 # Release manifests are embedded and authenticated as exact bytes.
 images/release/*.json text eol=lf
+images/predecessors/**/*.json text eol=lf

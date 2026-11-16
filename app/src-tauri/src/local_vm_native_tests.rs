@@ -748,6 +748,7 @@ mod release_image_tests {
             manifest: verified.image().manifest_bytes().to_vec(),
             image_id: identity.image_id.clone(),
             state_compatibility_id: identity.state_compatibility_id.clone(),
+            predecessors: vec![],
         };
         (temp, profile, identity)
     }
@@ -795,6 +796,18 @@ mod release_image_tests {
             ),
         ] {
             let profile = shipping_image(target).expect("approved platform image");
+            assert_eq!(profile.predecessors.len(), 1);
+            let predecessor = &profile.predecessors[0];
+            assert_eq!(predecessor.app_releases, ["v0.1.2"]);
+            assert!(
+                predecessor.target_manifests.is_empty(),
+                "a pin change alone must not grant an unqualified transition"
+            );
+            assert_eq!(predecessor.source.pin.manifest_sha256, digest);
+            assert_eq!(
+                format!("{:x}", Sha256::digest(&predecessor.source.manifest)),
+                digest
+            );
             assert_eq!(profile.pin.manifest_sha256, digest);
             assert_eq!(format!("{:x}", Sha256::digest(&profile.manifest)), digest);
             assert_eq!(profile.pin.limits.disk_bytes, disk_bytes);
@@ -1008,7 +1021,7 @@ mod release_image_tests {
             } else {
                 assert!(matches!(
                     image,
-                    Err(RuntimeError::Image(ImageError::Integrity))
+                    Err(RuntimeError::Image(ImageError::WorkspaceVersionUnsupported))
                 ));
             }
             assert!(!temp.path().join("cache").exists());
@@ -1217,6 +1230,273 @@ mod release_image_tests {
         .unwrap();
         assert_eq!(image.identity().manifest_sha256, expected.manifest_sha256);
         assert!(!cache.exists());
+    }
+
+    #[test]
+    fn pinned_reopen_predecessor_requires_exact_target() {
+        for changed_state in [false, true] {
+            let (temp, old, _) = profile();
+            let root = temp.path().join("install");
+            let cache = temp.path().join("cache");
+            let mut custody = JournalCustody(None);
+            let (_stop, closed) = watch::channel(false);
+            let runtime = runtime();
+            prepare_installation(
+                &source(old.clone()),
+                &root,
+                &cache,
+                &mut custody,
+                closed.clone(),
+                |_| {},
+                || Journal::create(&root, BackendKind::Qemu, vec![1]),
+                runtime.handle(),
+            )
+            .unwrap();
+            fs::remove_dir_all(&cache).unwrap();
+            // Writable guest bytes are not factory bytes, even for an eligible predecessor.
+            use std::io::{Seek, SeekFrom, Write};
+            let mut os = fs::OpenOptions::new()
+                .write(true)
+                .open(root.join("image/1/os.disk"))
+                .unwrap();
+            os.seek(SeekFrom::Start(0)).unwrap();
+            os.write_all(b"changed guest bytes").unwrap();
+            drop(os);
+            let snapshot = || {
+                ["image-binding.json", "record.json", "state.disk"].map(|name| {
+                    let path = root.join(name);
+                    (
+                        fs::read(&path).unwrap(),
+                        fs::metadata(path).unwrap().modified().unwrap(),
+                    )
+                })
+            };
+            let before = snapshot();
+            let mut exact = old.clone();
+            exact.predecessors = vec![Predecessor {
+                source: Box::new(old.clone()),
+                app_releases: vec!["v0.1.2".into()],
+                target_manifests: vec![old.pin.manifest_sha256.clone()],
+            }];
+            prepare_installation(
+                &source(exact),
+                &root,
+                &cache,
+                &mut custody,
+                closed.clone(),
+                |_| {},
+                || panic!("current image must reopen"),
+                runtime.handle(),
+            )
+            .unwrap();
+            let mut target = old.clone();
+            let mut manifest: serde_json::Value = serde_json::from_slice(&target.manifest).unwrap();
+            manifest["target"]["minimumAppVersion"] = "0.0.2".into();
+            manifest["target"]["minimumHostVersion"] = "1.0".into();
+            if changed_state {
+                manifest["stateCompatibilityId"] = "next-state-v1".into();
+                target.state_compatibility_id = "next-state-v1".into();
+            }
+            target.manifest = serde_json::to_vec(&manifest).unwrap();
+            target.pin.manifest_sha256 = format!("{:x}", Sha256::digest(&target.manifest));
+            assert_ne!(target.pin.manifest_sha256, old.pin.manifest_sha256);
+            for retained in [true, false] {
+                if !retained {
+                    drop(custody.0.take());
+                }
+                for policy in [
+                    "different-target",
+                    "allowed",
+                    "old-host",
+                    "old-app",
+                    "old-schema",
+                ] {
+                    let allowed = policy != "different-target";
+                    let mut predecessor = old.clone();
+                    if policy == "old-schema" {
+                        predecessor.pin.accepted_schema_sha256 = "f".repeat(64);
+                    }
+                    target.predecessors = vec![Predecessor {
+                        source: Box::new(predecessor),
+                        app_releases: vec!["v0.1.2".into()],
+                        target_manifests: vec![if allowed {
+                            target.pin.manifest_sha256.clone()
+                        } else {
+                            "f".repeat(64)
+                        }],
+                    }];
+                    let mut request = source(target.clone());
+                    match &mut request {
+                        ImageSource::Pinned { host, .. } => {
+                            if policy == "old-host" {
+                                host.host_version = "1.0".into();
+                            }
+                            if policy == "old-app" {
+                                host.app_version = "0.0.3".into();
+                            }
+                        }
+                        #[cfg(debug_assertions)]
+                        ImageSource::Development => unreachable!(),
+                    }
+                    let error = prepare_installation(
+                        &request,
+                        &root,
+                        &cache,
+                        &mut custody,
+                        closed.clone(),
+                        |_| {},
+                        || panic!("mismatch must not create"),
+                        runtime.handle(),
+                    )
+                    .unwrap_err();
+                    let expected = if policy == "allowed" {
+                        ImageError::WorkspaceUpdateRequired
+                    } else {
+                        ImageError::WorkspaceVersionUnsupported
+                    };
+                    assert!(
+                        matches!(error, RuntimeError::Image(ref kind) if *kind == expected),
+                        "{error:?}"
+                    );
+                    assert_eq!(snapshot(), before);
+                    assert!(!cache.exists());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_reopen_corrupt_binding_never_reaches_acquisition() {
+        for corruption in ["installationId", "kernel", "buildSourceCommit"] {
+            let (temp, old, _) = profile();
+            let root = temp.path().join("install");
+            let cache = temp.path().join("cache");
+            let runtime = runtime();
+            let (_stop, closed) = watch::channel(false);
+            let mut custody = JournalCustody(None);
+            prepare_installation(
+                &source(old.clone()),
+                &root,
+                &cache,
+                &mut custody,
+                closed.clone(),
+                |_| {},
+                || Journal::create(&root, BackendKind::Qemu, vec![1]),
+                runtime.handle(),
+            )
+            .unwrap();
+            fs::remove_dir_all(&cache).unwrap();
+            if corruption == "kernel" {
+                use std::io::Write;
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(root.join("image/1/os.kernel"))
+                    .unwrap()
+                    .write_all(b"tamper")
+                    .unwrap();
+            } else {
+                let path = root.join("image-binding.json");
+                let mut binding: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                if corruption == "installationId" {
+                    binding[corruption] =
+                        bridge_runtime_protocol::Uuid::new_v4().to_string().into();
+                } else {
+                    binding["identity"][corruption] = "f".repeat(40).into();
+                }
+                fs::write(path, serde_json::to_vec(&binding).unwrap()).unwrap();
+            }
+            for retained in [true, false] {
+                if !retained {
+                    drop(custody.0.take());
+                }
+                let error = prepare_installation(
+                    &source(old.clone()),
+                    &root,
+                    &cache,
+                    &mut custody,
+                    closed.clone(),
+                    |_| {},
+                    || panic!("corruption must not create"),
+                    runtime.handle(),
+                )
+                .unwrap_err();
+                let failure = crate::runtime::types::WorkspaceFailure::from_error(
+                    &error,
+                    crate::runtime::types::WorkspaceOperation::Verify,
+                );
+                assert_eq!(
+                    serde_json::to_value(failure).unwrap()["cause"],
+                    "integrity",
+                    "{corruption}: {error:?}"
+                );
+                assert!(!cache.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn pinned_reopen_unknown_binding_is_a_version_refusal_without_writes() {
+        let (temp, profile, _) = profile();
+        let root = temp.path().join("install");
+        let cache = temp.path().join("cache");
+        let mut custody = JournalCustody(None);
+        let (_stop, closed) = watch::channel(false);
+        let runtime = runtime();
+        prepare_installation(
+            &source(profile.clone()),
+            &root,
+            &cache,
+            &mut custody,
+            closed.clone(),
+            |_| {},
+            || Journal::create(&root, BackendKind::Qemu, vec![1]),
+            runtime.handle(),
+        )
+        .unwrap();
+        fs::remove_dir_all(&cache).unwrap();
+        let snapshot = || {
+            ["image-binding.json", "record.json", "state.disk"].map(|name| {
+                let path = root.join(name);
+                (
+                    fs::read(&path).unwrap(),
+                    fs::metadata(path).unwrap().modified().unwrap(),
+                )
+            })
+        };
+        let before = snapshot();
+        let mut other = profile;
+        let mut manifest: serde_json::Value = serde_json::from_slice(&other.manifest).unwrap();
+        manifest["stateCompatibilityId"] = "next-state-v1".into();
+        other.state_compatibility_id = "next-state-v1".into();
+        other.manifest = serde_json::to_vec(&manifest).unwrap();
+        other.pin.manifest_sha256 = format!("{:x}", Sha256::digest(&other.manifest));
+        for retained in [true, false] {
+            if !retained {
+                drop(custody.0.take());
+            }
+            let error = prepare_installation(
+                &source(other.clone()),
+                &root,
+                &cache,
+                &mut custody,
+                closed.clone(),
+                |_| {},
+                || panic!("refusal must not create"),
+                runtime.handle(),
+            )
+            .unwrap_err();
+            let failure = crate::runtime::types::WorkspaceFailure::from_error(
+                &error,
+                crate::runtime::types::WorkspaceOperation::Verify,
+            );
+            assert_eq!(
+                serde_json::to_value(failure).unwrap()["cause"],
+                "workspaceVersionUnsupported"
+            );
+            assert_eq!(snapshot(), before);
+            assert!(!cache.exists());
+        }
     }
 
     #[test]

@@ -41,6 +41,8 @@ pub enum WorkspaceCause {
     Permission,
     NoSpace,
     Integrity,
+    WorkspaceUpdateRequired,
+    WorkspaceVersionUnsupported,
     InUse,
     Network,
     Preparation,
@@ -115,6 +117,8 @@ impl WorkspaceFailure {
                     | ImageError::LimitExceeded
                     | ImageError::UnsafePath
                     | ImageError::RetainedImage => C::Integrity,
+                    ImageError::WorkspaceUpdateRequired => C::WorkspaceUpdateRequired,
+                    ImageError::WorkspaceVersionUnsupported => C::WorkspaceVersionUnsupported,
                     ImageError::NoSpace => C::NoSpace,
                     ImageError::Busy => C::InUse,
                     ImageError::Storage(std::io::ErrorKind::PermissionDenied) => C::Permission,
@@ -317,6 +321,16 @@ mod workspace_failure_tests {
                 RuntimeError::Image(I::RetainedImage),
                 O::Verify,
                 C::Integrity,
+            ),
+            (
+                RuntimeError::Image(I::WorkspaceUpdateRequired),
+                O::Verify,
+                C::WorkspaceUpdateRequired,
+            ),
+            (
+                RuntimeError::Image(I::WorkspaceVersionUnsupported),
+                O::Verify,
+                C::WorkspaceVersionUnsupported,
             ),
             (RuntimeError::Image(I::NoSpace), O::Prepare, C::NoSpace),
             (RuntimeError::Image(I::Busy), O::Prepare, C::InUse),

@@ -10,8 +10,52 @@ pub(super) struct ReleaseImage {
     pub manifest: Vec<u8>,
     pub image_id: String,
     pub state_compatibility_id: String,
+    pub predecessors: Vec<Predecessor>,
+}
+#[derive(Clone)]
+pub(super) struct Predecessor {
+    pub source: Box<ReleaseImage>,
+    pub app_releases: Vec<String>,
+    pub target_manifests: Vec<String>,
 }
 impl ReleaseImage {
+    fn validate_installed(
+        &self,
+        image: &crate::runtime::image_install::InstalledImageSet,
+        host: &HostTarget,
+    ) -> Result<(), ImageError> {
+        let current = self.validate_host(host)?;
+        if image.identity().manifest_sha256 == self.pin.manifest_sha256 {
+            return image.validate_pinned(&current);
+        }
+        for predecessor in &self.predecessors {
+            if image.identity().manifest_sha256 != predecessor.source.pin.manifest_sha256 {
+                continue;
+            }
+            let resolved = predecessor
+                .source
+                .validate_host(host)
+                .map_err(|error| match error {
+                    ImageError::Unsupported | ImageError::Incompatible(_) => {
+                        ImageError::WorkspaceVersionUnsupported
+                    }
+                    other => other,
+                })?;
+            image.validate_pinned(&resolved)?;
+            return Err(
+                if !predecessor.app_releases.is_empty()
+                    && predecessor
+                        .target_manifests
+                        .contains(&self.pin.manifest_sha256)
+                {
+                    ImageError::WorkspaceUpdateRequired
+                } else {
+                    ImageError::WorkspaceVersionUnsupported
+                },
+            );
+        }
+        Err(ImageError::WorkspaceVersionUnsupported)
+    }
     fn validate_host(&self, host: &HostTarget) -> Result<ResolvedImage, ImageError> {
         let resolved = crate::runtime::manifest::resolve_image(&self.pin, &self.manifest, host)?;
         self.validate(resolved.identity(), resolved.target())?;
@@ -36,29 +80,73 @@ impl ReleaseImage {
 /// The URLs stay fixed across the draft walks and app publication. Missing
 /// public images are a download error, never a request for operator credentials.
 pub(super) fn shipping_image(target: ImageTarget) -> Option<ReleaseImage> {
-    let (platform, manifest, digest) = match target {
+    let (manifest, digest) = match target {
         ImageTarget::MacosArm64 => (
-            "macos-arm64",
             include_bytes!("../../../images/release/macos-arm64.json").as_slice(),
             "f8c2d2b1423aa63b9f9b626eb428c944e5283277303872e47df655ee6064709e",
         ),
         ImageTarget::WindowsAmd64 => (
-            "windows-amd64",
             include_bytes!("../../../images/release/windows-amd64.json").as_slice(),
             "be18ce4298a22b28bec2de5776288726bc5bd020c2dc9a62c360fc256a9718e9",
         ),
     };
+    let mut image = release_image(
+        target,
+        manifest,
+        digest,
+        "bridge-images-preview-43e73491-r2",
+    )?;
+    let source = match target {
+        ImageTarget::MacosArm64 => {
+            include_bytes!("../../../images/predecessors/v0.1.2/macos-arm64.json").as_slice()
+        }
+        ImageTarget::WindowsAmd64 => {
+            include_bytes!("../../../images/predecessors/v0.1.2/windows-amd64.json").as_slice()
+        }
+    };
+    let source_digest = match target {
+        ImageTarget::MacosArm64 => {
+            "f8c2d2b1423aa63b9f9b626eb428c944e5283277303872e47df655ee6064709e"
+        }
+        ImageTarget::WindowsAmd64 => {
+            "be18ce4298a22b28bec2de5776288726bc5bd020c2dc9a62c360fc256a9718e9"
+        }
+    };
+    image.predecessors.push(Predecessor {
+        source: Box::new(release_image(
+            target,
+            source,
+            source_digest,
+            "bridge-images-preview-43e73491-r2",
+        )?),
+        app_releases: vec!["v0.1.2".into()],
+        // The image-release owner registers exact qualified destination hashes.
+        // Keeping source evidence is not permission to move to an arbitrary pin.
+        target_manifests: vec![],
+    });
+    Some(image)
+}
+fn release_image(
+    target: ImageTarget,
+    manifest: &[u8],
+    digest: &str,
+    release: &str,
+) -> Option<ReleaseImage> {
     let value: serde_json::Value = serde_json::from_slice(manifest).ok()?;
-    let base = "https://github.com/orka-agents/orka-bridge/releases/download/bridge-images-preview-43e73491-r2/";
+    let platform = match target {
+        ImageTarget::MacosArm64 => "macos-arm64",
+        ImageTarget::WindowsAmd64 => "windows-amd64",
+    };
+    let base = format!("https://github.com/orka-agents/orka-bridge/releases/download/{release}/");
     Some(ReleaseImage {
         pin: ImagePin {
-            release_id: "bridge-images-preview-43e73491-r2".into(),
+            release_id: release.into(),
             manifest_url: format!("{base}manifest-{platform}.json"),
             manifest_sha256: digest.into(),
             accepted_schema_sha256:
                 "80a867ef73ef29685f3d7e7d4d72365ca823cc9a56ce6e0ea9e1ee3e39b92d21".into(),
             target,
-            asset_base: base.into(),
+            asset_base: base,
             redirect_origins: vec!["https://release-assets.githubusercontent.com".into()],
             limits: TransferLimits {
                 compressed_bytes: value["artifact"]["compressedBytes"].as_u64()?,
@@ -70,6 +158,7 @@ pub(super) fn shipping_image(target: ImageTarget) -> Option<ReleaseImage> {
         manifest: manifest.to_vec(),
         image_id: value["imageId"].as_str()?.into(),
         state_compatibility_id: value["stateCompatibilityId"].as_str()?.into(),
+        predecessors: vec![],
     })
 }
 
@@ -127,8 +216,15 @@ pub(super) fn open_selected(
     std::sync::Arc<crate::runtime::image_install::InstalledImageSet>,
     crate::runtime::types::RuntimeError,
 > {
+    use crate::runtime::image_install::inspect_installed_image;
+    #[cfg(debug_assertions)]
     use crate::runtime::image_install::open_installed_image;
-    let opened = open_installed_image(&journal.image_target(source.compatibility())?);
+    let target = journal.image_target(source.compatibility())?;
+    let opened = match source {
+        ImageSource::Pinned { .. } => inspect_installed_image(&target),
+        #[cfg(debug_assertions)]
+        ImageSource::Development => open_installed_image(&target),
+    };
     #[cfg(debug_assertions)]
     if matches!(source, ImageSource::Pinned { .. })
         && (matches!(opened, Err(ImageError::RetainedImage))
@@ -154,7 +250,13 @@ pub(super) fn open_selected(
             }
         }
     }
-    opened.map(std::sync::Arc::new).map_err(Into::into)
+    let image = opened?;
+    match source {
+        ImageSource::Pinned { profile, host } => profile.validate_installed(&image, host)?,
+        #[cfg(debug_assertions)]
+        ImageSource::Development => {}
+    }
+    Ok(std::sync::Arc::new(image))
 }
 
 /// This helper never owns a backend. The factory keeps the original Journal

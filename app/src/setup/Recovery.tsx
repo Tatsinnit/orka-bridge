@@ -23,7 +23,7 @@ export default function Recovery({ detail, preflightFailure, failure, disabled, 
     <div className="workspace-step-actions">
       {info.topic && <Button type="button" kind="primary" onClick={() => { void help(); }}>Show me how</Button>}
       <Button type="button" kind={info.topic ? 'secondary' : 'primary'} disabled={disabled || info.retryBlocked}
-        title={info.retryBlocked ? 'Quit Bridge and reopen it before trying again' : undefined} onClick={onRetry}>Try again</Button>
+        title={info.retryBlocked ? info.category === 'stopUnconfirmed' ? 'Quit Bridge and reopen it before trying again' : info.action : undefined} onClick={onRetry}>Try again</Button>
       <Button type="button" kind="secondary" onClick={() => { void copy(); }}>Copy details for help</Button>
     </div>
     <Disclosure label={expanded ? 'Hide details' : 'Show details'} open={expanded} controls="workspace-failure-details" onOpenChange={setExpanded}>

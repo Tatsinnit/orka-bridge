@@ -110,6 +110,21 @@ test('typed unconfirmed stop cannot admit a second workspace', async () => {
   native({ cause: 'stopUnconfirmed', operation: 'stop', codes: [] }); render(<App />); await openLocalSetup();
   expect((await screen.findByRole('alert')).textContent).toContain("couldn't be stopped safely");
   expect(screen.getByRole('button', { name: 'Try again' }).matches(':disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Try again' }).title).toBe('Quit Bridge and reopen it before trying again');
+});
+
+test.each(['workspaceUpdateRequired', 'workspaceVersionUnsupported'] as const)('version refusal %s cannot retry or replace the workspace', async cause => {
+  const { ipc } = native({ cause, operation: 'verify', codes: [] });
+  const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('Open the matching Bridge version.');
+  expect(alert.textContent).not.toContain("download couldn't be verified");
+  const retry = within(alert).getByRole('button', { name: 'Try again' });
+  expect(retry.matches(':disabled')).toBe(true);
+  expect(retry.title).toBe('Open the matching Bridge version.');
+  await user.click(retry);
+  expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(0);
+  expect(screen.queryByRole('button', { name: 'Set up new workspace' })).toBeNull();
 });
 
 test('sign-in removal stays in progress in the setup step and shell', async () => {

@@ -416,7 +416,6 @@ fn validate_binding(
         || binding.image_generation != 1
         || binding.installation_id != target.id
         || binding.target != target_name(target.target)
-        || binding.identity.state_compatibility_id != target.compatibility
         || binding.installation_directory != dir_id(target.root)?
         || !valid_hash(&binding.identity.manifest_sha256)
         || binding.identity.image_id.is_empty()
@@ -538,18 +537,40 @@ fn verify_files(
 pub fn open_installed_image(
     target: &InstallationImageTarget<'_>,
 ) -> Result<InstalledImageSet, ImageError> {
+    let image = read_installed_image(target)?.ok_or(ImageError::RetainedImage)?;
+    if image.identity().state_compatibility_id != target.compatibility {
+        return Err(ImageError::RetainedImage);
+    }
+    Ok(image)
+}
+/// Owned structural inspection is not permission to boot a different image.
+#[cfg_attr(test, allow(dead_code))] // Some actual-source harnesses omit the native caller.
+pub(crate) fn inspect_installed_image(
+    target: &InstallationImageTarget<'_>,
+) -> Result<InstalledImageSet, ImageError> {
+    // Only absence can mean an unfinished new install. A committed malformed
+    // binding must not fall through to acquisition as RetainedImage does.
+    read_installed_image(target)
+        .map_err(|error| match error {
+            ImageError::RetainedImage => ImageError::Integrity,
+            other => other,
+        })?
+        .ok_or(ImageError::RetainedImage)
+}
+fn read_installed_image(
+    target: &InstallationImageTarget<'_>,
+) -> Result<Option<InstalledImageSet>, ImageError> {
     validate_target(target.root, target.owner, target.id)?;
-    let binding: Binding = json(target.root, "image-binding.json").map_err(|e| {
-        if missing(&e) {
-            ImageError::RetainedImage
-        } else {
-            e
-        }
-    })?;
+    match target.root.symlink_metadata("image-binding.json") {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(storage(error)),
+        Ok(_) => {}
+    }
+    let binding: Binding = json(target.root, "image-binding.json")?;
     validate_binding(&binding, target)?;
     verify_files(target.root, &binding, false, || Ok(()))?;
     sync_namespace(target, &binding)?;
-    Ok(installed(binding))
+    Ok(Some(installed(binding)))
 }
 fn sync_namespace(
     target: &InstallationImageTarget<'_>,
