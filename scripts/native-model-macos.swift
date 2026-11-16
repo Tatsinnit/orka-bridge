@@ -104,7 +104,8 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         let lenient = ["local-key-", "local-reset-", "local-remove-"].contains { name.hasPrefix($0) }
         let nativeText = !found && name.hasPrefix("local-") && (nativeResultTextIsVisible(value) || lenient && nativeChatTextIsVisible(value))
         let chatText = !found && name.hasPrefix("chat-") && nativeChatTextIsVisible(value)
-        require(found || nativeText || chatText, "Missing \(value) in \(name): \(text)")
+        let workspaceControl = !found && name.hasPrefix("local-workspace-") && nativeWorkspaceButtonIsVisible(value)
+        require(found || nativeText || chatText || workspaceControl, "Missing \(value) in \(name): \(text)")
     }
     guard let bitmap = NSBitmapImageRep(data: try Data(contentsOf: URL(fileURLWithPath: file))),
           let colour = bitmap.colorAt(x: bitmap.pixelsWide - 20, y: bitmap.pixelsHigh - 20)?.usingColorSpace(.deviceRGB)
@@ -114,7 +115,8 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     // Setup frames 1c, 1d (cropped) and 1e exist only in light; dark captures use them as layout references.
     // Frames 1g (AI connection failed) and 1h (AI reset) are approved in both themes.
     let frame: (file: String, label: String)? =
-        ["local-result", "local-answer", "local-story", "local-running", "local-stopping"].contains(where: { name.hasPrefix($0) }) ? ("designer-reference-\(theme)", "Approved Designer frame (wide reference)")
+        name.hasPrefix("local-workspace-") || name == "local-stopped" ? ("workspace-reference-\(theme)", "Approved workspace frame (wide reference)")
+        : ["local-result", "local-answer", "local-story", "local-running", "local-stopping"].contains(where: { name.hasPrefix($0) }) ? ("designer-reference-\(theme)", "Approved Designer frame (wide reference)")
         : name.hasPrefix("local-first-pass") ? ("setup-reference-first-pass", "Approved frame 1e, light (wide reference)")
         : name.hasPrefix("local-setup-installing") || name.hasPrefix("local-setup-meet") ? ("setup-reference-meet", "Approved frame 1c, light (wide reference)")
         : ["before-connect", "connected"].contains(name) || name.hasPrefix("local-setup-ai") || name.hasPrefix("local-setup-queued") || name.hasPrefix("local-setup-connected") || name.hasPrefix("local-key-anthropic-empty") ? ("setup-reference-ai", "Approved frame 1d, light (wide reference, cropped)")
@@ -299,12 +301,14 @@ click("Retry removal", rows)
 rows = try capture("removed", ["no longer has a saved sign-in", "GitHub CLI stays signed in", "Connect the AI"])
 click("Connect the AI", rows)
 rows = try capture("reconnected", ["Connected", "Remove sign-in"])
-// Only the fixture's finite in-memory state changes; no VM or files are touched.
-click("Stop the local cluster", rows)
-rows = try capture("local-stopped", ["Where should your agents run?", "On this computer", "Continue"])
-require(enabledButton("Stop the local cluster") == nil, "Stop must leave the local preflight page")
+// Workspace Stop is exercised after the original baseline coverage below.
 // Reuse the setup-progress selector and the existing Places entry to remount real
 // preflight for each bounded synthetic result. No native admission command runs.
+// This synthetic reset is a fresh choice, so acknowledge Welcome explicitly;
+// Stop no longer provides that unrelated presentation side effect.
+try "preflight-ready".write(to: setupProgress, atomically: true, encoding: .utf8)
+waitForButton("Get started")
+click("Get started", [])
 for state in ["ready", "unknown", "blocked", "memory", "mixed", "cluster"] {
     try "preflight-\(state)".write(to: setupProgress, atomically: true, encoding: .utf8)
     for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
@@ -409,14 +413,15 @@ func waitForNativeText(_ text: String) {
     }
     require(false, "Native text did not appear: \(text)")
 }
-// Fresh-profile automatic outcomes. With an outcome selected, the fixture's Stop restores
-// only its sample and reloads the renderer without its first-test claim; no VM or files.
+// Fresh-profile automatic outcomes use the explicit preflight fixture reset, never Stop.
+// This restores the sample and reloads the renderer without its first-test claim; no VM or files.
 for outcome in ["passed", "unknown"] {
     try outcome.write(to: firstTestOutcome, atomically: true, encoding: .utf8)
     localSize(1280, 800); scroll(4000)
-    reveal("Stop the local cluster")
-    click("Stop the local cluster", [])
-    waitForButton("Set up"); click("Set up", [])
+    try "preflight-ready".write(to: setupProgress, atomically: true, encoding: .utf8)
+    waitForButton("Set up")
+    try FileManager.default.removeItem(at: setupProgress)
+    click("Set up", [])
     waitForButton("Continue"); scroll(-4000); click("Continue", [])
     waitForButton("Connect the AI"); click("Connect the AI", [])
     if outcome == "passed" {
@@ -704,6 +709,16 @@ func nativeResultTextIsVisible(_ expected: String) -> Bool {
         return bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)
     }
 }
+// Vision read the visible Stop workspace button with a lowercase initial.
+// Exact, in-window accessibility controls prove the same property independently.
+func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
+    nativeElements().contains { element in
+        guard ["AXButton", "AXCheckBox"].contains(attribute(element, "AXRole") as? String ?? ""),
+            ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == expected }),
+            let bounds = nativeBounds(element) else { return false }
+        return window()!.1.contains(bounds)
+    }
+}
 func nativeChatTextIsVisible(_ expected: String) -> Bool {
     nativeElements().contains { element in
         guard attribute(element, "AXRole") as? String == "AXStaticText",
@@ -985,3 +1000,94 @@ _ = try capture("local-remove-confirmation-compact", ["saved sign-in?", "Cancel"
 click("Cancel", [])
 click("Clusters", [])
 _ = try capture("local-places-compact", ["Choose where agents run", "This computer"])
+// Stop/restart uses real UI actions. The existing selector settles only pending
+// synthetic IPC; no VM, credentials or provider is accessed.
+localSize(1280, 800)
+scroll(4000)
+click("Manage", [])
+func workspacePhase(_ phase: String) throws {
+    try phase.write(to: setupProgress, atomically: true, encoding: .utf8)
+    Thread.sleep(forTimeInterval: 1.2)
+}
+func workspaceCapture(_ state: String, _ expected: [String]) throws {
+    for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+        localSize(width, height)
+        scroll(4000)
+        _ = try capture("local-workspace-\(state)-\(size)", expected)
+    }
+    localSize(1280, 800)
+    scroll(4000)
+}
+try workspacePhase("workspace-wait")
+click("Stop the local cluster", [])
+try workspaceCapture("confirmation", ["Stop the workspace?", "Stop workspace", "Keep running"])
+click("Keep running", [])
+require(enabledButton("Stop the local cluster") != nil, "Keep running must not stop the workspace")
+click("Stop the local cluster", [])
+click("Stop workspace", [])
+try workspaceCapture("stopping", ["This computer", "Workspace", "Stopping"])
+require(enabledButton("Start") == nil, "Start must be disabled until stop acknowledgement")
+try workspacePhase("workspace-stopped")
+waitForButton("Start")
+try workspaceCapture("stopped", ["This computer", "Workspace", "Stopped", "Start"])
+_ = try capture("local-stopped", ["This computer", "Stopped", "Start"])
+require(!nativeElements().contains { attribute($0, "AXRole") as? String == "AXRadioButton" }, "Stop must not return to first-run choices")
+click("Start", [])
+waitForButton("Cancel")
+try workspaceCapture("starting", ["This computer", "Starting", "0:18 so far", "Cancel"])
+try workspacePhase("workspace-wait")
+click("Cancel", [])
+try workspacePhase("workspace-stopped")
+waitForButton("Start")
+try workspaceCapture("cancelled", ["This computer", "Stopped", "Start"])
+click("Start", [])
+try workspacePhase("workspace-failed")
+waitForButton("Try again")
+try workspaceCapture("failed", ["This computer", "Couldn't start", "Try again"])
+try workspacePhase("workspace-wait")
+click("Try again", [])
+try workspacePhase("workspace-running")
+waitForButton("Stop")
+try workspaceCapture("running", ["This computer", "Running", "Stop"])
+try workspacePhase("workspace-wait")
+click("Stop", [])
+click("Stop workspace", [])
+try workspacePhase("workspace-stopped")
+waitForButton("Start")
+try workspacePhase("workspace-unavailable")
+try workspaceCapture("unavailable", ["This computer", "Status unavailable"])
+require(enabledButton("Start") == nil, "Unreadable status must not authorize Start")
+try workspacePhase("workspace-stopped")
+waitForButton("Start")
+click("Start", [])
+try workspacePhase("workspace-running")
+waitForButton("Stop")
+try workspacePhase("workspace-wait")
+click("Stop", [])
+click("Stop workspace", [])
+try workspacePhase("workspace-closed")
+try workspaceCapture("closed", ["This computer", "Stopped", "Quit Bridge and reopen it"])
+require(enabledButton("Start") == nil, "Terminal closed state must not offer an inert Start")
+// Closed and failed are terminal: reset only the bounded fixture selector for
+// independent Stop failures, rather than duplicating the full restart walk.
+try workspacePhase("workspace-reset-ready")
+waitForButton("Stop")
+try workspacePhase("workspace-wait")
+click("Stop", [])
+click("Stop workspace", [])
+try workspacePhase("workspace-stop-failed")
+try workspaceCapture("stop-failed", ["This computer", "Couldn't stop", "Try again"])
+require(enabledButton("Try again") == nil, "Unconfirmed Stop must not authorize Try again")
+require(enabledButton("Start") == nil, "Unconfirmed Stop must not authorize Start")
+
+try workspacePhase("workspace-reset-ready")
+waitForButton("Stop")
+try workspacePhase("workspace-wait")
+click("Stop", [])
+click("Stop workspace", [])
+try workspacePhase("workspace-stop-lost-reply")
+try workspaceCapture("stop-lost-reply", ["This computer", "Status unavailable", "Workspace status is unavailable"])
+require(enabledButton("Stop") == nil && enabledButton("Start") == nil, "Lost Stop reply must pause workspace actions")
+try workspacePhase("workspace-stopped")
+waitForButton("Start")
+try workspaceCapture("stop-reply-recovered", ["This computer", "Stopped", "Start"])

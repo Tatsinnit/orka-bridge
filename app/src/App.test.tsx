@@ -347,7 +347,8 @@ test('Stop from cancellation shares Setup busy/status and leaves a restarted clu
   let finish!: (value: unknown) => void;
   const ipc = vi.fn(command => {
     if (command === 'setup_status') return status;
-    if (command === 'setup_change_local') return new Promise(resolve => { finish = resolve; });
+    if (command === 'setup_cancel_local') return new Promise(resolve => { finish = resolve; });
+    if (command === 'setup_select_local') { status = { selected: 'localVm', localVm: 'ready', model: 'locked' }; return status; }
     if (command === 'agent_open') return { documentId, name: 'reader', agent: '---\nname: reader\n---\nRead.', tests: 'Check' };
     if (command === 'agent_run_status') return { documentId, busy: null, state: 'complete', canRun: true, cancellation: 'unconfirmed', canRetryCancellation: false, canCheckCancellation: false, report: { verdict: 'unknown', cases: [] }, acknowledged: [], pending: null, error: 'session' };
     return { kind: 'version', version: 'v0.4.2', hasDiagnostics: false };
@@ -356,17 +357,19 @@ test('Stop from cancellation shares Setup busy/status and leaves a restarted clu
   await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
   await user.click(await screen.findByRole('button', { name: 'Stop the local cluster' }));
   expect(screen.getByRole('button', { name: 'Clusters' }).getAttribute('aria-current')).toBe('page');
-  expect(within(screen.getByRole('contentinfo')).getByText(/Stopping the local cluster/)).toBeTruthy();
+  expect(within(screen.getByRole('contentinfo')).getByText('Stopping the workspace. Your agents and files are kept.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Stop the local cluster' })?.hasAttribute('disabled')).not.toBe(false);
   expect(localStorage.getItem('bridge.firstTest.v1')).toBeNull();
-  status = { selected: null, localVm: 'cancelled', model: 'locked' };
+  status = { selected: 'localVm', localVm: 'cancelled', model: 'locked' };
   await act(async () => finish(status));
-  await screen.findByRole('heading', { name: 'Where should your agents run?' });
-  status = { selected: 'localVm', localVm: 'ready', model: 'locked' };
-  fireEvent.focus(window);
+  await screen.findByRole('heading', { name: 'This computer', level: 1 });
+  expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Start' }));
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   await waitFor(() => expect(screen.getByRole('button', { name: 'Run tests' }).hasAttribute('disabled')).toBe(false));
-  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_change_local')).toHaveLength(1);
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_cancel_local')).toHaveLength(1);
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_select_local')).toHaveLength(1);
+  expect(ipc.mock.calls.some(([cmd]) => cmd === 'setup_change_local')).toBe(false);
   expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(0);
 });
 

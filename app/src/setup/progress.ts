@@ -1,10 +1,10 @@
-import type { ModelState } from './Model';
-import { formatSize } from './requirements';
-import type { SetupStatus } from './state';
-import type { CheckStepState } from './Steps';
 import type { Status } from '../components/DesignSystem';
+import type { ModelState } from './Model';
 import { preflightRecovery } from './preflight-state';
 import { workspaceRecovery } from './recovery-info';
+import { formatSize } from './requirements';
+import type { CheckStepState } from './Steps';
+import type { SetupStatus } from './state';
 
 // One derivation feeds the tab, footer and step list so their counters cannot disagree.
 // Infrastructure substages share one workspace step; the file bar measures only file work.
@@ -18,7 +18,14 @@ export const plural = (count: number, unit: string) => `${count} ${unit}${count 
 // Native support must be affirmed: an unsupported platform or an older snapshot never offers the early choice.
 export const canQueueModel = (status: SetupStatus | undefined) =>
   status?.modelSupported === true && status.selected === 'localVm' && ['preparing', 'installing', 'starting'].includes(status.localVm);
-export function setupView(status: SetupStatus | undefined, { checking = false, stopping = false, model = 'idle', check, initialAutomatic = false }: { checking?: boolean; stopping?: boolean; model?: ModelState; check?: CheckStepState; initialAutomatic?: boolean } = {}): SetupView {
+export function workspaceView(status: SetupStatus, { stopping = false, starting = false }: { stopping?: boolean; starting?: boolean } = {}): { word: string; detail: string; status: Status; tone: Tone } {
+  if (stopping || status.localVm === 'closing') return { word: 'Stopping', detail: 'Stopping the workspace. Your agents and files are kept.', status: 'running', tone: 'busy' };
+  if (starting || ['preparing', 'installing', 'starting'].includes(status.localVm)) return { word: 'Starting', detail: 'Starting the workspace.', status: 'running', tone: 'busy' };
+  if (status.localVm === 'failed') return { word: status.workspaceFailure?.operation === 'stop' ? "Couldn't stop" : "Couldn't start", detail: status.workspaceFailure?.operation === 'stop' ? 'The workspace may still be stopping. Quit Bridge and reopen it before trying again.' : "The workspace couldn't start. Your agents and files are kept.", status: 'failed', tone: 'bad' };
+  if (status.localVm === 'ready') return { word: 'Running', detail: 'The workspace is running on this computer.', status: 'passed', tone: 'ready' };
+  return { word: 'Stopped', detail: 'The workspace is stopped. Your agents and their files are kept.', status: 'not-started', tone: 'wait' };
+}
+export function setupView(status: SetupStatus | undefined, { checking = false, stopping = false, starting = false, workspace = false, model = 'idle', check, initialAutomatic = false }: { checking?: boolean; stopping?: boolean; starting?: boolean; workspace?: boolean; model?: ModelState; check?: CheckStepState; initialAutomatic?: boolean } = {}): SetupView {
   const view = (place: SetupView['place'], step: number, line: string, detail: string, tone: Tone, done = false): SetupView => ({
     place, step, done, line, detail, tone,
     tabLine: !done && step > 0 && (tone === 'busy' || tone === 'needs-you') ? `Setting up, step ${step} of ${setupSteps}` : line,
@@ -27,6 +34,11 @@ export function setupView(status: SetupStatus | undefined, { checking = false, s
     action: done ? 'Manage' : step === 3 ? 'Connect the AI' : place === 'local' ? 'Continue setup' : 'Set up',
   });
   if (!status) return checking ? view('checking', 0, 'Checking the local cluster…', 'Checking the local cluster…', 'busy') : view('unavailable', 0, 'Local cluster unavailable', 'Local cluster unavailable', 'needs-you');
+  if (workspace) {
+    const state = workspaceView(status, { stopping, starting });
+    const result = view('local', 0, `Workspace ${state.word.toLowerCase()}`, state.detail, state.tone, status.localVm === 'ready');
+    return { ...result, tabLine: `This computer, ${state.word.toLowerCase()}`, action: state.word === 'Stopped' && status.localVm === 'cancelled' ? 'Start' : 'Manage' };
+  }
   const place = status.selected === 'localVm' ? 'local' : 'none';
   if (status.localVm === 'notIntegrated') return view(place, 0, 'Local cluster unavailable', 'Local cluster unavailable', 'needs-you');
   if (place === 'none') return view(place, 0, 'Choose where agents run', 'Choose where agents run', 'wait');

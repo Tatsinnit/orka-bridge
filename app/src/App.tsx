@@ -1,21 +1,20 @@
-import { Button } from './components/Button';
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react';
 import mark from './assets/orka-mark.svg';
-import Setup, { type LocalClusterControl } from './setup/Setup';
-import { firstTestPending, retireFirstTest, useFirstTest } from './setup/first-test';
-import Example, { type DocumentAction } from './designer/Example';
-import Overview from './overview/Overview';
-import { SAMPLE_DOCUMENT_ID } from './designer/agent-api';
-import { selectedDocument } from './designer/documents-api';
-import type { SetupStatus, ExamplePair } from './setup/state';
 import type { SelectedPlace } from './clusters/api';
+import { sendAgentFocus } from './clusters/send-api';
+import { Button } from './components/Button';
+import { agentInfo, SAMPLE_DOCUMENT_ID, type SaveState, type SourceId, sameSource } from './designer/agent-api';
+import { selectedDocument } from './designer/documents-api';
+import Example, { type DocumentAction } from './designer/Example';
+import { type RunSnapshot, runCall } from './designer/run-api';
+import Overview from './overview/Overview';
+import { firstTestPending, retireFirstTest, useFirstTest } from './setup/first-test';
 import type { ModelState } from './setup/Model';
-import { workspaceRecovery } from './setup/recovery-info';
 import { preflightRecovery } from './setup/preflight-state';
 import { setupView } from './setup/progress';
-import { runCall, type RunSnapshot } from './designer/run-api';
-import { sendAgentFocus } from './clusters/send-api';
-import { agentInfo, sameSource, type SaveState, type SourceId } from './designer/agent-api';
+import { workspaceRecovery } from './setup/recovery-info';
+import Setup, { type LocalClusterControl } from './setup/Setup';
+import type { ExamplePair, SetupStatus } from './setup/state';
 
 const pages = ['Overview', 'Designer', 'Clusters'] as const;
 type Page = (typeof pages)[number];
@@ -85,6 +84,7 @@ export default function App() {
   const [model, setModel] = useState<ModelState>('idle');
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [returningWorkspace, setReturningWorkspace] = useState(false);
   const [workspaceStopping, setWorkspaceStopping] = useState(false);
   const localCluster = useRef<LocalClusterControl>(null);
   const [localSetupView, setLocalSetupView] = useState(false);
@@ -183,7 +183,7 @@ export default function App() {
   // Tab, footer and the Setup card share this derivation. Native selection, not the default radio, names the host.
   const initialAutomatic = firstTest === 'running' || (model === 'connected' && firstTestPending() && (!sample || sample.state === 'idle'));
   const firstTestResult = sampleSource !== null && sample?.report ? { failed: sample.report.cases.filter(check => check.verdict === 'failed').length } : undefined;
-  const view = setupView(setup, { checking, stopping: workspaceStopping, model, check: firstCheck, initialAutomatic });
+  const view = setupView(setup, { checking, stopping: workspaceStopping, starting: workspaceBusy && !workspaceStopping, workspace: returningWorkspace, model, check: firstCheck, initialAutomatic });
   const { line: setupLine, detail, tone: hostTone } = view;
   const workspaceReady = setup?.localVm === 'ready';
   const workspaceTransition = !!setup && ['preparing', 'installing', 'starting', 'closing', 'failed'].includes(setup.localVm);
@@ -276,7 +276,7 @@ export default function App() {
           </div>}
         </div>}
         <div hidden={page !== 'Clusters'}>
-          <Setup ref={localCluster} place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstPass={firstPass} modelUnavailable={sample?.error === 'model'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
+          <Setup ref={localCluster} place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceMode={setReturningWorkspace} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstPass={firstPass} modelUnavailable={sample?.error === 'model'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
             onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)} onOpenAgent={() => openDesigner()} />
         </div>
         {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={catalogReady ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} onSeeInOverview={seeInOverview} /></div>}

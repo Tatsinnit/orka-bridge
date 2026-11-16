@@ -8,12 +8,13 @@ import Setup from './Setup';
 
 function native() {
   vi.stubGlobal('isTauri', true);
-  let selected: 'localVm' | null = 'localVm';
+  const selected = 'localVm';
+  let stopped = false;
   const ipc = vi.fn((command: string) => {
-    if (command === 'setup_status') return { selected, localVm: selected ? 'ready' : 'notIntegrated', model: selected ? 'available' : 'locked' };
+    if (command === 'setup_status') return { selected, localVm: stopped ? 'cancelled' : 'ready', model: stopped ? 'locked' : 'available' };
     if (command === 'setup_requirements') return null;
     if (command === 'setup_connect_model') return { ready: true };
-    if (command === 'setup_change_local') { selected = null; return { selected, localVm: 'notIntegrated', model: 'locked' }; }
+    if (command === 'setup_cancel_local') { stopped = true; return { selected, localVm: 'cancelled', model: 'locked' }; }
     if (command === 'cluster_contexts') return [];
     throw Error('Unexpected command: ' + command);
   });
@@ -59,8 +60,9 @@ test('the restored local page owns Stop and stays restartable even without an ol
   const stop = await screen.findByRole('button', { name: 'Stop the local cluster' });
   expect(stop.className).toBe('button button-quiet');
   await user.click(stop);
-  expect(await screen.findByRole('button', { name: 'Continue' })).toBeTruthy();
-  expect(ipc.mock.calls.filter(([command]) => command === 'setup_change_local')).toHaveLength(1);
+  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
+  expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy();
+  expect(ipc.mock.calls.filter(([command]) => command === 'setup_cancel_local')).toHaveLength(1);
 });
 
 test('cluster picking is explicitly separate from stopping and does not stop the local workspace', async () => {

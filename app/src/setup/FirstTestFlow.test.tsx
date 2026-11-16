@@ -11,15 +11,16 @@ const other = '12345678-1234-1234-1234-123456789abc';
 const idle = { documentId: sample, busy: null, state: 'idle', canRun: true, modelConnected: true, report: null, acknowledged: [], pending: null, error: null };
 function native(holdSave = false, lostReplies = false) {
   vi.stubGlobal('isTauri', true);
-  let selected = false; let running = false; let finished = false;
+  let selected = false; let running = false; let finished = false; let stopped = false;
   let attemptId: unknown;
   let unreadable = false; let unreadableFiles = false; let verdict = 'passed'; let saved = pair; let modelUnavailable = false;
-  const status = () => ({ selected: selected ? 'localVm' : null, localVm: selected ? 'ready' : 'idle', model: selected ? 'available' : 'locked' });
+  const status = () => ({ selected: selected ? 'localVm' : null, localVm: stopped ? 'cancelled' : selected ? 'ready' : 'idle', model: selected && !stopped ? 'available' : 'locked' });
   const ipc = vi.fn((command: string, payload?: unknown) => {
     const args = payload as Record<string, unknown> | undefined;
     if (command === 'setup_status') return status();
     if (command === 'setup_requirements') return null;
-    if (command === 'setup_select_local') { selected = true; if (lostReplies) throw Error('Lost selection reply'); return status(); }
+    if (command === 'setup_select_local') { selected = true; stopped = false; if (lostReplies) throw Error('Lost selection reply'); return status(); }
+    if (command === 'setup_cancel_local') { stopped = true; running = false; return status(); }
     if (command === 'setup_change_local') { selected = false; return status(); }
     if (command === 'setup_example') return { agent: pair.agent, tests: pair.tests };
     if (command === 'setup_connect_model') return { ready: true };
@@ -67,6 +68,22 @@ test('first setup stays for its first-pass story, opens only on request and neve
   await user.click(screen.getByRole('button', { name: 'Open web-reader' }));
   expect(screen.getByRole('button', { name: 'Designer' }).getAttribute('aria-current')).toBe('page');
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([['agent_run', { documentId: sample, bundledExample: true, attemptId: expect.any(String) }]]);
+});
+
+test('Stop after the first-pass story retains the workspace without replaying the story or automatic run on restart', async () => {
+  const { ipc, finish } = native(); const user = await completeSetup();
+  await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1)); finish();
+  await user.click(await screen.findByRole('button', { name: 'Open web-reader' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  await user.click(await screen.findByRole('button', { name: 'Stop the local cluster' }));
+  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
+  await user.click(await screen.findByRole('button', { name: 'Start' }));
+  await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
+  await screen.findByRole('button', { name: 'Change' });
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
+  expect(screen.queryByRole('heading', { name: 'Your first agent passed its test' })).toBeNull();
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
+  expect(ipc.mock.calls.filter(([c]) => c === 'setup_change_local')).toHaveLength(0);
 });
 
 test('reading instructions before completion does not dismiss the later payoff', async () => {

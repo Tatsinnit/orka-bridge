@@ -30,9 +30,9 @@ function stepRows({ status, stopping, error, modelState = 'idle', firstCheck, in
   const paused = status.localVm === 'cancelled' || status.localVm === 'closed';
   const connected = modelState === 'connected';
   const infra = stopping ? null : infraProgress(status);
-  const workspace: [Status, string] = status.localVm === 'ready' ? ['passed', 'Ready']
+  const workspace: [Status, string] = stopping || status.localVm === 'closing' ? ['running', 'Stopping']
+    : status.localVm === 'ready' ? ['passed', 'Ready']
     : failed ? ['failed', 'Needs attention'] : paused ? ['not-started', 'Paused']
-    : stopping || status.localVm === 'closing' ? ['running', 'Stopping']
     : infra ? ['running', status.localVm === 'starting' ? 'Starting' : 'Getting ready'] : ['not-started', 'Waiting'];
   const model: [Status, string] = ['failed', 'resetFailed', 'removalFailed'].includes(modelState) ? ['failed', 'Needs attention'] : connected ? ['passed', 'Connected']
     : modelState === 'resetting' ? ['running', 'Resetting'] : modelState === 'connecting' ? ['running', 'Connecting'] : modelState === 'removing' ? ['running', 'Removing sign-in']

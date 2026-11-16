@@ -186,10 +186,11 @@ test('explicit Stop invalidates catalog before the stop reply, retaining the edi
   vi.stubGlobal('isTauri', true); localStorage.setItem('bridge.welcomeSeen.v1', '1');
   let finish!: (value: unknown) => void;
   const ready = { selected: 'localVm', localVm: 'ready', model: 'available', localVmError: null };
+  let current = ready;
   mockIPC(command => {
-    if (command === 'setup_status') return ready;
+    if (command === 'setup_status') return current;
     if (command === 'setup_connect_model') return { ready: true };
-    if (command === 'setup_change_local') return new Promise(resolve => { finish = resolve; });
+    if (command === 'setup_cancel_local') return new Promise(resolve => { finish = resolve; });
     if (command === 'workspace_catalog') return catalog;
     if (command === 'setup_example') return { agent: source, tests: 'Checks' };
     if (command === 'agent_open') return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', name: 'web-reader', agent: source, tests: 'Checks' };
@@ -202,10 +203,14 @@ test('explicit Stop invalidates catalog before the stop reply, retaining the edi
   await screen.findByRole('option', { name: 'listed' });
   await user.click(screen.getByRole('button', { name: /Clusters/ }));
   await user.click(screen.getByRole('button', { name: 'Stop the local cluster' }));
+  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
   // Designer stays mounted under the inactive page. It must not retain old choices.
   expect(document.querySelector('option[value="listed"]')).toBeNull();
   expect(document.querySelector('.instructions-editor')?.textContent).toBe('Role only.\n');
-  await act(async () => finish({ ...ready, selected: null, localVm: 'idle', model: 'locked' }));
+  await act(async () => { current = { ...ready, localVm: 'cancelled', model: 'locked' }; finish(current); });
+  expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).disabled).toBe(false);
 });
 test('workspace generation invalidates a late catalog without losing the owned draft', async () => {
   const pending: ((value: unknown) => void)[] = []; vi.stubGlobal('isTauri', true);

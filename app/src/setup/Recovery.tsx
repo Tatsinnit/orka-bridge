@@ -29,7 +29,7 @@ export default function Recovery({ detail, preflightFailure, failure, disabled, 
     <Disclosure label={expanded ? 'Hide details' : 'Show details'} open={expanded} controls="workspace-failure-details" onOpenChange={setExpanded}>
     {expanded && <div id="workspace-failure-details" className="workspace-progress-details"><p>Stage: {info.stage}</p><pre tabIndex={0}>{preflightFailure ? info.summary : detail || 'No further error details were reported.'}</pre></div>}</Disclosure>
     </div>
-    <Button kind="quiet" className="workspace-fallback" disabled={disabled || !onCluster} onClick={onCluster}>Use a cluster you already have instead</Button>
+    {onCluster && <Button kind="quiet" className="workspace-fallback" disabled={disabled} onClick={onCluster}>Use a cluster you already have instead</Button>}
     <p className="muted" role="status">{notice}</p>
   </div>;
 }
