@@ -9,7 +9,7 @@ import './clusters.css';
 import { CardSection, Details, Elapsed, GeneratedValue, LongCard, type Status, StatusIcon, StatusPill } from '../components/DesignSystem';
 import { changedFiles, resultAnnouncement, TestProgress, TestResults } from '../components/TestResults';
 
-/** Only brings the Send card into view; the card's own action owns the failed-test warning. */
+/** Opens the Send card; only the card's submit action owns the failed-test warning. */
 export function SendEntry({ blocked, onProceed }: { blocked?: string; onProceed: () => void }) {
   return <div className="send-entry">
     <Button type="button" kind="secondary" disabled={!!blocked} title={blocked} onClick={onProceed}>Send to a cluster</Button>
@@ -159,16 +159,15 @@ export function SendHistory({ revision, onChanged }: { revision: string; onChang
     }, (failure: Error) => { if (mounted) setError(failure.message); });
     return () => { mounted = false; };
   }, [revision, retry]);
-  return <section className="send-history card" aria-label="Past Sends">
-    <h4>Past Sends</h4>
+  return <section className="send-history" aria-label="Past Sends"><Disclosure label="Past Sends">
     <p>Earlier Sends and their test results. An interrupted Send may still be running on the cluster.</p>
     <Details hint="Saved results and limits"><p>Up to 256 Sends, 64 MiB total and 4 MiB per Send. Old terminal details are evicted first. Interrupted Sends are not resumed. Checking their status never sends tests again. Removing saved details changes only this computer, not the cluster. Removed or evicted answers may not be recoverable.</p></Details>
     {error ? <><p role="alert">{error}</p><Button type="button" kind="secondary" onClick={() => setRetry(v => v + 1)}>Retry saved Sends</Button></>
       : history ? history.length ? <ol>{history.map(attempt => <SavedSend key={attempt.id} attempt={attempt} revision={revision} onChanged={onChanged} />)}</ol> : <p>No saved Sends yet.</p> : <p role="status">Reading saved Sends…</p>}
-  </section>;
+  </Disclosure></section>;
 }
-export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, model, local, stale, blocked, onChooseCluster, onReloadSource, onSeeInOverview, onFixLocal }: {
-  documentId?: string; place: SelectedPlace; source?: SourceId; model?: string; local?: RunSnapshot; stale: boolean;
+export default function Send({ expanded = true, documentId = SAMPLE_DOCUMENT_ID, place, source, model, local, stale, blocked, onChooseCluster, onReloadSource, onSeeInOverview, onFixLocal }: {
+  expanded?: boolean; documentId?: string; place: SelectedPlace; source?: SourceId; model?: string; local?: RunSnapshot; stale: boolean;
   blocked?: string; onChooseCluster?: () => void; onReloadSource?: () => Promise<void>;
   /** Opens Overview on the agent recorded for this native Send attempt. */
   onSeeInOverview?: (sendId: string) => void; onFixLocal?: (testId: string) => void;
@@ -227,6 +226,7 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
   const matched = checked?.value && sameSource(source, checked.value.source) === true;
   const mismatched = checked?.value?.source != null && !matched;
   const reason = blocked ?? (foreignBusy ? `${foreignBusy.name} is sending tests.` : undefined) ?? (!target || !provider ? 'Choose a cluster and AI connection in Clusters first'
+    : !agentHash || !testsHash ? 'Saved file versions are unavailable. Open your agent again before sending.'
     : !checked ? 'Checking this destination…' : checked.error ?? (mismatched ? 'Your saved files changed. Reload them to check this destination.'
     : !checked.value?.canSend ? 'Resolve the destination checks before sending.' : undefined));
   const canSeparate = !blocked && !foreignBusy && matched && !!checked?.value?.canSeparate && !!target && !!provider;
@@ -294,7 +294,7 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
     : snapshot?.report?.verdict === 'cancelled' ? ['not-started', 'Cancelled']
     : snapshot?.error ? needsAttention ? ['needs-you', 'Needs attention'] : ['failed', 'Failed']
     : checkingEnabled && !checked ? ['running', 'Checking destination']
-    : !target || !provider ? ['not-started', 'Choose a cluster']
+    : !target || !provider || !agentHash || !testsHash || blocked ? ['not-started', 'Not started']
     : reason ? ['needs-you', 'Needs attention'] : ['passed', 'Ready to send'];
   const passedCount = snapshot?.report?.cases.filter(c => c.verdict === 'passed').length ?? 0;
   const headline = outdated ? 'Earlier result' : running || busy ? 'Tests on your cluster' : unhealthy ? (cancellation === 'requested' ? 'Waiting for the cluster' : 'Tests may still be running')
@@ -330,7 +330,9 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
   // canSend means an attempt is permitted; advisory "unverified" rows (inference, create proof) stay with the collapsed checks.
   const destinationReady = !!checked?.value?.canSend && !mismatched;
   const hasHappened = !!(foreignBusy || message || snapshot || controlCancelling);
-  return <><section ref={panel} tabIndex={-1} className="send-panel card" aria-label="Send and cluster tests">
+  // Only an unused local Send may be hidden. Keep all existing work and recovery visible.
+  const visible = expanded || !!target || !!snapshot || !!foreignBusy || busy || !!message;
+  return <>{visible && <h2 className="section-label">Team cluster</h2>}<section hidden={!visible} ref={panel} tabIndex={-1} className="send-panel card" aria-label="Send and cluster tests">
     <LongCard title={headline} status={<><StatusPill state={resultState}>{pillWord}</StatusPill><span className="status-description">{outdated ? unconfirmed ? undefined : 'Not run since your edit' : running || busy || !snapshot ? undefined : unhealthy ? undefined : uncertain ? snapshot.stage === 'stopped' && !cancellation ? 'Stopped watching' : undefined : undefined}</span></>} summary={<>The saved agent and test files go together{snapshot?.model && <> · <code>{snapshot.model}</code></>}{targetName && <> · <code>{targetName}</code></>}.</>}
       action={<div className="workspace-step-actions">
         {running ? <Button type="button" kind="secondary" disabled={busy || cancelling} onClick={() => { void mutate('send_cancel'); }}>Cancel tests</Button>
@@ -351,10 +353,12 @@ export default function Send({ documentId = SAMPLE_DOCUMENT_ID, place, source, m
       onSend={() => { setWarning(undefined); void mutate('send_start', warning.separate); }}
       onDismiss={focusAnchor => { setWarning(undefined); if (focusAnchor) warning.anchor.focus(); }} />}
    <p className="sr-only test-announcement" role="status" aria-live="polite" aria-atomic="true">{!running ? outdated ? revisionExplanation : cancellation && cancellation !== 'confirmed' ? `${cancellationLabels[cancellation]}.` : snapshot?.stage === 'stopped' && !cancellation ? 'Stopped watching.' : uncertain ? 'Test result unknown.' : resultAnnouncement(snapshot?.report) : undefined}</p>
+    <p className="muted">Team clusters are early in this preview.</p>
+    {!checkingEnabled && reason && (blocked || !foreignBusy) && <p className="muted">{reason}</p>}
     <CardSection title="What you send">
     <dl className="cluster-details"><div><dt>Source</dt><dd>Your saved agent and test files</dd></div>
       <div><dt>This computer</dt><dd>{localEvidence}</dd></div>
-      <div><dt>Destination</dt><dd>{target ? <><code>{target.context_name}</code> · <code>{target.watched_namespace}</code></> : 'Choose a cluster'}</dd></div>
+      {target && <div><dt>Destination</dt><dd><code>{target.context_name}</code> · <code>{target.watched_namespace}</code></dd></div>}
       {provider && <div><dt>AI connection</dt><dd>{(checked?.value?.model ?? model) && <><code>{checked?.value?.model ?? model}</code> through </>}<code>{provider.name}</code> · {provider.ready ? 'AI connection ready; the model is checked when tests run' : 'AI connection not ready'}</dd></div>}
     </dl>
     {!running && canSeparate && <p>Creates a new agent here. Previous work may still run; this does not stop or replace it.</p>}

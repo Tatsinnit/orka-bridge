@@ -99,7 +99,7 @@ test('a restored catalog never reopens a picker dismissed by unavailability', as
 });
 test('independent catalog failures and empty lists do not fall back to static inventory', async () => {
   const user = userEvent.setup(); const view = render(<AgentParts source={source} readOnly={false} onChange={() => {}} />);
-  expect(screen.getByRole('combobox').matches(':disabled')).toBe(true);
+  expect(screen.getByRole('combobox', { name: 'It thinks with' }).matches(':disabled')).toBe(true);
   expect(screen.getByRole('button', { name: 'Add a tool' }).matches(':disabled')).toBe(true);
   expect(screen.getAllByText(/(tools|models).*could not be read/i).length).toBeGreaterThan(0);
   view.rerender(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, models: { state: 'unavailable' }, tools: { state: 'ready', items: [] } }} onChange={() => {}} />);
@@ -180,7 +180,7 @@ test('a failed catalog can be refreshed without changing the file', async () => 
   const user = userEvent.setup(); render(<Example catalogKey={1} />);
   await user.click(await screen.findByRole('button', { name: 'Refresh tools and models' }));
   await screen.findByRole('option', { name: 'listed' });
-  expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('unlisted');
+  expect((screen.getByRole('combobox', { name: 'It thinks with' }) as HTMLSelectElement).value).toBe('unlisted');
 });
 test('explicit Stop invalidates catalog before the stop reply, retaining the editor', async () => {
   vi.stubGlobal('isTauri', true); localStorage.setItem('bridge.welcomeSeen.v1', '1');
@@ -231,4 +231,32 @@ test('workspace generation invalidates a late catalog without losing the owned d
   view.rerender(<Example />);
   expect(screen.queryByRole('option', { name: 'listed' })).toBeNull();
   expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value).toBe('Role only.\n');
+});
+const named: WorkspaceCatalogReply = { ...catalog, defaultModel: 'gpt-5.6-terra', models: { state: 'ready', items: [{ id: 'gpt-5.6-terra' }, { id: 'custom-model-7' }] } };
+test('known model IDs get display names while option values, saved source and emitted IDs stay exact', () => {
+  const changed = vi.fn(); render(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={named} onChange={changed} />);
+  const model = screen.getByRole('combobox', { name: 'It thinks with' }) as HTMLSelectElement;
+  expect(model.value).toBe('gpt-5.6-terra');
+  const known = screen.getByRole('option', { name: 'GPT-5.6 Terra' }) as HTMLOptionElement; expect(known.value).toBe('gpt-5.6-terra');
+  expect(screen.queryByRole('option', { name: 'gpt-5.6-terra' })).toBeNull();
+  expect((screen.getByRole('option', { name: 'custom-model-7' }) as HTMLOptionElement).value).toBe('custom-model-7');
+  expect(document.body.textContent).not.toMatch(/GitHub|Copilot|OpenAI/i);
+  expect(changed).not.toHaveBeenCalled();
+  fireEvent.change(model, { target: { value: 'custom-model-7' } }); expect(readForm(changed.mock.calls[0][0]).model).toBe('custom-model-7');
+  fireEvent.change(model, { target: { value: 'gpt-5.6-terra' } }); expect(changed).toHaveBeenCalledTimes(1);
+});
+test('selecting the friendly option writes the exact ID', () => {
+  const changed = vi.fn(); render(<AgentParts source={source} readOnly={false} catalog={named} onChange={changed} />);
+  fireEvent.change(screen.getByRole('combobox', { name: 'It thinks with' }), { target: { value: 'gpt-5.6-terra' } });
+  expect(readForm(changed.mock.calls[0][0]).model).toBe('gpt-5.6-terra');
+});
+test('unlisted and unavailable known models keep their friendly name and explanations', () => {
+  const view = render(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={{ ...named, models: { state: 'ready', items: [{ id: 'listed' }] } }} onChange={() => {}} />);
+  expect(screen.getByRole('option', { name: 'GPT-5.6 Terra (unlisted)' })).toBeTruthy(); expect(screen.getByText(/It may not run here/)).toBeTruthy();
+  view.rerender(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={{ ...named, models: { state: 'ready', items: [{ id: 'gpt-5.6-terra', chatSupported: false }, { id: 'listed' }] } }} onChange={() => {}} />);
+  expect(screen.getByRole('option', { name: 'GPT-5.6 Terra (not offered for chat)' })).toBeTruthy(); expect(screen.getByText(/not offered for chat by the connected AI/)).toBeTruthy();
+});
+test('a listed local model default is not repeated in helper text', () => {
+  render(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={named} onChange={() => {}} />);
+  expect(screen.queryByText(/Default model/)).toBeNull(); expect(screen.getAllByText(/GPT-5\.6 Terra|gpt-5\.6-terra/)).toHaveLength(1);
 });

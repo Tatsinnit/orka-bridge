@@ -75,7 +75,10 @@ test('a failed local open keeps saved Send history accessible without the source
   });
   render(<Example />);
   await screen.findByRole('button', { name: 'Try opening again' });
-  expect(await screen.findByRole('heading', { name: 'Past Sends' })).toBeTruthy();
+  const history = await screen.findByRole('button', { name: 'Past Sends' });
+  expect(history.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(history);
+  expect(await screen.findByText('No saved Sends yet.')).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Send to a cluster' }).hasAttribute('disabled')).toBe(true);
 });
 test('opening keeps a form-shaped skeleton until the owned document arrives', async () => {

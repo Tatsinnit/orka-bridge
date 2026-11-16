@@ -1,7 +1,7 @@
 .designer-test-list .test-result > summary > .disclosure-label { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
 .designer-test-list .test-result > summary > .disclosure-label > .test-name { grid-column: 1; display: grid; gap: var(--space-1); min-width: 0; overflow-wrap: anywhere; }
 .designer-test-list .test-result > summary > .disclosure-label > .pill { grid-column: 2; font: var(--type-small); }
-.test-name > span { font-family: var(--font-mono); font-size: .92em; font-weight: 500; }
+.test-name > span { font-family: var(--font-ui); font-size: var(--size-body); font-weight: 500; }
 .test-name > code { color: var(--color-text-secondary); font-size: .92em; }
 .test-story { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-4); }
 .test-story > li { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: var(--space-2); align-items: start; }

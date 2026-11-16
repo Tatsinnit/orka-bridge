@@ -1246,10 +1246,17 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try clickSendControl("Run cluster tests again", scrolling: 350)
     Thread.sleep(forTimeInterval: 1)
     try capturePreflight("send-mixed-wide", "1 of 2 tests passed")
-    let failed = try capturePreflight("send-failed-wide", "The answer did not include")
-    require(failed.contains { ($0.topCandidates(1).first?.string ?? "").contains("2099-12-31") }, "Plain test failure reason missing")
+    // Vision can garble this short Inter sentence at a valid scroll position.
+    // Keep the failed test/verdict in the captured frame and require the exact
+    // native reason (including its expected value) fully above the footer.
+    let failureReason = "The answer did not include “2099-12-31”."
+    let visibleFailure: ([VNRecognizedTextObservation]) -> Bool = { seen in
+        seen.contains { ($0.topCandidates(1).first?.string ?? "").contains("Failed") }
+            && nativeTextBounds(failureReason, exact: true).contains { bodyBounds().contains($0) }
+    }
+    try capturePreflight("send-failed-wide", "has-a-date", anchor: failureReason, requiring: visibleFailure)
     try resultSize(540, 900)
-    try capturePreflight("send-failed", "The answer did not include")
+    try capturePreflight("send-failed", "has-a-date", anchor: failureReason, requiring: visibleFailure)
     // Arm only the loopback fixture: first answer completes, second Task stays
     // live. Hold the cancel reply until its in-flight state has been captured.
     try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "cancelling"])
@@ -1393,7 +1400,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try capturePreflight("send-cancel-completion-race", "Tests finished before cancellation.")
     try focusSend()
     try capturePreflight("send-cancel-race-result", "1 of 2 tests passed")
-    try capturePreflight("send-cancel-race-failure", "The answer did not include")
+    try capturePreflight("send-cancel-race-failure", "has-a-date", anchor: failureReason, requiring: visibleFailure)
     // Restore and actually Send the common file version on the primary cluster
     // before comparing it with the secondary. Merely restoring local bytes does
     // not undo the live spec updates exercised above.
@@ -1580,21 +1587,13 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     clickTab("Designer", restarted)
     Thread.sleep(forTimeInterval: 1)
     try clickSendControl("Send to a cluster", scrolling: -350)
-    scrollMain(3000)
-    var historyFound = false
-    for _ in 0..<12 {
-        let seen = try capture("send-probe", "Designer", searching: true)
-        if let heading = seen.first(where: { $0.topCandidates(1).first?.string == "Past Sends" }) {
-            // Position the heading near the top so the two newest summaries fit
-            // even when the dark walk also retains the light walk's history.
-            let y = (1 - heading.boundingBox.maxY) * window()!.1.height
-            scrollMain(-Int32(max(0, y - 110)))
-            historyFound = true
-            break
-        }
-        scrollMain(-250)
+    clickButton("Past Sends")
+    guard let historyHeading = nativeButtons("Past Sends").compactMap({ nativeBounds($0) }).first else {
+        fail("Saved Send history was not reachable after restart")
     }
-    require(historyFound, "Saved Send history was not reachable after restart")
+    // The label is now a disclosure control, not a standalone OCR heading.
+    // Put it near the top so the newest saved summaries fit in the frame.
+    scrollMain(Int32((bodyBounds().minY + 24 - historyHeading.minY).rounded()))
     try capture("send-history-restarted", "Designer")
     // Prove the earlier passing summary remains reachable after restart.
     var savedPass = false

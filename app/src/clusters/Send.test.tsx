@@ -32,6 +32,29 @@ function native(local: unknown = idle, initial: unknown = null, preflight: unkno
   });
   mockIPC(ipc); return ipc;
 }
+test.each([
+  { state: 'running', stage: 'observe', error: null },
+  { state: 'unknown', stage: 'stopped', error: null },
+  { state: 'unknown', stage: 'done', error: 'storage' },
+  { state: 'unknown', stage: 'stopped', error: null, cancellation: 'unconfirmed' },
+  { state: 'failed', stage: 'submit', error: 'connection' },
+])('an existing Send remains visible without explicitly opening it: %j', async snapshot => {
+  native(idle, { ...running, ...snapshot });
+  render(<Send expanded={false} place={{ kind: 'thisComputer' }} source={source} stale={false} />);
+  expect(await screen.findByRole('region', { name: 'Send and cluster tests' })).toBeTruthy();
+  if (snapshot.state === 'running') expect(screen.getByRole('button', { name: 'Cancel tests' })).toBeTruthy();
+});
+
+test('missing saved-file versions do not claim a destination check is running', async () => {
+  const ipc = native();
+  render(<Send place={place} stale={false} />);
+  expect(await screen.findByText('Saved file versions are unavailable. Open your agent again before sending.')).toBeTruthy();
+  expect(screen.queryByText('Checking this destination…')).toBeNull();
+  expect(screen.queryByText('Needs attention')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Send and run tests' }).hasAttribute('disabled')).toBe(true);
+  expect(ipc.mock.calls.some(([command]) => command === 'send_preflight')).toBe(false);
+});
+
 test.each(['blocked', 'cannotCheck'])('preflight %s explains the problem and prevents submission', async status => {
   const ipc = native(idle, null, { ...allowed, rows: [{ label: 'page-reader', status, message: status === 'blocked' ? 'Create page-reader on team-dev.' : 'Bridge cannot check page-reader.' }], canSend: false });
   render(<Send place={place} source={source} stale={false} />);
@@ -313,6 +336,7 @@ test('a confirmed cluster opens the owned editor after failed local setup and ke
     if (command === 'cluster_discover') return [target];
     if (command === 'cluster_use') return { status: 'connected', providers: [provider, other], failure: null };
     if (command === 'agent_open') return pair;
+    if (command === 'agent_select') return null;
     if (command === 'agent_run_status') return idle;
     if (command === 'send_status') return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', view: null, busy: null };
     if (command === 'send_preflight') return { ...allowed, providerId: other.id };
@@ -327,6 +351,13 @@ test('a confirmed cluster opens the owned editor after failed local setup and ke
   await user.click(screen.getByRole('button', { name: 'Open your agent' }));
   expect(await screen.findByRole('heading', { name: 'web-reader', level: 1 })).toBeTruthy();
   expect(screen.queryByText('Read-only during setup')).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'File' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  expect(screen.getByRole('button', { name: 'File' }).getAttribute('aria-pressed')).toBe('true');
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Open your agent' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Agent' }).getAttribute('aria-pressed')).toBe('true'));
   await user.click(screen.getByRole('button', { name: 'Send and run tests' }));
   await waitFor(() => expect(starts).toBe(1));
   expect(sentArgs).toEqual({ documentId: '9b2b93c4-375c-4815-9717-39852a96e411', targetId: target.id, providerId: other.id, expectedSource: source });

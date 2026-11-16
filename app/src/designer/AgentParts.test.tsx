@@ -164,7 +164,7 @@ test('setup opens the owned document for editing but keeps discovery and Run gat
   const instructions = await screen.findByRole('textbox', { name: 'Instructions' });
   expect((instructions as HTMLTextAreaElement).readOnly).toBe(false);
   expect(screen.getByRole('button', { name: 'Add a tool' }).matches(':disabled')).toBe(true);
-  expect(screen.getByRole('combobox').matches(':disabled')).toBe(true);
+  expect(screen.getByRole('combobox', { name: 'It thinks with' }).matches(':disabled')).toBe(true);
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
   await user.click(screen.getByText('More settings'));
   expect(screen.getByText(path)).toBeTruthy();

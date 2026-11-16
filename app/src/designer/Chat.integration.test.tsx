@@ -33,7 +33,7 @@ test('Chat replaces tests and editor without changing their evidence or draft', 
   native(); render(<Example />); const user = await chat(); compose();
   expect(screen.queryByRole('region', { name: 'Tests on the local cluster' })).toBeNull();
   expect(screen.queryByRole('textbox', { name: 'Instructions' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Send to a cluster' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Send to a cluster' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Agent' }));
   expect(screen.getByRole('region', { name: 'Tests on the local cluster' })).toBeTruthy();
   expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value).toContain('Read a page.');

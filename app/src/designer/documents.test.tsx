@@ -68,9 +68,9 @@ test('switch waits for autosave, keeps failed draft, and retry switches without 
   expect(screen.queryByText('Instructions B')).toBeNull();
   expect(screen.getByRole('textbox', { name: 'Agent file' })).toBe(editor);
   fail = false; await user.click(screen.getByRole('button', { name: 'Try saving again' }));
-  await waitFor(() => expect((screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement).value).toBe('Instructions B'));
+  await waitFor(() => expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value).toBe('Instructions B'));
   expect(writes.every(id => id === a)).toBe(true);
-  expect(screen.getByRole('heading', { name: 'beta.agent.md' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Agent' }).getAttribute('aria-pressed')).toBe('true');
 });
 test('late open and reload replies cannot overwrite an identical-byte document', async () => {
   native(); let reload!: (value: unknown) => void; let opens = 0;

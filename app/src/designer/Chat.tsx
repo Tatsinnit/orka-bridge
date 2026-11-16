@@ -61,6 +61,8 @@ export default function Chat({ documentId, blocked }: { documentId: string; bloc
   }, [snapshot]);
   const act = async (action: ChatCommand) => {
     if (mutation.current || !snapshot) return;
+    // The parent's block covers every conversation reset too; Stop/Reconnect stay available for recovery.
+    if (action === 'agent_chat_new' && blocked) return;
     if (action === 'agent_chat_send' && (blocked || !snapshot.canSend || awaitingTurn || !draftRef.current.trim())) return;
     mutation.current = true; const request = ++epoch.current; setCommand(action); setError(undefined);
     if (action === 'agent_chat_send') {
@@ -85,16 +87,18 @@ export default function Chat({ documentId, blocked }: { documentId: string; bloc
   const status = pending.current?.uncertain ? 'Checking whether your message was accepted. Do not resend it.'
     : command === 'agent_chat_stop' ? states.requestingStop
     : snapshot?.state === 'working' && latestTurn && ['', 'Pending', 'Queued'].includes(latestTurn.phase) ? 'Waiting to start…'
+    : blocked && snapshot?.state === 'ready' ? 'Chat is unavailable.'
+    : blocked && snapshot?.state === 'contextUnavailable' ? 'Earlier messages could not be confirmed.'
     : snapshot ? states[snapshot.state] : 'Opening your conversation…';
   const canStop = snapshot && snapshot.state !== 'ready' && snapshot.state !== 'contextUnavailable';
-  const canReset = snapshot && !snapshot.busy && !awaitingTurn && ['ready', 'contextUnavailable'].includes(snapshot.state);
+  const canReset = snapshot && !blocked && !snapshot.busy && !awaitingTurn && ['ready', 'contextUnavailable'].includes(snapshot.state);
   const snapshotError = snapshot?.state === 'contextUnavailable' && snapshot.error
-    ? 'Use New conversation to continue without unconfirmed history.'
+    ? blocked ? `New conversation is unavailable: ${blocked}` : 'Use New conversation to continue without unconfirmed history.'
     : snapshot?.state === 'ready' && snapshot.error === 'connection'
     ? 'The local cluster could not be reached. Check Clusters, then try sending again.'
     : snapshot?.error ? chatErrors[snapshot.error] : undefined;
   return <section className="chat-panel card" aria-label="Chat on local cluster">
-    <div className="chat-heading"><h2>Chat on local cluster</h2><Button type="button" kind="secondary" disabled={!canReset || !!command} title={!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button></div>
+    <div className="chat-heading"><h2>Chat on local cluster</h2><Button type="button" kind="secondary" disabled={!canReset || !!command} title={blocked ?? (!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined)} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button></div>
     <p className="muted">Talk to your saved agent. Chat does not run tests or change their results.</p>
     <section ref={transcript} className="chat-transcript" aria-label="Conversation" tabIndex={0} onScroll={event => {
       const area = event.currentTarget; follow.current = area.scrollHeight - area.clientHeight - area.scrollTop < 48;

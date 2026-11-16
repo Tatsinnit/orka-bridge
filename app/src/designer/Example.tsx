@@ -80,9 +80,14 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
   const editInstructions = () => { setView('Agent'); requestAnimationFrame(() => { const editor = document.querySelector<HTMLTextAreaElement>('.instructions-editor'); editor?.focus(); editor?.scrollIntoView?.({ block: 'center' }); }); };
   const [localRun, setLocalRun] = useState<RunSnapshot>();
   const observeRun = useCallback((value: RunSnapshot | undefined) => { setLocalRun(value); onRun?.(value, boundDocument); }, [onRun, boundDocument]);
-  const openSend = () => {
-    requestAnimationFrame(() => { const panel = document.querySelector<HTMLElement>('.send-panel'); panel?.focus(); panel?.scrollIntoView?.({ block: 'start' }); });
-  };
+  const [sendRequest, setSendRequest] = useState(0);
+  const openSend = () => { setView('Agent'); setSendRequest(value => value + 1); };
+  useEffect(() => {
+    if (!sendRequest) return;
+    // Focus only after Agent view and the Send card have been revealed.
+    const frame = requestAnimationFrame(() => { const panel = document.querySelector<HTMLElement>('.send-panel'); panel?.focus(); panel?.scrollIntoView?.({ block: 'start' }); });
+    return () => cancelAnimationFrame(frame);
+  }, [sendRequest]);
   // One keyboard target: the failing local result, which then offers Edit instructions.
   const focusLocalResult = (testId: string) => requestAnimationFrame(() => {
     const result = [...document.querySelectorAll<HTMLElement>('.designer-tests [data-result-id]')].find(node => node.dataset.resultId === testId);
@@ -148,6 +153,8 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
       // The editor stays writable during IPC. Re-admit after any newer edit is saved.
       if (busy.current || needsCommit.current || pendingSoulCurrent.current || latest.current !== saved.current) return;
       setSelectionNeeded(false); setSelectionError(undefined);
+      // Explicit Open (including this same file) is distinct from returning to the tab.
+      setView('Agent');
       if (next === boundDocument) return;
       reloadEpoch.current++; reloadAdmitted.current = false; setReloading(false);
       confirmed.current = undefined; setPair(undefined); setDraft(''); latest.current = saved.current = '';
@@ -233,13 +240,13 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
           <button type="button" aria-pressed={view === 'Chat'} disabled={!pair} title={!pair ? 'Wait for your agent folder to open' : undefined} onClick={() => setView('Chat')}>Chat</button>
           <button type="button" aria-pressed={view === 'File'} disabled={!pair} title={!pair ? 'Wait for your agent folder to open' : undefined} onClick={() => setView('File')}>File</button>
         </div>
-        {entries && <label className="agent-selector"><span className="sr-only">Agent</span><select className="field" disabled={selecting} title={selecting ? 'Opening your agent' : undefined} value={boundDocument} onChange={event => { setSelectionError(undefined); setWantsCreate(false); onNewAgentHandled?.(); requestDocument(event.target.value); }}>
-          {!entries.some(entry => entry.id === boundDocument) && <option value={boundDocument}>{pair?.name ?? 'Current agent'}</option>}
-          {entries.map(entry => <option key={entry.id} value={entry.id}>{entry.name}{(nameCounts.get(entry.name) ?? 0) > 1 ? ` (${entry.path ?? 'location unavailable'})` : ''}{entry.available ? '' : ' (unavailable)'}</option>)}
-        </select></label>}
+        <label className="agent-selector"><span className="sr-only">Agent</span><select className="field" disabled={!entries || selecting} title={!entries ? 'Reading your agents' : selecting ? 'Opening your agent' : undefined} value={boundDocument} onChange={event => { setSelectionError(undefined); setWantsCreate(false); onNewAgentHandled?.(); requestDocument(event.target.value); }}>
+          {!entries?.some(entry => entry.id === boundDocument) && <option value={boundDocument}>{pair?.name ?? 'Current agent'}</option>}
+          {entries?.map(entry => <option key={entry.id} value={entry.id}>{entry.name}{(nameCounts.get(entry.name) ?? 0) > 1 ? ` (${entry.path ?? 'location unavailable'})` : ''}{entry.available ? '' : ' (unavailable)'}</option>)}
+        </select></label>
         <Button type="button" kind="secondary" className="new-agent-entry" onClick={() => setWantsCreate(true)}>New agent</Button>
         {actions}
-        {view !== 'Chat' && <SendEntry blocked={sendBlocked} onProceed={openSend} />}
+        <SendEntry blocked={sendBlocked} onProceed={openSend} />
       </div>
     </div>
     {selectionError && <p role="alert">{selectionError}</p>}
@@ -269,8 +276,8 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
         {/* Run shows the test list and test file itself; this copy is only for the not-ready state. */}
         {setupPending && <><DesignerTests definitions={testDefinitions(pair.tests)} stale={false} /><Details hint="Test file">{testSource}</Details></>}
       </div></section>
-      <section className="designer-checks" aria-label="Team cluster"><h2 className="section-label">Team cluster</h2>
-        <Send documentId={boundDocument} place={place} source={pair.source} model={readForm(draft).model} local={localRun} stale={stale} blocked={sendBlocked} onSeeInOverview={onSeeInOverview} onFixLocal={focusLocalResult} onChooseCluster={onChooseCluster} onReloadSource={reloadSource} />
+      <section className="designer-checks" aria-label="Team cluster">
+        <Send expanded={sendRequest > 0} documentId={boundDocument} place={place} source={pair.source} model={readForm(draft).model} local={localRun} stale={stale} blocked={sendBlocked} onSeeInOverview={onSeeInOverview} onFixLocal={focusLocalResult} onChooseCluster={onChooseCluster} onReloadSource={reloadSource} />
       </section>
       </div>
       </div>

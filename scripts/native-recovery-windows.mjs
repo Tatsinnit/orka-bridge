@@ -443,7 +443,7 @@ try {
       const documentId = '9b2b93c4-375c-4815-9717-39852a96e411';
       let selected = ${JSON.stringify(!first && !places)};
       const designer = name.startsWith('designer');
-      if (designer) pair.agent = ${JSON.stringify('---\nname: web-reader\nmodel: fixture-model\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools: []\n---\nFetch before answering.')};
+      if (designer) pair.agent = ${JSON.stringify('---\nname: web-reader\nmodel: ' + (name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model') + '\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools: []\n---\nFetch before answering.')};
       let connected = designer && name !== 'designer';
       let submitted = false;
       let attemptId = null;
@@ -566,16 +566,20 @@ try {
           return null;
         }
         if (designer && command === 'agent_selected') return documentId;
+        if (designer && command === 'agents_list') return [{ id: documentId, name: 'web-reader', path: null, available: true }];
         if (designer && (command === 'workspace_catalog' || command === 'cluster_catalog')) {
           window.__bridgeCatalogCalls.push({ command, args });
           if (name === 'designer-catalog-busy' && !window.__bridgeCatalogReleased) throw 'catalogBusy';
-          return { defaultModel: 'fixture-model', models: { state: 'ready', items: [{ id: 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }, { kind: 'builtin', name: 'request_approval', description: 'Ask a person to approve an action.' }] } };
+          return { defaultModel: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model', models: { state: 'ready', items: [{ id: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }, { kind: 'builtin', name: 'request_approval', description: 'Ask a person to approve an action.' }] } };
         }
         if (name === 'designer-remote' && command === 'cluster_contexts') return [context];
         if (name === 'designer-remote' && command === 'cluster_discover') return [target];
         if (command === 'cluster_use') { window.__bridgeClusterUses++; if (name === 'designer-remote') return { status: 'connected', providers: [provider], failure: null }; }
+        // A complete idle snapshot, so the blocked-Chat check proves Ready is suppressed, not merely that no status loaded.
+        if (designer && command === 'agent_chat_status') return { documentId, state: 'ready', busy: false, canSend: true, versions: [], error: null };
         if (command === 'send_status') return { documentId, view: null, busy: null };
-        if (command === 'agent_open') return { ...pair, documentId, name: 'web-reader', ...(name.startsWith('first-test-') && name !== 'first-test-result' && name !== 'first-test-running' || name === 'designer-stale' || localCancel ? { source } : {}) };
+        if (name === 'designer-remote' && command === 'send_preflight') return { documentId, targetId: target.id, providerId: provider.id, source, model: 'fixture-model', canSend: true, action: 'create', canSeparate: false, rows: [{ label: 'Cluster', status: 'allowed', message: 'Ready.' }] };
+        if (command === 'agent_open') return { ...pair, documentId, name: 'web-reader', ...(name.startsWith('first-test-') && name !== 'first-test-result' && name !== 'first-test-running' || ['designer-connected', 'designer-remote', 'designer-stale'].includes(name) || localCancel ? { source } : {}) };
         if (localCancel && (command === 'agent_run_cancel' || command === 'agent_run_check_cancellation')) {
           if (args?.documentId !== documentId) throw Error('Wrong cancellation document');
           window.__bridgeCancelCalls.push(command); window.__bridgeCancellation = 'cancelling'; return snapshot();
@@ -648,7 +652,12 @@ try {
       const state = await evaluate(`({ historyHidden: !document.querySelector('.designer-checks .send-history')?.getClientRects().length, catalog: window.__bridgeCatalogCalls, runPrimary: [...document.querySelectorAll('.example-run button')].some(button => button.textContent === 'Run tests' && button.classList.contains('button-primary')) })`);
       if (await evaluate(`document.body.innerText.includes('Your agent selection could not be saved')`)) throw Error('Designer fixture failed to acknowledge document selection');
       if (name === 'designer' && (state.catalog.length || state.runPrimary)) throw Error('Disconnected Designer presents a runnable primary/catalog: ' + JSON.stringify(state));
-      if (!await evaluate(`!!document.querySelector('.send-panel')?.getClientRects().length`)) throw Error('The stable Send card is missing beside local tests');
+      // Send is retained but hidden until used or a cluster is selected; its header entry and Past Sends section are always present.
+      const sendShown = await evaluate(`!!document.querySelector('.send-panel')?.getClientRects().length`);
+      if (sendShown !== (name === 'designer-remote')) throw Error(`${name}: Send card visibility is wrong (visible=${sendShown})`);
+      if (!await evaluate(`!!document.querySelector('.send-panel') && !!document.querySelector('.agent-selector select') && [...document.querySelectorAll('.send-entry button')].some(b => b.textContent === 'Send to a cluster')`)) throw Error(`${name}: retained Send, header picker or Send entry is missing`);
+      if (!sendShown && await evaluate(`[...document.querySelectorAll('.designer-checks h2')].some(h => h.getClientRects().length)`)) throw Error(`${name}: hidden Send left its team heading`);
+      if (await evaluate(`document.querySelector('.send-history details')?.open !== false`)) throw Error(`${name}: Past Sends must start closed`);
       if (name === 'designer-remote' && (state.historyHidden || !state.catalog.some(call => call.command === 'cluster_catalog' && call.args.targetId === '00000000-0000-4000-8000-000000000002' && call.args.providerId === '00000000-0000-4000-8000-000000000003'))) throw Error('Remote catalog is not scoped to the selected cluster/AI');
     }
     if (name.startsWith('local-cancel-')) {
@@ -966,6 +975,65 @@ try {
     if (name === 'ai-removal-retry' && !await evaluate(`document.querySelector('h1').textContent === "The saved sign-in couldn't be removed" && document.querySelector('#model-title')?.textContent === "Couldn't remove the saved sign-in" && ![...document.querySelectorAll('button')].some(button => button.textContent === 'Remove sign-in' && button.getClientRects().length)`)) throw Error('Removal failure lost its headings or still offers Remove');
     if (name === 'ai-idle' && await evaluate(`document.querySelector('.setup-model').innerText.includes('Remove sign-in')`)) throw Error('Unused sign-in removal is visible before connecting');
     if (await evaluate(`document.body.innerText.includes('Change where agents run')`)) throw Error('Removed change panel is still visible');
+    if (name === 'designer-connected' || name === 'designer-remote') {
+      const settle = () => evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+      const shoot = async suffix => {
+        await settle();
+        const image = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-${name}-${suffix}.png`), Buffer.from(image.data, 'base64'));
+        await compareDesigner(image.data, theme, size, `${name}-${suffix}`);
+      };
+      const pressed = () => evaluate(`document.querySelector('.view-switch [aria-pressed="true"]')?.textContent`);
+      // Explicit Open (first Designer entry) must land on Agent.
+      if (await pressed() !== 'Agent') throw Error(`${name}: Open must show Agent`);
+      await evaluate(`document.querySelector('main').scrollTop = 0`);
+      const type = await evaluate(`(() => { const f = n => n && getComputedStyle(n); const mono = c => /mono|consolas|courier/i.test(c?.fontFamily ?? ''); const label = document.querySelector('.designer-file label[for$="-model"]'); const span = document.querySelector('.test-name > span'), code = document.querySelector('.test-name > code'); const agent = document.querySelector('.agent-name'); const sel = document.querySelector('.model-select'); return { agent: { family: f(agent)?.fontFamily, mono: mono(f(agent)) }, label: label && { size: f(label).fontSize, weight: f(label).fontWeight, mono: mono(f(label)) }, testTitle: span && { family: f(span).fontFamily, weight: f(span).fontWeight, mono: mono(f(span)) }, testId: code && { family: f(code).fontFamily, mono: mono(f(code)) }, model: sel && { value: sel.value, shown: sel.selectedOptions[0]?.textContent }, defaultRepeated: /Default model: /.test(document.querySelector('.designer-file')?.innerText ?? '') }; })()`);
+      await writeFile(join(output, `${theme}-${size}-${name}-typography.json`), JSON.stringify(type, null, 2));
+      // The chosen agent name stays mono by design; test titles use UI type; IDs mono; form labels 13px/500.
+      if (!type.agent.mono || !type.label || type.label.mono || type.label.size !== '13px' || type.label.weight !== '500') throw Error(`${name}: wrong agent-name/form-label type: ${JSON.stringify(type)}`);
+      if (name === 'designer-connected') {
+        if (!type.testTitle || type.testTitle.mono || type.testTitle.weight !== '500' || !type.testId?.mono) throw Error(`${name}: test title must be UI font/500 with a mono ID: ${JSON.stringify(type)}`);
+        if (type.model?.value !== 'gpt-5.6-terra' || type.model.shown !== 'GPT-5.6 Terra' || type.defaultRepeated) throw Error(`${name}: known model needs a friendly label, unchanged value and no repeated default: ${JSON.stringify(type)}`);
+      }
+      // Header geometry must not move across Agent, Chat and File.
+      const header = async () => { await evaluate(`document.querySelector('main').scrollTop = 0`); return evaluate(`(() => { const r = s => { const b = document.querySelector(s)?.getBoundingClientRect(); return b && { x: b.x, y: b.y, w: b.width, h: b.height }; }; return { switch: r('.view-switch'), picker: r('.agent-selector'), send: r('.send-entry'), name: r('.agent-name') }; })()`); };
+      const base = await header();
+      for (const view of ['Chat', 'File']) {
+        await clickAction(view);
+        await until(async () => await pressed() === view, `${view} view`);
+        const now = await header();
+        for (const key of Object.keys(base)) if (!base[key] || !now[key] || ['x', 'y', 'w', 'h'].some(k => Math.abs(base[key][k] - now[key][k]) > 2)) throw Error(`${name}: header ${key} moved in ${view}: ${JSON.stringify([base, now])}`);
+        if (view === 'Chat') {
+          await until(() => evaluate(`!!document.querySelector('.chat-heading')?.getClientRects().length && !document.body.innerText.includes('Opening your conversation')`), 'Chat snapshot');
+          const chat = await evaluate(`(() => { const root = document.querySelector('.chat-heading').parentElement; return { text: root.innerText, reset: [...root.querySelectorAll('button')].find(b => b.textContent === 'New conversation')?.disabled }; })()`);
+          await writeFile(join(output, `${theme}-${size}-${name}-chat-state.json`), JSON.stringify(chat, null, 2));
+          // Remote is parent-blocked; the idle ready snapshot must not be shown as Ready. Unblocked state is recorded only.
+          if (name === 'designer-remote') {
+            if (/\bReady\b/.test(chat.text) || chat.reset !== true) throw Error(`Blocked Chat must not say Ready and must disable New conversation: ${JSON.stringify(chat)}`);
+            await shoot('chat-blocked');
+            // Top-level tab navigation retains the last view.
+            await evaluate(`document.querySelector('nav[aria-label="Main"] button[aria-label="Overview"]').click()`);
+            await until(() => evaluate(`!document.querySelector('.chat-heading')?.getClientRects().length`), 'Chat hidden while on Overview');
+            await evaluate(`document.querySelector('nav[aria-label="Main"] button[aria-label="Designer"]').click()`);
+            await until(async () => await pressed() === 'Chat' && await evaluate(`!!document.querySelector('.chat-heading')?.getClientRects().length`), 'tab return keeps Chat');
+          }
+        }
+        if (view === 'File') await shoot('file');
+      }
+      await clickAction('Agent');
+      await until(async () => await pressed() === 'Agent', 'Agent view');
+      if (name === 'designer-connected') {
+        await clickAction('Send to a cluster');
+        await until(() => evaluate(`!!document.querySelector('.send-panel')?.getClientRects().length && document.activeElement === document.querySelector('.send-panel')`), 'opened Send is shown and focused');
+        if (await evaluate(`document.querySelector('.send-history details').open`)) throw Error('Opening Send must not open Past Sends');
+        await evaluate(`document.querySelector('.send-panel').scrollIntoView({ block: 'start' })`);
+        await shoot('send');
+        await evaluate(`document.querySelector('.send-history summary').click()`);
+        await until(() => evaluate(`document.querySelector('.send-history summary').getAttribute('aria-expanded') === 'true'`), 'Past Sends opens on request');
+        await evaluate(`document.querySelector('.send-history').scrollIntoView({ block: 'center' })`);
+        await shoot('history');
+      } else if (!await evaluate(`!!document.querySelector('.send-panel')?.getClientRects().length`)) throw Error('Returning from Chat lost the retained Send');
+    }
     console.log(`Captured native WebView2 action fixture: ${theme}/${size}/${name}`);
   }
   // Overview renderer fixtures: synthetic IPC in an isolated world running the compiled app, shaped like app/src/overview/api.ts.

@@ -115,7 +115,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .setup-availability { border-top: 1px solid var(--color-border); padding-top: 12px; margin-top: 12px; }
 .example-source { font-family: var(--font-mono); font-size: var(--size-small); line-height: 16px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 .designer-heading { align-items: flex-start; gap: 16px; }
-.agent-selector { max-width: 220px; }
+.agent-selector { width: 220px; max-width: 100%; }
 .agent-selector select { width: 100%; font-family: var(--font-mono); }
 .new-agent-form { display: grid; gap: var(--space-3); max-width: 520px; }
 .new-agent-form > label, .new-agent-form legend { font-weight: 600; }
@@ -174,13 +174,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .skeleton-field { height: 40px; margin-block: 16px; border-radius: var(--radius-control); background: var(--color-hover); }
 .skeleton-prompt { height: 140px; }
 @media (forced-colors: active) { .file-highlight { display: none; } .agent-editor { color: CanvasText; background: Canvas; caret-color: auto; } }
-.agent-parts { display: grid; gap: 24px; }
+.agent-parts { display: grid; gap: 24px; max-width: 520px; }
 .agent-part { display: grid; gap: 8px; min-width: 0; }
-.agent-part label, .agent-part h3 { font-size: var(--size-reading); font-weight: 600; margin: 0; }
+.agent-part label, .agent-part h3 { font: var(--type-body); font-weight: 500; color: var(--color-text-secondary); margin: 0; }
 .agent-part p { margin: 0; }
 .instructions-editor, .description-editor, .tool-picker input { width: 100%; }
 .instructions-editor.field, .description-editor.field { padding: 12px; line-height: 1.7; }
-.instructions-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.instructions-heading { display: grid; gap: 4px; }
 .instructions-editor.field { min-height: 120px; resize: none; overflow: hidden; font: var(--type-reading); }
 .description-editor.field { min-height: 5rem; resize: vertical; }
 .agent-tool-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
@@ -199,7 +199,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .tool-picker li button { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); text-align: left; overflow-wrap: anywhere; padding: var(--space-2); border: 0; border-radius: var(--radius-row); background: transparent; color: var(--color-text); font: inherit; }
 .tool-option-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
 .tool-picker .tool-description { color: var(--color-text-secondary); overflow-wrap: anywhere; }
-.field.model-select { min-width: 12rem; }
+.field.model-select { min-width: 12rem; max-width: 100%; }
 .soul-reference-field { display: grid; gap: 8px; }
 .soul-reference-field input { width: 100%; font: 400 13px/18px var(--font-mono); }
 .agent-parts .control-tip { top: auto; bottom: calc(100% + 8px); left: 0; right: auto; }

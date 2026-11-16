@@ -223,7 +223,7 @@ export default function App() {
       const remount = exampleState === 'failed' && saveState === 'saved';
       if (remount) { setExampleAttempt(value => value + 1); setExampleState('loading'); }
       if (!exampleOpen || remount) setPersistInitialSelection(id !== undefined);
-      else if (id !== undefined) setOpenDocumentRequest(value => value + 1);
+      else if (!create) setOpenDocumentRequest(value => value + 1);
       setDocumentId(selected); setExampleOpen(true);
       if (create) setNewAgentRequest(value => value + 1);
     };

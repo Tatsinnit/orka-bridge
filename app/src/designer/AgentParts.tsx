@@ -12,6 +12,9 @@ function Unavailable({ label, reason, children, focusRef }: { label: string; rea
     {children}<span className="control-tip" aria-hidden="true">{reason}</span>
   </span>;
 }
+// Display-only names. Values, saved source and emitted IDs always remain the catalog ID; the catalog supplies no provider, so none is claimed.
+const modelNames: Record<string, string> = { 'gpt-5.6-terra': 'GPT-5.6 Terra' };
+const modelLabel = (id: string) => Object.hasOwn(modelNames, id) ? modelNames[id] : id;
 function toolDescription(tool: CatalogTool): string {
   return tool.kind === 'builtin' && Object.hasOwn(builtInToolDescriptions, tool.name) ? builtInToolDescriptions[tool.name] : tool.description;
 }
@@ -72,6 +75,9 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
   }, [picker, toolReason]);
   const modelReason = readOnly ? 'You can change the model after setup.' : !form.modelEditable ? 'Edit the model in File view for this file’s format.'
     : setupPending ? 'Models will be available when the local cluster is ready.' : catalogLoading ? 'Loading models…' : models === undefined ? 'Models could not be read from this cluster. Check Clusters or edit File view.' : undefined;
+  const modelHelp = catalogLoading ? 'The model saved in your file is shown while choices load.' : modelReason
+    ?? (remote ? models?.length ? 'The selected AI connection’s configured default. Other models can be entered in File view.' : 'No default model is configured for this AI connection. Enter a model in File view.'
+      : models?.length ? undefined : 'No models listed by the local cluster.');
   const labelFor = (name: string) => Object.hasOwn(builtInTools, name) ? builtInTools[name] : name;
   const editSoul = async (value: string) => {
     if (readOnly || !form.soulEditable) return;
@@ -137,10 +143,10 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
       <label htmlFor={`${id}-model`}>It thinks with</label>
       <div className="agent-tool-row">
         <select id={`${id}-model`} className="field model-select" disabled={!!modelReason} title={modelReason} value={form.model ?? ''} onChange={event => change(changeModel(source, event.target.value))}>
-          {!listed && <option value={form.model ?? ''}>{form.model ? `${form.model}${unlistedLabel}` : 'No model in this file'}</option>}
-          {models?.map(model => <option key={model.id} value={model.id}>{model.id}</option>)}
+          {!listed && <option value={form.model ?? ''}>{form.model ? `${modelLabel(form.model)}${unlistedLabel}` : 'No model in this file'}</option>}
+          {models?.map(model => <option key={model.id} value={model.id}>{modelLabel(model.id)}</option>)}
         </select>
-        <span className="muted">{catalogLoading ? 'The model saved in your file is shown while choices load.' : modelReason ?? (remote ? models?.length ? 'The selected AI connection’s configured default. Other models can be entered in File view.' : 'No default model is configured for this AI connection. Enter a model in File view.' : models?.length ? `Default model: ${catalog?.defaultModel}` : 'No models listed by the local cluster.')}</span>
+        {modelHelp && <span className="muted">{modelHelp}</span>}
       </div>
       {!remote && !listed && models && form.model && <p className="muted">{knownModel ? 'This model is not offered for chat by the connected AI. Choose another model to use it here.' : 'This model is saved in your file but is not listed by the connected AI. It may not run here. Choose a listed model or check your AI connection.'}</p>}
     </div>

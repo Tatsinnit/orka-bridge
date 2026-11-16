@@ -441,8 +441,8 @@ try {
         Press (Find-Control $script:window 'Create' $button)
         $agent = Join-Path $folder 'web-reader.agent.md'
         $tests = Join-Path $folder 'web-reader.agent.test.md'
-        Wait-For 'Own-repo web-reader pair or created editor missing' {
-            $editor = Find-Control $script:window 'Agent file' ([System.Windows.Automation.ControlType]::Edit)
+        Wait-For 'Own-repo web-reader pair or created Agent view missing' {
+            $editor = Find-Control $script:window 'Instructions' ([System.Windows.Automation.ControlType]::Edit)
             $explanation = Find-Control $script:window $copy $null
             (Test-Path $agent) -and (Test-Path $tests) -and $editor -and !$editor.Current.IsOffscreen -and $explanation -and !(Find-Control $script:window 'Create' $button)
         } | Out-Null

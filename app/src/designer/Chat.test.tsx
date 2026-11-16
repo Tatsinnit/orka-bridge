@@ -232,3 +232,46 @@ test('new answers do not drag a reader away from older transcript text', async (
   fireEvent.scroll(transcript); snapshot.versions[0].turns.push({ ...turn, message: 'Later' }); await poll();
   expect(transcript.scrollTop).toBe(100);
 });
+const blockedReason = 'Wait for your changes to save.';
+const newConversation = () => screen.getByRole('button', { name: 'New conversation' });
+test('blocked idle Chat does not claim Ready and disables New conversation with the exact reason', async () => {
+  await open(blockedReason);
+  expect(screen.getByRole('status').textContent).not.toMatch(/ready/i);
+  expect(newConversation().hasAttribute('disabled')).toBe(true); expect(newConversation().getAttribute('title')).toBe(blockedReason);
+  fireEvent.click(newConversation()); await act(async () => {});
+  expect(calls.some(c => c.command === 'agent_chat_new')).toBe(false);
+});
+test('blocked unavailable history shows the blocker, not advice to use the disabled New conversation', async () => {
+  snapshot = { ...idle, state: 'contextUnavailable', error: 'identity' };
+  await open(blockedReason);
+  expect(newConversation().hasAttribute('disabled')).toBe(true); expect(newConversation().getAttribute('title')).toBe(blockedReason);
+  expect(screen.getByRole('status').textContent).not.toMatch(/new conversation/i);
+  expect(screen.getByRole('alert').textContent).toContain(blockedReason); expect(screen.getByRole('alert').textContent).not.toMatch(/Use New conversation/);
+  fireEvent.click(newConversation()); await act(async () => {}); expect(calls.some(c => c.command === 'agent_chat_new')).toBe(false);
+});
+test('unblocked unavailable history still points to New conversation', async () => {
+  snapshot = { ...idle, state: 'contextUnavailable', error: 'identity' }; await open();
+  expect(screen.getByRole('status').textContent).toContain('Start a new conversation when available.');
+  expect(screen.getByRole('alert').textContent).toContain('Use New conversation');
+});
+test('blocked active Chat keeps authoritative progress and Stop', async () => {
+  snapshot = { ...idle, state: 'working', busy: true, canSend: false, versions: [{ turns: [{ ...turn, answer: null, phase: 'Running' }] }] };
+  await open(blockedReason);
+  expect(screen.getByRole('status').textContent).toBe('Your agent is working…');
+  expect(newConversation().getAttribute('title')).toBe(blockedReason);
+  fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await act(async () => {});
+  expect(calls.some(c => c.command === 'agent_chat_stop')).toBe(true);
+});
+test('blocked observation loss keeps its warning and Reconnect', async () => {
+  snapshot = { ...idle, state: 'observationLost', canSend: false, versions: [{ turns: [{ ...turn, answer: null }] }] };
+  await open(blockedReason);
+  expect(screen.getByRole('status').textContent).toMatch(/connection was lost/i);
+  fireEvent.click(screen.getByRole('button', { name: 'Reconnect' })); await act(async () => {});
+  expect(calls.some(c => c.command === 'agent_chat_reconnect')).toBe(true);
+});
+test('a blocked parent keeps an uncertain Send status instead of replacing it', async () => {
+  send = () => Promise.reject('unknown transport error'); const view = await open(); enter(); await act(async () => {});
+  view.rerender(<Chat documentId={id} blocked={blockedReason} />); await act(async () => {});
+  expect(screen.getByRole('status').textContent).toBe('Checking whether your message was accepted. Do not resend it.');
+  expect(screen.getByRole('button', { name: 'Reconnect' })).toBeTruthy(); expect(newConversation().getAttribute('title')).toBe(blockedReason);
+});
