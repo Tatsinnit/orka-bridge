@@ -1,5 +1,5 @@
 .setup.workspace-setup-grid { max-width: none; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); align-items: start; gap: 24px; }
-.workspace-steps, .setup-history { padding: var(--space-4); }
+.workspace-steps { padding: var(--space-4); }
 .setup-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .setup-column:empty { display: none; }
 .steps-four { list-style: none; padding: 0; margin: 0; }
@@ -14,8 +14,6 @@
 .step-more p { font-size: var(--size-body); margin: 0 0 8px; }
 .steps-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .steps-head h2 { font: var(--type-card); margin: 0; }
-.step-place { display: flex; gap: 8px; color: var(--color-text-secondary); font-size: var(--size-body); margin: 0 0 8px; }
-.step-place b { color: var(--color-text); font-weight: 550; }
 .workspace-steps > p { font-size: var(--size-body); margin: 0 0 8px; }
 .infra-bar { height: 5px; border-radius: var(--radius-control); overflow: hidden; margin: 12px 0; background: var(--color-border); position: relative; }
 .infra-bar > span { display: block; height: 100%; background: var(--color-action); border-radius: var(--radius-control); transition: width .4s ease; }
@@ -62,12 +60,10 @@
   .workspace-setup-grid > .setup-column { display: contents; }
   .workspace-setup-grid .setup-progress { order: 1; }
   .workspace-setup-grid .setup-model-slot { order: 2; }
-  .workspace-setup-grid.setup-action-model .setup-model-slot { order: 0; }
-  .workspace-setup-grid .setup-history { order: 3; }
   .workspace-setup-grid .workspace-meet { order: 4; }
 }
 @media (max-width: 520px) {
-  .workspace-steps, .setup-history, .workspace-meet { padding: 16px; }
+  .workspace-steps, .workspace-meet { padding: 16px; }
   .steps-four > li { grid-template-columns: 20px minmax(0, 1fr); }
   .step-result { grid-column: 2; }
 }

@@ -70,7 +70,6 @@ test('a choice during transfer connects exactly once at readiness, with no secon
   await screen.findByText('Connected', { selector: '.model-state .pill' });
   expect(connects()).toBe(1);
   expect(screen.getByRole('heading', { name: 'Connect the AI' }).closest('section')).toBe(model);
-  expect(model?.closest('.workspace-setup-grid')?.classList.contains('setup-action-model')).toBe(false);
   await observe(ipc);
   expect(connects()).toBe(1);
   expect(within(screen.getByRole('contentinfo')).getByText('Local cluster ready')).toBeTruthy();
@@ -79,7 +78,7 @@ test('a choice during transfer connects exactly once at readiness, with no secon
 
 test.each([false, undefined])('a platform without native model support (%s) offers no early choice and never reaches for credentials', async modelSupported => {
   const { ipc, sim, connects } = native('installing', { modelSupported }); render(<App />); await openLocalSetup();
-  await screen.findAllByText('Getting the local cluster ready', {}, wait);
+  await screen.findAllByText('Getting your workspace ready', {}, wait);
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   expect(screen.getAllByText('Waiting').length).toBeGreaterThan(0);
   expect(screen.queryByText('Pick any time')).toBeNull();
@@ -170,14 +169,14 @@ test('using a cluster clears the held intent even though the view stays mounted'
   sim.localVm = 'ready';
   await observe(ipc);
   expect(within(screen.getByRole('navigation')).getByText('AI unavailable')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), '00000000-0000-4000-8000-000000000001');
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await screen.findAllByText('Access confirmed');
   sim.model = 'available';
   await observe(ipc); expect(connects()).toBe(0);
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await openLocalSetup(user);
   await user.click(screen.getByRole('button', { name: 'Use this computer' }));
   expect(await screen.findByRole('button', { name: 'Connect the AI' })).toBeTruthy();
@@ -248,13 +247,13 @@ test('the single host dot is busy blue while connecting or removing, amber when 
   const dots = () => [...document.querySelectorAll('.live-dot')].map(dot => dot.className.replace('live-dot', '').trim());
   await screen.findByRole('button', { name: 'Connect the AI' });
   expect(dots()).toEqual(['needs-you']);
-  expect(screen.getByText('Step 4 of 5').previousElementSibling?.className).toContain('status-needs-you');
+  expect(screen.getByText('Choose the AI your agent uses').closest('li')?.querySelector('.status-needs-you')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
-  await screen.findAllByText('Connecting the AI…');
+  await screen.findByText('Connecting', { selector: '.step-result' });
   expect(dots()).toEqual(['busy']);
-  expect(screen.getByText('Step 4 of 5').previousElementSibling?.className).toContain('status-running');
-  expect(within(screen.getByRole('contentinfo')).getByText('Connecting the AI…')).toBeTruthy();
-  expect(within(screen.getByRole('navigation')).getByText('Connecting the AI…')).toBeTruthy();
+  expect(screen.getByText('Choose the AI your agent uses').closest('li')?.querySelector('.status-running')).toBeTruthy();
+  expect(within(screen.getByRole('contentinfo')).getByText('Connecting the AI…, step 3 of 4')).toBeTruthy();
+  expect(within(screen.getByRole('navigation')).getByText('Setting up, step 3 of 4')).toBeTruthy();
 });
 
 test('removing the sign-in is busy blue and a usable cluster with no test evidence is Ready, without claiming tests passed', async () => {

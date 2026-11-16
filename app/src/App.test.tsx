@@ -23,7 +23,7 @@ test.each(['Agent', 'File'] as const)('a pending %s draft survives setup readine
     return { kind: 'version', version: 'v0.4.2', hasDiagnostics: false };
   });
   const user = userEvent.setup(); render(<App />);
-  await within(screen.getByRole('contentinfo')).findByText('Starting the local cluster');
+  await within(screen.getByRole('contentinfo')).findByText('Getting your workspace ready, step 2 of 4');
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   await screen.findByRole('textbox', { name: 'Instructions' });
   if (view === 'File') await user.click(screen.getByRole('button', { name: 'File' }));
@@ -32,7 +32,7 @@ test.each(['Agent', 'File'] as const)('a pending %s draft survives setup readine
   fireEvent.change(editor, { target: { value: edited } }); fireEvent.blur(editor);
   await waitFor(() => expect(pending).toContain('Draft kept through setup.'));
   localVm = 'ready';
-  await within(screen.getByRole('contentinfo')).findByText('Connect the AI', {}, { timeout: 2000 });
+  await within(screen.getByRole('contentinfo')).findByText('Connect the AI, step 3 of 4', {}, { timeout: 2000 });
   expect(screen.getByRole('textbox', { name: view === 'File' ? 'Agent file' : 'Instructions' })).toBe(editor);
   expect(editor.value).toBe(edited); expect(opens).toBe(1); expect(discovery).toEqual([]);
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
@@ -208,9 +208,9 @@ test('Designer opens the owned agent without workspace setup and shares its save
 
 test.each([
   ['idle', null, 'Choose where agents run', 'Choose where agents run'],
-  ['preparing', 'localVm', 'Getting the local cluster ready', 'Getting the local cluster ready'],
-  ['installing', 'localVm', 'Getting the local cluster ready', 'Getting the local cluster ready'],
-  ['starting', 'localVm', 'Starting the local cluster', 'Starting the local cluster'],
+  ['preparing', 'localVm', 'Getting your workspace ready, step 2 of 4', 'Setting up, step 2 of 4'],
+  ['installing', 'localVm', 'Getting your workspace ready, step 2 of 4', 'Setting up, step 2 of 4'],
+  ['starting', 'localVm', 'Getting your workspace ready, step 2 of 4', 'Setting up, step 2 of 4'],
   ['ready', 'localVm', 'AI connection unavailable', 'AI unavailable'],
   ['failed', 'localVm', "Bridge couldn't determine why the local cluster failed.", 'Setup failed'],
   ['closed', 'localVm', 'Local cluster stopped', 'Local cluster stopped'],
@@ -242,7 +242,7 @@ test('setup refreshes while another page is open', async () => {
   mockIPC(command => command === 'setup_status' ? { selected: 'localVm', localVm, model: localVm === 'ready' ? 'available' : 'locked' } : { kind: 'version', version: 'v0.4.2', hasDiagnostics: false });
   vi.stubGlobal('isTauri', true);
   const user = userEvent.setup(); render(<App />);
-  await within(screen.getByRole('contentinfo')).findByText('Connect the AI');
+  await within(screen.getByRole('contentinfo')).findByText('Connect the AI, step 3 of 4');
   await user.click(screen.getByRole('button', { name: 'Overview' }));
   localVm = 'failed';
   expect(await within(screen.getByRole('navigation')).findByText('Setup failed', {}, { timeout: 2000 })).toBeTruthy();
@@ -436,7 +436,7 @@ test('a transient setup read failure recovers while off Clusters', async () => {
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await within(screen.getByRole('navigation')).findByText('Local cluster unavailable');
   await user.click(screen.getByRole('button', { name: 'Overview' })); fail = false;
-  expect(await within(screen.getByRole('navigation')).findByText('Starting the local cluster', {}, { timeout: 2000 })).toBeTruthy();
+  expect(await within(screen.getByRole('navigation')).findByText('Setting up, step 2 of 4', {}, { timeout: 2000 })).toBeTruthy();
 });
 
 test('a transient setup read failure does not invalidate an admitted model connection', async () => {

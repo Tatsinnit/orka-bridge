@@ -45,7 +45,7 @@ test.each([
     onCheckFirstTest={() => {}} onOpenExample={() => {}} busy={false} stopping={false}
     onCancel={() => {}} onRestart={() => {}} onChange={() => {}} />);
   const region = screen.getByRole('region', { name: 'Local cluster setup' });
-  expect(within(region).queryByText('Step 5 of 5')).toBeNull();
+  expect(within(region).queryByText('Setting up, step 4 of 4')).toBeNull();
   expect(within(region).getByText(badge, { selector: '.status-description' })).toBeTruthy();
   expect(region.querySelector('.pill')?.className).toContain(`status-${tone}`);
   expect(region.querySelector('.pill')?.textContent).not.toContain(badge);
@@ -60,90 +60,88 @@ test.each([
   } else expect(region.querySelector('.button-primary')).toBeNull();
 });
 
-test('five steps show native transfer bytes and ETA in one bar, with expandable details', async () => {
+test('four fixed steps contain one native file bar and expandable details', async () => {
   native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
-  await screen.findByRole('heading', { name: 'Getting the local cluster ready' });
+  await screen.findByRole('heading', { name: 'Getting your workspace ready' });
   const steps = screen.getByRole('list', { name: 'Setup steps' });
-  expect(within(steps).getAllByRole('listitem')).toHaveLength(5);
-  for (const name of ['Install the local cluster', 'Start the local cluster', 'Cluster ready', 'Connect the AI', 'Run your first agent']) expect(within(steps).getByText(name)).toBeTruthy();
-  expect(screen.getByText('Cluster').nextElementSibling?.textContent).toBe('Local cluster');
-  expect(screen.getByText('Installing, 1.1 GiB of 2.8 GiB')).toBeTruthy();
-  expect(screen.getByText('30 seconds left')).toBeTruthy();
+  expect(within(steps).getAllByRole('listitem')).toHaveLength(4);
+  expect(screen.getByText('Installing, 1.1 GiB of 2.8 GiB · 30 seconds left in this file step')).toBeTruthy();
   const bar = screen.getByRole('progressbar');
   expect(screen.getAllByRole('progressbar')).toHaveLength(1);
-  expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThan(0);
-  expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(70);
-  expect(screen.queryByText(/Downloading/)).toBeNull();
+  expect(Number(bar.getAttribute('aria-valuenow'))).toBe(40);
+  expect(bar.closest('li')).toBe(within(steps).getAllByRole('listitem')[1]);
   expect(screen.getByRole('button', { name: 'Connect the AI' }).matches(':disabled')).toBe(false);
   expect(screen.queryByText('Checking cluster files')).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Show details' }));
   expect(screen.getByText('Checking cluster files')).toBeTruthy();
-  expect(screen.getAllByText('Starting the local cluster').length).toBeGreaterThan(0);
+  expect(screen.getByText('20 seconds installing files.')).toBeTruthy();
 });
 
-test('tab, footer and card agree on one step index and the model action is available during transfer', async () => {
-  native(); render(<App />); await openLocalSetup();
-  expect(await within(screen.getByRole('navigation')).findByText('Getting the local cluster ready')).toBeTruthy();
-  expect(within(screen.getByRole('contentinfo')).getByText('Getting the local cluster ready')).toBeTruthy();
-  expect(screen.getByText('Step 1 of 5')).toBeTruthy();
-  expect(document.body.textContent).not.toMatch(/of 4/);
+test.each(['installing', 'starting'])('tab, footer and list agree on workspace step during %s', async state => {
+  native(state); render(<App />); await openLocalSetup();
+  expect(within(screen.getByRole('navigation')).getByText('Setting up, step 2 of 4')).toBeTruthy();
+  expect(within(screen.getByRole('contentinfo')).getByText('Getting your workspace ready, step 2 of 4')).toBeTruthy();
+  expect(document.querySelector('.setup-progress [aria-current="step"] b')?.textContent).toBe('Get your workspace ready');
+  expect(document.querySelector('.setup-progress .pill')).toBeNull();
   expect(screen.getByRole('button', { name: 'Connect the AI' }).hasAttribute('disabled')).toBe(false);
   expect(screen.getByText('Pick any time')).toBeTruthy();
 });
 
-test('setup keeps progress and history in one stack, with the AI and introduction in the other', async () => {
+test('one setup stack stays independent of the AI and introduction stack', async () => {
   native(); render(<App />); await openLocalSetup();
   const model = (await screen.findByRole('heading', { name: 'Connect the AI' })).closest('section')!;
-  const history = screen.getByRole('list', { name: 'Setup steps' });
+  const steps = screen.getByRole('list', { name: 'Setup steps' });
   const progress = screen.getByRole('region', { name: 'Local cluster setup' });
-  const primary = progress.closest('.setup-column');
-  const side = model.closest('.setup-column');
-  expect(primary).toBeTruthy();
-  expect(side).toBeTruthy();
-  expect(side).not.toBe(primary);
-  expect(history.closest('.setup-column')).toBe(primary);
-  expect(document.querySelector('.workspace-meet')?.closest('.setup-column')).toBe(side);
-  expect(model.closest('.workspace-setup-grid')?.classList.contains('setup-action-model')).toBe(true);
-  expect(history.querySelectorAll('button, a')).toHaveLength(0);
+  expect(progress.closest('.setup-column')).toBeTruthy();
+  expect(model.closest('.setup-column')).toBeTruthy();
+  expect(model.closest('.setup-column')).not.toBe(progress.closest('.setup-column'));
+  expect(steps.closest('section')).toBe(progress);
+  expect(document.querySelector('.workspace-meet')?.closest('.setup-column')).toBe(model.closest('.setup-column'));
 });
 
-test('startup uses the same bar, labels its time as a rough estimate and shows native elapsed time', async () => {
-  native('starting', { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 12000, remainingMs: null }); render(<App />); await openLocalSetup();
+test.each([12000, 95000])('startup stays indeterminate with observed elapsed time at %s ms', async elapsedMs => {
+  native('starting', { phase: 'starting', bytes: null, totalBytes: null, elapsedMs, remainingMs: null }); render(<App />); await openLocalSetup();
   const bar = await screen.findByRole('progressbar', { name: 'Local cluster setup progress' });
-  expect(Number(bar.getAttribute('aria-valuenow'))).toBeGreaterThanOrEqual(70);
-  expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(100);
-  expect(screen.getByText('12 seconds elapsed')).toBeTruthy();
-  expect(screen.getByText(/Rough estimate, not a measurement: about 18 seconds left/)).toBeTruthy();
-  expect(screen.getByText('Start the local cluster').closest('li')?.getAttribute('aria-current')).toBe('step');
-  expect(screen.getByText('Install the local cluster').closest('li')?.className).toBe('step-done');
-  expect(bar.closest('main')).toBeTruthy();
-});
-
-test('startup past its estimate stays incomplete and says it is taking longer', async () => {
-  native('starting', { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 95000, remainingMs: null }); render(<App />); await openLocalSetup();
-  const bar = await screen.findByRole('progressbar', { name: 'Local cluster setup progress' });
-  expect(Number(bar.getAttribute('aria-valuenow'))).toBeLessThan(100);
-  expect(screen.getByText(/Taking longer than the rough 30-second estimate/)).toBeTruthy();
-  expect(screen.queryByText(/seconds left/)).toBeNull();
-  expect(screen.getByText('95 seconds elapsed')).toBeTruthy();
+  expect(bar.hasAttribute('aria-valuenow')).toBe(false);
+  expect(screen.getByText(`${elapsedMs / 1000} seconds elapsed`)).toBeTruthy();
+  expect(screen.queryByText(/estimate|seconds left/)).toBeNull();
 });
 
 test('unavailable progress never fabricates bytes or time left, and the bar stays indeterminate', async () => {
   native('installing', null); render(<App />); await openLocalSetup();
   await screen.findByRole('list', { name: 'Setup steps' });
-  const bar = screen.getByRole('progressbar');
-  expect(bar.hasAttribute('aria-valuenow')).toBe(false);
+  expect(screen.getByRole('progressbar').hasAttribute('aria-valuenow')).toBe(false);
   expect(screen.queryByText(/seconds left|minute left|of .*GiB/)).toBeNull();
 });
 
-test('the one bar never completes before native ready and is gone once ready', async () => {
+test('readiness removes the bar without moving completed rows', async () => {
   const { ready } = native('starting', { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 31000, remainingMs: null }); render(<App />); await openLocalSetup();
   await screen.findByRole('progressbar');
+  const list = screen.getByRole('list', { name: 'Setup steps' });
+  const rows = within(list).getAllByRole('listitem');
   ready();
   await waitFor(() => expect(screen.queryByRole('progressbar')).toBeNull(), { timeout: 2000 });
-  const rows = within(screen.getByRole('list', { name: 'Completed setup steps' })).getAllByRole('listitem');
-  expect(rows.map(row => row.className)).toEqual(['step-done', 'step-done', 'step-done']);
-  expect(within(screen.getByRole('navigation')).getByText('Connect the AI')).toBeTruthy();
+  expect(within(list).getAllByRole('listitem')).toEqual(rows);
+  expect(rows.slice(0, 2).map(row => row.className)).toEqual(['step-done', 'step-done']);
+  expect(within(screen.getByRole('navigation')).getByText('Setting up, step 3 of 4')).toBeTruthy();
+});
+
+test('startup details never reuse the previous file phase timing', async () => {
+  native('starting', { phase: 'materializing', bytes: 100, totalBytes: 100, elapsedMs: 54000, remainingMs: 1000 });
+  const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  await user.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(screen.queryByText(/54 seconds|second left|in this file step/)).toBeNull();
+  expect(screen.getByRole('progressbar').hasAttribute('aria-valuenow')).toBe(false);
+});
+
+test('setup opened on launch has a truthful route to Places, not a fictional Back', async () => {
+  const { ipc } = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  expect(screen.queryByRole('button', { name: 'Back to clusters' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Choose where agents run' }));
+  await screen.findByRole('region', { name: 'This computer' });
+  expect(ipc.mock.calls.some(([cmd]) => ['setup_cancel_local', 'setup_change_local'].includes(cmd))).toBe(false);
+  await openLocalSetup(user);
+  expect(screen.getByRole('button', { name: 'Back to clusters' })).toBeTruthy();
 });
 
 test('keyboard Cancel then start again calls native retry and keeps the Meet panel', async () => {
@@ -194,7 +192,7 @@ test('setup readiness does not reopen the already editable document', async () =
   await screen.findByRole('textbox', { name: 'Instructions' });
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_open')).toHaveLength(1);
   ready();
-  await within(screen.getByRole('contentinfo')).findByText('Connect the AI', {}, { timeout: 2000 });
+  await within(screen.getByRole('contentinfo')).findByText('Connect the AI, step 3 of 4', {}, { timeout: 2000 });
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_open')).toHaveLength(1);
   await user.click(screen.getByRole('button', { name: 'File' }));
   expect((screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement).readOnly).toBe(false);
@@ -231,7 +229,7 @@ test('Designer opens owned editing while the first native setup observation is p
   await screen.findByRole('heading', { name: 'web-reader', level: 1 });
   expect(ipc.mock.calls.filter(([command]) => command === 'agent_open')).toHaveLength(1);
   observe({ selected: 'localVm', localVm: 'installing', model: 'locked' });
-  await within(screen.getByRole('contentinfo')).findByText('Getting the local cluster ready');
+  await within(screen.getByRole('contentinfo')).findByText('Getting your workspace ready, step 2 of 4');
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
 });
 
@@ -246,7 +244,7 @@ test('opening Designer while Continue awaits native admission opens editing but 
   expect(ipc.mock.calls.filter(([command]) => command === 'agent_open')).toHaveLength(1);
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
   started = true; admit({ selected: 'localVm', localVm: 'installing', model: 'locked' });
-  await within(screen.getByRole('contentinfo')).findByText('Getting the local cluster ready');
+  await within(screen.getByRole('contentinfo')).findByText('Getting your workspace ready, step 2 of 4');
 });
 
 test('a failed example read is not presented as an endless load', async () => {
@@ -266,8 +264,8 @@ test.each(['running', 'passed', 'failed', 'unknown'] as const)('the last setup s
   await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
   await screen.findByRole('heading', { name: 'web-reader', level: 1 });
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  await waitFor(() => expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')!.textContent).toContain({ running: 'Running', passed: 'Its test passed', failed: 'Its test failed', unknown: 'Result unknown' }[result]));
-  if (result === 'running') expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')!.getAttribute('aria-current')).toBeNull();
+  await waitFor(() => expect(screen.getByText('Run your first test', { selector: 'li b' }).closest('li')!.textContent).toContain({ running: 'Running', passed: 'Its test passed', failed: 'Its test failed', unknown: 'Result unknown' }[result]));
+  if (result === 'running') expect(screen.getByText('Run your first test', { selector: 'li b' }).closest('li')!.getAttribute('aria-current')).toBeNull();
 });
 
 test('changing workspace and starting again preserves an owned draft after a failed save', async () => {
@@ -341,10 +339,10 @@ test('Cancel and Start again restore keyboard focus after replacing the action',
   native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Cancel' }));
   await screen.findByRole('button', { name: 'Start again' });
-  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting the local cluster ready', level: 1 }));
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting your workspace ready', level: 1 }));
   await user.click(screen.getByRole('button', { name: 'Start again' }));
   await screen.findByRole('button', { name: 'Cancel' });
-  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting the local cluster ready', level: 1 }));
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting your workspace ready', level: 1 }));
 });
 
 test('a failed Stop retains the selected local cluster and never offers another setup admission', async () => {
@@ -372,24 +370,23 @@ test('an unreadable status makes the card unavailable instead of keeping the las
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   expect(screen.getByRole('progressbar')).toBeTruthy();
   const card = () => within(screen.getByRole('region', { name: 'Local cluster setup' }));
-  expect(card().getByText('Step 1 of 5')).toBeTruthy();
+  expect(card().getByText('Get your workspace ready').closest('li')?.getAttribute('aria-current')).toBe('step');
   unreadable();
   await waitFor(() => expect(within(screen.getByRole('contentinfo')).getAllByText('Local cluster unavailable').length).toBeGreaterThan(0), { timeout: 3000 });
-  expect(card().getByText('Unavailable', { selector: '.status-description' })).toBeTruthy();
-  expect(card().getByText('Needs you', { selector: '.pill' })).toBeTruthy();
-  expect(card().queryByText('Step 1 of 5')).toBeNull();
+  expect(card().getByRole('status').textContent).toBe('Local cluster status is unavailable.');
+  expect(card().queryByText('Setting up, step 2 of 4')).toBeNull();
   expect(screen.queryByRole('progressbar')).toBeNull();
   expect(screen.queryByText(/Installing, 1.1 GiB/)).toBeNull();
   expect(card().getByText('Local cluster status is unavailable.')).toBeTruthy();
   const steps = screen.getByRole('list', { name: 'Setup steps' });
   // The list is a last-known snapshot, not a live observation: nothing runs and no row is current.
   expect(steps.querySelector('.step-current, [aria-current]')).toBeNull();
-  expect(within(steps).getAllByText(/^Last known: /)).toHaveLength(5);
+  expect(within(steps).getAllByText(/^Last known: /)).toHaveLength(4);
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_connect_model')).toHaveLength(0);
   readable();
   await waitFor(() => expect(screen.getByRole('progressbar')).toBeTruthy(), { timeout: 3000 });
-  expect(card().getByText('Step 1 of 5')).toBeTruthy();
+  expect(card().getByText('Get your workspace ready').closest('li')?.getAttribute('aria-current')).toBe('step');
   expect(within(steps).queryByText(/^Last known: /)).toBeNull();
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_connect_model')).toHaveLength(0);
@@ -401,10 +398,10 @@ test.each([
   ['a failed AI connection', { selected: 'localVm', localVm: 'ready', model: 'available' }, 'failed'],
 ] as const)('a kept passed result is not shown for %s', (_name, status, modelState) => {
   render(<SetupSteps status={status} busy={false} stopping={false} modelState={modelState} firstCheck="passed" onRestart={() => {}} />);
-  expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')!.textContent).toBe('Run your first agentWaiting');
+  expect(screen.getByText('Run your first test', { selector: 'li b' }).closest('li')!.textContent).toBe('Run your first testWaiting');
 });
 
 test('a passed result is shown only once the workspace is ready and the AI is connected', () => {
   render(<SetupSteps status={{ selected: 'localVm', localVm: 'ready', model: 'available' }} busy={false} stopping={false} modelState="connected" firstCheck="passed" onRestart={() => {}} />);
-  expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')!.textContent).toBe('Run your first agentIts test passed');
+  expect(screen.getByText('Run your first test', { selector: 'li b' }).closest('li')!.textContent).toBe('Run your first testIts test passed');
 });

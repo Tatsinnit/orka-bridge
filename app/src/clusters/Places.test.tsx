@@ -135,7 +135,7 @@ test('Add stays blank while remembered Connect resolves a fresh target without c
   await user.selectOptions(screen.getByRole('combobox', { name: 'kubectl context' }), context.id);
   await screen.findByText('Cluster found');
   expect(observe).toHaveBeenLastCalledWith({ kind: 'cluster' });
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Connect' }));
   await screen.findByRole('button', { name: 'Use this cluster' });
   expect(screen.queryByRole('combobox', { name: 'kubectl context' })).toBeNull();
@@ -181,7 +181,7 @@ test('Manage rechecks the same installation with its already-entered ServiceAcco
   await user.type(await screen.findByRole('textbox', { name: 'ServiceAccount name' }), 'team-runner');
   await user.click(screen.getByRole('button', { name: 'Use this cluster' }));
   await screen.findByText('Access confirmed');
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Manage' }));
   await user.click(await screen.findByRole('button', { name: 'Check access again' }));
   expect(await screen.findByText('Access confirmed')).toBeTruthy();
@@ -199,7 +199,7 @@ test('selected Manage uses current App capabilities without discovery and change
   expect(screen.getByRole('button', { name: 'Change context' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Use this cluster' })).toBeNull();
   expect(observe).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   expect(within(await screen.findByRole('region', { name: 'team-dev' })).getByText('Selected for Designer')).toBeTruthy();
   expect(observe).not.toHaveBeenCalled();
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('cluster_use');
@@ -213,14 +213,14 @@ test('local Manage is navigation; explicit Use this computer never starts a stop
   await user.click(screen.getByRole('button', { name: 'Use this computer' }));
   expect(observe).toHaveBeenLastCalledWith({ kind: 'thisComputer' });
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('setup_select_local');
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   expect(screen.queryByText('Selected for Designer')).toBeNull();
 });
 
 test.each([['closed', 'Local cluster stopped'], ['cancelled', 'Setup paused'], ['idle', 'Not set up']] as const)('a selected %s local workspace never claims setup is still running', async (localVm, label) => {
   const { sim } = native(); sim.status = { ...sim.status, selected: 'localVm', localVm };
   const user = userEvent.setup(); render(<Host />);
-  await user.click(await screen.findByRole('button', { name: 'Back to clusters' }));
+  await user.click(await screen.findByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   const local = row('This computer');
   expect(within(local).getByText(label).closest('.pill')).toBeNull();
   expect(local.querySelector('.pill')?.className).toContain('status-not-started');
@@ -232,7 +232,7 @@ test('snapshot failure retains known rows but does not invent a selected row or 
   const { sim } = native(); const user = userEvent.setup(); render(<Host initial={connected} />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
   sim.unavailable = true;
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await screen.findByText("Couldn't read your clusters. Try opening Clusters again.");
   expect(row('team-dev')).toBeTruthy();
   expect(screen.queryByText('Selected for Designer')).toBeNull();
@@ -246,7 +246,7 @@ test('a Use recheck clears the frontend target before native replies and Back ca
   await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Manage' }));
   await user.click(await screen.findByRole('button', { name: 'Check access again' }));
   expect(observe).toHaveBeenLastCalledWith({ kind: 'cluster' });
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   expect(screen.queryByText('Selected for Designer')).toBeNull();
   const calls = observe.mock.calls.length;
   await act(async () => pending.resolve({ status: 'connected', providers: [provider], failure: null }));
@@ -257,13 +257,13 @@ test('a Use recheck clears the frontend target before native replies and Back ca
 test('Back preserves a queued local Model and its one eventual connection while Places is visible', async () => {
   const { ipc, sim } = native(); sim.status = { ...sim.status, selected: 'localVm', localVm: 'installing' };
   const observe = vi.fn(); const user = userEvent.setup(); render(<Host initial={connected} observe={observe} />);
-  await user.click(await screen.findByRole('button', { name: 'Back to clusters' }));
+  await user.click(await screen.findByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await user.click(within(row('This computer')).getByRole('button', { name: 'Continue setup' }));
   expect(observe).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(observe).toHaveBeenLastCalledWith({ kind: 'thisComputer' });
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   expect(within(row('This computer')).getByText('Getting the local cluster ready', { selector: '.place-meta span' })).toBeTruthy();
   expect(observe).toHaveBeenCalledTimes(1);
   sim.status = { ...sim.status, localVm: 'ready', model: 'available' };
@@ -301,7 +301,7 @@ test('a known empty list promotes Set up, but a metadata failure does not imply 
   expect(screen.getByRole('button', { name: 'Add a cluster' }).className).toContain('button-secondary');
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   sim.snapshot.persistenceState = 'unavailable';
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await screen.findByText(/remembered cluster information is unavailable/i);
   expect(screen.queryByText(/No other clusters added/)).toBeNull();
   expect(screen.getByRole('button', { name: 'Set up' }).className).toContain('button-secondary');
@@ -375,7 +375,7 @@ test('Manage after an unused Add keeps its already confirmed target', async () =
   const { ipc } = native(); const user = userEvent.setup(); render(<Host initial={connected} />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
   await screen.findByRole('combobox', { name: 'kubectl context' });
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await user.click(within(row('team-dev')).getByRole('button', { name: 'Manage' }));
   expect(ipc.mock.calls.filter(([command]) => command === 'cluster_reconnect')).toHaveLength(0);
   expect(screen.getByText('Access confirmed')).toBeTruthy();
@@ -409,10 +409,10 @@ test('returning to Add after reconnect replaces obsolete cached context handles'
   const user = userEvent.setup(); render(<Host />);
   await user.click(await screen.findByRole('button', { name: 'Add a cluster' }));
   expect((await screen.findByRole('option', { name: context.name }) as HTMLOptionElement).value).toBe(context.id);
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await user.click(within(row('team-dev')).getByRole('button', { name: 'Connect' }));
   await screen.findByRole('button', { name: 'Use this cluster' });
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   expect((await screen.findByRole('option', { name: context.name }) as HTMLOptionElement).value).toBe(freshContext.id);
 });
@@ -470,7 +470,7 @@ test('remembered reconnect revokes the old frontend target before native replies
   const observe = vi.fn(); const user = userEvent.setup(); render(<Host initial={connected} observe={observe} />);
   await user.click(within(await screen.findByRole('region', { name: 'team-other' })).getByRole('button', { name: 'Connect' }));
   expect(observe).toHaveBeenLastCalledWith({ kind: 'cluster' });
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   await act(async () => pending.resolve(target));
   expect(screen.getByRole('heading', { name: 'Clusters' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Use this cluster' })).toBeNull();
@@ -499,7 +499,7 @@ test.each(['local', 'another cluster'])('late removal completion does not replac
   await user.click(within(await screen.findByRole('region', { name: 'team-dev' })).getByRole('button', { name: 'Manage' }));
   await user.click(screen.getByRole('button', { name: 'Remove' }));
   await user.click(screen.getByRole('button', { name: 'Remove cluster' }));
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: /Back to clusters|Choose where agents run/ }));
   if (destination === 'local') await user.click(within(row('This computer')).getByRole('button', { name: 'Set up' }));
   else {
     await user.click(within(row('team-other')).getByRole('button', { name: 'Connect' }));

@@ -136,6 +136,8 @@ fn main() {
     let key_attempt = std::sync::atomic::AtomicUsize::new(0);
     let key_check_release =
         std::env::var_os("BRIDGE_MODEL_CHECK_RELEASE").map(std::path::PathBuf::from);
+    // A bounded state selector for setup renderer captures, never part of the app.
+    let setup_progress = std::env::var_os("BRIDGE_SETUP_PROGRESS").map(std::path::PathBuf::from);
     let key_removed_once = std::sync::atomic::AtomicBool::new(false);
     let first_test_pending = std::sync::atomic::AtomicBool::new(false);
     let original = include_str!("../example-agent/web-reader.agent.md");
@@ -258,6 +260,20 @@ fn main() {
                         ]})}})
                 }
                 "setup_status" | "setup_change_local" | "setup_select_local" => {
+                    let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+                    if invoke.message.command() == "setup_status" {
+                        let progress = match phase.as_deref() {
+                            Some("installing") => Some(json!({"selected":"localVm", "localVm":"installing", "model":"locked", "modelSupported":true,
+                                "workspaceProgress":{"phase":"materializing", "bytes":1073741824_u64, "totalBytes":2147483648_u64, "elapsedMs":20000, "remainingMs":30000}})),
+                            Some("starting") => Some(json!({"selected":"localVm", "localVm":"starting", "model":"locked", "modelSupported":true,
+                                "workspaceProgress":{"phase":"starting", "bytes":null, "totalBytes":null, "elapsedMs":45000, "remainingMs":null}})),
+                            _ => None,
+                        };
+                        if let Some(progress) = progress {
+                            invoke.resolver.resolve(progress);
+                            return true;
+                        }
+                    }
                     if invoke.message.command() == "setup_change_local" {
                         selected.store(false, std::sync::atomic::Ordering::SeqCst);
                         connected.store(false, std::sync::atomic::Ordering::SeqCst);

@@ -88,7 +88,7 @@ test('keyboard disclosure and opening local setup are inert; only Continue start
   const next = screen.getByRole('button', { name: 'Continue' });
   next.focus(); await user.keyboard('{Enter}{Enter}');
   expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
-  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting the local cluster ready' }));
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting your workspace ready' }));
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toEqual([['setup_select_local', {}]]);
 });
 

@@ -39,7 +39,10 @@ try FileManager.default.createDirectory(atPath: output, withIntermediateDirector
 let child = Process()
 child.executableURL = URL(fileURLWithPath: CommandLine.arguments[2])
 let keyCheckRelease = URL(fileURLWithPath: output).appendingPathComponent("key-check-release-\(UUID().uuidString)")
-child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path]) { _, fixture in fixture }
+let setupProgress = URL(fileURLWithPath: output).appendingPathComponent("setup-progress-\(UUID().uuidString)")
+try "installing".write(to: setupProgress, atomically: true, encoding: .utf8)
+defer { try? FileManager.default.removeItem(at: setupProgress) }
+child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path, "BRIDGE_SETUP_PROGRESS": setupProgress.path]) { _, fixture in fixture }
 try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
@@ -90,7 +93,9 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         }.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
     }
     for value in expected {
-        let found = visible.replacingOccurrences(of: "Connect the Al", with: "Connect the AI").contains(value)
+        // Vision renders the capital I as a lowercase l in this exact observed label.
+        let found = visible.replacingOccurrences(of: "Connect the Al", with: "Connect the AI")
+            .replacingOccurrences(of: "APl key", with: "API key").contains(value)
         let nativeText = !found && name.hasPrefix("local-") && (nativeResultTextIsVisible(value) || name.hasPrefix("local-key-") && nativeChatTextIsVisible(value))
         let chatText = !found && name.hasPrefix("chat-") && nativeChatTextIsVisible(value)
         require(found || nativeText || chatText, "Missing \(value) in \(name): \(text)")
@@ -124,7 +129,24 @@ func click(_ label: String, _ rows: [VNRecognizedTextObservation]) {
     }
     Thread.sleep(forTimeInterval: 1)
 }
-// A native frame can appear before WebKit has painted the controls.
+// Exercise the four-step list with only synthetic IPC, at the actual minimum and wide sizes.
+waitForButton("Connect the AI")
+for (phase, expected) in [("installing", "Installing, 1 GiB of 2 GiB"), ("starting", "45 seconds elapsed")] {
+    try phase.write(to: setupProgress, atomically: true, encoding: .utf8)
+    Thread.sleep(forTimeInterval: 0.6)
+    for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+        localSize(width, height)
+        scroll(4000)
+        _ = try capture("local-setup-\(phase)-\(size)", ["Getting your workspace ready", "Where agents run", "Get your workspace ready", expected])
+    }
+}
+localSize(1280, 800)
+scroll(4000)
+click("Show details", [])
+_ = try capture("local-setup-starting-details", ["45 seconds elapsed", "Starting the local cluster"])
+try FileManager.default.removeItem(at: setupProgress)
+Thread.sleep(forTimeInterval: 0.6)
+click("Choose where agents run", [])
 waitForButton("Connect the AI")
 // A running VM is not completed setup: its local row offers the current AI action.
 var rows = try capture("local-places-wide", ["Choose where agents run", "This computer", "Connect the AI"])
@@ -132,10 +154,17 @@ require(enabledButton("Connect the AI") != nil && enabledButton("Manage") == nil
         "VM-ready local card must offer Connect the AI, not Manage")
 click("Connect the AI", rows)
 rows = try capture("before-connect", ["Connect the AI"])
+localSize(540, 640)
+scroll(4000)
+_ = try capture("local-setup-ai-minimum-top", ["Where agents run", "Get your workspace ready"])
+_ = try seek("Connect the AI", -200)
+_ = try capture("local-setup-ai-minimum", ["GitHub Copilot", "Connect the AI"])
+localSize(1280, 800)
+scroll(4000)
 require(enabledButton("Remove sign-in") == nil, "Remove must be absent before the first sign-in attempt")
 click("Connect the AI", rows)
-rows = try capture("local-completed", ["Local cluster", "Local cluster ready", "Stop the local cluster", "Completed setup steps"])
-require(!rows.contains { ($0.topCandidates(1).first?.string ?? "").range(of: "Step [0-9]+ of 5", options: .regularExpression) != nil },
+rows = try capture("local-completed", ["Local cluster", "Local cluster ready", "Stop the local cluster", "Run your first test"])
+require(!rows.contains { ($0.topCandidates(1).first?.string ?? "").range(of: "[Ss]tep [0-9]+ of [45]", options: .regularExpression) != nil },
         "Completed local page must not keep a setup counter")
 click("Remove sign-in", rows)
 rows = try capture("local-remove-confirmation", ["saved sign-in?", "Cancel", "Remove sign-in"])

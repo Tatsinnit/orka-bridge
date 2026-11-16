@@ -122,7 +122,7 @@ test('sign-in removal stays in progress in the setup step and shell', async () =
   await screen.findByRole('alert');
   await user.click(screen.getByRole('button', { name: 'Remove sign-in' }));
   await user.click(within(screen.getByRole('group', { name: 'Remove sign-in confirmation' })).getByRole('button', { name: 'Remove sign-in' }));
-  const step = within(screen.getByRole('list', { name: 'Setup steps' })).getByText('Connect the AI').closest('li')!;
+  const step = within(screen.getByRole('list', { name: 'Setup steps' })).getByText('Choose the AI your agent uses').closest('li')!;
   expect(step.textContent).toContain('Removing sign-in');
   expect(step.querySelector('.status-running')).toBeTruthy();
   expect(screen.getByRole('contentinfo').textContent).toContain('Removing the AI sign-in');
