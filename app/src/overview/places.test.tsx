@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import Overview from './Overview';
+import { Board } from './places';
 
 const source = { agent: 'a'.repeat(64), tests: 'b'.repeat(64) };
 const id = '12345678-1234-1234-1234-123456789abc';
@@ -25,6 +26,16 @@ function ipc(value: unknown = places(), files: unknown = saved(), live: unknown 
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 const group = (name: string) => screen.findByRole('region', { name });
 const buttons = (el: HTMLElement) => within(el).getAllByRole('button').map(b => b.textContent);
+
+test('the board explicitly marks a single stack and removes that layout when a second stack appears', () => {
+  const groups = [{ key: 'local', title: 'This computer', notes: [], cards: [] }];
+  const actions = { onOpen: vi.fn(), onCheck: vi.fn(), onClusters: vi.fn() };
+  const view = render(<Board stacks={[groups, []]} byAgent={false} actions={actions} />);
+  expect(view.container.querySelector('.overview-board-single')).toBeTruthy();
+  view.rerender(<Board stacks={[groups, [{ ...groups[0], key: 'team', title: 'Team' }]]} byAgent={false} actions={actions} />);
+  expect(view.container.querySelector('.overview-board-single')).toBeNull();
+  expect(view.container.querySelectorAll('.overview-board > .overview-stack')).toHaveLength(2);
+});
 
 test('By cluster: This computer first, then each cluster by context name, with a count at the right', async () => {
   ipc(); render(<Overview {...props} />);

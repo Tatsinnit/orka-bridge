@@ -59,6 +59,43 @@ test.each([true, false])('reopening Designer uses native model connection eviden
   expect(catalogs.mock.calls.length).toBe(modelConnected ? 1 : 0);
 });
 
+test.each(['preparing', 'installing', 'starting', 'closing', 'failed'])('Overview reflects setup %s rather than a stopped cluster', async localVm => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(command => {
+    if (command === 'setup_status') return { selected: 'localVm', localVm, model: 'locked' };
+    if (command === 'overview_files') return { state: 'complete', files: [], runActive: false, historyState: 'complete', runAgents: [] };
+    if (command === 'overview_places') return { places: [], historyState: 'complete', unobserved: [] };
+    if (command === 'overview_agents') return { state: 'unavailable', installation: null, agents: [], observedAt: null, observation: null, runActive: false, reason: 'stopped' };
+    return null;
+  });
+  const user = userEvent.setup(); render(<App />);
+  await user.click(screen.getByRole('button', { name: 'Overview' }));
+  const page = await screen.findByRole('main', { name: 'Your agents' });
+  const expected = localVm === 'starting' ? 'Starting the local cluster' : localVm === 'closing' ? 'Stopping the local cluster' : localVm === 'failed' ? 'Setup failed' : 'Getting the local cluster ready';
+  const overview = within(page).getByRole('region', { name: 'Agents by cluster' });
+  expect(await within(overview).findByText(expected)).toBeTruthy();
+  expect(within(overview).queryByText(/The local cluster is stopped/)).toBeNull();
+});
+
+test.each(['closed', 'failed'])('Overview shows a pending start before the first reply from %s', async localVm => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(command => {
+    if (command === 'setup_status') return { selected: 'localVm', localVm, model: 'locked' };
+    if (command === 'setup_select_local') return new Promise(() => {});
+    if (command === 'overview_files') return { state: 'complete', files: [], runActive: false, historyState: 'complete', runAgents: [] };
+    if (command === 'overview_places') return { places: [], historyState: 'complete', unobserved: [] };
+    if (command === 'overview_agents') return { state: 'unavailable', installation: null, agents: [], observedAt: null, observation: null, runActive: false, reason: 'stopped' };
+    return null;
+  });
+  const user = userEvent.setup(); render(<App />);
+  await openLocalSetup(user);
+  await user.click(await screen.findByRole('button', { name: localVm === 'failed' ? 'Try again' : 'Start again' }));
+  await user.click(screen.getByRole('button', { name: 'Overview' }));
+  const overview = screen.getByRole('region', { name: 'Agents by cluster' });
+  expect(await within(overview).findByText('Getting your workspace ready…')).toBeTruthy();
+  expect(within(overview).queryByText(/stopped|Setup failed/i)).toBeNull();
+});
+
 test('navigation_order', () => {
   render(<App />);
   const nav = screen.getByRole('navigation', { name: 'Main' });

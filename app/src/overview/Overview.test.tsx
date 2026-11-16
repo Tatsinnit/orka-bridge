@@ -28,6 +28,108 @@ function ipc(saved: unknown = files(), agents: unknown = live(), places: unknown
 const card = (name: RegExp | string) => screen.findByRole('article', { name });
 const buttons = (el: HTMLElement) => within(el).getAllByRole('button').map(b => b.textContent);
 
+test.each(['Starting the local cluster', 'Getting your workspace ready…', 'Stopping the local cluster', 'Setup failed'])('workspace status wins over a stopped inventory: %s', async workspaceNote => {
+  ipc(files(), unavailable);
+  render(<Overview {...props} workspaceNote={workspaceNote} />);
+  expect(await screen.findByText(workspaceNote)).toBeTruthy();
+  expect(screen.queryByText(/The local cluster is stopped/)).toBeNull();
+  expect(buttons(await card(/^reader/))).toEqual(['Open', 'Details']);
+});
+
+test('setup status blocks readiness actions even if the last live inventory is complete', async () => {
+  ipc(); const view = render(<Overview {...props} />); await card(/^reader/);
+  view.rerender(<Overview {...props} workspaceNote="Starting the local cluster" />);
+  expect(buttons(await card(/^reader/))).toEqual(['Open', 'Details']);
+});
+
+test('generated Chat runtime agents are hidden without hiding saved, remote or similarly named agents', async () => {
+  const generated = `bridge-chat-agent-${'a'.repeat(32)}`;
+  const ownFile = named(id2, generated, { localResult: null });
+  const runtime = (name: string, uid: string) => ({ name, namespace: 'orka-system', uid });
+  const remote = { key: 'team', context: 'team', service: 'control/orka', namespace: 'agents', stale: false, observedAt: 1234567890000,
+    agents: [{ ...runtime(generated, 'remote'), namespace: 'agents', agentType: 'runtime', model: null, tools: null, record: null }] };
+  ipc(files([file, ownFile]), live([runtime(generated, 'chat'), runtime('bridge-chat-agent-mine', 'mine')]), { ...none, places: [remote] });
+  const counts = vi.fn(); render(<Overview {...props} onCounts={counts} />);
+  await card(/^bridge-chat-agent-mine$/);
+  expect(screen.getAllByRole('heading', { name: generated })).toHaveLength(2);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('4 agents'));
+  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
+  expect(screen.getAllByRole('article')).toHaveLength(4);
+});
+
+test('registration refreshes visited Overview counts while hidden without reading live agents', async () => {
+  const counts = vi.fn(); ipc(); const view = render(<Overview {...props} filesRevision={0} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent'));
+  view.rerender(<Overview {...props} active={false} filesRevision={0} onCounts={counts} />);
+  let inventories = 0;
+  mockIPC(command => command === 'overview_files' ? files([file, named(id2, 'new-agent', { localResult: null })]) : (inventories++, live()));
+  view.rerender(<Overview {...props} active={false} filesRevision={1} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('2 agents'));
+  expect(inventories).toBe(0);
+});
+
+test('a workspace transition rearms a cancelled registration refresh while Overview stays hidden', async () => {
+  const counts = vi.fn(); ipc(); const view = render(<Overview {...props} filesRevision={0} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent'));
+  view.rerender(<Overview {...props} active={false} filesRevision={0} onCounts={counts} />);
+  let finish!: (value: unknown) => void;
+  mockIPC(command => command === 'overview_files' ? new Promise(resolve => { finish = resolve; }) : none);
+  view.rerender(<Overview {...props} active={false} filesRevision={1} onCounts={counts} />);
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  ipc(files([file, named(id2, 'new-agent', { localResult: null })]));
+  view.rerender(<Overview {...props} active={false} filesRevision={1} workspaceKey="starting" onCounts={counts} />);
+  await act(async () => finish(files()));
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('2 agents shown'));
+});
+
+test.each(['pending', 'unavailable'])('registration refreshes a visited Overview after its first read was %s', async initial => {
+  const counts = vi.fn();
+  mockIPC(command => command === 'overview_files' ? initial === 'pending' ? new Promise(() => {}) : { state: 'unavailable', files: [], runActive: false } : none);
+  const view = render(<Overview {...props} filesRevision={0} onCounts={counts} />);
+  await act(async () => {});
+  view.rerender(<Overview {...props} active={false} filesRevision={0} onCounts={counts} />);
+  ipc(files());
+  view.rerender(<Overview {...props} active={false} filesRevision={1} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent shown'));
+});
+
+test('hidden test reads preserve the last final verdict and remember a new final for the next run', async () => {
+  const counts = vi.fn(); ipc(files([{ ...file, localResult: result('failed', 0, 1) }]));
+  const view = render(<Overview {...props} filesRevision={1} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent, 1 failed'));
+  const unknown = { ...file, localResult: result('unknown', 0, 0, { state: 'unknown', report: null }) };
+  ipc(files([unknown], { runActive: true }));
+  view.rerender(<Overview {...props} active={false} filesRevision={1} activeDocumentId={id} runBusy onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent shown, 1 failed'));
+  ipc(files([{ ...file, localResult: result('passed', 1, 1) }]));
+  view.rerender(<Overview {...props} active={false} filesRevision={1} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent'));
+  ipc(files([unknown], { runActive: true }));
+  view.rerender(<Overview {...props} filesRevision={1} activeDocumentId={id} runBusy onCounts={counts} />);
+  expect(within(await card(/^reader/)).getByText('Passed')).toBeTruthy();
+});
+
+test('registration does not introduce an initial hidden Overview read', async () => {
+  let calls = 0; mockIPC(() => { calls++; return files(); });
+  const view = render(<Overview {...props} active={false} filesRevision={0} />);
+  view.rerender(<Overview {...props} active={false} filesRevision={1} />);
+  await act(async () => {}); expect(calls).toBe(0);
+});
+
+test('a hidden registration read cannot overwrite files from a later workspace refresh', async () => {
+  ipc(); const view = render(<Overview {...props} filesRevision={0} />); await card(/^reader/);
+  view.rerender(<Overview {...props} active={false} filesRevision={0} />);
+  let finish!: (value: unknown) => void;
+  mockIPC(command => command === 'overview_files' ? new Promise(resolve => { finish = resolve; }) : none);
+  view.rerender(<Overview {...props} active={false} filesRevision={1} />);
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  ipc(files([named(id3, 'latest', { localResult: null })]));
+  view.rerender(<Overview {...props} filesRevision={1} workspaceKey="new" />);
+  await card(/^latest/);
+  await act(async () => finish(files([named(id2, 'outdated', { localResult: null })])));
+  expect(screen.queryByRole('heading', { name: 'outdated' })).toBeNull();
+});
+
 test('initial loading is not empty and saved files do not wait for live reads', async () => {
   mockIPC(command => command === 'overview_files' ? files() : command === 'overview_places' ? none : new Promise(() => {}));
   render(<Overview {...props} />);
@@ -54,19 +156,19 @@ test('a card is compact: name, one pill, time, description, one meta line, actio
   expect(within(c).getByRole('button', { name: 'Copy Agent file hash' })).toBeTruthy();
 });
 
-test('actions follow the card: Passed quiet Run, Failed primary Open without Chat, untested primary Run', async () => {
+test('actions keep Open, Chat, Run order with consistent button treatments and contextual primary emphasis', async () => {
   const other = named(id2, 'failing', { localResult: result('failed', 0, 2, { documentId: id2 }) });
   const fresh = named(id3, 'fresh', { localResult: null });
   ipc(files([file, other, fresh]), live());
   render(<Overview {...props} />);
   const passed = await card(/^reader/), failed = await card(/^failing/), untested = await card(/^fresh/);
   expect(buttons(passed)).toEqual(['Open', 'Chat', 'Run tests', 'Details']);
-  expect(within(passed).getByRole('button', { name: 'Run tests reader' }).className).toContain('button-quiet');
+  expect(within(passed).getByRole('button', { name: 'Run tests reader' }).className).toContain('button-secondary');
   expect(within(passed).getByRole('button', { name: 'Open reader' }).className).toContain('button-secondary');
   expect(buttons(failed)).toEqual(['Open', 'Run tests', 'Details']);
   expect(within(failed).getByRole('button', { name: 'Open failing' }).className).toContain('button-primary');
   expect(within(untested).getByText('Not tested')).toBeTruthy();
-  expect(buttons(untested)).toEqual(['Run tests', 'Open', 'Chat', 'Details']);
+  expect(buttons(untested)).toEqual(['Open', 'Chat', 'Run tests', 'Details']);
   expect(within(untested).getByRole('button', { name: 'Run tests fresh' }).className).toContain('button-primary');
   for (const c of [passed, failed, untested]) expect(c.querySelectorAll('.button-primary').length).toBeLessThanOrEqual(1);
 });
@@ -100,7 +202,7 @@ test('a pass recorded on earlier files is Not run since your edit, with Run test
   const c = await card(/^reader/);
   expect(within(c).getByText('Not run since your edit')).toBeTruthy();
   expect(within(c).queryByText(/of 3 tests/)).toBeNull();
-  expect(buttons(c)).toEqual(['Run tests', 'Open', 'Chat', 'Details']);
+  expect(buttons(c)).toEqual(['Open', 'Chat', 'Run tests', 'Details']);
 });
 
 test('Bridge test-run Agents are never cards; exact identity only, never the name', async () => {

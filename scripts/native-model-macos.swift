@@ -539,6 +539,21 @@ waitForButton("New conversation")
 _ = try capture("chat-stop-ready-compact", ["Ready", "Execution termination is unconfirmed."])
 localSize(1280, 800)
 _ = try capture("chat-stop-ready-wide", ["Ready", "Execution termination is unconfirmed."])
+// Capture card actions before the final test deliberately holds the fixture busy.
+click("Overview", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height))
+    scroll(4000)
+    _ = try capture("local-controls-overview-\(size)", ["Your agents", "Refresh", "web-reader", "Failed", "Run tests"])
+}
+click("By agent", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height))
+    scroll(4000)
+    _ = try capture("local-overview-by-agent-\(size)", ["Your agents", "web-reader", "This computer"])
+}
+click("By cluster", [])
+click("Designer", [])
 scroll(4000)
 click("Agent", [])
 localSize(540, 900)
@@ -562,17 +577,3 @@ _ = try capture("local-remove-confirmation-compact", ["saved sign-in?", "Cancel"
 click("Cancel", [])
 click("Back to clusters", [])
 _ = try capture("local-places-compact", ["Choose where agents run", "This computer"])
-// Keep the third top-level page reviewable at both control sizes too.
-click("Overview", [])
-for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
-    localSize(CGFloat(width), CGFloat(height))
-    scroll(4000)
-    _ = try capture("local-controls-overview-\(size)", ["Your agents", "Refresh", "web-reader", "Failed"])
-}
-click("By agent", [])
-for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
-    localSize(CGFloat(width), CGFloat(height))
-    scroll(4000)
-    _ = try capture("local-overview-by-agent-\(size)", ["Your agents", "web-reader", "This computer"])
-}
-click("By cluster", [])

@@ -9,12 +9,14 @@ export type OverviewProps = {
   onNewAgent?: () => void; active: boolean; runBusy: boolean; activeDocumentId?: string; workspaceKey: string;
   onOpenDocument: (id: string) => void; onChatDocument?: (id: string) => void; onRunDocument?: (id: string) => void;
   onOpenExample: () => void; onChooseWorkspace: () => void; onCounts?: (label: string) => void;
+  workspaceNote?: string; filesRevision?: number;
 };
 const complete = (v?: LiveAgents): v is CompleteAgents => v?.state === 'complete' && v.installation !== null && v.observedAt !== null;
-export default function Overview({ onNewAgent, active, runBusy, activeDocumentId, workspaceKey, onOpenDocument, onChatDocument, onRunDocument, onOpenExample, onChooseWorkspace, onCounts }: OverviewProps) {
+export default function Overview({ onNewAgent, active, runBusy, activeDocumentId, workspaceKey, onOpenDocument, onChatDocument, onRunDocument, onOpenExample, onChooseWorkspace, onCounts, workspaceNote, filesRevision = 0 }: OverviewProps) {
   // Last good reads are kept so a busy or failed refresh never blanks the page; each is flagged when it is not fresh.
   const [files, setFiles] = useState<SavedFiles>();
   const [filesStale, setFilesStale] = useState(false);
+  const filesVisited = useRef(false);
   const finals = useRef(new Map<string, Observation>());
   const knownRunAgents = useRef(new Map<string, RunAgent>());
   const [live, setLive] = useState<LiveAgents>();
@@ -43,6 +45,7 @@ export default function Overview({ onNewAgent, active, runBusy, activeDocumentId
       knownWorkspace.current = workspaceKey; setLive(undefined); setLast(undefined);
     }
     if (!active) return;
+    filesVisited.current = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     setPending(runBusy);
     async function list(retried = false) {
@@ -69,14 +72,30 @@ export default function Overview({ onNewAgent, active, runBusy, activeDocumentId
       void list();
     });
     return () => { epoch.current++; clearTimeout(timer); };
-  }, [active, runBusy, activeDocumentId, workspaceKey, refresh]);
+  }, [active, runBusy, activeDocumentId, workspaceKey, refresh, filesRevision]);
+  // A new saved file updates a previously visited tab without mounting Designer or listing live Agents.
+  // The initial hidden inventory read belongs to the app-frame flow, not registration.
+  useEffect(() => {
+    if (active || !filesRevision || !filesVisited.current) return;
+    const request = epoch.current;
+    let cancelled = false;
+    void readFiles().then(value => {
+      if (cancelled || request !== epoch.current) return;
+      if (value.state !== 'complete') { setFilesStale(true); return; }
+      value.files.forEach(f => { if (f.localResult && (f.localResult.state === 'complete' || f.localResult.state === 'unknown' && (!(runBusy || value.runActive) || f.documentId !== activeDocumentId))) finals.current.set(f.documentId, f.localResult); });
+      setPending(runBusy || value.runActive);
+      value.runAgents.forEach(a => { knownRunAgents.current.set(JSON.stringify([a.installation, a.namespace, a.agentUid]), a); });
+      setFiles({ ...value, runAgents: [...knownRunAgents.current.values()] }); setFilesStale(false);
+    });
+    return () => { cancelled = true; };
+  }, [active, filesRevision, workspaceKey, runBusy, activeDocumentId]);
   const observed = complete(live) ? live : last;
-  const inputs: Inputs = { files, filesStale, finals: finals.current, live, observed, pending, activeDocumentId, places, placeError, chat: !!onChatDocument, run: !!onRunDocument };
+  const inputs: Inputs = { files, filesStale, finals: finals.current, live, observed, pending, activeDocumentId, places, placeError, chat: !!onChatDocument, run: !!onRunDocument, workspaceNote };
   const built = buildCards(inputs);
   const empty = isEmpty(inputs, built);
-  const partial = filesStale || files?.historyState !== 'complete' || !complete(live) || pending || !places || placeError || places.places.some(p => p.stale || p.observedAt === null);
+  const partial = !!workspaceNote || filesStale || files?.historyState !== 'complete' || !complete(live) || pending || !places || placeError || places.places.some(p => p.stale || p.observedAt === null);
   const counts = !files ? 'Reading saved files…' : files.state === 'unavailable' ? 'Saved files unavailable' : summaryLabel(built.cards, partial);
-  useEffect(() => { if (active) onCounts?.(counts); }, [active, counts, onCounts]);
+  useEffect(() => { if (active || filesRevision > 0 && filesVisited.current) onCounts?.(counts); }, [active, filesRevision, counts, onCounts]);
   const clusters = clusterGroups(inputs, built);
   const groups = byAgent ? agentGroups(built.cards, built.saved) : clusters;
   const actions = { onOpen: onOpenDocument, onChat: onChatDocument, onRun: onRunDocument, onCheck: () => setRefresh(v => v + 1), onClusters: onChooseWorkspace };
@@ -85,7 +104,7 @@ export default function Overview({ onNewAgent, active, runBusy, activeDocumentId
     <div className="page-heading"><h1 id={active ? 'page-title' : undefined}>Your agents</h1><div className="overview-actions">
       {onNewAgent && !empty && <Button kind="primary" onClick={onNewAgent}>New agent</Button>}
       {!empty && <div className="view-switch" role="group" aria-label="Group agents"><button type="button" aria-pressed={!byAgent} onClick={() => setByAgent(false)}>By cluster</button><button type="button" aria-pressed={byAgent} onClick={() => setByAgent(true)}>By agent</button></div>}
-      <Button kind="quiet" onClick={actions.onCheck}>Refresh</Button></div></div>
+      <Button onClick={actions.onCheck}>Refresh</Button></div></div>
     {placeError && <div className="overview-note" role="status"><p>Couldn't read clusters just now.{places && ' Showing what Bridge last saw.'}</p><Button kind="quiet" onClick={actions.onCheck}>Check again</Button></div>}
     {places?.historyState === 'unavailable' && <p role="alert" className="overview-note">Saved Send results are unavailable, so cluster agents show no test result.</p>}
     {byAgent && !empty && <div className="overview-stack">{clusters.filter(g => g.notes.some(n => !n.text.startsWith('No agents'))).map(g => <GroupSection key={g.key} group={{ ...g, cards: [], count: undefined, notes: g.notes.filter(n => !n.text.startsWith('No agents')) }} byAgent={false} actions={actions} />)}</div>}

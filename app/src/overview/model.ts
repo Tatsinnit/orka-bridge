@@ -2,7 +2,7 @@ import type { Status } from '../components/DesignSystem';
 import { sameSource } from '../designer/agent-api';
 import type { LiveAgents, Observation, Place, Places, SavedFile, SavedFiles } from './api';
 
-export type CardAction = { id: 'open' | 'chat' | 'run'; primary?: boolean; quiet?: boolean };
+export type CardAction = { id: 'open' | 'chat' | 'run'; primary?: boolean };
 export type Detail = { label: string; value: string; copy?: boolean };
 export type Card = {
   key: string; groupKey: string; agentKey: string; title: string; place: string; subject: string;
@@ -16,7 +16,7 @@ export type CompleteAgents = LiveAgents & { state: 'complete'; installation: str
 export type Inputs = {
   files?: SavedFiles; filesStale: boolean; finals: Map<string, Observation>;
   live?: LiveAgents; observed?: CompleteAgents; pending: boolean; activeDocumentId?: string;
-  places?: Places; placeError: boolean; chat: boolean; run: boolean;
+  places?: Places; placeError: boolean; chat: boolean; run: boolean; workspaceNote?: string;
 };
 export type Built = ReturnType<typeof buildCards>;
 
@@ -65,14 +65,14 @@ function localStatus(file: SavedFile, result: Observation | undefined, running: 
   if (verdict === 'cancelled') return { status: 'not-started', pill: 'Not tested' };
   return { status: 'stale', pill: 'Result unknown' };
 }
-// One primary and at most two secondaries (D8); trouble groups pass chat/run as false and keep Open only.
+// Keep the same action order as the frame, even when the next step changes.
 function localActions(file: SavedFile, status: Status, chat: boolean, run: boolean): CardAction[] {
   if (file.state !== 'readable') return [];
-  const open: CardAction = { id: 'open' };
-  const quietRun: CardAction[] = run ? [{ id: 'run', quiet: true }] : [];
-  if (status === 'failed') return [{ ...open, primary: true }, ...quietRun];
-  if (status === 'passed') return [open, ...(chat ? [{ id: 'chat' as const }] : []), ...quietRun];
-  return [...(run ? [{ id: 'run' as const, primary: true }] : []), open, ...(chat ? [{ id: 'chat' as const }] : [])];
+  return [
+    { id: 'open', primary: status === 'failed' },
+    ...(chat && status !== 'failed' ? [{ id: 'chat' as const }] : []),
+    ...(run ? [{ id: 'run' as const, primary: status !== 'passed' && status !== 'failed' }] : []),
+  ];
 }
 const toolText = (tools?: string[] | null) => tools ? tools.join(', ') || 'no tools' : undefined;
 
@@ -81,7 +81,7 @@ export function buildCards(i: Inputs) {
   const saved = files?.files ?? [];
   const ownershipKnown = !!files && files.historyState === 'complete';
   const history = ownershipKnown && !i.filesStale;
-  const state = localState(i.live, i.pending);
+  const state = i.workspaceNote ? 'workspace' : localState(i.live, i.pending);
   const acts = state === 'ok' || state === 'image';
   const labels = placeLabels(i.places?.places ?? []);
   // A remote card links to a file only on exactly one saved hash match (document association is PR 3). The link is
@@ -114,7 +114,9 @@ export function buildCards(i: Inputs) {
   // installation + namespace + UID in the recorded list (or the live observation).
   const owned = new Set([...(files?.runAgents ?? []).map(a => exact(a.installation, a.namespace, a.agentUid)),
     ...(i.observed?.observation ? [exact(i.observed.installation, i.observed.observation.namespace, i.observed.observation.agentUid)] : [])]);
-  const strays: Card[] = !ownershipKnown || !i.observed ? [] : i.observed.agents.filter(a => !owned.has(exact(i.observed!.installation, a.namespace, a.uid))).map(a => ({
+  // Chat's generated Agents are implementation details, not the creator's files. This is display-only;
+  // it must never be used to claim ownership or authorize resource cleanup.
+  const strays: Card[] = !ownershipKnown || !i.observed ? [] : i.observed.agents.filter(a => !/^bridge-chat-agent-[0-9a-f]{32}$/.test(a.name) && !owned.has(exact(i.observed!.installation, a.namespace, a.uid))).map(a => ({
     key: `local/${exact(a.namespace, a.uid)}`, groupKey: 'local', agentKey: `agent/local/${a.namespace}/${a.uid}`, title: a.name, place: 'This computer', subject: a.name,
     description: 'No agent file on this computer.', meta: { also: [], on: 'This computer' }, remote: false, actions: [],
     details: [{ label: 'Name on the cluster', value: a.name }, { label: 'Namespace', value: a.namespace }, { label: 'Agent ID', value: a.uid, copy: true }, { label: 'Last seen', value: absolute(i.observed!.observedAt) }],
@@ -146,6 +148,7 @@ export function clusterGroups(i: Inputs, built: Built): Group[] {
   if (i.files?.state === 'unavailable') notes.push({ text: "Couldn't read your saved files.", check: true });
   else if (i.filesStale) notes.push({ text: "Couldn't read your saved files just now. Showing what Bridge last read.", check: true });
   if (!i.files) notes.push({ text: 'Reading saved files…' });
+  if (i.workspaceNote) notes.push({ text: i.workspaceNote, clusters: true });
   if (state === 'reading') notes.push({ text: 'Reading agents…' });
   if (state === 'updating') notes.push({ text: 'Updating when the test finishes.', seen });
   if (state === 'busy') notes.push({ text: 'The local cluster is busy right now.', seen, check: true });

@@ -553,15 +553,97 @@ try {
     if (await evaluate(`document.body.innerText.includes('Change where agents run')`)) throw Error('Removed change panel is still visible');
     console.log(`Captured native WebView2 action fixture: ${theme}/${size}/${name}`);
   }
+  // Overview renderer fixtures: synthetic IPC in an isolated world running the compiled app, shaped like app/src/overview/api.ts.
+  // Chat's generated Agent is in the live list on purpose and must never be shown.
+  const overviewVariants = ['clusters', 'local-only', 'starting'];
+  async function captureOverview(theme, size, variant) {
+    ({ executionContextId: contextId } = await call('Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: `overview-${theme}-${size}-${variant}` }));
+    await evaluate(`(() => {
+      const variant = ${JSON.stringify(variant)};
+      const hex = (c, n) => c.repeat(n);
+      const installation = '11111111-1111-4111-8111-111111111111';
+      const src = c => ({ agent: hex(c, 64), tests: hex(String.fromCharCode(c.charCodeAt(0) + 1), 64) });
+      const now = Date.now();
+      const runAgent = (n, c) => ({ name: 'web-reader-test-' + n, namespace: 'default', uid: 'run-uid-' + c });
+      const result = (id, c, verdict, passed, total, agent) => ({ installation, documentId: id, source: src(c), namespace: agent.namespace, agentName: agent.name, agentUid: agent.uid, observedAt: now - 3600000, state: 'complete', report: { verdict, passed, total } });
+      const ids = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'];
+      const failedRun = runAgent(1, 'f'), passedRun = runAgent(2, 'e');
+      const file = (id, name, c, description, localResult) => ({ documentId: id, name, state: 'readable', source: src(c), summary: { name, description, model: 'fixture-model', tools: ['web_fetch'] }, reason: null, localResult });
+      const files = { state: 'complete', historyState: 'complete', runActive: false,
+        files: [file(ids[0], 'checksum-checker', '1', 'Checks a page checksum', result(ids[0], '1', 'failed', 1, 3, failedRun)),
+          file(ids[1], 'web-reader', '3', 'Answers from the web page named in the request', result(ids[1], '3', 'passed', 2, 2, passedRun)),
+          file(ids[2], 'draft-helper', '5', 'A new agent with no tests run yet', null)],
+        runAgents: [failedRun, passedRun].map(a => ({ installation, namespace: a.namespace, agentUid: a.uid })) };
+      const chatAgent = { name: 'bridge-chat-agent-' + hex('0', 32), namespace: 'default', uid: 'chat-uid-0' };
+      const live = { state: 'complete', installation, agents: [failedRun, passedRun, chatAgent], observedAt: now, observation: null, runActive: false, reason: null };
+      const remote = { name: 'web-reader', namespace: 'agents', uid: 'remote-uid-1', agentType: 'Declarative', model: 'fixture-model', tools: ['web_fetch'],
+        record: { id: '22222222-2222-4222-8222-222222222222', source: src('3'), targetDisplay: 'team-dev', targetUids: { serviceNamespace: 'control', serviceUid: 'svc-uid', deploymentNamespace: 'control', deploymentUid: 'dep-uid', watchedNamespace: 'agents' }, provider: 'team-ai', plannedAgentName: 'web-reader', agentUid: 'remote-uid-1', verdict: 'passed', time: Math.floor(now / 1000) - 7200 } };
+      const places = { historyState: 'complete', unobserved: [], places: variant === 'clusters' ? [{ key: 'fixture-remote', context: 'team-dev', service: 'control / orka', namespace: 'agents', stale: false, observedAt: now - 60000, agents: [remote] }] : [] };
+      const progress = { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 12000, remainingMs: null };
+      const starting = variant === 'starting';
+      localStorage.setItem('bridge.welcomeSeen.v1', '1');
+      window.isTauri = true;
+      window.__TAURI_INTERNALS__ = { invoke: async command => {
+        if (command === 'setup_status') return { selected: 'localVm', localVm: starting ? 'starting' : 'ready', model: 'locked', modelSupported: true, workspaceProgress: starting ? progress : null, localVmError: null };
+        if (command === 'overview_files') return files;
+        if (command === 'overview_agents') return live;
+        if (command === 'overview_places') return places;
+        if (command === 'setup_example') return ${JSON.stringify(pair)};
+        if (command === 'setup_requirements') return null;
+        if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
+        if (command === 'engine_call') throw { kind: 'unavailable' };
+        throw Error('Unmocked Overview fixture command: ' + command);
+      } };
+      document.getElementById('root').replaceWith(Object.assign(document.createElement('div'), { id: 'root' }));
+    })()`);
+    await evaluate(bundle);
+    await until(() => evaluate(`!!document.querySelector('button.page-tab[aria-label="Overview"]')`), 'Overview tab');
+    await evaluate(`document.querySelector('button.page-tab[aria-label="Overview"]').click()`);
+    const text = () => evaluate(`document.querySelector('section.overview:not([hidden])')?.innerText ?? ''`);
+    const shoot = async suffix => {
+      await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+      const image = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(output, `${theme}-${size}-overview-${variant}${suffix}.png`), Buffer.from(image.data, 'base64'));
+      console.log(`Captured native WebView2 Overview fixture: ${theme}/${size}/${variant}${suffix}`);
+    };
+    const check = async mode => {
+      const body = await text();
+      const fail = reason => { throw Error(`overview-${variant}/${size}/${mode}: ${reason}: ${body}`); };
+      if (variant === 'starting') {
+        if (!/Starting the local cluster/.test(body) || /stopped/i.test(body)) fail('startup must say starting, not stopped');
+        return;
+      }
+      for (const label of ['Failed', 'Passed', 'Not tested']) if (!body.includes(label)) fail(`missing ${label} verdict`);
+      if (/bridge-chat-agent/.test(body)) fail('generated Chat Agent is visible');
+      if (variant === 'clusters' && !body.includes('team-dev')) fail('remote cluster is missing');
+      if (variant === 'local-only' && body.includes('team-dev')) fail('remote cluster should be absent');
+      const overflow = await evaluate(`(() => { const main = document.querySelector('main'); return main.scrollWidth - main.clientWidth; })()`);
+      if (overflow > 2) fail('page overflows horizontally');
+    };
+    if (variant === 'starting') {
+      await until(async () => /Starting the local cluster/.test(await text()), 'Overview startup note');
+      await check('');
+      await shoot('');
+      return;
+    }
+    await until(async () => (await text()).includes('Not tested'), 'Overview cards');
+    await check('by-cluster');
+    await shoot('-by-cluster');
+    await clickAction('By agent');
+    await until(() => evaluate(`document.querySelector('.view-switch button:nth-child(2)')?.getAttribute('aria-pressed') === 'true'`), 'By agent view');
+    await check('by-agent');
+    await shoot('-by-agent');
+  }
   const notes = [];
   for (const theme of ['light', 'dark']) {
     await call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
     for (const fixture of setupFixtures) await captureSetup(theme, 'wide', fixture);
     for (const name of actionFixtures) await captureActions(theme, 'wide', name);
+    for (const variant of overviewVariants) await captureOverview(theme, 'wide', variant);
   }
   // Resize the real native window to its minimum 540x640 client area, as a user would. Win32 SetWindowPos through
   // PowerShell, then verify what the embedded WebView actually reports; never assume the resize worked.
-  const target = { width: 540, height: 640 };
+  async function resizeTo(target, label) {
   const resizeScript = `
 $ErrorActionPreference = 'Stop'
 Add-Type @'
@@ -600,14 +682,23 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     await call('Emulation.setDeviceMetricsOverride', { width: target.width, height: target.height, deviceScaleFactor: 1, mobile: false });
     reported = await viewport();
   }
-  notes.push(`Compact captures: ${mode}. Requested content area ${target.width}x${target.height}; WebView reported ${reported.width}x${reported.height} CSS px at devicePixelRatio ${reported.dpr}. ${resized.stdout.trim()}`);
+  notes.push(`${label} captures: ${mode}. Requested content area ${target.width}x${target.height}; WebView reported ${reported.width}x${reported.height} CSS px at devicePixelRatio ${reported.dpr}. ${resized.stdout.trim()}`);
+  }
+  await resizeTo({ width: 540, height: 640 }, 'Compact');
   for (const theme of ['light', 'dark']) {
     await call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
     for (const fixture of setupFixtures) await captureSetup(theme, 'compact', fixture);
     for (const name of actionFixtures) await captureActions(theme, 'compact', name);
+    for (const variant of overviewVariants) await captureOverview(theme, 'compact', variant);
+  }
+  // Preserve the explicitly named Overview minimum captures alongside the compact suite.
+  await resizeTo({ width: 540, height: 640 }, 'Minimum');
+  for (const theme of ['light', 'dark']) {
+    await call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+    for (const variant of overviewVariants) await captureOverview(theme, 'minimum', variant);
   }
   await writeFile(join(output, 'compact-window.txt'), notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. compact-window.txt says whether 540x640 was a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*), completed local/Stop pages (local-completed, local-stopped), removal confirmation/retry (ai-removal-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. compact-window.txt says whether 540x640 compact and minimum captures were a real native window resize or renderer viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

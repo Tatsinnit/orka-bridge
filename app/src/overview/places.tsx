@@ -35,5 +35,5 @@ export function GroupSection({ group, byAgent, actions }: { group: Group; byAgen
   </section>;
 }
 export function Board({ stacks, byAgent, actions }: { stacks: Group[][]; byAgent: boolean; actions: GroupActions }) {
-  return <div className="overview-board">{stacks.map((stack, i) => <div key={i} className="overview-stack">{stack.map(g => <GroupSection key={g.key} group={g} byAgent={byAgent} actions={actions} />)}</div>)}</div>;
+  return <div className={`overview-board${stacks.some(stack => !stack.length) ? ' overview-board-single' : ''}`}>{stacks.map((stack, i) => <div key={i} className="overview-stack">{stack.map(g => <GroupSection key={g.key} group={g} byAgent={byAgent} actions={actions} />)}</div>)}</div>;
 }

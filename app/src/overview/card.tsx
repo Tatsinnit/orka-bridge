@@ -32,7 +32,7 @@ export function AgentCard({ card, byAgent, actions }: { card: Card; byAgent: boo
     {!(byAgent && !card.agentKey.startsWith('agent/')) && <p className="overview-card-description">{card.description}</p>}
     <Meta card={card} />
     <div className="overview-card-actions">
-      {card.actions.map(a => <Button key={a.id} kind={a.primary ? 'primary' : a.quiet ? 'quiet' : 'secondary'} aria-label={label({ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id])} onClick={() => run(a.id)}>{{ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id]}</Button>)}
+      {card.actions.map(a => <Button key={a.id} kind={a.primary ? 'primary' : 'secondary'} aria-label={label({ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id])} onClick={() => run(a.id)}>{{ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id]}</Button>)}
       <Disclosure className="overview-details-toggle" label="Details" open={open} onOpenChange={setOpen} controls={id}>{null}</Disclosure>
     </div>
     {open && <div id={id} className="overview-details">{card.details.map(d => d.copy ? <GeneratedValue key={d.label} label={d.label} value={d.value} />
