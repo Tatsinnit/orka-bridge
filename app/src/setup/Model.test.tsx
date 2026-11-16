@@ -8,6 +8,29 @@ const { invoke, isTauri } = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn(
 vi.mock('@tauri-apps/api/core', () => ({ invoke, isTauri }));
 beforeEach(() => { invoke.mockReset(); isTauri.mockReturnValue(true); });
 afterEach(() => { cleanup(); });
+test('a busy AI action explains its disabled controls once', async () => {
+  invoke.mockImplementation(() => new Promise(() => {}));
+  render(<Model enabled />);
+  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  expect(screen.getAllByText('Wait for the AI connection to finish.')).toHaveLength(1);
+});
+test('paused model actions explain the workspace wait without changing admission', async () => {
+  invoke.mockResolvedValue({ ready: true });
+  const view = render(<Model enabled />);
+  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  await screen.findByText(/^Connected$/);
+  view.rerender(<Model enabled paused />);
+  const change = screen.getByRole('button', { name: 'Change' });
+  expect(change.hasAttribute('disabled')).toBe(true);
+  expect(change.title).toBe('Wait for the workspace action to finish.');
+});
+test('a retained sign-in explains why provider choices cannot change', async () => {
+  invoke.mockRejectedValue({ kind: 'modelConnect', message: 'unavailable' });
+  render(<Model enabled />);
+  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('group', { name: 'AI connection' }).getAttribute('title')).toBe('Remove the saved sign-in or key before choosing another provider.');
+});
 test('remove is explicit, excludes duplicates and permits connecting again', async () => {
   const onState = vi.fn();
   invoke.mockResolvedValue({ ready: true });

@@ -204,7 +204,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   const continueAction = <Button type="button" kind="primary" aria-describedby={location === 'local' && requirements ? 'preflight-reason' : undefined} disabled={busy || !status || !!error || (location === 'local' && status.localVm !== 'notIntegrated' && requirements !== null && preflightBlocked)} onClick={() => { if (location === 'cluster') chooseCluster(); else void chooseLocal(); }}>Continue</Button>;
   useImperativeHandle(ref, () => ({ stop() { setPanel('local'); void chooseLocal('change'); }, showPlaces() { if (view !== 'places') back(); } }));
   const titleId = active ? 'page-title' : undefined;
-  if (!status && !error) return <h1 id={titleId}>Checking the local cluster…</h1>;
+  if (!status && !error) return <><h1 id={titleId}>Clusters</h1><p role="status">Checking the local cluster…</p></>;
   if (welcome && status) return <Welcome titleId={titleId} onStart={start} onCluster={() => chooseCluster()} unavailable={status.localVm === 'notIntegrated' ? runtimeCopy.notIntegrated : undefined} />;
   const selected = status?.selected === 'localVm';
   const modelRecovery = ['failed', 'resetFailed', 'removalFailed', 'resetting'].includes(modelState);
@@ -218,10 +218,13 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   const aiHeading = aiHeadings[modelState] ?? 'Connect the AI';
   const presentation = setupView(error ? undefined : status, { stopping: sending && pendingAction !== 'start', starting: sending && pendingAction === 'start', workspace, model: modelState, check: firstCheck, initialAutomatic });
   const showPayoff = !workspace && !payoffDismissed && eligiblePayoff;
+  const localStage = status?.localVm === 'ready' ? aiHeading : status?.localVm === 'failed'
+    ? status.preflightFailure ? 'Check this computer' : workspaceRecovery(status.workspaceFailure).heading : 'Getting your workspace ready';
   return <div className="places-workspace">
     {view === 'cluster' && <Button type="button" kind="quiet" className="places-back" onClick={back}>Back to clusters</Button>}
     <div className="workspace-heading places-heading" hidden={!!showPayoff}>
-      <h1 ref={heading} tabIndex={-1} id={showPayoff ? undefined : titleId}>{view === 'places' ? 'Clusters' : view === 'cluster' ? entry?.current ? 'Manage your cluster' : entry?.remembered ? 'Connect a cluster' : 'Add a cluster' : workspace ? 'This computer' : selected ? presentation.done ? 'This computer' : status?.localVm === 'ready' ? aiHeading : status?.localVm === 'failed' ? status.preflightFailure ? 'Check this computer' : workspaceRecovery(status.workspaceFailure).heading : 'Getting your workspace ready' : 'Where should your agents run?'}</h1>
+      <h1 ref={heading} tabIndex={-1} id={showPayoff ? undefined : titleId}>{view === 'places' ? 'Clusters' : view === 'cluster' ? entry?.current ? 'Manage your cluster' : entry?.remembered ? 'Connect a cluster' : 'Add a cluster' : workspace || selected ? 'This computer' : 'Where should your agents run?'}</h1>
+      {view === 'local' && !workspace && selected && !presentation.done && <p className="muted">{localStage}</p>}
       {view === 'places' && <p className="muted">Choose where agents run</p>}
       {view === 'places' && <Button type="button" kind={!snapshotUnavailable && snapshot?.persistenceState === 'complete' && snapshot.places.length === 0 ? 'secondary' : 'primary'} onClick={() => chooseCluster()}>Add a cluster</Button>}
       {view === 'local' && !workspace && selected && !['ready', 'failed', 'notIntegrated'].includes(status?.localVm ?? '') && <p className="muted">Meanwhile, meet the agent you'll test first.</p>}

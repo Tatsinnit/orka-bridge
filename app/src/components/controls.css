@@ -2,9 +2,10 @@
 .button-primary { background: var(--color-action); color: var(--color-action-text); border-color: transparent; }
 .button-secondary:not(:disabled):hover { background: var(--color-hover); }
 .button-primary:not(:disabled):hover { background: var(--color-action-hover); }
-.button-quiet { background: transparent; border-color: transparent; color: var(--color-text-secondary); }
+.button-quiet { background: transparent; border-color: transparent; border-inline-width: 0; padding-inline: 0; color: var(--color-text-secondary); }
 .button-quiet:not(:disabled):hover { color: var(--color-text); text-decoration: underline; text-underline-offset: 3px; }
 .button-small { min-height: 26px; padding: 2px 10px; }
+.button-small.button-quiet { padding-inline: 0; }
 .button-icon { min-height: 26px; width: 26px; height: 26px; padding: 0; flex: none; background: transparent; border-color: transparent; color: var(--color-text-secondary); }
 .button-icon:not(:disabled):hover { background: var(--color-hover); color: var(--color-text); }
 .button:disabled { background: var(--color-hover); border-color: transparent; color: var(--color-text-tertiary); cursor: not-allowed; }

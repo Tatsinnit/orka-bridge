@@ -3,7 +3,7 @@
 .brand { display: flex; align-items: center; gap: var(--space-2); padding-inline: var(--space-2); font: var(--type-card); }
 .brand img { object-fit: contain; filter: var(--mark-filter); }
 .page-nav { display: flex; flex: 1; gap: var(--space-1); min-width: 0; }
-.page-tab { flex: 1 1 0; display: flex; align-items: center; gap: var(--space-2); width: 180px; min-width: 0; min-height: 40px; padding: var(--space-1) var(--space-2); border: 0; border-radius: var(--radius-control); background: transparent; text-align: left; }
+.page-tab { flex: 0 1 180px; display: flex; align-items: center; gap: var(--space-2); width: 180px; min-width: 0; min-height: 40px; padding: var(--space-1) var(--space-2); border: 0; border-radius: var(--radius-control); background: transparent; text-align: left; }
 .page-tab:hover, .page-tab[aria-current="page"] { background: var(--color-page); }
 .page-tab[aria-current="page"] { box-shadow: inset 0 -2px 0 var(--color-action); }
 .page-tab .icon-tile { width: 24px; height: 24px; }
@@ -16,10 +16,11 @@
 .tab-copy small { display: block; color: var(--color-text-secondary); font: var(--type-small); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab-copy small:has(.tab-agent-name) { display: flex; }
 .tab-agent-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 40%; white-space: pre; }
-.tab-status-word { color: var(--status); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tab-agent-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tab-status-word { color: var(--status); }
 /* Small green text lacks contrast on the darker inactive light chrome. */
 .page-tab:not([aria-current]) .tab-status-word.status-passed { color: var(--color-text-secondary); }
-.chrome-tools { display: flex; align-items: center; margin-left: auto; min-width: 0; }
+.chrome-tools { display: flex; align-items: center; margin-left: auto; padding-left: var(--space-4); min-width: 0; }
 .host-chip { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-control); background: var(--color-card); box-shadow: 0 0 0 1px var(--color-border-strong); font-size: var(--size-body); white-space: nowrap; max-width: 220px; overflow: hidden; }
 .host-label { overflow: hidden; text-overflow: ellipsis; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-text-tertiary); flex: none; }
@@ -31,6 +32,12 @@
 .coming-control { position: relative; display: inline-flex; border-radius: var(--radius-control); }
 .control-tip { display: none; position: absolute; z-index: 2; top: calc(100% + 8px); right: 0; width: max-content; max-width: 240px; padding: var(--space-2); border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-card); color: var(--color-text); font: var(--type-body); box-shadow: 0 2px 6px rgb(0 0 0 / .12); }
 .coming-control:hover .control-tip, .coming-control:focus-visible .control-tip { display: block; }
+* { scrollbar-width: thin; scrollbar-color: var(--color-text-tertiary) var(--color-page); }
+@supports not (scrollbar-width: thin) {
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--color-page); }
+  ::-webkit-scrollbar-thumb { background: var(--color-text-tertiary); border: 2px solid var(--color-page); border-radius: var(--radius-control); }
+}
 .page-content { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; padding: var(--space-6); }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
 .heading-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
@@ -45,7 +52,8 @@
 @media (max-width: 1100px) { .brand b { display: none; } }
 @media (max-width: 820px) {
   .page-nav { flex: 1; }
-  .page-tab { width: auto; }
+  .page-tab { flex: 1 1 0; width: auto; }
+  .chrome-tools { padding-left: var(--space-2); }
   .tab-copy small, .tab-copy small:has(.tab-agent-name) { display: none; }
   .host-chip { max-width: 192px; }
   .host-label { max-width: 160px; }

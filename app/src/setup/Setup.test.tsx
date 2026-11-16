@@ -86,7 +86,7 @@ test('the chooser only reads setup and build information, without runtime or cre
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   const existing = screen.getByRole('button', { name: 'Add a cluster' });
   expect(existing.matches(':disabled')).toBe(false);
-  expect(ipc.mock.calls.every(call => ['setup_status', 'setup_requirements', 'cluster_places'].includes(call[0]))).toBe(true);
+  expect(ipc.mock.calls.every(call => ['setup_status', 'setup_requirements', 'cluster_places', 'overview_files'].includes(call[0]))).toBe(true);
   expect(fetch).not.toHaveBeenCalled(); expect(screen.queryByRole('textbox')).toBeNull();
 });
 
@@ -127,7 +127,7 @@ test.each([null, 'attempted'])('a lost selection reply preserves durable intent 
   await screen.findByText('Your workspace is ready on this computer.');
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe(previous ?? 'pending');
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
-  expect(ipc.mock.calls.every(([command]) => ['setup_status', 'setup_requirements', 'setup_example', 'setup_select_local', 'cluster_places'].includes(command))).toBe(true);
+  expect(ipc.mock.calls.every(([command]) => ['setup_status', 'setup_requirements', 'setup_example', 'setup_select_local', 'cluster_places', 'overview_files'].includes(command))).toBe(true);
 });
 
 test('browser preview never pretends that native persistence or integration works', async () => {
@@ -192,7 +192,7 @@ test('Continue shows real startup states and a ready session can open the owned 
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
   expect(await screen.findByText('exact agent source')).toBeTruthy();
   expect(screen.getByText('exact test source')).toBeTruthy();
-  expect(ipc.mock.calls.every(([name]) => ['setup_status', 'setup_requirements', 'setup_select_local', 'setup_example', 'agent_open', 'agent_select', 'agents_list', 'agent_run_status', 'agent_chat_status', 'send_status', 'send_history', 'engine_call', 'cluster_places'].includes(name))).toBe(true);
+  expect(ipc.mock.calls.every(([name]) => ['setup_status', 'setup_requirements', 'setup_select_local', 'setup_example', 'agent_open', 'agent_select', 'agents_list', 'agent_run_status', 'agent_chat_status', 'send_status', 'send_history', 'engine_call', 'cluster_places', 'overview_files'].includes(name))).toBe(true);
 });
 
 test.each([

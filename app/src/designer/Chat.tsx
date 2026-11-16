@@ -128,16 +128,20 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
         <h3>Conversation {index + 1}</h3>
         {index > 0 && <p className="muted">New conversation. Earlier turns are shown for reference, not sent as history.</p>}
         {version.turns.map((turn, i) => {
-          const waiting = turn === latestTurn && ['preparing', 'working'].includes(snapshot.state) && ['', 'Pending', 'Queued', 'Scheduled', 'Running', 'Finalizing'].includes(turn.phase) && turn.answer === null;
+          // A terminal Task can be published before the worker finishes reading its result/Session.
+          const confirming = turn === latestTurn && (snapshot.state === 'waitingForSession'
+            || snapshot.state === 'working' && ['Succeeded', 'Failed', 'Cancelled'].includes(turn.phase));
+          const waiting = turn.answer === null && (confirming
+            || turn === latestTurn && ['preparing', 'working'].includes(snapshot.state) && ['', 'Pending', 'Queued', 'Scheduled', 'Running', 'Finalizing'].includes(turn.phase));
           return <article className="chat-turn" key={i}>
             <div className="chat-question"><h4>You</h4><p className="reading">{turn.message}</p></div>
             <div className="chat-response"><h4>Agent</h4>
               {turn.phase === 'Failed' && <p>This turn failed.</p>}{turn.phase === 'Cancelled' && <p>The cluster reported this turn cancelled; worker termination is unconfirmed.</p>}
               {turn.answer !== null ? <p className="reading">{turn.answer}</p> : waiting
-                ? <p className="chat-waiting"><StatusIcon state="running" />{['Running', 'Finalizing'].includes(turn.phase) ? 'Waiting for your agent’s reply…' : 'Waiting for your agent to start…'}</p>
+                ? <p className="chat-waiting"><StatusIcon state="running" />{confirming ? snapshot.state === 'waitingForSession' ? states.waitingForSession : 'Confirming your agent’s reply…' : ['Running', 'Finalizing'].includes(turn.phase) ? 'Waiting for your agent’s reply…' : 'Waiting for your agent to start…'}</p>
                 : <p className="muted">{turn.phase === 'Failed' ? 'The turn failed without an answer.' : 'No answer was received.'}</p>}
               {turn.stopUnconfirmed ? <p className="chat-notice">{states.stopUnconfirmed}</p> : turn.terminationUnconfirmed && <p className="chat-notice">{states.stopRequested}</p>}
-              {!turn.contextRetained && !waiting && <p className="muted">This turn is not confirmed in later context.</p>}
+              {!turn.contextRetained && !waiting && !confirming && <p className="muted">This turn is not confirmed in later context.</p>}
               {!!turn.tools.length && <Disclosure className="card-details" label="Tool activity"><ul className="chat-tools">{turn.tools.map((tool, t) => <li key={t}><code>{tool.name}</code> · {tool.phase}</li>)}</ul></Disclosure>}
             </div>
           </article>;

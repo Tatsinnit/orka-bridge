@@ -291,8 +291,20 @@ func closeMain() {
     guard let close = attribute(main, "AXCloseButton") else { fatalError("Missing native Close button") }
     press(close as! AXUIElement)
 }
+let noticeMarker = data.appendingPathComponent("close-notice-seen-v1")
+let needsNotice = !FileManager.default.fileExists(atPath: noticeMarker.path)
+func noticeVisible() -> Bool { shownStrings(root).contains("Bridge is still running") }
 closeMain()
+if needsNotice {
+    wait("First Close did not explain background running") { noticeVisible() }
+    check(!FileManager.default.fileExists(atPath: noticeMarker.path), "Close notice marked seen before acknowledgement")
+    try command("/usr/sbin/screencapture", ["-x", "\(output)/first-close-notice.png"])
+    let noticeText = shownStrings(root).joined(separator: " ")
+    check(noticeText.contains("menu bar") && noticeText.contains("Stop the local cluster and quit"), "Close notice lost reopen/Quit guidance")
+    press(find(root, "close-notice-ok") { pressable($0, "OK") })
+}
 wait("Native Close did not hide") { windowInfo() == nil }
+check(FileManager.default.fileExists(atPath: noticeMarker.path) && !noticeVisible(), "Acknowledged notice was not remembered/dismissed")
 check(!app!.isTerminated, "Close quit instead of hiding")
 let commands = menu(root)
 try capture("menu-hidden", menu: true)
@@ -301,6 +313,7 @@ wait("Open Bridge did not reopen/focus") { windowInfo() != nil && NSWorkspace.sh
 retained(); try capture("reopened-menu")
 closeMain()
 wait("Close before Dock activation did not hide") { windowInfo() == nil }
+check(!noticeVisible(), "Second Close repeated the information dialog")
 try command("/usr/bin/open", [bundle]) // LaunchServices delivers Dock-style Reopen.
 wait("Dock activation did not reopen/focus") { windowInfo() != nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
 retained(); try capture("reopened-dock")
@@ -326,6 +339,6 @@ press(find(appMenu as! AXUIElement, "application-menu") { attribute($0, "AXRole"
 press(find(quitRoot, "menu-quit") { attribute($0, "AXTitle") as? String == "Quit Bridge" })
 wait("Standard Quit did not exit") { app!.isTerminated }
 check(!FileManager.default.fileExists(atPath: selected) && !FileManager.default.fileExists(atPath: data.appendingPathComponent("local-vm-v1").path), "Saved local selection or VM data appeared")
-let evidence = "PASS \(theme): native Close/hide, tray menu/Open, same PID \(pid)/window \(originalID), File view and edited text retained, Dock activation, hidden/minimized second launches, menu stop, standard Quit. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof.\n"
+let evidence = "PASS \(theme): native first-Close notice/acknowledgement when unseen, profile marker and second Close without dialog, Close/hide, tray menu/Open, same PID \(pid)/window \(originalID), File view and edited text retained, Dock activation, hidden/minimized second launches, menu stop, standard Quit. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof.\n"
 try evidence.write(toFile: "\(output)/evidence.txt", atomically: true, encoding: .utf8)
 print(evidence)

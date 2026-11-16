@@ -175,6 +175,13 @@ try {
       const main = document.querySelector('main');
       return {
         width: innerWidth, scrollWidth: main.scrollWidth, clientWidth: main.clientWidth,
+        tabs: shown('.page-tab').map(node => ({ ...rect(node), grow: getComputedStyle(node).flexGrow })),
+        host: rect(document.querySelector('.host-chip')), hostLabel: rect(document.querySelector('.host-label')),
+        subtitles: shown('.tab-copy small').filter(node => getComputedStyle(node).display !== 'none').length,
+        quiet: shown('.button-quiet').map(node => ({ start: getComputedStyle(node).paddingInlineStart, end: getComputedStyle(node).paddingInlineEnd })),
+        scrollbar: { width: getComputedStyle(main).scrollbarWidth, color: getComputedStyle(main).scrollbarColor },
+        hostTone: document.querySelector('.host-chip .live-dot')?.className,
+        overview: document.querySelector('#tab-status-Overview')?.textContent,
         forms: shown('.cluster-card > :not(.cluster-actions):not([role="group"]), .local-preflight > .card').map(node => ({ ...rect(node), limit: node.matches('.local-preflight > .card') ? 554 : 520 })),
         rows: shown('.place-row').map(row => ({ name: rect(row.querySelector('.place-summary')), pill: rect(row.querySelector(':scope > .pill')), action: rect(row.querySelector(':scope > button')), row: rect(row) })),
         checks: shown('.cluster-checks li').map(row => ({ row: rect(row), card: rect(row.closest('.cluster-card')) })),
@@ -185,6 +192,12 @@ try {
     })()`);
     const fail = reason => { throw Error(`${name}/${size}: ${reason}: ${JSON.stringify(layout)}`); };
     if (layout.scrollWidth > layout.clientWidth + 2) fail('page overflows horizontally');
+    if (layout.width > 820 && (layout.tabs.length !== 3 || layout.tabs.some(tab => Math.abs(tab.width - 180) > 1 || tab.grow !== '0') || layout.host.x - layout.tabs.at(-1).right < 16)) fail('wide tabs must stay 180px/non-growing with a 16px host gap');
+    if (layout.width <= 820 && (layout.subtitles || layout.hostLabel.width > 160)) fail('compact subtitles/host label exceed their bounds');
+    if (layout.quiet.some(item => item.start !== '0px' || item.end !== '0px')) fail('quiet control has inline padding');
+    if (layout.scrollbar.width !== 'thin' || layout.scrollbar.color === 'auto') fail('page scrollbar must be thin and themed');
+    if (['ai-reset-mismatch', 'ai-removal-retry'].includes(name) && !layout.hostTone?.split(' ').includes('ready')) fail('AI failure changed the ready workspace host tone');
+    if (name === 'setup-failed' && !layout.hostTone?.split(' ').includes('bad')) fail('workspace failure lost its failed host tone');
     // Preflight card includes its 16px padding and 1px border on both sides.
     if (layout.forms.some(rect => rect.width > rect.limit + 2)) fail('form exceeds its content width');
     for (const { row, card } of layout.checks) {
@@ -249,6 +262,7 @@ try {
         if (command === 'setup_status' && ${JSON.stringify(!!failLater)} && reads++ > 0) throw Error('Fixture status unreadable');
         if (command === 'setup_status') return { selected: 'localVm', localVm: ${JSON.stringify(localVm)}, model: ${JSON.stringify(localVm === 'ready' ? 'available' : 'locked')}, modelSupported: ${JSON.stringify(modelSupported)}, workspaceProgress: ${JSON.stringify(progress)}, localVmError: null, ...${JSON.stringify(failure ? { workspaceFailure: failure } : {})} };
         if (command === 'setup_example') return pair;
+        if (command === 'overview_files') return { state: 'complete', files: [], runActive: false, historyState: 'complete', runAgents: [] };
         if (command === 'setup_requirements') return null;
         if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
         if (command === 'engine_call') throw { kind: 'unavailable' };
@@ -268,6 +282,8 @@ try {
     }
     const panel = localVm === 'failed' ? '.workspace-failure' : '.setup-progress';
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected)}) && [...document.querySelectorAll(${JSON.stringify(panel)})].some(item => item.getClientRects().length)`), `${name} setup progress`);
+    if (!await evaluate(`document.querySelector('h1')?.textContent === 'This computer'`)) throw Error(`${name}: local page lost its stable title`);
+    await until(() => evaluate(`document.querySelector('#tab-status-Overview')?.textContent === 'No saved agents yet'`), 'initial saved-only empty count');
     const chrome = await evaluate(`document.querySelector('header').innerText + document.querySelector('footer').innerText`);
     const observed = !failLater && localVm !== 'failed';
     const step = localVm === 'ready' ? 3 : 2;
@@ -366,7 +382,7 @@ try {
     })()`);
     await writeFile(join(output, `${theme}-${size}-${name}-comparison.png`), Buffer.from(comparison, 'base64'));
   }
-  if (runUi) actionFixtures.push('chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure');
+  if (runUi) actionFixtures.push('chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure');
   async function captureWorkspace(theme, size, name) {
     const card = '.returning-workspace';
     const capture = async (state, word, action, disabled = false) => {
@@ -480,6 +496,7 @@ try {
       const target = { id: '00000000-0000-4000-8000-000000000002', context_id: context.id, context_name: context.name, service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'fixture-image' };
       const provider = { id: '00000000-0000-4000-8000-000000000003', name: 'team-ai', ready: true };
       window.__bridgeCatalogCalls = [];
+      window.__bridgeOverviewLiveReads = 0;
       const localCancel = name.startsWith('local-cancel-');
       window.__bridgeCancellation = name.slice('local-cancel-'.length);
       window.__bridgeCancelCalls = [];
@@ -588,6 +605,8 @@ try {
           if (name === 'ai-cli-missing') throw { kind: 'modelCaptureUnavailable' };
           connected = true; return { ready: true, connection: { kind: 'copilot', model: 'gpt-5.6-terra', account: ${JSON.stringify(fixtureAccount)} } };
         }
+        if (command === 'overview_files') return { state: 'complete', runActive: false, historyState: 'complete', runAgents: [], files: [{ documentId, name: documentName, state: 'readable', source, summary: { name: documentName, description: null, model: 'fixture-model', tools: [] }, reason: null, localResult: null }] };
+        if (command === 'overview_agents' || command === 'overview_places') { window.__bridgeOverviewLiveReads++; throw Error('Synthetic live inventory unavailable'); }
         if (command === 'agent_open' && name === 'designer-loading') return new Promise(() => {});
         if (command === 'agent_open' && name === 'designer-open-error') throw Error('Synthetic agent open failure');
         if (designer && command === 'agent_select') {
@@ -616,9 +635,10 @@ try {
           return documentId;
         }
         if (command === 'agent_chat_status') {
+          const confirming = name === 'chat-session-null' || name === 'chat-session-answer';
           const waiting = name === 'chat-pending' || name === 'chat-running';
-          const turn = { message: 'What did the page say?', answer: waiting ? null : 'The page says fixture-checksum.', phase: waiting ? name === 'chat-pending' ? 'Pending' : 'Running' : 'Succeeded', tools: [], contextRetained: !waiting, terminationUnconfirmed: false, stopUnconfirmed: false };
-          return { documentId, state: waiting ? 'working' : 'ready', busy: waiting, canSend: !waiting, versions: name === 'chat-empty' ? [] : [{ turns: [turn] }], error: null };
+          const turn = { message: 'What did the page say?', answer: waiting || name === 'chat-session-null' ? null : 'The page says fixture-checksum.', phase: waiting ? name === 'chat-pending' ? 'Pending' : 'Running' : 'Succeeded', tools: [], contextRetained: !waiting && !confirming, terminationUnconfirmed: false, stopUnconfirmed: false };
+          return { documentId, state: confirming ? 'waitingForSession' : waiting ? 'working' : 'ready', busy: waiting || confirming, canSend: !waiting && !confirming, versions: name === 'chat-empty' ? [] : [{ turns: [turn] }], error: null };
         }
         if (name.startsWith('cluster-') && command === 'cluster_contexts') return [context, { ...context, id: '00000000-0000-4000-8000-000000000004', name: 'team-west', current: false }];
         if (name.startsWith('cluster-') && command === 'cluster_discover') {
@@ -682,9 +702,10 @@ try {
     } else if (name.startsWith('designer') || name.startsWith('local-cancel-') || name.startsWith('chat-') || name.startsWith('new-agent-')) await clickAction('Read its instructions');
     if (name.startsWith('chat-')) {
       await clickAction('Chat');
-      const expected = name === 'chat-empty' ? 'Ask your agent a question' : name === 'chat-pending' ? 'Waiting for your agent to start…' : name === 'chat-running' ? 'Waiting for your agent’s reply…' : 'The page says fixture-checksum.';
+      const expected = name === 'chat-empty' ? 'Ask your agent a question' : name === 'chat-pending' ? 'Waiting for your agent to start…' : name === 'chat-running' ? 'Waiting for your agent’s reply…' : name === 'chat-session-null' ? 'Waiting for the conversation to finish saving…' : 'The page says fixture-checksum.';
       await until(() => evaluate(`document.querySelector('.chat-panel')?.innerText.includes(${JSON.stringify(expected)})`), name);
-      if (['chat-pending', 'chat-running'].includes(name) && await evaluate(`document.querySelector('.chat-transcript').innerText.includes('not confirmed in later context')`)) throw Error('Waiting Chat shows a context fault');
+      if (['chat-pending', 'chat-running', 'chat-session-null', 'chat-session-answer'].includes(name) && await evaluate(`['not confirmed in later context', 'No answer was received.', 'failed without an answer'].some(text => document.querySelector('.chat-transcript').innerText.includes(text))`)) throw Error('Waiting Chat shows a premature missing-answer/context fault');
+      if (name.startsWith('chat-session-') && !await evaluate(`document.querySelector('.chat-panel').innerText.includes('Waiting for the conversation to finish saving…')`)) throw Error('Session confirmation lost its pending status');
       await evaluate(`document.querySelector('.chat-panel').scrollIntoView({ block: 'start' })`);
     }
     if (name.startsWith('new-agent-')) {
@@ -723,6 +744,8 @@ try {
         await evaluate(`window.__bridgeCatalogReleased = true`);
       }
       if (name !== 'designer') await until(() => evaluate(`!document.querySelector('.model-select').disabled`), 'connected Designer catalog');
+      await until(() => evaluate(`document.querySelector('#tab-status-Overview')?.textContent === '1 saved agent'`), 'hidden saved-file count');
+      if (await evaluate(`window.__bridgeOverviewLiveReads !== 0 || /\\bSaved\\b/.test(document.querySelector('footer').innerText)`)) throw Error('Untouched Designer claimed Saved or hidden Overview read live inventory');
       if (name === 'designer-catalog-busy') {
         await evaluate(`document.querySelector('button[aria-controls$="-picker"]').click()`);
         await until(() => evaluate(`!!document.querySelector('.tool-picker')?.getClientRects().length`), 'first tool list without Refresh');
@@ -884,7 +907,7 @@ try {
         await compareReference(image.data, theme, size, `ai-reset-${state}`, frame);
       };
       const mismatch = s => s.text.includes("Bridge's saved AI connection is from an earlier setup.") && s.primary.join() === 'Reset AI connection';
-      await expect('mismatch', row, s => mismatch(s) && s.heading === "The AI couldn't connect" && s.page.includes('Your workspace is running. Nothing is lost.')
+      await expect('mismatch', row, s => mismatch(s) && s.heading === 'This computer' && s.page.includes("The AI couldn't connect") && s.page.includes('Your workspace is running. Nothing is lost.')
         && ['Use another provider', 'Copy details for help'].every(b => s.buttons.includes(b)) && !['Remove sign-in', 'Check again', 'Connect the AI'].some(b => s.buttons.includes(b)));
       await shoot('mismatch', 'failed', row);
       await evaluate(`document.querySelector('button[aria-label="Clusters"]').click()`);
@@ -902,7 +925,7 @@ try {
       await clickAction('Cancel');
       await expect('provider cancelled', row, s => mismatch(s) && !s.resets.length);
       await clickAction('Reset AI connection'); await clickAction('Reset');
-      await expect('failed', row, s => s.heading === "The AI connection couldn't be reset" && s.text.includes("Bridge couldn't reset the AI connection") && s.primary.join() === 'Reset again'
+      await expect('failed', row, s => s.heading === 'This computer' && s.page.includes("The AI connection couldn't be reset") && s.text.includes("Bridge couldn't reset the AI connection") && s.primary.join() === 'Reset again'
         && !['Use another provider', 'Remove sign-in'].some(b => s.buttons.includes(b)) && s.resets.length === 1);
       await shoot('failed', 'reset', row);
       await clickAction('Copy details for help');
@@ -919,15 +942,15 @@ try {
       await shoot('failed-again', 'reset', row);
       await evaluate(`window.__bridgeResetOutcome = 'pending'`);
       await clickAction('Reset again');
-      await expect('resetting', row, s => s.heading === 'Resetting the AI connection' && s.text.includes('Resetting') && !['Remove sign-in', 'Connect the AI', 'Reset again', 'Reset AI connection'].some(b => s.buttons.includes(b)));
+      await expect('resetting', row, s => s.heading === 'This computer' && s.page.includes('Resetting the AI connection') && s.text.includes('Resetting') && !['Remove sign-in', 'Connect the AI', 'Reset again', 'Reset AI connection'].some(b => s.buttons.includes(b)));
       await shoot('resetting', 'reset', row);
       await evaluate('window.__bridgeFinishReset()');
-      await expect('done', '.setup-model', s => s.text.includes('Connection reset. Choose the AI again.') && s.heading === 'Connect the AI' && s.buttons.includes('Connect the AI') && !s.buttons.includes('Remove sign-in') && s.resets.length === 3);
+      await expect('done', '.setup-model', s => s.text.includes('Connection reset. Choose the AI again.') && s.heading === 'This computer' && s.page.includes('Connect the AI') && s.buttons.includes('Connect the AI') && !s.buttons.includes('Remove sign-in') && s.resets.length === 3);
       await shoot('done', 'reset', '.setup-model');
       console.log(`Captured native WebView2 AI reset fixture: ${theme}/${size}`);
       return;
     }
-    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -1113,7 +1136,7 @@ try {
       if (!idle.model.includes('gpt-5.6-terra') || idle.pickers || /Azure|signed in as|Saved GitHub sign-in/i.test(idle.text)) throw Error(`AI choice must show the fixed model without a picker or an unverified account: ${JSON.stringify(idle)}`);
     }
     if (name === 'ai-connecting' && await evaluate(`[...document.querySelectorAll('button')].some(button => /^Remove (sign-in|key)$/.test(button.textContent) && button.getClientRects().length)`)) throw Error('Remove is offered while Connecting');
-    if (name === 'ai-removal-retry' && !await evaluate(`document.querySelector('h1').textContent === "The saved sign-in couldn't be removed" && document.querySelector('#model-title')?.textContent === "Couldn't remove the saved sign-in" && ![...document.querySelectorAll('button')].some(button => button.textContent === 'Remove sign-in' && button.getClientRects().length)`)) throw Error('Removal failure lost its headings or still offers Remove');
+    if (name === 'ai-removal-retry' && !await evaluate(`document.querySelector('h1').textContent === 'This computer' && document.body.innerText.includes("The saved sign-in couldn't be removed") && document.querySelector('#model-title')?.textContent === "Couldn't remove the saved sign-in" && ![...document.querySelectorAll('button')].some(button => button.textContent === 'Remove sign-in' && button.getClientRects().length)`)) throw Error('Removal failure lost its headings or still offers Remove');
     if (name === 'ai-idle' && await evaluate(`document.querySelector('.setup-model').innerText.includes('Remove sign-in')`)) throw Error('Unused sign-in removal is visible before connecting');
     if (await evaluate(`document.body.innerText.includes('Change where agents run')`)) throw Error('Removed change panel is still visible');
     if (name === 'designer-connected' || name === 'designer-remote') {
@@ -1329,7 +1352,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     if (runCore) for (const name of ['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale']) await captureActions(theme, 'minimum', name);
   }
   await writeFile(join(output, 'compact-window.txt'), `Capture scope: ${captureScope}\n` + notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core and chat-agent-clusters artifacts separately; both are required for the complete matrix.\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority and loading/open-error fallback spacing. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Chat empty/pending/running/answer, New agent form/blank-created, Clusters list, context picker/checking/failure are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core and chat-agent-clusters artifacts separately; both are required for the complete matrix.\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority, loading/open-error fallback spacing, fixed wide tabs/host gap, compact subtitles/label, quiet padding and themed thin scrollbars. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Chat empty/pending/running/answer and waitingForSession Succeeded/null or known-answer, New agent form/blank-created, Clusters list, context picker/checking/failure are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

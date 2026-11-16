@@ -74,6 +74,20 @@ impl ChatFixture {
                 self.view.busy = false;
                 self.view.can_send = true;
                 self.started = None;
+            } else if matches!(phase.as_deref(), Some("session-null" | "session-answer")) {
+                self.view.state = ChatState::WaitingForSession;
+                let turn = self
+                    .view
+                    .versions
+                    .last_mut()
+                    .unwrap()
+                    .turns
+                    .last_mut()
+                    .unwrap();
+                turn.phase = "Succeeded".into();
+                turn.context_retained = false;
+                turn.answer = (phase.as_deref() == Some("session-answer"))
+                    .then(|| "The checksum is ALPHA. <script>fixture</script>".into());
             } else if self.view.state == ChatState::Preparing || phase.is_some() {
                 self.view.state = ChatState::Working;
                 self.view

@@ -220,9 +220,11 @@ require(enabledButton("Connect the AI") != nil && enabledButton("Manage") == nil
         "VM-ready local card must offer Connect the AI, not Manage")
 click("Connect the AI", rows)
 rows = try capture("before-connect", ["Connect the AI"])
+// The tab subtitle is visible in the capture but isn't a separate AXStaticText value.
+require(rows.contains { $0.boundingBox.minX < 0.3 && $0.boundingBox.maxY > 0.85 && $0.topCandidates(1).first?.string == "3 saved agents" }, "Hidden Overview must report the saved-file count in the header")
 localSize(540, 640)
 scroll(4000)
-_ = try capture("local-setup-ai-minimum-top", ["Where agents run", "Get your workspace ready"])
+_ = try capture("local-setup-ai-minimum-top", ["This computer", "Get your workspace ready"])
 _ = try seek("Connect the AI", -200)
 _ = try capture("local-setup-ai-minimum", ["GitHub Copilot", "Connect the AI"])
 // Earlier-installation record (frames 1g/1h): synthetic recovery IDs, no store, file or VM.
@@ -404,6 +406,7 @@ click("Connect the AI", rows)
 _ = try seek("Tests on the local cluster", -200)
 let firstResult = try capture("local-first-test-result", ["Tests on the local cluster", "1 of 2 passed"])
 require(!firstResult.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").contains("Your agent selection could not be saved"), "Fixture rejected its owned agent selection")
+require(!exactTextIsVisible("Saved"), "Untouched agent must not claim a save acknowledgement")
 // The native fixture reports the same finite Busy error as a held VM connection.
 // This proves first-open renderer loading/recovery, not live guest discovery.
 for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
@@ -769,13 +772,14 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
         return window()!.1.contains(bounds)
     }
 }
-func nativeChatTextIsVisible(_ expected: String) -> Bool {
+func nativeChatTextIsVisible(_ expected: String, aboveFooter: Bool = false) -> Bool {
     nativeElements().contains { element in
         guard attribute(element, "AXRole") as? String == "AXStaticText",
             let text = attribute(element, "AXValue") as? String,
             text.contains(expected), let bounds = nativeBounds(element) else { return false }
         // WebKit exposes clipped or screen-reader-only text with zero/one-pixel bounds.
         return bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)
+            && (!aboveFooter || bounds.maxY <= window()!.1.maxY - 32)
     }
 }
 func waitForButton(_ label: String) {
@@ -821,11 +825,20 @@ func resetCapture(_ state: String, _ expected: [String], anchor: String) throws 
     for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
         localSize(width, height)
         scroll(4000)
+        var contentVisible = false
         for _ in 0..<10 {
-            if let button = enabledButton(anchor) { if reachable(nativeBounds(button)) { break } }
-            else if nativeChatTextIsVisible(anchor) { break }
+            let anchorVisible = enabledButton(anchor).map { reachable(nativeBounds($0)) } ?? nativeChatTextIsVisible(anchor, aboveFooter: true)
+            // Wrapped secondary actions may sit below the primary at the minimum size.
+            let actionsVisible = expected.compactMap(enabledButton).allSatisfy { reachable(nativeBounds($0)) }
+            if anchorVisible && actionsVisible {
+                let probe = try capture("local-probe", [])
+                let text = probe.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+                // Copy notices and disclosure text can also wrap below the last action.
+                if expected.allSatisfy({ text.contains($0) || nativeChatTextIsVisible($0, aboveFooter: true) }) { contentVisible = true; break }
+            }
             scroll(-200)
         }
+        require(contentVisible, "Reset capture content must be visible above the footer: \(state)-\(size)")
         _ = try capture("local-reset-\(state)-\(size)", expected + [anchor])
     }
     localSize(1280, 800)
@@ -1054,6 +1067,7 @@ for character in "Changed fixture instructions.".utf16 {
 }
 Thread.sleep(forTimeInterval: 1)
 require((attribute(editor, "AXValue") as? String)?.contains("Changed fixture instructions.") == true, "Native keystrokes did not edit Instructions")
+require(exactTextIsVisible("Saved"), "A completed edit/save must acknowledge Saved")
 // Focusing Instructions scrolls below the compact test card; return to its start.
 scroll(4000)
 _ = try seek("Not run since your edit", -250)
@@ -1107,14 +1121,17 @@ click("Send message", [])
 localSize(1280, 800); scroll(4000)
 _ = try seek("Waiting for your agent to start…", -100)
 waitForChatText("Waiting for your agent to start…")
-for (phase, expected) in [("pending", "Waiting for your agent to start…"), ("running", "Waiting for your agent’s reply…")] {
+for (phase, expected) in [("pending", "Waiting for your agent to start…"), ("running", "Waiting for your agent’s reply…"), ("session-null", "Waiting for the conversation to finish saving…"), ("session-answer", "The checksum is ALPHA.")] {
     try phase.write(to: chatPhase, atomically: true, encoding: .utf8)
     waitForChatText(expected)
     for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
         localSize(CGFloat(width), CGFloat(height)); scroll(4000)
         _ = try seek(expected, -100)
         _ = try capture("chat-\(phase)-\(size)", [expected])
-        require(!nativeChatTextIsVisible("This turn is not confirmed in later context."), "Waiting Chat must not show a context fault")
+        require(!nativeTextExists("This turn is not confirmed in later context.") && !nativeTextExists("No answer was received."), "Waiting Chat must not show a premature missing-answer/context fault")
+        if phase == "session-answer" {
+            require(nativeChatTextIsVisible("The checksum is ALPHA."), "Session wait must retain the known answer")
+        }
     }
 }
 try "answer".write(to: chatPhase, atomically: true, encoding: .utf8)

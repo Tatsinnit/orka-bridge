@@ -57,7 +57,8 @@ test.each(['stay', 'navigate'])('AI recovery keeps reset completion visible afte
   mockIPC(ipc); const user = userEvent.setup(); render(<Setup onOpenExample={() => {}} />);
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' })); // Places' navigation action
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  expect(await screen.findByRole('heading', { name: "The AI couldn't connect" })).toBeTruthy();
+  expect(await screen.findByRole('heading', { level: 1, name: 'This computer' })).toBeTruthy();
+  expect(screen.getByText("The AI couldn't connect", { selector: 'p' })).toBeTruthy();
   const row = screen.getByText('Choose the AI your agent uses').closest('li')!;
   expect(within(row).getByRole('button', { name: 'Reset AI connection' })).toBeTruthy();
   expect(screen.getByText('Your workspace is ready on this computer.')).toBeTruthy();

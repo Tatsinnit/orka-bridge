@@ -62,7 +62,8 @@ test.each([
 
 test('four fixed steps contain one native file bar and expandable details', async () => {
   native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
-  await screen.findByRole('heading', { name: 'Getting your workspace ready' });
+  await screen.findByRole('heading', { name: 'This computer' });
+  expect(screen.getByText('Getting your workspace ready', { selector: 'p' })).toBeTruthy();
   const steps = screen.getByRole('list', { name: 'Setup steps' });
   expect(within(steps).getAllByRole('listitem')).toHaveLength(4);
   expect(screen.getByText('Installing, 1.1 GiB of 2.8 GiB · 30 seconds left in this file step')).toBeTruthy();
@@ -192,7 +193,7 @@ test('Meet opens the owned example for editing without Run commands', async () =
   const { ipc } = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   expect(await screen.findByRole('heading', { name: 'web-reader' })).toBeTruthy();
   expect(screen.getByText('Answers from the web page named in the request')).toBeTruthy();
-  expect(within(screen.getByRole('navigation')).getByText('No agent open')).toBeTruthy();
+  expect(within(screen.getByRole('navigation')).getByText('Ready after setup')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
   const main = screen.getByRole('main', { name: 'web-reader' });
   expect(within(main).getByText('Fetch before answering.')).toBeTruthy();
@@ -385,10 +386,10 @@ test('Cancel and Start again restore keyboard focus after replacing the action',
   native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Cancel' }));
   await screen.findByRole('button', { name: 'Start again' });
-  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting your workspace ready', level: 1 }));
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'This computer', level: 1 }));
   await user.click(screen.getByRole('button', { name: 'Start again' }));
   await screen.findByRole('button', { name: 'Cancel' });
-  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Getting your workspace ready', level: 1 }));
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'This computer', level: 1 }));
 });
 
 test('a failed Stop retains the selected local cluster and never offers another setup admission', async () => {

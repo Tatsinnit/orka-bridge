@@ -54,7 +54,8 @@ test.each([
 
 test('download heading and preservation do not promise rejected bytes are kept', async () => {
   native({ cause: 'network', operation: 'download', codes: [] }); render(<App />); await openLocalSetup();
-  expect(await screen.findByRole('heading', { level: 1, name: "The local cluster couldn't be downloaded" })).toBeTruthy();
+  expect(await screen.findByRole('heading', { level: 1, name: 'This computer' })).toBeTruthy();
+  expect(screen.getByText("The local cluster couldn't be downloaded")).toBeTruthy();
   expect(screen.getByRole('alert').textContent).toContain('Your agent files are kept. Try again to continue setup.');
 });
 
@@ -151,7 +152,7 @@ test('AI failure marks its setup step and every shell status without losing the 
   expect(screen.getByText('Needs attention').closest('li')?.className).toBe('step-failed');
   expect(within(screen.getByRole('navigation')).getByText('AI needs attention')).toBeTruthy();
   expect(screen.getByRole('contentinfo').textContent).toContain('AI needs attention');
-  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('Check the AI connection in Clusters');
-  expect(document.querySelector('.host-chip .live-dot')?.className).toContain('bad');
+  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is running on this computer.');
+  expect(document.querySelector('.host-chip .live-dot')?.className).toContain('ready');
   expect(screen.getByRole('alert').textContent).toContain('Your workspace and agent files are kept');
 });

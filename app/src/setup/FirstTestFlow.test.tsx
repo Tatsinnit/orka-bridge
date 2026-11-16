@@ -182,7 +182,7 @@ test.each(['passed', 'failed', 'unreadable', 'edited'] as const)('Setup retains 
     expect(card.getByText('Failed', { selector: '.pill' }).className).toContain('status-failed');
     expect(within(screen.getByRole('navigation')).getByText('Its test failed')).toBeTruthy();
     expect(within(screen.getByRole('contentinfo')).getByText('Its test failed')).toBeTruthy();
-    expect(document.querySelector('.host-chip .live-dot')?.className).toContain('bad');
+    expect(document.querySelector('.host-chip .live-dot')?.className).toContain('ready');
     await user.click(screen.getByRole('button', { name: 'Clusters' }));
     expect(within(screen.getByRole('region', { name: 'This computer' })).getByText('Failed', { selector: '.pill' }).className).toContain('status-failed');
     await openLocalSetup(user);

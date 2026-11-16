@@ -34,6 +34,14 @@ describe('Estuary theme contract', () => {
       }
     }
   });
+  it('declares themed thin scrollbars and non-growing wide tabs', () => {
+    const shell = readFileSync('src/shell.css', 'utf8');
+    const controls = readFileSync('src/components/controls.css', 'utf8');
+    expect(shell).toMatch(/scrollbar-width:\s*thin/);
+    expect(shell).toMatch(/scrollbar-color:\s*var\(--color-text-tertiary\)\s+var\(--color-page\)/);
+    expect(shell).toMatch(/\.page-tab\s*\{[^}]*flex:\s*0 1 180px/);
+    expect(controls).toMatch(/\.button-quiet\s*\{[^}]*padding-inline:\s*0/);
+  });
   it('uses the system dark preference and bundled reading and code families', () => {
     expect(css).toContain('@media (prefers-color-scheme: dark)');
     expect(palettes[0]['font-ui']).toContain('Inter Variable');

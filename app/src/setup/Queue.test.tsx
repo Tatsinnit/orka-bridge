@@ -193,7 +193,7 @@ test.each(['notIntegrated', 'cancelled', 'closed', 'closing', 'idle'])('nothing 
   expect(connects()).toBe(0);
 });
 
-test('native selection, not the default radio, names the host, including checking, unreadable and relaunch', async () => {
+test('the place label stays This computer without inventing selection or readiness', async () => {
   const { sim } = native('installing', { selected: null }); sim.localVm = 'idle';
   let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
   const ipc = vi.fn(async (command: string) => {
@@ -206,7 +206,8 @@ test('native selection, not the default radio, names the host, including checkin
   const chip = () => document.querySelector('.host-chip')!;
   expect(chip().querySelector('.host-label')?.textContent).toBe('Checking…');
   await act(async () => { release(); });
-  await waitFor(() => expect(chip().querySelector('.host-label')?.textContent).toBe('No cluster selected'));
+  await waitFor(() => expect(chip().querySelector('.host-label')?.textContent).toBe('This computer'));
+  expect(chip().querySelector('.live-dot')?.className).not.toContain('ready');
   expect(chip().tagName).toBe('SPAN');
   expect(within(screen.getByRole('navigation')).queryByRole('button', { name: /computer|place/i })).toBeNull();
   // A valid saved choice restored after relaunch is "This computer"; an unreadable read afterwards is not "no selection".
@@ -236,28 +237,28 @@ test('an edit marks the first test stale immediately without putting the ready w
   await user.type(screen.getByRole('textbox', { name: 'Agent file' }), ' edit');
   // No wait for a save or poll: the edit callback itself marks every consumer stale.
   expect(within(screen.getByRole('contentinfo')).getByText('Tests not run since your edit')).toBeTruthy();
-  expect(within(screen.getByRole('navigation')).getByText(/tests need running/)).toBeTruthy();
+  expect(within(screen.getByRole('navigation')).getByText((_, node) => node?.tagName === 'SMALL' && !!node.textContent?.includes('tests need running'))).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   expect(within(screen.getByRole('navigation')).queryByText('Setting up, step 5 of 5')).toBeNull();
   expect(within(screen.getByRole('navigation')).getByText('Tests need running')).toBeTruthy();
   expect(within(screen.getByRole('region', { name: 'Local cluster setup' })).getByText('Tests need running')).toBeTruthy();
 });
 
-test('the single host dot is busy blue while connecting or removing, amber when it is the creator\'s move, and green only when complete', async () => {
+test('the host stays ready while AI attention and connecting states remain in the setup step', async () => {
   native('ready', { model: 'available', connect: 'hang' }); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   const dots = () => [...document.querySelectorAll('.live-dot')].map(dot => dot.className.replace('live-dot', '').trim());
   await screen.findByRole('button', { name: 'Connect the AI' });
-  expect(dots()).toEqual(['needs-you']);
+  expect(dots()).toEqual(['ready']);
   expect(screen.getByText('Choose the AI your agent uses').closest('li')?.querySelector('.status-needs-you')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
   await screen.findByText('Connecting', { selector: '.step-result' });
-  expect(dots()).toEqual(['busy']);
+  expect(dots()).toEqual(['ready']);
   expect(screen.getByText('Choose the AI your agent uses').closest('li')?.querySelector('.status-running')).toBeTruthy();
   expect(within(screen.getByRole('contentinfo')).getByText('Connecting the AI…, step 3 of 4')).toBeTruthy();
   expect(within(screen.getByRole('navigation')).getByText('Setting up, step 3 of 4')).toBeTruthy();
 });
 
-test('removing the sign-in is busy blue and a usable cluster with no test evidence is Ready, without claiming tests passed', async () => {
+test('removing the sign-in leaves the computer ready without claiming tests passed', async () => {
   native('ready', { model: 'available', remove: 'hang' }); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   const dots = () => [...document.querySelectorAll('.live-dot')].map(dot => dot.className.replace('live-dot', '').trim());
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
@@ -267,5 +268,5 @@ test('removing the sign-in is busy blue and a usable cluster with no test eviden
   await user.click(screen.getByRole('button', { name: 'Remove sign-in' }));
   await user.click(within(screen.getByRole('group', { name: 'Remove sign-in confirmation' })).getByRole('button', { name: 'Remove sign-in' }));
   await screen.findByText('Removing sign-in…');
-  expect(dots()).toEqual(['busy']);
+  expect(dots()).toEqual(['ready']);
 });

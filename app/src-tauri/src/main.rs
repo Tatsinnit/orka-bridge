@@ -768,12 +768,8 @@ fn main() {
                 } if label == "main" => {
                     api.prevent_close();
                     if app.state::<lifecycle::HideOnClose>().0 {
-                        if let Some(window) = app.get_webview_window("main") {
-                            if window.hide().is_ok() {
-                                return;
-                            }
-                        }
-                        eprintln!("Could not hide Bridge; stopping the workspace instead.");
+                        lifecycle::hide(app);
+                        return;
                     }
                     true
                 }

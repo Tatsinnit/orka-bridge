@@ -57,6 +57,30 @@ test('generated Chat runtime agents are hidden without hiding saved, remote or s
   expect(screen.getAllByRole('article')).toHaveLength(4);
 });
 
+test.each([
+  [files([]), 'No saved agents yet'],
+  [files(), '1 saved agent'],
+  [{ state: 'unavailable', files: [], runActive: false }, 'Saved files unavailable'],
+])('an unvisited hidden Overview reports saved inventory only: %s', async (saved, label) => {
+  const counts = vi.fn(); const commands: string[] = [];
+  mockIPC(command => { commands.push(command); return command === 'overview_files' ? saved : none; });
+  render(<Overview {...props} active={false} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith(label));
+  expect(commands).toEqual(['overview_files']);
+});
+
+test('activation discards an obsolete initial hidden read', async () => {
+  let finish!: (value: unknown) => void; const counts = vi.fn();
+  mockIPC(command => command === 'overview_files' ? new Promise(resolve => { finish = resolve; }) : none);
+  const view = render(<Overview {...props} active={false} onCounts={counts} />);
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  ipc(files([file, named(id2, 'new-agent', { localResult: null })]));
+  view.rerender(<Overview {...props} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('2 agents'));
+  await act(async () => finish(files([])));
+  expect(counts).toHaveBeenLastCalledWith('2 agents');
+});
+
 test('registration refreshes visited Overview counts while hidden without reading live agents', async () => {
   const counts = vi.fn(); ipc(); const view = render(<Overview {...props} filesRevision={0} onCounts={counts} />);
   await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent'));
@@ -109,11 +133,13 @@ test('hidden test reads preserve the last final verdict and remember a new final
   expect(within(await card(/^reader/)).getByText('Passed')).toBeTruthy();
 });
 
-test('registration does not introduce an initial hidden Overview read', async () => {
-  let calls = 0; mockIPC(() => { calls++; return files(); });
-  const view = render(<Overview {...props} active={false} filesRevision={0} />);
-  view.rerender(<Overview {...props} active={false} filesRevision={1} />);
-  await act(async () => {}); expect(calls).toBe(0);
+test('registration refreshes an unvisited tab without live discovery', async () => {
+  const calls: string[] = []; mockIPC(command => { calls.push(command); return files(); });
+  const counts = vi.fn();
+  const view = render(<Overview {...props} active={false} filesRevision={0} onCounts={counts} />);
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 saved agent'));
+  view.rerender(<Overview {...props} active={false} filesRevision={1} onCounts={counts} />);
+  await act(async () => {}); expect(calls).toEqual(['overview_files', 'overview_files']);
 });
 
 test('a hidden registration read cannot overwrite files from a later workspace refresh', async () => {

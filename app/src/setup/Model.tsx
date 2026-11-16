@@ -51,6 +51,8 @@ export default function Model({ enabled, queueable = false, paused = false, away
   const [notice, setNotice] = useState('');
   const [failedAction, setFailedAction] = useState<'connect' | 'remove' | 'reset'>('connect');
   const removalFailed = !!error && (failedAction === 'remove' || error.category === 'modelKeyCleanup');
+  const actionReason = paused ? 'Wait for the workspace action to finish.' : busy ? `Wait for the AI ${busy === 'connect' ? 'connection' : busy === 'remove' ? 'removal' : 'reset'} to finish.` : !enabled ? 'Start the workspace before changing the AI connection.' : undefined;
+  const providerReason = busy ? actionReason : hasSignIn ? 'Remove the saved sign-in or key before choosing another provider.' : undefined;
   // Clearing an error advances the same card flow; it must not hide that flow's next state.
   useEffect(() => {
     if (!onPlaceCard) setCardRecovery(false);
@@ -187,6 +189,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
       ? 'Native credential removed; saved record removal not confirmed.'
       : recovery.resetStage === 'credentialRemovalUnconfirmed' ? 'Native credential removal not confirmed; saved record kept.' : resetFailed ? 'Bridge could not check what is still saved. The identifiers below are from the last confirmed record.' : 'Saved record: model-v1. Native credential removal has not been requested.';
     const content = <section ref={root} className={recoveryTarget ? 'model-recovery' : 'card setup-model model-recovery'} aria-label="Saved AI connection" aria-busy={!!busy}>
+      {actionReason && <p className="muted">{actionReason}</p>}
       {busy === 'reset' ? <div ref={status} role="status" tabIndex={-1} className="model-state"><StatusPill state="running">Resetting</StatusPill><p>Removing Bridge's saved AI connection. Your workspace and agents aren't touched.</p></div>
         : <div className="workspace-failure" role="alert"><div className="workspace-failure-explanation">
           {resetFailed ? <><h2 className="failure-summary">Bridge couldn't reset the AI connection</h2><p>{resetAttempts > 1 ? 'Reset failed again. Copy the details for whoever helps you with Bridge; Show details lists what Bridge could confirm.' : "Bridge couldn't confirm the saved connection was removed. Try once more. If it fails again, copy the details for whoever helps you with Bridge."}</p></>
@@ -210,12 +213,14 @@ export default function Model({ enabled, queueable = false, paused = false, away
   const portaled = !!recoveryTarget && (!!error || onPlaceCard && (resetDone || cardRecovery));
   const content = <section ref={root} className={portaled ? "setup-model" : "card setup-model"} aria-labelledby="model-title" aria-busy={!!busy}>
     <h2 id="model-title" ref={heading} tabIndex={-1}>{removalFailed ? `Couldn't remove the saved ${keyMode ? 'key' : 'sign-in'}` : 'Connect the AI'}</h2>
+    {actionReason && (paused || busy || removalFailed) && <p className="muted">{actionReason}</p>}
     {!ready && busy !== 'remove' && !removalFailed && <>
-      <fieldset className="model-choice" disabled={!!busy || hasSignIn}>
+      <fieldset className="model-choice" title={providerReason} disabled={!!busy || hasSignIn}>
         <legend className="sr-only">AI connection</legend>
         <label><input type="radio" name="model-kind" checked={!keyMode} onChange={() => chooseKind('copilot')} /> GitHub Copilot</label>
         <label><input type="radio" name="model-kind" checked={keyMode} onChange={() => chooseKind('key')} /> Your own API key <span className="muted">(OpenAI, Anthropic)</span></label>
       </fieldset>
+      {providerReason && providerReason !== actionReason && <p className="muted">{providerReason}</p>}
       {keyMode ? <div className="model-key-form">
         <fieldset className="view-switch"><legend className="sr-only">Company</legend>
           {(['openai', 'anthropic'] as const).map(item => <button key={item} type="button" aria-pressed={vendor === item} disabled={!!busy || hasSignIn} onClick={() => { clearKey(); setVendor(item); setError(undefined); }}>{companies[item].name}</button>)}
@@ -271,7 +276,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
           : !removalFailed && <Button key="model-connect" ref={retry} type="button" kind={primary ? 'primary' : 'secondary'} disabled={(!enabled && (!queueable || keyMode)) || paused || !!busy} onClick={choose}>
             {error && failedAction === 'connect' ? 'Check again' : 'Connect the AI'}
           </Button>}
-          {ready && <Button type="button" kind="secondary" disabled={paused || !!busy} onClick={event => { if (document.activeElement === event.currentTarget) changeFocus.current = 'confirm'; setConfirmRemoval(true); }}>Change</Button>}
+          {ready && <Button type="button" kind="secondary" title={actionReason} disabled={paused || !!busy} onClick={event => { if (document.activeElement === event.currentTarget) changeFocus.current = 'confirm'; setConfirmRemoval(true); }}>Change</Button>}
           {removalFailed && removalAction}
           {error && <Button type="button" kind="secondary" onClick={() => { void copy(); }}>Copy details for help</Button>}
           {cliUnavailable && <Button type="button" kind="quiet" onClick={() => { void help('githubCliInstall'); }}>Install GitHub CLI</Button>}

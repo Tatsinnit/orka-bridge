@@ -51,6 +51,12 @@ async function stop() {
   return user;
 }
 
+test.each(['starting', 'ready', 'failed'] as const)('the local place keeps its title while %s', async localVm => {
+  status = { selected: 'localVm', localVm, model: localVm === 'ready' ? 'available' : 'locked' };
+  render(<App />); await openLocalSetup();
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
+});
+
 test('Stop keeps This computer and native selection instead of first-run setup', async () => {
   await stop();
   expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');

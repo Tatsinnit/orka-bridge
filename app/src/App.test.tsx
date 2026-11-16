@@ -159,7 +159,8 @@ test('Overview reads saved documents without opening, setup or VM commands; Open
   await user.click(screen.getByRole('button', { name: 'Open second' }));
   expect(await screen.findByRole('heading', { name: 'second', level: 1 })).toBeTruthy();
   // Native selection is still null, so the chip does not invent a place after Open.
-  expect(document.querySelector('.host-chip')?.textContent).toContain('No cluster selected');
+  expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
+  expect(document.querySelector('.host-chip .live-dot')?.className).not.toContain('ready');
   await user.click(screen.getByRole('button', { name: 'Overview' }));
   await user.click(await screen.findByRole('button', { name: 'Open second' }));
   expect(calls.filter(c => c === 'agent_open')).toHaveLength(1);
@@ -229,6 +230,27 @@ test('switching the owned example to a registered document opens each identity o
   expect(opened).toEqual(['9b2b93c4-375c-4815-9717-39852a96e411', id]);
 });
 
+test('first opening the sample refreshes the hidden saved count without live discovery', async () => {
+  vi.stubGlobal('isTauri', true);
+  const id = '9b2b93c4-375c-4815-9717-39852a96e411';
+  const pair = { documentId: id, name: 'reader', agent: '---\nname: reader\n---\nRead.', tests: 'Checks' };
+  let created = false; const live: string[] = [];
+  mockIPC(command => {
+    if (command === 'setup_status') return { selected: null, localVm: 'idle', model: 'locked' };
+    if (command === 'overview_files') return { state: 'complete', runActive: false, historyState: 'complete', runAgents: [], files: created ? [{ documentId: id, name: 'reader', state: 'readable', source: { agent: 'a'.repeat(64), tests: 'b'.repeat(64) }, summary: { name: 'reader', description: null, model: 'fixture-model', tools: [] }, reason: null, localResult: null }] : [] };
+    if (command === 'overview_agents' || command === 'overview_places') live.push(command);
+    if (command === 'agent_open') { created = true; return pair; }
+    if (command === 'agent_run_status') return { documentId: id, busy: null, state: 'idle', canRun: false, report: null, acknowledged: [], pending: null, error: null };
+    throw { kind: 'unavailable' };
+  });
+  render(<App />);
+  await within(screen.getByRole('navigation')).findByText('No saved agents yet');
+  await userEvent.click(screen.getByRole('button', { name: 'Designer' }));
+  await screen.findByRole('heading', { name: 'reader', level: 1 });
+  await within(screen.getByRole('navigation')).findByText('1 saved agent');
+  expect(live).toEqual([]);
+});
+
 test('Designer opens the owned agent without workspace setup and shares its saved state', async () => {
   vi.stubGlobal('isTauri', true);
   mockIPC(command => command === 'setup_status' ? { selected: null, localVm: 'idle', model: 'locked' }
@@ -240,7 +262,7 @@ test('Designer opens the owned agent without workspace setup and shares its save
   expect(await screen.findByRole('heading', { name: 'web-reader', level: 1 })).toBeTruthy();
   expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
   expect(screen.getByRole('main', { name: 'web-reader' })).toBeTruthy();
-  expect(within(screen.getByRole('contentinfo')).getByText('Saved').getAttribute('aria-live')).toBe('polite');
+  expect(within(screen.getByRole('contentinfo')).queryByText('Saved')).toBeNull();
 });
 
 test.each([
@@ -307,12 +329,14 @@ test('model acknowledgment and observed check counts survive navigation', async 
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   expect(await within(screen.getByRole('contentinfo')).findByText('Local cluster ready')).toBeTruthy();
-  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('AI connected');
-  expect(document.querySelector('.host-chip')?.textContent).toBe('This computer: AI connected');
+  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is running on this computer.');
+  expect(document.querySelector('.host-chip')?.textContent).toBe('This computer: The workspace is running on this computer.');
+  expect(document.querySelector('.host-chip .live-dot')?.className).toContain('ready');
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
   expect(await within(screen.getByRole('contentinfo')).findByText('1 of 2 passed')).toBeTruthy();
   expect(screen.queryByText(/Connect the AI in Clusters first\./)).toBeNull();
   expect(within(screen.getByRole('navigation')).getByText((_, node) => node?.tagName === 'SMALL' && node.textContent === 'page-reader, 1 test failing')).toBeTruthy();
+  expect(document.querySelector('.tab-status-word')?.textContent).toBe('failing');
   expect(within(screen.getByRole('navigation')).getByText('Its test failed')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   expect(within(screen.getByRole('contentinfo')).getByText('Its test failed')).toBeTruthy();
@@ -645,7 +669,7 @@ test('Clusters reads setup without engine diagnostics or legacy IPC', async () =
   const user = userEvent.setup(); render(<App />);
   expect(await screen.findByRole('button', { name: 'Set up' })).toBeTruthy();
   expect(screen.queryByText('Engine diagnostics')).toBeNull();
-  expect(ipc.mock.calls.every(([command]) => ['setup_requirements', 'setup_status', 'cluster_places'].includes(command))).toBe(true);
+  expect(ipc.mock.calls.every(([command]) => ['setup_requirements', 'setup_status', 'cluster_places', 'overview_files'].includes(command))).toBe(true);
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_requirements')).toEqual([['setup_requirements', {}]]);
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   expect(screen.queryByRole('heading', { name: 'Engine available' })).toBeNull();

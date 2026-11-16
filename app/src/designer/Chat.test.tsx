@@ -181,6 +181,34 @@ test('a newly admitted turn stays waiting while the saved agent is preparing', a
   expect(within(conversation).queryAllByText(/No answer was received|not confirmed in later context/)).toHaveLength(0);
   expect(within(conversation).getByText('Waiting for your agent to start…')).toBeTruthy();
 });
+test.each([
+  ['waitingForSession', null], ['waitingForSession', 'An already observed answer'],
+  ['working', null], ['working', 'An already observed answer'],
+] as const)('%s confirmation keeps answer %s and postpones context claims', async (state, answer) => {
+  snapshot = { ...idle, state, busy: true, canSend: false, versions: [{ turns: [
+    { ...turn, message: 'Earlier question', contextRetained: false },
+    { ...turn, answer, contextRetained: false },
+  ] }] };
+  await open();
+  const conversation = screen.getByRole('region', { name: 'Conversation' });
+  expect(within(conversation).queryByText('No answer was received.')).toBeNull();
+  expect(within(conversation).getAllByText(/not confirmed in later context/)).toHaveLength(1);
+  if (answer) expect(within(conversation).getByText(answer)).toBeTruthy();
+  else expect(within(conversation).getByText(state === 'waitingForSession' ? 'Waiting for the conversation to finish saving…' : 'Confirming your agent’s reply…')).toBeTruthy();
+  snapshot = { ...snapshot, state: 'ready', busy: false, canSend: true };
+  await poll();
+  expect(within(conversation).getAllByText(/not confirmed in later context/)).toHaveLength(2);
+  if (!answer) expect(within(conversation).getByText('No answer was received.')).toBeTruthy();
+});
+test.each(['Failed', 'Cancelled'])('Session confirmation preserves %s and stop warnings', async phase => {
+  snapshot = { ...idle, state: 'waitingForSession', busy: true, canSend: false, versions: [{ turns: [
+    { ...turn, answer: null, phase, contextRetained: false, terminationUnconfirmed: true },
+  ] }] };
+  await open();
+  expect(screen.getByText(phase === 'Failed' ? 'This turn failed.' : /The cluster reported this turn cancelled/)).toBeTruthy();
+  expect(screen.getByText('Stop requested. Execution termination is unconfirmed.')).toBeTruthy();
+  expect(screen.queryByText(/not confirmed in later context|failed without an answer|No answer was received/)).toBeNull();
+});
 test('terminal unconfirmed history remains distinct from an in-progress reply', async () => {
   snapshot = { ...idle, versions: [{ turns: [{ ...turn, contextRetained: false }] }] };
   await open(); expect(screen.getByText(/not confirmed in later context/)).toBeTruthy();

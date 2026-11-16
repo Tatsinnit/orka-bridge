@@ -129,15 +129,15 @@ export default function Overview({ onNewAgent, active, runBusy, activeDocumentId
     });
     return () => { epoch.current++; clearTimeout(timer); };
   }, [active, runBusy, activeDocumentId, workspaceKey, refresh, filesRevision]);
-  // A new saved file updates a previously visited tab without mounting Designer or listing live Agents.
-  // The initial hidden inventory read belongs to the app-frame flow, not registration.
+  // The hidden tab reads saved files only, initially and after a registration/workspace change.
+  // Live Agents and remembered clusters are still observed only when Overview is visited.
   useEffect(() => {
-    if (active || !filesRevision || !filesVisited.current) return;
+    if (active) return;
     const request = epoch.current;
     let cancelled = false;
     void readFiles().then(value => {
       if (cancelled || request !== epoch.current) return;
-      if (value.state !== 'complete') { setFilesStale(true); return; }
+      if (value.state !== 'complete') { setFiles(previous => previous?.state === 'complete' ? previous : value); setFilesStale(true); return; }
       value.files.forEach(f => { if (f.localResult && (f.localResult.state === 'complete' || f.localResult.state === 'unknown' && (!(runBusy || value.runActive) || f.documentId !== activeDocumentId))) finals.current.set(f.documentId, f.localResult); });
       setPending(runBusy || value.runActive);
       value.runAgents.forEach(a => { knownRunAgents.current.set(JSON.stringify([a.installation, a.namespace, a.agentUid]), a); });
@@ -150,8 +150,10 @@ export default function Overview({ onNewAgent, active, runBusy, activeDocumentId
   const built = buildCards(inputs);
   const empty = isEmpty(inputs, built);
   const partial = !!workspaceNote || filesStale || files?.historyState !== 'complete' || !complete(live) || pending || !places || placeError || places.places.some(p => p.stale || p.observedAt === null);
-  const counts = !files ? 'Reading saved files…' : files.state === 'unavailable' ? 'Saved files unavailable' : summaryLabel(built.cards, partial);
-  useEffect(() => { if (active || filesRevision > 0 && filesVisited.current) onCounts?.(counts); }, [active, filesRevision, counts, onCounts]);
+  const counts = !files ? 'Reading saved files…' : files.state === 'unavailable' ? 'Saved files unavailable'
+    : !filesVisited.current ? filesStale ? 'Saved files unavailable' : files.files.length ? `${files.files.length} saved agent${files.files.length === 1 ? '' : 's'}` : 'No saved agents yet'
+    : summaryLabel(built.cards, partial);
+  useEffect(() => { onCounts?.(counts); }, [counts, onCounts]);
   const clusters = clusterGroups(inputs, built);
   const groups = byAgent ? agentGroups(built.cards, built.saved) : clusters;
   const actions = { onOpen: onOpenDocument, onChat: onChatDocument, onRun: onRunDocument, onCheck: () => { setDismissedFocus(navigationFocus?.id); setRefresh(v => v + 1); }, onClusters: onChooseWorkspace };

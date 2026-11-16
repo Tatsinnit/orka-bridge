@@ -8,12 +8,60 @@ use tauri::{
     Manager,
 };
 
+mod close_notice;
+use close_notice::{CloseAction, CloseNotice};
+use tauri_plugin_dialog::DialogExt;
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 mod windows;
 
 pub struct HideOnClose(pub bool);
+
+fn hide_or_stop(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.hide().is_ok() {
+            return;
+        }
+    }
+    eprintln!("Could not hide Bridge; stopping the workspace instead.");
+    stop(app);
+}
+
+/// Explain close-to-tray once, without blocking the native event loop or changing Quit.
+pub fn hide(app: &tauri::AppHandle) {
+    if app.state::<Arc<TerminalShutdown>>().closing() {
+        return;
+    }
+    match app.state::<CloseNotice>().admit() {
+        CloseAction::Hide => hide_or_stop(app),
+        CloseAction::Pending => {}
+        CloseAction::Explain => {
+            let Some(window) = app.get_webview_window("main") else {
+                hide_or_stop(app);
+                return;
+            };
+            let handle = app.clone();
+            let location = if cfg!(target_os = "macos") {
+                "menu bar"
+            } else {
+                "system tray"
+            };
+            app.dialog().message(format!(
+                "Closing this window doesn't stop your workspace. Open Bridge from the {location}. To stop the workspace and quit Bridge, choose ‘Stop the local cluster and quit’ from its menu."
+            )).title("Bridge is still running").parent(&window).show(move |acknowledged| {
+                // Quit can win while the information dialog is open.
+                let shutdown = handle.state::<Arc<TerminalShutdown>>();
+                if shutdown.closing() || shutdown.completed() { return; }
+                if let Err(error) = handle.state::<CloseNotice>().finish(acknowledged) {
+                    eprintln!("Could not remember Bridge's close notice: {error}");
+                }
+                hide_or_stop(&handle);
+            });
+        }
+    }
+}
 
 /// Activation only exposes the existing webview; it never re-enters VM setup.
 pub fn show(app: &tauri::AppHandle) {
@@ -107,6 +155,7 @@ pub fn install(
             })
             .build(app)?;
     }
+    app.manage(CloseNotice::new(app.path().app_data_dir().ok()));
     app.manage(HideOnClose(integrated));
     Ok(())
 }
