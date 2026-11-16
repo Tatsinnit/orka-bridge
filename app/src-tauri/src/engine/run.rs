@@ -63,6 +63,8 @@ pub struct AssertionReport {
 #[serde(rename_all = "camelCase")]
 pub struct CaseReport {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub question: String,
     pub phase: String,
     pub answer: Option<String>,
@@ -688,6 +690,7 @@ impl<'a> NativeRunner<'a> {
                     };
                     let row = CaseReport {
                         id: case.id.clone(),
+                        title: case.title.clone(),
                         question: case.input().into(),
                         phase: if phase == "Failed"
                             && credit_limited(value["status"]["message"].as_str())

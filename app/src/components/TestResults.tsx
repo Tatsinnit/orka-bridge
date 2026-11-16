@@ -27,7 +27,7 @@ export function changedFiles(current: SourceId | undefined, captured: SourceId |
 export function TestProgress({ stage }: { stage: string }) {
   return <div className="test-progress"><StatusIcon state="running" /><span role="status">{stage}</span><Elapsed /></div>;
 }
-function reason(c: Case, vendor?: 'openai' | 'anthropic' | null) {
+export function testReason(c: Case, vendor?: 'openai' | 'anthropic' | null) {
   if (c.phase === 'NotRun') return 'This test was not submitted.';
   if (c.phase === 'CreditLimited' && vendor) {
     const company = vendor === 'openai' ? 'OpenAI' : 'Anthropic';
@@ -52,7 +52,7 @@ export function TestResults({ report, stale, vendor }: { report: Report | null |
       <div className="test-answer">
         <h5 className="section-label">Question</h5><p className="reading">{c.question}</p>
         <h5 className="section-label">Answer</h5><p className="reading">{c.answer ?? 'No answer was observed.'}</p>
-        {reason(c, vendor) && <p className="test-reason">{reason(c, vendor)}</p>}
+        {testReason(c, vendor) && <p className="test-reason">{testReason(c, vendor)}</p>}
         {!!c.completedTools.length && <p>Tools used: {c.completedTools.map((tool, i) => <span key={`${tool}:${i}`}>{i > 0 && ', '}<code>{tool}</code></span>)}</p>}
         <Details hint="Test expectations and execution">
           <p>Execution: {c.phase}</p>

@@ -32,6 +32,23 @@ test.each(['blocked', 'cannot-run', 'unreadable'])('an Overview request is consu
   view.rerender(<Run startRequest={1} onStartRequestHandled={handled} />);
   expect(ipc.mock.calls.some(([cmd]) => cmd === 'agent_run')).toBe(false);
 });
+test('Designer shows the saved test list before running and Stop uses native cancellation', async () => {
+  vi.stubGlobal('isTauri', true);
+  let snapshot = { ...idle, state: 'idle', stage: null as string | null, canCancel: false };
+  const ipc = vi.fn(command => {
+    if (command === 'agent_run') snapshot = { ...snapshot, state: 'running', canRun: false, stage: 'observe', canCancel: true };
+    if (command === 'agent_run_cancel') snapshot = { ...snapshot, stage: 'cancel', canCancel: false };
+    return snapshot;
+  });
+  mockIPC(ipc);
+  const tests = '---\nschemaVersion: 1\n---\n' + '\x60\x60\x60yaml agent-test\nid: page\ntitle: Reads the page\ninput: What did it say?\nassertions: [{id: a, type: contains, value: checksum}]\n\x60\x60\x60\n';
+  render(<Run tests={tests} />);
+  expect(screen.getByText('Reads the page')).toBeTruthy();
+  await userEvent.click(await screen.findByRole('button', { name: 'Run tests' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run_cancel')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+});
 test('Run is explicit, duplicate clicks and remounts only observe existing work', async () => {
   vi.stubGlobal('isTauri', true); let value: unknown = idle;
   const ipc = vi.fn(command => {

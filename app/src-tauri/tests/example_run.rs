@@ -58,6 +58,35 @@ async fn first_test_rejects_files_edited_after_renderer_open_but_manual_run_acce
 }
 
 #[tokio::test]
+async fn legacy_untitled_sample_is_preserved_and_remains_manually_runnable() {
+    let (vm, posts, _) = fixture(false, false).await;
+    let home = tempfile::tempdir().unwrap();
+    let folder = Arc::new(AgentFolder::new(Some(home.path().into())));
+    let pair = folder.open().unwrap();
+    let path = std::path::Path::new(pair.path.as_ref().unwrap())
+        .parent()
+        .unwrap()
+        .join("web-reader.agent.test.md");
+    let legacy = pair
+        .tests
+        .replace("title: \"Copies the checksum from the page\"\n", "");
+    assert_ne!(legacy, pair.tests);
+    std::fs::write(&path, &legacy).unwrap();
+    let prepared = folder.prepare_example_model("gpt-4.1").unwrap();
+    assert_eq!(prepared.tests, legacy);
+    assert_eq!(prepared.agent, pair.agent);
+    let run = ExampleRun::new(tokio::runtime::Handle::current(), true, folder);
+    run.start_first_test(vm.clone(), pair.document_id).unwrap();
+    assert_eq!(finished(&run, &vm).await.error, Some("source"));
+    assert!(posts.lock().unwrap().is_empty());
+    assert_eq!(std::fs::read_to_string(path).unwrap(), legacy);
+    run.start(vm.clone());
+    let done = finished(&run, &vm).await;
+    assert_eq!(done.state, RunState::Complete);
+    assert!(done.report.unwrap().cases[0].title.is_none());
+    vm.shutdown().await.unwrap();
+}
+#[tokio::test]
 async fn first_test_accepts_bundled_lf_crlf_and_mixed_line_endings() {
     for ending in ["lf", "crlf", "mixed"] {
         let (vm, posts, _) = fixture(false, false).await;

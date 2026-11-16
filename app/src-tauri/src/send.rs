@@ -360,6 +360,7 @@ impl SendOwner {
                 if !report.cases.iter().any(|r| r.id == case.id) {
                     report.cases.push(CaseReport {
                         id: case.id.clone(),
+                        title: case.title.clone(),
                         question: case.input().into(),
                         phase: "NotRun".into(),
                         answer: None,

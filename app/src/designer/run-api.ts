@@ -2,7 +2,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type DocumentRef, isDocumentId, isDocumentRef, isSourceId, SAMPLE_DOCUMENT_ID, type SourceId } from './agent-api';
 export type Verdict = 'passed' | 'failed' | 'unknown' | 'cancelled';
 type Assertion = { id: string; kind: 'contains' | 'toolCalled'; expected: string; verdict: Exclude<Verdict, 'cancelled'> };
-type Case = { id: string; question: string; phase: string; answer: string | null; completedTools: string[]; assertions: Assertion[]; verdict: Verdict };
+type Case = { id: string; title?: string; question: string; phase: string; answer: string | null; completedTools: string[]; assertions: Assertion[]; verdict: Verdict };
 type Receipt = { kind: 'Agent' | 'Task'; name: string; uid: string };
 export const errors = {
   session: 'The running local VM is not available for Run.',
@@ -40,7 +40,7 @@ export function isRunSnapshot(value: unknown): value is RunSnapshot {
   if (value.report === null) return value.state !== 'complete';
   const report = value.report;
   return record(report, ['cases', 'verdict']) && verdict(report.verdict) && Array.isArray(report.cases) && (report.cases.length > 0 || report.verdict === 'cancelled' && (value.cancellation === 'beforeStart' || value.state === 'running' && value.cancellation === 'cancelling') || report.verdict === 'unknown' && (value.cancellation === 'unconfirmed' || value.state === 'running' && value.cancellation === 'cancelling')) && report.cases.length <= 32 && report.cases.every(c =>
-    record(c, ['id', 'question', 'phase', 'answer', 'completedTools', 'assertions', 'verdict']) && text(c.id) && text(c.question, 1048576) && text(c.phase) && verdict(c.verdict) && (c.answer === null || typeof c.answer === 'string' && c.answer.length <= 1048576)
+    record(c, ['id', 'question', 'phase', 'answer', 'completedTools', 'assertions', 'verdict', ...(typeof c === 'object' && c !== null && 'title' in c ? ['title'] : [])]) && (!('title' in c) || typeof c.title === 'string' && c.title.length <= 1048576) && text(c.id) && text(c.question, 1048576) && text(c.phase) && verdict(c.verdict) && (c.answer === null || typeof c.answer === 'string' && c.answer.length <= 1048576)
     && Array.isArray(c.completedTools) && c.completedTools.length <= 6000 && c.completedTools.every(t => text(t))
     && Array.isArray(c.assertions) && (c.verdict === 'cancelled' ? c.phase === 'Cancelled' && c.assertions.length === 0 : c.assertions.length > 0) && c.assertions.length <= 64 && c.assertions.every(a => record(a, ['id', 'kind', 'expected', 'verdict']) && text(a.id) && text(a.expected, 1048576) && (a.kind === 'contains' || a.kind === 'toolCalled') && verdict(a.verdict) && a.verdict !== 'cancelled'));
 }

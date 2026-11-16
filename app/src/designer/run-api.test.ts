@@ -15,6 +15,13 @@ test('only automatic first-test admission opts into the bundled-source check', a
     ['agent_run', { documentId: SAMPLE_DOCUMENT_ID, bundledExample: true }],
   ]);
 });
+test('optional title metadata cannot hide valid run evidence and older reports remain readable', () => {
+  const withTitle = (title: unknown) => ({ ...base, report: { ...base.report, cases: [{ ...base.report.cases[0], title }] } });
+  expect(isRunSnapshot(withTitle('Says the answer'))).toBe(true);
+  for (const title of ['', 'a\nline', '🙂'.repeat(161), 'gh' + 'p_' + 'A'.repeat(30)]) expect(isRunSnapshot(withTitle(title))).toBe(true);
+  for (const title of [null, 42, 'a'.repeat(1048577)]) expect(isRunSnapshot(withTitle(title))).toBe(false);
+  expect(isRunSnapshot(base)).toBe(true);
+});
 test('frozen evidence contract accepts long valid source fields and optional local stages', () => {
   expect(isRunSnapshot(base)).toBe(true); // Send reuses this six-key adapter.
   expect(isRunSnapshot({ ...base, stage: 'done', model: 'model' })).toBe(true);

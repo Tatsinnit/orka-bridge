@@ -105,6 +105,29 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         else { fatalError("Cannot sample native theme") }
     let brightness = (colour.redComponent + colour.greenComponent + colour.blueComponent) / 3
     require(theme == "dark" ? brightness < 0.25 : brightness > 0.8, "Wrong system theme")
+    if ["local-result", "local-answer", "local-story", "local-running", "local-stopping"].contains(where: { name.hasPrefix($0) }) {
+        guard let actual = NSImage(contentsOfFile: file),
+            let reference = NSImage(contentsOfFile: "../docs/images/designer-reference-\(theme).png") else {
+            fatalError("Missing Designer comparison image")
+        }
+        let width = actual.size.width
+        let referenceHeight = reference.size.height * width / reference.size.width
+        let height = max(actual.size.height, referenceHeight) + 42
+        let comparison = NSImage(size: NSSize(width: width * 2 + 48, height: height + 16))
+        comparison.lockFocus()
+        NSColor.windowBackgroundColor.setFill()
+        NSRect(origin: .zero, size: comparison.size).fill()
+        actual.draw(in: NSRect(x: 16, y: height - 42 - actual.size.height, width: width, height: actual.size.height))
+        reference.draw(in: NSRect(x: width + 32, y: height - 42 - referenceHeight, width: width, height: referenceHeight))
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor]
+        ("Native Bridge, synthetic test data" as NSString).draw(at: NSPoint(x: 16, y: height - 26), withAttributes: attributes)
+        ("Approved Designer frame (wide reference)" as NSString).draw(at: NSPoint(x: width + 32, y: height - 26), withAttributes: attributes)
+        comparison.unlockFocus()
+        guard let tiff = comparison.tiffRepresentation,
+            let bitmap = NSBitmapImageRep(data: tiff),
+            let png = bitmap.representation(using: .png, properties: [:]) else { fatalError("Cannot compose Designer comparison") }
+        try png.write(to: URL(fileURLWithPath: "\(output)/\(name)-comparison.png"))
+    }
     print("PASS \(name): real native frontend, synthetic IPC only")
     return rows
 }
@@ -312,6 +335,16 @@ _ = try seek("Tests on the local cluster", -250)
 _ = try capture("local-result", ["Tests on the local cluster", "1 of 2 passed"])
 _ = try seek("The answer did not include", -150)
 _ = try capture("local-answer", ["Which date is shown", "No date was given", "2099-12-31"])
+localSize(540, 640)
+scroll(4000)
+_ = try seek("Says which date", -150)
+// Put the result above the fixed footer, not merely inside the window bounds.
+scroll(-200)
+_ = try capture("local-result-minimum", ["Says which date", "Asked"])
+_ = try seek("The answer did not include", -100)
+scroll(-180)
+_ = try capture("local-story-minimum", ["No date was given", "2099-12-31"])
+localSize(540, 900)
 // Edit the fixture's Instructions field through the native text control. Its
 // writer is in-memory only, so no creator file or credential can be changed.
 scroll(4000)
@@ -565,7 +598,15 @@ _ = try capture("local-running", ["Waiting for answers", "Observed for"])
 localSize(1280, 800)
 scroll(4000)
 _ = try seek("Waiting for answers", -250)
-_ = try capture("local-running-wide", ["Waiting for answers", "Observed for"])
+_ = try capture("local-running-wide", ["Waiting for answers", "Observed for", "Stop", "Copies the checksum from the page", "Awaiting result"])
+localSize(540, 640)
+scroll(4000)
+_ = try seek("Stop", -100)
+scroll(-400)
+_ = try capture("local-running-minimum", ["Stop", "Waiting for answers", "Awaiting result"])
+click("Stop", [])
+_ = try seek("Cancelling", -100)
+_ = try capture("local-stopping-minimum", ["Cancelling"])
 localSize(540, 900)
 scroll(4000)
 click("Clusters", [])

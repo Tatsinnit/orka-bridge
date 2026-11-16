@@ -1,10 +1,13 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../components/Button';
-import { useEffect, useRef, useState } from 'react';
-import { CardSection, Details, GeneratedValue, LongCard, StatusPill, type Status } from '../components/DesignSystem';
-import { changedFiles, resultAnnouncement, resultLabel, TestProgress, TestResults } from '../components/TestResults';
+import { DesignerTests } from '../components/DesignerTests';
+import { CardSection, Details, GeneratedValue, LongCard, type Status, StatusPill } from '../components/DesignSystem';
+import { changedFiles, resultAnnouncement, resultLabel, TestProgress } from '../components/TestResults';
 import { SAMPLE_DOCUMENT_ID, type SourceId, sameSource } from './agent-api';
 import { errors, type RunSnapshot, runCall } from './run-api';
-export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, blocked = false, stale = false, onStart, source, onStopLocalCluster, onChooseCluster, onEditInstructions, startRequest, onStartRequestHandled }: { documentId?: string; onSnapshot?: (snapshot: RunSnapshot | undefined) => void; blocked?: boolean; stale?: boolean; onStart?: () => void; source?: SourceId; onStopLocalCluster?: () => void; onChooseCluster?: () => void; onEditInstructions?: () => void; startRequest?: number; onStartRequestHandled?: () => void }) {
+import { testDefinitions } from './test-definitions';
+export default function Run({ tests, documentId = SAMPLE_DOCUMENT_ID, onSnapshot, blocked = false, stale = false, onStart, source, onStopLocalCluster, onChooseCluster, onEditInstructions, startRequest, onStartRequestHandled }: { tests?: string; documentId?: string; onSnapshot?: (snapshot: RunSnapshot | undefined) => void; blocked?: boolean; stale?: boolean; onStart?: () => void; source?: SourceId; onStopLocalCluster?: () => void; onChooseCluster?: () => void; onEditInstructions?: () => void; startRequest?: number; onStartRequestHandled?: () => void }) {
+  const definitions = useMemo(() => tests === undefined ? undefined : testDefinitions(tests), [tests]);
   const [received, setSnapshot] = useState<RunSnapshot>();
   const snapshot = received?.documentId === documentId ? received : undefined;
   const canRun = !!snapshot?.canRun && snapshot.modelConnected !== false;
@@ -69,14 +72,14 @@ export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, block
   const stage = { capture: 'Reading your saved files', model: 'Checking the local model', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', cancel: 'Cancelling tests', done: 'Tests finished' };
   return <section className="example-run" aria-label="Tests on the local cluster">
     <LongCard title="Tests on the local cluster" status={<><StatusPill state={state}>{outdated ? undefined : cancelling ? 'Cancelling' : unconfirmed ? 'Not confirmed' : confirmed || beforeStart ? 'Cancelled' : undefined}</StatusPill><span className="status-description">{outdated ? 'Not run since your edit' : running || cancellationLine ? undefined : uncertain ? 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>On this computer{snapshot?.model && <> · <code>{snapshot.model}</code></>}.{snapshot?.modelConnected === false && ' Connect the AI in Clusters first.'}</>}
-      action={running ? !cancelling && snapshot?.canCancel && <Button type="button" kind="secondary" onClick={() => { void act('agent_run_cancel'); }}>Cancel tests</Button>
+      action={running ? !cancelling && snapshot?.canCancel && <Button type="button" kind="secondary" onClick={() => { void act('agent_run_cancel'); }}>Stop</Button>
         : (!unconfirmed || !snapshot?.canCheckCancellation) && <div className="workspace-step-actions">{snapshot?.modelConnected === false && onChooseCluster && <Button type="button" kind="primary" onClick={onChooseCluster}>Connect the AI</Button>}<Button type="button" kind={canRun && !blocked ? 'primary' : 'secondary'} disabled={!!action || blocked || !canRun} title={blocked ? 'Save your changes before running the test' : !canRun ? 'Start the local cluster and connect the AI in Clusters first' : undefined} onClick={() => { void act('agent_run'); }}>Run tests</Button></div>}>
       <p className="sr-only test-announcement" role="status" aria-live="polite" aria-atomic="true">{!running ? cancellationLine ?? (!outdated ? uncertain ? 'Test result unknown.' : resultAnnouncement(snapshot?.report) : undefined) : undefined}</p>
-      <CardSection title="What happened">
+      <CardSection title={snapshot?.report || running ? "What happened" : "Tests"}>
         {snapshot?.busy && snapshot.busy.documentId !== documentId && <p role="status">{snapshot.busy.name} is running a test.</p>}
         {outdated && <p role="status">{changedFiles(source, snapshot?.source, stale)}</p>}
         {running && <TestProgress stage={cancelling ? 'Cancelling tests · waiting for the test worker to stop' : snapshot?.stage && snapshot.stage !== 'done' ? stage[snapshot.stage] : 'Starting your tests'} />}
-        {running && !cancelling && snapshot?.canCancel && <p>Cancel stops the tests on this computer and keeps answers that already finished.</p>}
+        {running && !cancelling && snapshot?.canCancel && <p>Stop ends the tests on this computer and keeps answers that already finished.</p>}
         {!running && cancellationLine && <p>{cancellationLine}</p>}
         {!running && unconfirmed && <><p>Stop the local cluster to stop all work on this computer. Actions already taken are not undone.</p>
           <div className="workspace-step-actions">
@@ -89,15 +92,16 @@ export default function Run({ documentId = SAMPLE_DOCUMENT_ID, onSnapshot, block
         {message && <p role="status">{message}</p>}
         {snapshot?.error && !(snapshot.error === 'model' && snapshot.modelConnected) && <p role="alert">{errors[snapshot.error]}</p>}
         {!running && !outdated && !uncertain && !cancellationLine && snapshot?.report?.verdict === 'failed' && <div className="test-next-step">
-          <p>{snapshot.report.cases.some(c => c.verdict === 'failed' && c.phase !== 'Succeeded') ? 'The task did not finish successfully. Review its answer and tool activity in Details before trying again.' : 'The agent answered, but its checks failed. Compare the answer with the test, then adjust the instructions or test file.'}</p>
+          <p>{snapshot.report.cases.some(c => c.verdict === 'failed' && c.phase !== 'Succeeded') ? 'The task did not finish successfully. Review its answer and tool activity below before trying again.' : 'The agent answered, but its checks failed. Compare the answer with the test, then adjust the instructions or test file.'}</p>
           {onEditInstructions && <Button type="button" kind="secondary" onClick={onEditInstructions}>Edit instructions</Button>}
         </div>}
-        {(!running || cancelling) && <TestResults report={snapshot?.report} stale={outdated} vendor={snapshot?.vendor} />}
+        <DesignerTests definitions={running && sourceCurrent === false ? undefined : definitions} report={snapshot?.report} stale={outdated} running={running} vendor={snapshot?.vendor} />
       </CardSection>
-      {(!!snapshot?.acknowledged.length || snapshot?.pending || snapshot?.source) && <Details hint="Resources and file hashes">
-        {snapshot.source && <><GeneratedValue label="Agent file hash" value={snapshot.source.agent} /><GeneratedValue label="Test file hash" value={snapshot.source.tests} /></>}
-        {snapshot.acknowledged.map(r => <GeneratedValue key={r.uid} label={r.kind} value={r.name} />)}
-        {snapshot.pending && <GeneratedValue label={`Possibly created ${snapshot.pending.kind}`} value={snapshot.pending.name} />}
+      {(tests !== undefined || !!snapshot?.acknowledged.length || snapshot?.pending || snapshot?.source) && <Details hint="Test file, resources and file hashes">
+        {tests !== undefined && <section className="test-file-source" aria-label="Test file, read-only"><h5 className="section-label">Test file, read-only</h5><pre className="example-source">{tests}</pre></section>}
+        {snapshot?.source && <><GeneratedValue label="Agent file hash" value={snapshot.source.agent} /><GeneratedValue label="Test file hash" value={snapshot.source.tests} /></>}
+        {snapshot?.acknowledged.map(r => <GeneratedValue key={r.uid} label={r.kind} value={r.name} />)}
+        {snapshot?.pending && <GeneratedValue label={`Possibly created ${snapshot.pending.kind}`} value={snapshot.pending.name} />}
       </Details>}
     </LongCard>
   </section>;

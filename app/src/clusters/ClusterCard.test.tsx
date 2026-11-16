@@ -166,14 +166,14 @@ test('local results remain explicitly local after confirming cluster access', as
   });
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Designer' }));
-  await screen.findByText('1 of 1 tests passing', { selector: '.checks-status' });
+  await screen.findByText('1 of 1 passed', { selector: '.checks-status' });
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   await screen.findByRole('combobox', { name: 'kubectl context' }); await discover(user);
   await user.click(screen.getByRole('button', { name: 'Use this cluster' }));
   await screen.findAllByText('Access confirmed');
-  expect(screen.getByText('This computer: 1 of 1 tests passing', { selector: '.checks-status' })).toBeTruthy();
+  expect(screen.getByText('This computer: 1 of 1 passed', { selector: '.checks-status' })).toBeTruthy();
 });
 
 test('local model acknowledgement survives a cluster round trip', async () => {
@@ -217,7 +217,7 @@ test('local-result observation continues while remote access is unconfirmed', as
   await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
   await screen.findByText('Cluster found');
   complete = true;
-  expect(await screen.findByText('1 of 1 tests passing', { selector: '.checks-status' })).toBeTruthy();
+  expect(await screen.findByText('1 of 1 passed', { selector: '.checks-status' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);

@@ -13,6 +13,77 @@ const AGENT: &str = "---\nname: reader\ndescription: inert\nmodel: 'model:exact'
 const TESTS: &str = "---\nschemaVersion: 1\n---\n# Cases\n```yaml agent-test\nid: checksum\ninput: |\n  Fetch https://example.test/checksum\nassertions:\n  - id: answer\n    type: contains\n    value: secret-expected\n  - id: fetched\n    type: toolCalled\n    tool: web_fetch\n```\n";
 
 #[test]
+fn test_titles_are_display_only_and_roundtrip_without_changing_untitled_cases() {
+    let original = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
+    let old = serde_json::to_value(&original.cases()[0]).unwrap();
+    assert!(old.get("title").is_none());
+    for title in [
+        "Copies the checksum",
+        "  é 🙂  ",
+        &"🙂".repeat(160),
+        &format!("Täsk-{}", "A".repeat(20)),
+        &format!("é{}", "a".repeat(52)),
+    ] {
+        let tests = TESTS.replace("id: checksum", &format!("id: checksum\ntitle: '{}'", title));
+        let pair = ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).unwrap();
+        let saved = serde_json::to_value(&pair.cases()[0]).unwrap();
+        assert_eq!(saved["title"], title);
+        assert_eq!(pair.prompt(), original.prompt());
+        assert_eq!(pair.cases()[0].input(), original.cases()[0].input());
+        let restored: RunCase = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), saved);
+    }
+    let mut historical = old.clone();
+    historical["title"] = json!(format!("{}{}", "ghp_", "A".repeat(30)));
+    // Historical metadata must load even if today\'s source-title policy rejects it.
+    assert!(serde_json::from_value::<RunCase>(historical).is_ok());
+    let restored: RunCase = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), old);
+}
+#[test]
+fn malformed_or_credential_shaped_titles_are_not_display_metadata() {
+    for title in [
+        "null".to_owned(),
+        "42".into(),
+        "true".into(),
+        "''".into(),
+        "' '".into(),
+        format!("'{}'", "🙂".repeat(161)),
+        r#""a\nb""#.into(),
+        "'a\u{200b}b'".into(),
+        "'a\u{2028}b'".into(),
+        format!("'{}{}'", "ghp_", "A".repeat(30)),
+    ] {
+        let tests = TESTS.replace("id: checksum", &format!("id: checksum\ntitle: {title}"));
+        assert!(
+            ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).is_err(),
+            "{title}"
+        );
+    }
+}
+#[test]
+fn string_fields_preserve_yaml_scalar_spelling_without_coercing_titles() {
+    for scalar in ["42", "true", "null", "0x2A", "1.20", "FALSE", "1e+3", "~"] {
+        let tests = format!("---\nschemaVersion: 1\n---\n\x60\x60\x60yaml agent-test\nid: {scalar}\ntitle: Reads the page\ninput: {scalar}\nassertions: [{{id: answer, type: contains, value: checksum}}]\n\x60\x60\x60\n");
+        let pair = ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).unwrap();
+        let saved = serde_json::to_value(&pair.cases()[0]).unwrap();
+        assert_eq!(saved["id"], scalar);
+        assert_eq!(saved["input"], scalar);
+        assert_eq!(saved["title"], "Reads the page");
+        // Internally tagged assertions buffer typed YAML values before reading String.
+        for assertion in [
+            format!("{{id: {scalar}, type: contains, value: checksum}}"),
+            format!("{{id: answer, type: contains, value: {scalar}}}"),
+            format!("{{id: answer, type: toolCalled, tool: {scalar}}}"),
+        ] {
+            assert!(
+                serde_yaml_ng::from_str::<Assertion>(&assertion).is_err(),
+                "{assertion}"
+            );
+        }
+    }
+}
+#[test]
 fn real_yaml_preserves_prompt_input_model_and_exact_byte_provenance() {
     // Catches trimming/rebuilding source, a handwritten YAML subset, or lost hashes.
     let pair = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
@@ -918,6 +989,43 @@ async fn native_runner_accepts_a_borrowed_transport_without_a_second_http_target
     assert_eq!(requests.lock().unwrap().as_slice(), ["agents"]);
     assert_eq!(error.pending.unwrap().kind, "Agent");
     assert!(error.handle.agent().is_none());
+}
+#[tokio::test]
+async fn captured_titles_survive_observation_and_old_report_deserialization() {
+    let source = TESTS.replace("id: checksum", "id: checksum\ntitle: Copies the checksum");
+    let pair = ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()).unwrap();
+    let fixture = Fixture::start(Behavior {
+        events: "paged",
+        ..Behavior::default()
+    })
+    .await;
+    let runner = fixture.runner();
+    let handle = runner.submit(pair).await.unwrap();
+    let report = runner.observe(&handle).await.unwrap();
+    assert_eq!(
+        report.cases[0].title.as_deref(),
+        Some("Copies the checksum")
+    );
+    assert_eq!(
+        serde_json::from_value::<RunReport>(serde_json::to_value(&report).unwrap())
+            .unwrap()
+            .cases[0]
+            .title,
+        report.cases[0].title
+    );
+    let mut legacy = serde_json::to_value(report).unwrap();
+    legacy["cases"][0].as_object_mut().unwrap().remove("title");
+    assert!(
+        serde_json::from_value::<RunReport>(legacy).unwrap().cases[0]
+            .title
+            .is_none()
+    );
+    for (_, body) in fixture.requests.lock().unwrap().iter() {
+        assert!(
+            !body.to_string().contains("Copies the checksum"),
+            "display metadata entered execution"
+        );
+    }
 }
 #[tokio::test]
 async fn submits_exact_mapping_and_observes_only_acknowledged_unique_resources() {

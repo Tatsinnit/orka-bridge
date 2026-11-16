@@ -761,7 +761,7 @@ fn fixed_example_is_the_exact_public_pair_not_an_edit_or_run_operation() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(pair.tests.as_bytes())),
-        "710f4309a3b482ccc41049b204a9d464460ed4285285d73f5e58e7487c62c3ba"
+        "b462346165c70e4f6d33f05c17bc06ffea120f28603edca617fc0a5654fb8144"
     );
     assert!(pair.agent.len() < 65536 && pair.tests.len() < 65536);
 }

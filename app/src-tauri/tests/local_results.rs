@@ -190,6 +190,7 @@ fn test_counts_are_cases_not_assertions_and_unknown_cases_are_in_total() {
         .into_iter()
         .map(|verdict| CaseReport {
             id: "display".into(),
+            title: None,
             question: "PRIVATE QUESTION".into(),
             phase: "done".into(),
             answer: Some("PRIVATE ANSWER".into()),

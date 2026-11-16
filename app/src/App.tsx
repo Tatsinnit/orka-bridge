@@ -149,7 +149,7 @@ export default function App() {
   const checksStale = stale || (run?.sourceCurrent === false && !!run.report);
   const localChecks = checksStale ? 'Tests not run since your edit' : runUnavailable ? 'Test status unavailable' : run?.cancellation === 'unconfirmed' ? 'Cancellation not confirmed' : run?.state === 'unknown' ? 'Test result unknown'
     : run?.cancellation === 'cancelling' ? 'Cancelling tests' : run?.state === 'running' ? 'Running tests…' : run?.report?.verdict === 'cancelled' ? 'Tests cancelled' : run?.report?.verdict === 'unknown' ? 'Test result unknown' : cases
-    ? `${cases.filter(check => check.verdict === 'passed').length} of ${cases.length} tests passing` : undefined;
+    ? `${cases.filter(check => check.verdict === 'passed').length} of ${cases.length} passed` : undefined;
   const checks = remote && localChecks ? `This computer: ${localChecks}` : localChecks;
   const firstTest = useFirstTest({
     ready: setup?.selected === 'localVm' && setup.localVm === 'ready' && model === 'connected' && !workspaceBusy && !remote,

@@ -227,7 +227,7 @@ test('an edit marks the first test stale immediately without putting the ready w
   render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
-  await within(screen.getByRole('contentinfo')).findByText('1 of 1 tests passing');
+  await within(screen.getByRole('contentinfo')).findByText('1 of 1 passed');
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await waitFor(() => expect(within(screen.getByRole('navigation')).getByText('Local cluster ready')).toBeTruthy());
   await user.click(screen.getByRole('button', { name: 'Designer' }));

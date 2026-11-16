@@ -167,7 +167,7 @@ impl NativeRunner<'_> {
                 task.terminal=true;
                 let assertions=if phase=="Cancelled" {Vec::new()} else {case.evaluate(answer.as_deref(),&tools)};
                 let verdict=if phase=="Cancelled" {Verdict::Cancelled} else if phase=="Succeeded" {aggregate(assertions.iter().map(|r|r.verdict))} else {Verdict::Failed};
-                Ok(Some((CaseReport {id:case.id.clone(),question:case.input().into(),phase:phase.into(),answer,completed_tools:tools,assertions,verdict},captured)))
+                Ok(Some((CaseReport {id:case.id.clone(),title:case.title.clone(),question:case.input().into(),phase:phase.into(),answer,completed_tools:tools,assertions,verdict},captured)))
             }.await;
             match read {
                 Ok(None) => (),

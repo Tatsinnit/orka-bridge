@@ -26,6 +26,12 @@ pub struct ParsedAgent {
 #[serde(deny_unknown_fields)]
 pub struct RunCase {
     pub id: String,
+    #[serde(
+        default,
+        deserialize_with = "test_title",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub title: Option<String>,
     input: String,
     assertions: Vec<Assertion>,
 }
@@ -183,6 +189,34 @@ fn frontmatter(bytes: &[u8]) -> Result<(&str, &str), ErrorKind> {
 fn yaml<T: serde::de::DeserializeOwned>(s: &str) -> Result<T, ErrorKind> {
     serde_yaml_ng::from_str(s).map_err(|_| ErrorKind::Source)
 }
+// Match the optional test-title format without moving display metadata into prompts.
+// Patterns are shared with the renderer, applied to decoded YAML rather than source spelling.
+fn test_title<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    match serde_yaml_ng::Value::deserialize(deserializer)? {
+        serde_yaml_ng::Value::String(title) => Ok(Some(title)),
+        _ => Err(serde::de::Error::custom("invalid test title")),
+    }
+}
+fn valid_test_title(title: &str) -> bool {
+    use std::sync::LazyLock;
+    static INVALID: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]").unwrap());
+    static SECRETS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
+        serde_json::from_str::<Vec<String>>(include_str!(
+            "../../../src/designer/test-title-patterns.json"
+        ))
+        .unwrap()
+        .iter()
+        .map(|pattern| regex::Regex::new(pattern).unwrap())
+        .collect()
+    });
+    !title.trim().is_empty()
+        && title.chars().count() <= 160
+        && !INVALID.is_match(title)
+        && !SECRETS.iter().any(|pattern| pattern.is_match(title))
+}
 fn present(s: &str) -> bool {
     !s.trim().is_empty() && !s.contains('\0')
 }
@@ -221,7 +255,11 @@ impl ParsedPair {
         }
         let mut ids = HashSet::new();
         for case in &cases {
-            if !present(&case.id)
+            if case
+                .title
+                .as_deref()
+                .is_some_and(|title| !valid_test_title(title))
+                || !present(&case.id)
                 || !ids.insert(&case.id)
                 || !present(&case.input)
                 || case.assertions.is_empty()

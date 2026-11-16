@@ -1,0 +1,16 @@
+[
+  "sk-[a]nt-",
+  "sk-[p]roj-",
+  "(?:^|[^\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}])sk-[A-Za-z0-9]{20,}",
+  "(?i)api[_-]?key\\s*[:=]\\s*\\\\?[\"'][A-Za-z0-9_-]{20,}",
+  "kmh_[A-Za-z0-9_-]{8,}",
+  "gh[pousr]_[A-Za-z0-9]{16,}",
+  "github_pat_[A-Za-z0-9_]{20,}",
+  "xox[baprs]-[A-Za-z0-9-]{10,}",
+  "xapp-[0-9]-[A-Za-z0-9-]{10,}",
+  "(?:^|[^A-Za-z0-9_-])[a-fA-F0-9]{32}(?:$|[^A-Za-z0-9_-])",
+  "(?:^|[^\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}])(?:[A-Za-z0-9+/]{0,59}(?:JQQJ|AAAB|ACOGk)[A-Za-z0-9+/]{60,130}|[A-Za-z0-9+/]{30,100}(?:JQQJ|AAAB|ACOGk)[A-Za-z0-9+/]{30,130}|[A-Za-z0-9+/]{60,100}(?:JQQJ|AAAB|ACOGk)[A-Za-z0-9+/]{0,30})={0,2}",
+  "(?:^|[^\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}])[a-z2-7]{52}(?:$|[^\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}])",
+  "(?:^|[^\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}])eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.",
+  "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+]

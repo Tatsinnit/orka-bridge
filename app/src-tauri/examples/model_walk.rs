@@ -129,6 +129,7 @@ fn main() {
     use tauri::Manager;
     let removed_once = std::sync::atomic::AtomicBool::new(false);
     let running = std::sync::atomic::AtomicBool::new(false);
+    let cancelling = std::sync::atomic::AtomicBool::new(false);
     let chat = std::sync::Mutex::new(ChatFixture::new());
     let selected = std::sync::atomic::AtomicBool::new(true);
     let connected = std::sync::atomic::AtomicBool::new(false);
@@ -142,8 +143,9 @@ fn main() {
     let first_test_pending = std::sync::atomic::AtomicBool::new(false);
     let original = include_str!("../example-agent/web-reader.agent.md");
     let agent = std::sync::Mutex::new(original.to_owned());
-    let tests = "---\nschemaVersion: 1\n---\n```yaml agent-test\nid: reads-page\ninput: What did the page say?\nassertions:\n - id: text\n   type: contains\n   value: checksum\n```\n```yaml agent-test\nid: has-a-date\ninput: Which date is shown on the page?\nassertions:\n - id: date\n   type: contains\n   value: '2099-12-31'\n```\n";
+    let tests = "---\nschemaVersion: 1\n---\n```yaml agent-test\nid: reads-page\ntitle: Copies the checksum from the page\ninput: What did the page say?\nassertions:\n - id: text\n   type: contains\n   value: checksum\n```\n```yaml agent-test\nid: has-a-date\ntitle: Says which date is on the page\ninput: Which date is shown on the page?\nassertions:\n - id: date\n   type: contains\n   value: '2099-12-31'\n```\n";
     let source = bridge_runtime_protocol::SnapshotId::of(original.as_bytes(), tests.as_bytes());
+    let run_source = std::sync::Mutex::new(source.clone());
     tauri::Builder::default()
         .setup(|app| {
             app.get_webview_window("main")
@@ -239,8 +241,11 @@ fn main() {
                         Err(error) => { invoke.resolver.reject(error); return true; }
                     }
                 }
-                "agent_run_status" | "agent_run" => {
+                "agent_run_status" | "agent_run" | "agent_run_cancel" => {
+                    if invoke.message.command() == "agent_run_cancel" { cancelling.store(true, std::sync::atomic::Ordering::SeqCst); }
                     if invoke.message.command() == "agent_run" {
+                        *run_source.lock().unwrap() = bridge_runtime_protocol::SnapshotId::of(agent.lock().unwrap().as_bytes(), tests.as_bytes());
+                        cancelling.store(false, std::sync::atomic::Ordering::SeqCst);
                         // The automatic first test finishes with the fixed failed report.
                         // A later manual Run stays active for the existing result captures.
                         let automatic = matches!(invoke.message.payload(), tauri::ipc::InvokeBody::Json(args) if args["bundledExample"].as_bool() == Some(true));
@@ -251,12 +256,13 @@ fn main() {
                     let waiting = first_test_pending.load(std::sync::atomic::Ordering::SeqCst);
                     let credit_limited = key_connected.load(std::sync::atomic::Ordering::SeqCst);
                     json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "busy":null,
-                        "state":if active {"running"} else if waiting {"idle"} else {"complete"}, "stage":if active {json!("observe")} else if waiting {json!(null)} else {json!("done")},
-                        "model":if credit_limited {"claude-sonnet-5-5"} else {"gpt-5.6-terra"}, "vendor":if credit_limited {json!("anthropic")} else {json!(null)}, "modelConnected":connected.load(std::sync::atomic::Ordering::SeqCst), "canRun":!active, "source":source,
+                        "canCancel":active && !cancelling.load(std::sync::atomic::Ordering::SeqCst), "cancellation":if cancelling.load(std::sync::atomic::Ordering::SeqCst) {"cancelling"} else {"none"},
+                        "state":if active {"running"} else if waiting {"idle"} else {"complete"}, "stage":if active {json!(if cancelling.load(std::sync::atomic::Ordering::SeqCst) {"cancel"} else {"observe"})} else if waiting {json!(null)} else {json!("done")},
+                        "model":if credit_limited {"claude-sonnet-5-5"} else {"gpt-5.6-terra"}, "vendor":if credit_limited {json!("anthropic")} else {json!(null)}, "modelConnected":connected.load(std::sync::atomic::Ordering::SeqCst), "canRun":!active, "source":run_source.lock().unwrap().clone(),
                         "acknowledged":[], "pending":null, "error":null,
                         "report":if active || waiting {json!(null)} else {json!({"verdict":"failed", "cases":[
-                            {"id":"reads-page", "question":"What did the page say?", "phase":if credit_limited {"CreditLimited"} else {"Succeeded"}, "answer":if credit_limited {json!(null)} else {json!("Fixture checksum.")}, "completedTools":if credit_limited {json!([])} else {json!(["web_fetch"])}, "verdict":if credit_limited {"failed"} else {"passed"}, "assertions":[{"id":"text", "kind":"contains", "expected":"checksum", "verdict":if credit_limited {"unknown"} else {"passed"}}]},
-                            {"id":"has-a-date", "question":"Which date is shown on the page?", "phase":"Succeeded", "answer":"No date was given.", "completedTools":[], "verdict":"failed", "assertions":[{"id":"date", "kind":"contains", "expected":"2099-12-31", "verdict":"failed"}]}
+                            {"id":"reads-page", "title":"Copies the checksum from the page", "question":"What did the page say?", "phase":if credit_limited {"CreditLimited"} else {"Succeeded"}, "answer":if credit_limited {json!(null)} else {json!("Fixture checksum.")}, "completedTools":if credit_limited {json!([])} else {json!(["web_fetch"])}, "verdict":if credit_limited {"failed"} else {"passed"}, "assertions":[{"id":"text", "kind":"contains", "expected":"checksum", "verdict":if credit_limited {"unknown"} else {"passed"}}]},
+                            {"id":"has-a-date", "title":"Says which date is on the page", "question":"Which date is shown on the page?", "phase":"Succeeded", "answer":"No date was given.", "completedTools":[], "verdict":"failed", "assertions":[{"id":"date", "kind":"contains", "expected":"2099-12-31", "verdict":"failed"}]}
                         ]})}})
                 }
                 "setup_status" | "setup_change_local" | "setup_select_local" => {
@@ -278,6 +284,7 @@ fn main() {
                         selected.store(false, std::sync::atomic::Ordering::SeqCst);
                         connected.store(false, std::sync::atomic::Ordering::SeqCst);
                     } else if invoke.message.command() == "setup_select_local" {
+                        cancelling.store(false, std::sync::atomic::Ordering::SeqCst);
                         selected.store(true, std::sync::atomic::Ordering::SeqCst);
                         first_test_pending.store(true, std::sync::atomic::Ordering::SeqCst);
                         running.store(false, std::sync::atomic::Ordering::SeqCst);
