@@ -527,7 +527,7 @@ test.each(['saved file', 'cluster Agent'])('%s Open keeps the selected cluster a
   });
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  await user.click(await screen.findByRole('button', { name: 'Back to clusters' }));
+  await user.click(await screen.findByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   await user.selectOptions(await screen.findByRole('combobox', { name: 'kubectl context' }), context.id);
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));

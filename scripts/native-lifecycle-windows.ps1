@@ -317,7 +317,10 @@ try {
         Capture 'places-empty'
         Press $setUp
         $requirements = Wait-For 'Computer requirements panel missing' { Find-Control $script:window 'Computer requirements' $null }
-        Wait-For 'Computer requirements did not settle' { $check = Find-Control $requirements 'Check again' $button; if ($check -and $check.Current.IsEnabled) { $true } } | Out-Null
+        Wait-For 'Computer requirements did not settle' {
+            $lines = (Get-UiNames $requirements) -join ' '
+            $lines.Contains('These checks do not change this computer.') -or $lines.Contains('Fix the computer requirements above before continuing.') -or $lines.Contains("Bridge couldn't check this computer yet.")
+        } | Out-Null
         # Required RAM stays visible; image and maximum disk facts are behind What's inside.
         Press (Wait-For 'Workspace details disclosure missing' { Find-Control $script:window "What's inside" $button })
         Wait-For 'Local size facts did not settle' {

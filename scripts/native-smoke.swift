@@ -507,7 +507,7 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         // Vision can read the capital I in AI as lowercase l. Match the rest of the heading.
         let welcome = text.contains("Build an") && text.contains("does a real job") || !nativeButtons("Get started").isEmpty
         let places = text.contains("Choose where agents run") || nativeTextIsVisible("Choose where agents run")
-        let detail = text.contains("Back to clusters")
+        let detail = text.contains("Back to clusters") || text.contains("Where should your agents run?") || !nativeButtons("Continue").isEmpty
         require(welcome || places || detail, "Places heading or subview not visible; observed: \(text)")
         require(!text.contains("Engine diagnostics"), "Removed engine diagnostics is still visible: \(text)")
         if places && !detail {
@@ -640,7 +640,8 @@ func localPreflight(_ name: String) throws {
     scrollMain(1000)
     try capture(name, "Clusters")
     requireNoLocalWorkspace() // the size screen must never start the VM
-    clickButton("Back to clusters")
+    require(visibleButtons("Back to clusters").isEmpty, "Local setup must not have a header Back link")
+    clickTab("Clusters", [])
 }
 try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
 setContent(1280, 800)

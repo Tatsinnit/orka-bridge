@@ -65,7 +65,7 @@ test('the restored local page owns Stop and stays restartable even without an ol
 
 test('cluster picking is explicitly separate from stopping and does not stop the local workspace', async () => {
   const ipc = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_change_local')).toBe(false);

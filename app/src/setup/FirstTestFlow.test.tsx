@@ -149,7 +149,7 @@ test.each(['passed', 'failed', 'unreadable', 'edited'] as const)('Setup retains 
     expect(within(screen.getByRole('navigation')).getByText('Its test failed')).toBeTruthy();
     expect(within(screen.getByRole('contentinfo')).getByText('Its test failed')).toBeTruthy();
     expect(document.querySelector('.host-chip .live-dot')?.className).toContain('bad');
-    await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+    await user.click(screen.getByRole('button', { name: 'Clusters' }));
     expect(within(screen.getByRole('region', { name: 'This computer' })).getByText('Failed', { selector: '.pill' }).className).toContain('status-failed');
     await openLocalSetup(user);
   }
@@ -295,10 +295,10 @@ test.each(['Overview', 'Designer', 'cluster', 'Add', 'Places', 'workspace lost']
   if (destination === 'Overview' || destination === 'Designer') await user.click(screen.getByRole('button', { name: destination }));
   else if (destination === 'workspace lost') { loseWorkspace(); window.dispatchEvent(new Event('focus')); await screen.findByRole('button', { name: 'Continue' }); }
   else if (destination === 'Add' || destination === 'Places') {
-    await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+    await user.click(screen.getByRole('button', { name: 'Clusters' }));
     if (destination === 'Add') await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   } else {
-    await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+    await user.click(screen.getByRole('button', { name: 'Clusters' }));
     await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   }
   finish();
@@ -318,7 +318,7 @@ test('Add retires an automatic first test awaiting its initial observation witho
   const user = await completeSetup();
   await waitFor(() => expect(reads).toBe(1));
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe('pending');
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe('attempted');
   expect(document.querySelector('.host-chip .host-label')?.textContent).toBe('This computer');

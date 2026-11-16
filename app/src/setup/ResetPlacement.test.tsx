@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
-import Setup from './Setup';
+import Setup from './SetupHarness';
 
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 test.each(['stay', 'navigate'])('AI recovery keeps reset completion visible after %s on the running-place card', async destination => {
@@ -26,7 +26,7 @@ test.each(['stay', 'navigate'])('AI recovery keeps reset completion visible afte
   expect(within(row).getByRole('button', { name: 'Reset AI connection' })).toBeTruthy();
   expect(screen.getByText('Your workspace is ready on this computer.')).toBeTruthy();
   await user.click(within(row).getByRole('button', { name: 'Show details' }));
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
   const place = screen.getByRole('region', { name: 'This computer' });
   expect(within(place).getByRole('button', { name: 'Reset AI connection' })).toBeTruthy();
   expect(within(place).getByRole('button', { name: 'Hide details' })).toBeTruthy();

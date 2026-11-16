@@ -134,14 +134,46 @@ test('startup details never reuse the previous file phase timing', async () => {
   expect(screen.getByRole('progressbar').hasAttribute('aria-valuenow')).toBe(false);
 });
 
-test('setup opened on launch has a truthful route to Places, not a fictional Back', async () => {
+test('the active Clusters tab replaces the local setup header without workspace effects', async () => {
   const { ipc } = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   expect(screen.queryByRole('button', { name: 'Back to clusters' })).toBeNull();
-  await user.click(screen.getByRole('button', { name: 'Choose where agents run' }));
+  expect(screen.queryByRole('button', { name: 'Choose where agents run' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await screen.findByRole('region', { name: 'This computer' });
   expect(ipc.mock.calls.some(([cmd]) => ['setup_cancel_local', 'setup_change_local'].includes(cmd))).toBe(false);
   await openLocalSetup(user);
+  expect(screen.queryByRole('button', { name: 'Back to clusters' })).toBeNull();
+});
+
+test.each(['installing', 'ready'])('returning from Designer keeps the %s local view; active Clusters returns to Places', async phase => {
+  const { ipc } = native(phase); const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  const local = screen.getByRole('region', { name: 'Local cluster setup' });
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  expect(screen.getByRole('region', { name: 'Local cluster setup' })).toBe(local);
+  expect(screen.queryByRole('button', { name: 'Use a cluster instead' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Use a cluster you already have instead' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  expect(await screen.findByRole('region', { name: 'This computer' })).toBeTruthy();
+  expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
+  expect(ipc.mock.calls.some(([cmd]) => ['setup_cancel_local', 'setup_change_local', 'setup_select_local', 'cluster_admit', 'cluster_contexts'].includes(cmd))).toBe(false);
+  await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
+  await screen.findByRole('heading', { name: 'Add a cluster' });
   expect(screen.getByRole('button', { name: 'Back to clusters' })).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  expect(await screen.findByRole('region', { name: 'This computer' })).toBeTruthy();
+});
+
+test('clicking the active Clusters tab on Places cannot arm a later polling focus jump', async () => {
+  const sim = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  await screen.findByRole('region', { name: 'This computer' });
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  const add = screen.getByRole('button', { name: 'Add a cluster' });
+  add.focus();
+  sim.ready();
+  await waitFor(() => expect(within(screen.getByRole('region', { name: 'This computer' })).getByRole('button', { name: 'Connect the AI' })).toBeTruthy());
+  expect(document.activeElement).toBe(add);
 });
 
 test('keyboard Cancel then start again calls native retry and keeps the Meet panel', async () => {
@@ -323,7 +355,7 @@ test('a delayed Stop cannot strand subsequent Continue actions', async () => {
   expect(within(screen.getByRole('navigation')).getByText('Stopping the local cluster')).toBeTruthy();
   expect(within(screen.getByRole('contentinfo')).getByText('Stopping the local cluster')).toBeTruthy();
   expect(within(screen.getByRole('region', { name: 'Local cluster setup' })).getByText('Stopping the local cluster').previousElementSibling?.className).toContain('status-running');
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
   const row = screen.getByRole('region', { name: 'This computer' });
   expect(within(row).getByText('Stopping the local cluster').closest('.pill')).toBeNull();
   expect(row.querySelector('.pill.status-running')).toBeTruthy();

@@ -381,8 +381,10 @@ fn main() {
                     let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
                     let unknown = phase.as_deref() == Some("preflight-unknown");
                     let blocked = matches!(phase.as_deref(), Some("preflight-blocked" | "preflight-cluster"));
-                    json!({"platform":"macos", "virtualization":if unknown {"unknown"} else if blocked {"unsupported"} else {"ready"},
-                        "memory":if unknown {"unknown"} else {"ready"}, "installedMemoryBytes":if unknown {json!(null)} else {json!(17179869184_u64)},
+                    let memory = matches!(phase.as_deref(), Some("preflight-memory" | "preflight-mixed"));
+                    let mixed = phase.as_deref() == Some("preflight-mixed");
+                    json!({"platform":"macos", "virtualization":if unknown || mixed {"unknown"} else if blocked {"unsupported"} else {"ready"},
+                        "memory":if unknown {"unknown"} else if memory {"insufficient"} else {"ready"}, "installedMemoryBytes":if unknown {json!(null)} else if memory {json!(2147483648_u64)} else {json!(17179869184_u64)},
                         "requiredMemoryBytes":4294967296_u64})
                 }
                 "setup_connect_model" => {

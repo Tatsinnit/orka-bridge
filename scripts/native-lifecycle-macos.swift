@@ -241,7 +241,11 @@ let setUp = find(main, "places-set-up") {
 try command("/usr/sbin/screencapture", ["-x", "-o", "-l", String(windowInfo()!.0), "\(output)/places-empty.png"])
 press(setUp)
 let requirements = find(main, "computer-requirements-panel") { text($0).contains("Computer requirements") }
-_ = find(requirements, "computer-requirements") { pressable($0, "Check again") }
+wait("Computer requirements did not settle") {
+    shownStrings(requirements).contains { line in
+        ["These checks do not change this computer.", "Fix the computer requirements above before continuing.", "Bridge couldn't check this computer yet."].contains { line.contains($0) }
+    }
+}
 // Required installed memory stays visible; image and maximum disk facts live in What's inside.
 press(find(main, "workspace-inside") { pressable($0, "What's inside") })
 currentStage = "local-size-block"; print("STAGE: \(currentStage)")

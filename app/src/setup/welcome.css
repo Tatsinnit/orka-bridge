@@ -29,9 +29,10 @@
 .local-preflight #workspace-inside:not([hidden]) { display: grid; gap: 8px; }
 .local-preflight .workspace-choice-step { font: var(--type-body); }
 .workspace-preflight { display: grid; gap: 16px; }
+.workspace-preflight > [aria-live]:empty { display: none; }
 .workspace-preflight > [aria-live] { display: grid; gap: 16px; }
 .workspace-preflight > [aria-live] > section { display: grid; gap: 8px; }
-.workspace-preflight .preflight-result { display: flex; align-items: start; gap: 8px; }
+.workspace-preflight .preflight-result { color: var(--color-status-failed); display: flex; align-items: start; gap: 8px; }
 .workspace-preflight .preflight-result > .status-icon { flex: none; margin-top: 1px; }
 .workspace-preflight .disclosure { margin-left: 24px; }
 .workspace-preflight #preflight-memory-help { display: grid; gap: 8px; }

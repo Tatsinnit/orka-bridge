@@ -3,7 +3,7 @@ import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
-import Setup from './Setup';
+import Setup from './SetupHarness';
 import App from '../App';
 
 const requirements = { memoryBytes: 6442450944, imageBytes: 3651994962, stateDiskBytes: 34359738368 };
@@ -38,8 +38,11 @@ test('the default local choice keeps Continue inside the containing card', async
   expect(within(card as HTMLElement).getByRole('group', { name: 'Where agents run' })).toBeTruthy();
   expect(screen.getByRole<HTMLInputElement>('radio', { name: 'On this computer' }).checked).toBe(true);
   expect(screen.getByRole<HTMLInputElement>('radio', { name: 'On a cluster you already have' }).checked).toBe(false);
-  expect(screen.getByRole('button', { name: 'Check again' }).parentElement).toBe(action.parentElement);
-  expect(screen.getByRole('button', { name: 'Copy details for help' }).parentElement).toBe(action.parentElement);
+  expect(screen.queryByRole('region', { name: 'Virtualization' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Installed memory' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Copy details for help' })).toBeNull();
+  expect(document.getElementById(action.getAttribute('aria-describedby')!)).toBeTruthy();
   const inside = within(card as HTMLElement).getByRole('button', { name: "What's inside" });
   expect(inside.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
@@ -103,6 +106,9 @@ test('insufficient installed memory blocks preparation, explains RAM, and can be
   await user.click(screen.getByRole('button', { name: 'Check again' }));
   await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false));
   expect(within(panel).getByRole('status').textContent).toBe('These checks do not change this computer.');
+  expect(document.activeElement).toBe(within(panel).getByRole('status'));
+  expect(within(panel).getByRole('status').className).toBe('muted');
+  expect(within(panel).queryByRole('region', { name: 'Installed memory' })).toBeNull();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_preflight')).toHaveLength(2);
   expect(ipc.mock.calls.some(([c]) => c === 'setup_select_local')).toBe(false);
   await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -136,31 +142,56 @@ test('virtualization failure offers native fixed-topic help, sanitized copy, and
   await user.click(screen.getByRole('button', { name: 'Copy details for help' }));
   expect(copy.mock.calls[0][0]).toContain('disabled');
   expect(copy.mock.calls[0][0]).not.toMatch(/SECRET_MARKER|C:\\/);
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
-  await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
+  await user.click(screen.getByRole('button', { name: 'Use a cluster instead' }));
+  expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'On a cluster you already have' }));
+  expect(screen.queryByRole('combobox', { name: 'kubectl context' })).toBeNull();
+  expect(ipc.mock.calls.some(([c]) => ['cluster_contexts', 'cluster_admit'].includes(c))).toBe(false);
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
   expect(await screen.findByLabelText('kubectl context')).toBeTruthy();
   expect(ipc.mock.calls.some(([c]) => c === 'setup_select_local')).toBe(false);
 });
 
 test.each([null, { ...ready, extra: 'SECRET_MARKER' }, { ...ready, requiredMemoryBytes: 1 }, { ...ready, installedMemoryBytes: -1 }, { ...ready, memory: 'SECRET_MARKER' }])('unreadable observations settle to unknown and defer to native launch: %j', async value => {
   const { ipc } = await native(value);
-  expect(await screen.findAllByText('Not checked')).toHaveLength(2);
+  expect(await screen.findByText("Bridge couldn't check this computer yet. It checks again when the workspace starts.")).toBeTruthy();
   await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false));
   expect(document.body.textContent).not.toContain('SECRET_MARKER');
   const next = screen.getByRole('button', { name: 'Continue' });
-  const retry = screen.getByRole('button', { name: 'Check again' });
-  expect(retry.className).toBe('button button-secondary');
   expect(next.className).toBe('button button-primary');
-  expect(next.compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(screen.getByText('Bridge checks this when it starts.')).toBeTruthy();
-  for (const name of ['Virtualization', 'Installed memory']) {
-    const row = screen.getByRole('region', { name });
-    expect(row.querySelector('.status-not-started')).toBeTruthy();
-    expect(within(row).getByRole('button', { name: 'About this check' }).getAttribute('aria-expanded')).toBe('false');
-  }
+  expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Copy details for help' })).toBeNull();
+  expect(screen.queryByText('Not checked')).toBeNull();
+  for (const name of ['Virtualization', 'Installed memory']) expect(screen.queryByRole('region', { name })).toBeNull();
+  expect(screen.getByText("Bridge couldn't check this computer yet. It checks again when the workspace starts.").closest('.workspace-option')?.querySelector('#workspace-local')).toBeTruthy();
   await userEvent.setup().click(next);
   expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_select_local')).toHaveLength(1);
+});
+
+test.each([
+  ['unknown', 'insufficient', 'Installed memory'],
+  ['disabled', 'unknown', 'Virtualization'],
+])('mixed %s/%s observations show only the failed check', async (virtualization, memory, failed) => {
+  await native({ ...ready, virtualization, memory, installedMemoryBytes: memory === 'unknown' ? null : 4294967296 });
+  const row = await screen.findByRole('region', { name: failed });
+  expect(row.querySelector('.status-failed')).toBeTruthy();
+  expect(screen.queryByRole('region', { name: failed === 'Virtualization' ? 'Installed memory' : 'Virtualization' })).toBeNull();
+  expect(screen.getAllByText("Bridge couldn't check this computer yet. It checks again when the workspace starts.")).toHaveLength(1);
+  expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
+});
+
+test('rechecking hides stale failure rows while Continue stays blocked', async () => {
+  const { update } = await native({ ...ready, virtualization: 'disabled' });
+  await screen.findByRole('region', { name: 'Virtualization' });
+  update(new Promise(() => {}));
+  const retry = screen.getByRole('button', { name: 'Check again' });
+  retry.focus();
+  await userEvent.setup().keyboard('{Enter}');
+  expect(document.activeElement).toBe(screen.getByText('Checking this computer before setup.'));
+  expect(screen.queryByRole('region', { name: 'Virtualization' })).toBeNull();
+  expect(screen.getByText('Checking this computer before setup.')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Use a cluster instead' })).toBeNull();
 });
 
 test('Mac unsupported virtualization explains platform support without Windows help', async () => {
@@ -186,7 +217,7 @@ test('a pending refresh disables Continue and an old request cannot survive leav
   const user = userEvent.setup();
   await screen.findByRole('region', { name: 'Computer requirements' });
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
-  await user.click(screen.getByRole('button', { name: 'Back to clusters' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   complete({ ...ready, virtualization: 'disabled' });
   await screen.findByLabelText('kubectl context');

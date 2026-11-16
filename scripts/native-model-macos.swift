@@ -201,7 +201,7 @@ click("Show details", [])
 _ = try capture("local-setup-starting-details", ["45 seconds elapsed", "Starting the local cluster"])
 try FileManager.default.removeItem(at: setupProgress)
 Thread.sleep(forTimeInterval: 0.6)
-click("Choose where agents run", [])
+click("Clusters", [])
 waitForButton("Connect the AI")
 // A running VM is not completed setup: its local row offers the current AI action.
 var rows = try capture("local-places-wide", ["Choose where agents run", "This computer", "Connect the AI"])
@@ -221,7 +221,7 @@ waitForButton("Reset AI connection")
 require(nativeTextExists("The AI couldn't connect") && nativeTextExists("Your workspace is running. Nothing is lost."), "Mismatch must name the AI failure and the safe workspace")
 require(!["Remove sign-in", "Check again", "Connect the AI"].contains(where: anyButton), "Mismatch offers only reset recovery")
 try resetCapture("mismatch", ["earlier setup", "Use another provider", "Copy details for help"], anchor: "Reset AI connection")
-press(enabledButton("Back to clusters") != nil ? "Back to clusters" : "Choose where agents run")
+press("Clusters")
 waitForButton("Reset AI connection")
 try resetCapture("place", ["This computer", "Workspace running", "earlier setup"], anchor: "Reset AI connection")
 press("Connect the AI")
@@ -301,18 +301,27 @@ click("Connect the AI", rows)
 rows = try capture("reconnected", ["Connected", "Remove sign-in"])
 // Only the fixture's finite in-memory state changes; no VM or files are touched.
 click("Stop the local cluster", rows)
-rows = try capture("local-stopped", ["Where should your agents run?", "On this computer", "Back to clusters"])
+rows = try capture("local-stopped", ["Where should your agents run?", "On this computer", "Continue"])
 require(enabledButton("Stop the local cluster") == nil, "Stop must leave the local preflight page")
 // Reuse the setup-progress selector and the existing Places entry to remount real
 // preflight for each bounded synthetic result. No native admission command runs.
-for state in ["ready", "unknown", "blocked", "cluster"] {
+for state in ["ready", "unknown", "blocked", "memory", "mixed", "cluster"] {
     try "preflight-\(state)".write(to: setupProgress, atomically: true, encoding: .utf8)
     for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
         localSize(1280, 800)
         scroll(4000)
-        click("Back to clusters", [])
+        click("Clusters", [])
         click("Set up", [])
-        waitForButton("Check again")
+        // Completion is a status, not the presence of a retry control.
+        var checksSettled = false
+        for _ in 0..<100 {
+            let strings = nativeElements().flatMap { element in
+                ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
+            }
+            if strings.contains(where: { $0.contains("These checks do not change") || $0.contains("Fix the computer requirements") || $0.contains("Bridge couldn't check this computer yet.") }) { checksSettled = true; break }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        require(checksSettled, "Computer requirements did not settle")
         let choices = nativeElements().filter { attribute($0, "AXRole") as? String == "AXRadioButton" }
         require(choices.count == 2, "Preflight needs exactly two setup choices")
         let local = choices.first { element in
@@ -324,19 +333,32 @@ for state in ["ready", "unknown", "blocked", "cluster"] {
                 && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == "Continue" }
         }
         require(next.count == 1, "Preflight needs one Continue")
-        require((attribute(next[0], "AXEnabled") as? Bool == true) == !["blocked", "cluster"].contains(state),
+        require((attribute(next[0], "AXEnabled") as? Bool == true) == !["blocked", "memory", "mixed", "cluster"].contains(state),
                 "Only known local blockers may disable Continue")
         let strings = nativeElements().flatMap { element in
             ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
         }
         require(strings.contains { $0.contains("4.3 GB") } && strings.contains { $0.contains("Step 1 of 4") },
                 "Local choice lost native-derived decimal GB or its step counter")
-        if state == "unknown" {
-            require(strings.contains { $0.contains("Not checked") } && strings.contains { $0.contains("Bridge checks this when it starts.") },
-                    "Unknown checks must remain neutral and defer final checking to startup")
+        require(enabledButton("Back to clusters") == nil && enabledButton("Choose where agents run") == nil, "Local setup must not have a header Back link")
+        if ["ready", "unknown"].contains(state) {
+            require(!strings.contains { $0.hasPrefix("Virtualization:") || $0.hasPrefix("Installed memory:") || $0 == "Not checked" },
+                    "Only checks that ran and failed get rows")
+            require(enabledButton("Check again") == nil && enabledButton("Copy details for help") == nil, "Nonfailed checks need no recovery controls")
+        }
+        if ["unknown", "mixed"].contains(state) {
+            require(strings.contains { $0.contains("Bridge couldn't check this computer yet. It checks again when the workspace starts.") },
+                    "Unknown checks need one quiet startup explanation")
+        }
+        if ["memory", "mixed"].contains(state) {
+            require(strings.contains { $0.contains("Not enough installed memory") }, "Insufficient RAM must show its failed row")
         }
         if state == "cluster" {
-            chooseConnection("On a cluster you already have")
+            click("Use a cluster instead", [])
+            require(nativeElements().contains { element in
+                attribute(element, "AXFocused") as? Bool == true
+                    && ["AXTitle", "AXDescription"].contains { (attribute(element, $0) as? String)?.hasPrefix("On a cluster you already have") == true }
+            }, "Cluster fallback must focus its radio choice")
             waitForButton("Continue")
             require(!nativeElements().contains { element in
                 ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == "Computer requirements" }
@@ -412,7 +434,7 @@ for outcome in ["passed", "unknown"] {
         require(enabledButton("Open web-reader") == nil, "The first-pass story replayed")
     } else {
         waitForNativeText("Result unknown")
-        click("Clusters", []); scroll(4000)
+        scroll(4000)
         for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
             localSize(CGFloat(width), CGFloat(height)); scroll(4000)
             _ = try seek("Result unknown", -200)
@@ -573,7 +595,7 @@ localSize(540, 900)
 localSize(1280, 800)
 click("Clusters", [])
 scroll(4000)
-if enabledButton("Back to clusters") != nil { click("Back to clusters", []) }
+click("Clusters", [])
 _ = try seek("Connect", -150)
 click("Connect", [])
 _ = try seek("Use this cluster", -150)
@@ -621,7 +643,7 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
 // remaining pre-existing editor/Chat walk continues on This computer.
 click("Clusters", [])
 scroll(4000)
-if enabledButton("Back to clusters") != nil { click("Back to clusters", []) }
+click("Clusters", [])
 let localAction = nativeElements().first { element in
     guard attribute(element, "AXRole") as? String == "AXButton" else { return false }
     var parent = element
@@ -955,11 +977,11 @@ _ = try capture("local-stopping-minimum", ["Cancelling"])
 localSize(540, 900)
 scroll(4000)
 click("Clusters", [])
-_ = try capture("local-manage-compact", ["Back to clusters", "Remove sign-in"])
+_ = try capture("local-manage-compact", ["This computer", "Remove sign-in"])
 // Keep the completed local and removal states reviewable at the compact size too.
 _ = try seek("Remove sign-in", -200)
 click("Remove sign-in", [])
 _ = try capture("local-remove-confirmation-compact", ["saved sign-in?", "Cancel", "Remove sign-in"])
 click("Cancel", [])
-click("Back to clusters", [])
+click("Clusters", [])
 _ = try capture("local-places-compact", ["Choose where agents run", "This computer"])

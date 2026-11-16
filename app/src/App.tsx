@@ -254,6 +254,7 @@ export default function App() {
               aria-current={page === name ? 'page' : undefined}
               onClick={() => {
                 setDocumentAction(undefined);
+                if (name === 'Clusters' && page === 'Clusters') localCluster.current?.showPlaces();
                 if (name === 'Designer' && !exampleOpen) openDesigner();
                 else setPage(name);
               }}>
