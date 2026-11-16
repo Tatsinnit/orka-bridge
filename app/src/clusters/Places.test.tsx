@@ -509,22 +509,22 @@ test.each(['local', 'another cluster'])('late removal completion does not replac
   }
   sim.snapshot.places = [secondary];
   await act(async () => pending.resolve(null));
-  if (destination === 'local') expect(screen.getByRole('heading', { name: 'Set up this computer' })).toBeTruthy();
+  if (destination === 'local') expect(screen.getByRole('heading', { name: 'Where should your agents run?' })).toBeTruthy();
   else {
     expect(screen.getByText('team-other', { selector: '.cluster-result h2 code' })).toBeTruthy();
     expect(screen.getByText('Access confirmed')).toBeTruthy();
   }
 });
 
-test('loading local size facts keeps all three rows visible and Continue gated', async () => {
+test('loading local requirements stays explicit and keeps Continue gated', async () => {
   const { ipc } = native(); const pending = deferred<unknown>(); const old = ipc.getMockImplementation()!;
   ipc.mockImplementation(c => c === 'setup_requirements' ? pending.promise : old(c));
   const user = userEvent.setup(); render(<Host />);
   await user.click(within(await screen.findByRole('region', { name: 'This computer' })).getByRole('button', { name: 'Set up' }));
-  expect(screen.getAllByText('Reading…', { selector: 'dd' })).toHaveLength(3);
+  expect(screen.getByText(/Reading this build's requirements/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
   await act(async () => pending.resolve(null));
-  expect(screen.getAllByText('Not available yet')).toHaveLength(3);
+  expect(screen.getByText(/Requirements are not available yet for this build/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false);
   expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_select_local');
   await user.click(screen.getByRole('button', { name: 'Continue' }));

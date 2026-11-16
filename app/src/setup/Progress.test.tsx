@@ -329,7 +329,7 @@ test('a delayed Stop cannot strand subsequent Continue actions', async () => {
   expect(row.querySelector('.pill.status-running')).toBeTruthy();
   await openLocalSetup(user);
   selected = null; change({ selected: null, localVm: 'cancelled', model: 'locked' });
-  await screen.findByRole('heading', { name: 'Set up this computer' });
+  await screen.findByRole('heading', { name: 'Where should your agents run?' });
   await openLocalSetup(user);
   const next = await screen.findByRole('button', { name: 'Continue' });
   expect(next.matches(':disabled')).toBe(false);
@@ -361,7 +361,7 @@ test('Stop is an explicit local-page action and leaves that page ready to restar
   expect(ipc.mock.calls.some(([c]) => c === 'setup_change_local')).toBe(false);
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await user.click(await screen.findByRole('button', { name: 'Stop the local cluster' }));
-  expect(await screen.findByRole('heading', { name: 'Set up this computer' })).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: 'Where should your agents run?' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_change_local')).toHaveLength(1);
 });
 

@@ -318,10 +318,12 @@ try {
         Press $setUp
         $requirements = Wait-For 'Computer requirements panel missing' { Find-Control $script:window 'Computer requirements' $null }
         Wait-For 'Computer requirements did not settle' { $check = Find-Control $requirements 'Check again' $button; if ($check -and $check.Current.IsEnabled) { $true } } | Out-Null
-        # Memory, Cluster download and Data disk rows come from this native build and must settle.
-        Wait-For 'Local size rows did not settle' {
+        # Required RAM stays visible; image and maximum disk facts are behind What's inside.
+        Press (Wait-For 'Workspace details disclosure missing' { Find-Control $script:window "What's inside" $button })
+        Wait-For 'Local size facts did not settle' {
             $names = Get-UiNames $script:window
-            ($names -cmatch '^Memory\b') -and ($names -cmatch '^Cluster download\b') -and ($names -cmatch '^Data disk, up to\b') -and !($names -cmatch '^Reading|Unavailable in this build')
+            $text = ($names -join ' ') -replace '\s+', ' '
+            ($text -cmatch 'about \d+\.\d GB of installed memory') -and ($text -cmatch 'image size is \d+\.\d GB after installation, not the amount downloaded') -and ($text -cmatch 'data disk can grow to \d+\.\d GB') -and !($names -cmatch '^Reading|Unavailable in this build')
         } | Out-Null
         # Observe the real runner; never inject Ready or select a local workspace.
         Capture 'computer-requirements'

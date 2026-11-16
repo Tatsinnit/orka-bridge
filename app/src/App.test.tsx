@@ -361,7 +361,7 @@ test('Stop from cancellation shares Setup busy/status and leaves a restarted clu
   expect(localStorage.getItem('bridge.firstTest.v1')).toBeNull();
   status = { selected: null, localVm: 'cancelled', model: 'locked' };
   await act(async () => finish(status));
-  await screen.findByRole('heading', { name: 'Set up this computer' });
+  await screen.findByRole('heading', { name: 'Where should your agents run?' });
   status = { selected: 'localVm', localVm: 'ready', model: 'locked' };
   fireEvent.focus(window);
   await user.click(screen.getByRole('button', { name: 'Designer' }));

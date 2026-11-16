@@ -13,6 +13,11 @@ export async function workspaceRequirements(): Promise<WorkspaceRequirements | n
   } catch { return null; }
 }
 
+// Welcome requirements use decimal GB; transfer progress keeps its existing GiB units.
+export function formatRequirementGB(bytes: number) {
+  return `${new Intl.NumberFormat(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(bytes / 1e9)} GB`;
+}
+
 export function formatSize(bytes: number) {
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(bytes / 1024 ** 3)} GiB`;
 }

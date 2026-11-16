@@ -133,7 +133,9 @@ test.each([null, 'attempted'])('a lost selection reply preserves durable intent 
 test('browser preview never pretends that native persistence or integration works', async () => {
   vi.stubGlobal('isTauri', false); const ipc = vi.fn(); mockIPC(ipc); render(<App />); await openLocalSetup();
   expect(await screen.findByText('Local cluster setup is not available in this preview.')).toBeTruthy();
-  expect(screen.queryByRole('radio')).toBeNull();
+  expect(screen.getByRole<HTMLInputElement>('radio', { name: 'On this computer' }).checked).toBe(true);
+  expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
+  await userEvent.setup().click(screen.getByRole('radio', { name: 'On a cluster you already have' }));
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
   expect(ipc).not.toHaveBeenCalled();
 });

@@ -498,13 +498,26 @@ func capture(_ name: String, _ page: String, afterFrame: (() throws -> Void)? = 
     if page == "Clusters" {
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         // Vision can read the capital I in AI as lowercase l. Match the rest of the heading.
-        let welcome = text.contains("Build an") && text.contains("does a real job")
+        let welcome = text.contains("Build an") && text.contains("does a real job") || !nativeButtons("Get started").isEmpty
         let places = text.contains("Choose where agents run") || nativeTextIsVisible("Choose where agents run")
         let detail = text.contains("Back to clusters")
         require(welcome || places || detail, "Places heading or subview not visible; observed: \(text)")
-        // The old chooser and its radios were replaced by Places and its subviews.
-        require(!text.contains("Where should your agents run") && !text.contains("On a cluster you already have")
-            && !text.contains("Engine diagnostics"), "Removed workspace chooser or diagnostics is still visible: \(text)")
+        require(!text.contains("Engine diagnostics"), "Removed engine diagnostics is still visible: \(text)")
+        if places && !detail {
+            // Places keeps direct row actions; the local subview owns the setup choices.
+            require(!text.contains("Where should your agents run") && !text.contains("On a cluster you already have"),
+                    "Setup chooser leaked onto Places: \(text)")
+        }
+        if name.hasPrefix("local-preflight") {
+            let radios = nativeElements().filter { attribute($0, "AXRole") as? String == "AXRadioButton" }
+            for choice in ["On this computer", "On a cluster you already have"] {
+                require(radios.contains { element in
+                    ["AXTitle", "AXDescription"].contains { (attribute(element, $0) as? String)?.hasPrefix(choice) == true }
+                }, "Missing local setup choice: \(choice)")
+            }
+            require(nativeStrings().contains { $0.contains("Step 1 of 4") } && nativeButtons("Continue").count == 1,
+                    "Local setup choice lost its step counter or Continue")
+        }
         if !welcome {
             require(!nativeTextIsVisible("Local cluster setup is not included in this build. Nothing will be downloaded or started."),
                     "Supported release still reports setup unavailable")
@@ -618,10 +631,24 @@ func localPreflight(_ name: String) throws {
     clickButton("Back to clusters")
 }
 try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
+setContent(1280, 800)
 var initial = try capture("initial", "Clusters")
 // Each theme owns a fresh runner profile; verify retention after its own restart.
 let initiallyWelcome = initial.contains { $0.topCandidates(1).first?.string == "Get started" }
 require(initiallyWelcome, "Expected a first-run welcome in the fresh \(theme) job")
+for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+    setContent(width, height)
+    scrollMain(4000)
+    try capture("welcome-\(size)", "Clusters")
+    scrollMain(-4000)
+    try capture("welcome-\(size)-end", "Clusters")
+    require(visibleButtons("Get started").count == 1 && nativeTextIsVisible("About 5 minutes, mostly a download"),
+            "Welcome next action and time cue must remain reachable at \(size)")
+    require(nativeStrings().contains { $0.contains("Team clusters are early in this preview.") }, "Welcome lost the team-cluster preview caveat")
+    requireNoLocalWorkspace()
+}
+setContent(1280, 800)
+scrollMain(4000)
 if initial.contains(where: { $0.topCandidates(1).first?.string == "Get started" }) {
     clickText("Get started", in: initial)
     initial = try capture("places-empty", "Clusters")

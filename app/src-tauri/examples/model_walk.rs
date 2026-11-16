@@ -229,6 +229,7 @@ fn main() {
                     ]}
                 }),
                 "cluster_places" => json!({"places":[], "selectedKey":null, "persistenceState":"complete"}),
+                "cluster_contexts" => json!([]),
                 "send_history" => json!([]),
                 "send_status" => json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "view":null, "busy":null}),
                 command @ ("agent_chat_status" | "agent_chat_send" | "agent_chat_reconnect" | "agent_chat_stop" | "agent_chat_new") => {
@@ -296,7 +297,17 @@ fn main() {
                     }
                 }
                 "setup_example" => json!({"agent":original, "tests":tests}),
-                "setup_requirements" => json!(null),
+                // Sizing is synthetic, distinct from transfer progress above. The renderer
+                // must show decimal GB without treating materialized image bytes as a download.
+                "setup_requirements" => json!({"memoryBytes":4294967296_u64, "imageBytes":3006477107_u64, "stateDiskBytes":21474836480_u64}),
+                "setup_preflight" => {
+                    let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+                    let unknown = phase.as_deref() == Some("preflight-unknown");
+                    let blocked = matches!(phase.as_deref(), Some("preflight-blocked" | "preflight-cluster"));
+                    json!({"platform":"macos", "virtualization":if unknown {"unknown"} else if blocked {"unsupported"} else {"ready"},
+                        "memory":if unknown {"unknown"} else {"ready"}, "installedMemoryBytes":if unknown {json!(null)} else {json!(17179869184_u64)},
+                        "requiredMemoryBytes":4294967296_u64})
+                }
                 "setup_connect_model" => {
                     connected.store(true, std::sync::atomic::Ordering::SeqCst);
                     key_connected.store(false, std::sync::atomic::Ordering::SeqCst);

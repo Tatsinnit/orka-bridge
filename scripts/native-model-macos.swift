@@ -204,9 +204,69 @@ click("Connect the AI", rows)
 rows = try capture("reconnected", ["Connected", "Remove sign-in"])
 // Only the fixture's finite in-memory state changes; no VM or files are touched.
 click("Stop the local cluster", rows)
-rows = try capture("local-stopped", ["Set up this computer", "This computer", "Continue", "Back to clusters"])
+rows = try capture("local-stopped", ["Where should your agents run?", "On this computer", "Back to clusters"])
 require(enabledButton("Stop the local cluster") == nil, "Stop must leave the local preflight page")
-click("Continue", rows)
+// Reuse the setup-progress selector and the existing Places entry to remount real
+// preflight for each bounded synthetic result. No native admission command runs.
+for state in ["ready", "unknown", "blocked", "cluster"] {
+    try "preflight-\(state)".write(to: setupProgress, atomically: true, encoding: .utf8)
+    for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+        localSize(1280, 800)
+        scroll(4000)
+        click("Back to clusters", [])
+        click("Set up", [])
+        waitForButton("Check again")
+        let choices = nativeElements().filter { attribute($0, "AXRole") as? String == "AXRadioButton" }
+        require(choices.count == 2, "Preflight needs exactly two setup choices")
+        let local = choices.first { element in
+            ["AXTitle", "AXDescription"].contains { (attribute(element, $0) as? String)?.hasPrefix("On this computer") == true }
+        }
+        require(local.flatMap { attribute($0, "AXValue") as? NSNumber }?.intValue == 1, "Local setup must be selected by default")
+        let next = nativeElements().filter { element in
+            attribute(element, "AXRole") as? String == "AXButton"
+                && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == "Continue" }
+        }
+        require(next.count == 1, "Preflight needs one Continue")
+        require((attribute(next[0], "AXEnabled") as? Bool == true) == !["blocked", "cluster"].contains(state),
+                "Only known local blockers may disable Continue")
+        let strings = nativeElements().flatMap { element in
+            ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
+        }
+        require(strings.contains { $0.contains("4.3 GB") } && strings.contains { $0.contains("Step 1 of 4") },
+                "Local choice lost native-derived decimal GB or its step counter")
+        if state == "unknown" {
+            require(strings.contains { $0.contains("Not checked") } && strings.contains { $0.contains("Bridge checks this when it starts.") },
+                    "Unknown checks must remain neutral and defer final checking to startup")
+        }
+        if state == "cluster" {
+            chooseConnection("On a cluster you already have")
+            waitForButton("Continue")
+            require(!nativeElements().contains { element in
+                ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == "Computer requirements" }
+            }, "Cluster choice must unmount local checks")
+        }
+        localSize(width, height)
+        scroll(4000)
+        _ = try capture("local-preflight-\(state)-\(size)", ["On this computer"])
+        scroll(-4000)
+        _ = try capture("local-preflight-\(state)-\(size)-end", ["Continue"])
+        let actionBounds = (state == "cluster" ? enabledButton("Continue") : next.first).flatMap(nativeBounds)
+        require(actionBounds.map { window()!.1.contains($0) && $0.maxY <= window()!.1.maxY - 32 } == true,
+                "Continue must remain reachable above the fixed footer at \(size)")
+    }
+}
+// Check the selected cluster route without selecting local or using a cluster.
+click("Continue", [])
+_ = try capture("local-preflight-cluster-chooser", ["Add a cluster"])
+require(enabledButton("Connect the AI") == nil, "Cluster route must not select local setup")
+click("Back to clusters", [])
+try FileManager.default.removeItem(at: setupProgress)
+localSize(1280, 800)
+scroll(4000)
+click("Set up", [])
+waitForButton("Continue")
+scroll(-4000)
+click("Continue", [])
 rows = try capture("before-first-test", ["Connect the AI"])
 click("Connect the AI", rows)
 _ = try seek("Tests on the local cluster", -200)
@@ -254,8 +314,8 @@ func chooseConnection(_ label: String) {
         attribute(element, "AXRole") as? String == "AXRadioButton"
             && ["AXTitle", "AXDescription"].contains { (attribute(element, $0) as? String)?.hasPrefix(label) == true }
     }
-    require(choices.count == 1, "Expected one AI connection choice")
-    require(AXUIElementPerformAction(choices[0], kAXPressAction as CFString) == .success, "Cannot select AI connection")
+    require(choices.count == 1, "Expected one radio choice: \(label)")
+    require(AXUIElementPerformAction(choices[0], kAXPressAction as CFString) == .success, "Cannot select radio choice: \(label)")
 }
 func keyCapture(_ state: String, _ expected: [String], compact: Bool = false) throws {
     for size in compact ? ["wide", "compact"] : ["wide"] {

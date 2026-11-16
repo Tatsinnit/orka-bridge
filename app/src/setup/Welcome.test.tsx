@@ -32,7 +32,8 @@ test('Get started remembers the welcome without starting a workspace, including 
   expect(screen.getByText('Write it')).toBeTruthy();
   expect(screen.getByText('Test it')).toBeTruthy();
   expect(screen.getByText('Share it')).toBeTruthy();
-  expect(screen.queryByText(/5 minutes/)).toBeNull();
+  expect(screen.getByText('About 5 minutes, mostly a download').parentElement).toBe(screen.getByRole('button', { name: 'Get started' }).parentElement);
+  expect(screen.getByText(/Team clusters are early in this preview/).textContent).toContain('Send');
   await user.click(screen.getByRole('button', { name: 'Get started' }));
   const heading = await screen.findByRole('heading', { name: 'Clusters' });
   expect(document.activeElement).toBe(heading);
@@ -68,6 +69,7 @@ test('expert route is available without starting a local workspace', async () =>
   const ipc = native(); const user = userEvent.setup(); render(<App />);
   const expert = await screen.findByRole('button', { name: 'I already run Orka on a cluster' });
   expect(expert.matches(':disabled')).toBe(false);
+  expect(expert.classList.contains('welcome-expert')).toBe(true);
   await user.click(expert);
   expect(await screen.findByRole('combobox', { name: 'kubectl context' })).toBeTruthy();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
@@ -95,10 +97,14 @@ test('keyboard disclosure and opening local setup are inert; only Continue start
 test('requirements render the native build values rather than fixed image or memory sizes', async () => {
   localStorage.setItem(preference, '1'); native(unselected, { memoryBytes: 8589934592, imageBytes: 18253611008, stateDiskBytes: 68719476736 });
   render(<App />); await openLocalSetup();
-  expect(screen.getByText('8 GiB')).toBeTruthy();
-  expect(screen.getByText('17 GiB')).toBeTruthy();
-  expect(screen.getByText(/64 GiB/)).toBeTruthy();
-  expect(screen.queryByText(/6 GB|2 GB|6 GiB/)).toBeNull();
+  expect(screen.getByText(/about 8.6 GB of installed memory/)).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole('button', { name: "What's inside" }));
+  const imageDetails = screen.getByText(/image size is 18.3 GB/);
+  expect(imageDetails).toBeTruthy();
+  expect(screen.getByText(/data disk can grow to 68.7 GB/)).toBeTruthy();
+  // WebKit exposes interpolated sibling text nodes as separate AXStaticText values.
+  expect(imageDetails.childNodes).toHaveLength(1);
+  expect(screen.queryByText(/GiB|free disk|18.3 GB download/)).toBeNull();
 });
 
 test('release welcome exposes unavailability before Get started without replacing the workflow copy', async () => {
@@ -130,8 +136,9 @@ test.each([
   { ...requirements, secret: 'SECRET_MARKER' },
 ])('unsupported sizing cannot produce requirements copy or leak data: %j', async value => {
   localStorage.setItem(preference, '1'); native(unselected, value); render(<App />); await openLocalSetup();
-  expect(await screen.findAllByText('Not available yet')).toHaveLength(3);
-  expect(screen.queryByText(/GiB/)).toBeNull();
+  expect(await screen.findByText(/Requirements are not available yet for this build\./)).toBeTruthy();
+  await userEvent.setup().click(screen.getByRole('button', { name: "What's inside" }));
+  expect(document.body.textContent).not.toMatch(/\d[.,]\d GB|GiB/);
   expect(document.body.textContent).not.toContain('SECRET_MARKER');
 });
 

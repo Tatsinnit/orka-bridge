@@ -242,12 +242,14 @@ try command("/usr/sbin/screencapture", ["-x", "-o", "-l", String(windowInfo()!.0
 press(setUp)
 let requirements = find(main, "computer-requirements-panel") { text($0).contains("Computer requirements") }
 _ = find(requirements, "computer-requirements") { pressable($0, "Check again") }
-// Memory, Cluster download and Data disk rows must settle without an engineering-build caveat.
+// Required installed memory stays visible; image and maximum disk facts live in What's inside.
+press(find(main, "workspace-inside") { pressable($0, "What's inside") })
 currentStage = "local-size-block"; print("STAGE: \(currentStage)")
-wait("Local size rows did not settle") {
+wait("Local size facts did not settle") {
     let shown = shownStrings(main)
-    return ["Memory", "Cluster download", "Data disk, up to"].allSatisfy { label in shown.contains { $0 == label || $0.hasPrefix(label + " ") } }
-        && !shown.contains { $0.hasPrefix("Reading") || $0.contains("Unavailable in this build") }
+    return [#"about \d+\.\d GB of installed memory"#, #"image size is \d+\.\d GB after installation, not the amount downloaded"#, #"data disk can grow to \d+\.\d GB"#].allSatisfy { pattern in
+        shown.contains { $0.range(of: pattern, options: .regularExpression) != nil }
+    } && !shown.contains { $0.hasPrefix("Reading") || $0.contains("Unavailable in this build") }
 }
 // Capture the runner observations as drawn, without selecting local or asserting Ready.
 try command("/usr/sbin/screencapture", ["-x", "-o", "-l", String(windowInfo()!.0), "\(output)/computer-requirements.png"])
