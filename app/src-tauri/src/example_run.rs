@@ -582,6 +582,10 @@ impl ExampleRun {
             self.cancelled_before_start(id);
             return;
         }
+        if pair.agent().has_unsupported_local_tool() {
+            self.fail(id, "unsupportedTool");
+            return;
+        }
         let observed = client.model_status();
         if *stop.borrow() {
             self.cancelled_before_start(id);

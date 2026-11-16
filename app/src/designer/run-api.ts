@@ -1,4 +1,5 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { unsupportedToolMessage } from './built-in-tools';
 import { type DocumentRef, isDocumentId, isDocumentRef, isSourceId, SAMPLE_DOCUMENT_ID, type SourceId } from './agent-api';
 export type Verdict = 'passed' | 'failed' | 'unknown' | 'cancelled';
 type Assertion = { id: string; kind: 'contains' | 'toolCalled'; expected: string; verdict: Exclude<Verdict, 'cancelled'> };
@@ -6,6 +7,7 @@ type Case = { id: string; title?: string; question: string; phase: string; answe
 type Receipt = { kind: 'Agent' | 'Task'; name: string; uid: string };
 export const errors = {
   session: 'The running local VM is not available for Run.',
+  unsupportedTool: unsupportedToolMessage,
   source: 'Check the format of your saved agent and check files.',
   model: 'Connect the local VM model in Clusters before running the example.',
   submit: 'Submission was not confirmed. A named resource may still exist; it was not retried.',

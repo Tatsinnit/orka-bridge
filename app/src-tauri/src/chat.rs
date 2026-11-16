@@ -40,6 +40,7 @@ pub enum ChatError {
     InvalidMessage,
     Busy,
     Source,
+    UnsupportedTool,
     Model,
     Connection,
     Identity,
@@ -281,6 +282,7 @@ impl ChatOwner {
                         error,
                         ChatError::InvalidMessage
                             | ChatError::Source
+                            | ChatError::UnsupportedTool
                             | ChatError::Model
                             | ChatError::Connection
                             | ChatError::Interrupted
@@ -434,6 +436,9 @@ impl Worker {
                 .map_err(|_| ChatError::Source)?
                 .map_err(|_| ChatError::Source)?;
             let parsed = ParsedAgent::parse(&source).map_err(|_| ChatError::Source)?;
+            if parsed.has_unsupported_local_tool() {
+                return Err(ChatError::UnsupportedTool);
+            }
             let fresh = self
                 .context
                 .as_ref()

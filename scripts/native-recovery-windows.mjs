@@ -437,7 +437,7 @@ try {
         if (designer && command === 'agent_selected') return documentId;
         if (designer && (command === 'workspace_catalog' || command === 'cluster_catalog')) {
           window.__bridgeCatalogCalls.push({ command, args });
-          return { defaultModel: 'fixture-model', models: { state: 'ready', items: [{ id: 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }] } };
+          return { defaultModel: 'fixture-model', models: { state: 'ready', items: [{ id: 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }, { kind: 'builtin', name: 'request_approval', description: 'Ask a person to approve an action.' }] } };
         }
         if (name === 'designer-remote' && command === 'cluster_contexts') return [context];
         if (name === 'designer-remote' && command === 'cluster_discover') return [target];
@@ -719,6 +719,17 @@ try {
       const story = await call('Page.captureScreenshot', { format: 'png' });
       await writeFile(join(output, `${theme}-${size}-${name}-story.png`), Buffer.from(story.data, 'base64'));
       await compareDesigner(story.data, theme, size, name + '-story');
+      await evaluate(`document.querySelector('button[aria-controls$="-picker"]').click()`);
+      await until(() => evaluate(`!!document.querySelector('.tool-picker')?.getClientRects().length`), 'tool picker');
+      const blocked = await evaluate(`(() => {
+        const picker = document.querySelector('.tool-picker');
+        const approval = [...picker.querySelectorAll('button')].find(button => button.textContent.includes('request_approval'));
+        return approval?.disabled && approval.textContent.includes('Bridge does not support for local tests or Chat');
+      })()`);
+      if (!blocked) throw Error('Unsupported approval tool is offered without its reason');
+      const pickerImage = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(output, `${theme}-${size}-approval-tool.png`), Buffer.from(pickerImage.data, 'base64'));
+      await evaluate(`document.querySelector('button[aria-label="Close picker"]').click()`);
     }
     if (['ai-connected', 'local-completed'].includes(name)) {
       const complete = await evaluate(`({ heading: document.querySelector('h1').textContent, card: document.querySelector('.setup-progress .steps-head h2')?.textContent, pill: document.querySelector('.setup-progress .pill')?.textContent, rows: document.querySelectorAll('[aria-label="Setup steps"] > li').length, text: document.body.innerText, model: document.querySelector('.setup-model').innerText })`);

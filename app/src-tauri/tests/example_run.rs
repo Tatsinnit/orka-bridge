@@ -58,6 +58,44 @@ async fn first_test_rejects_files_edited_after_renderer_open_but_manual_run_acce
 }
 
 #[tokio::test]
+async fn approval_tool_is_rejected_before_posts_and_explicit_removal_restores_run() {
+    for (kind, name) in [
+        ("builtin", "request_approval"),
+        ("tool", "request_approval"),
+        ("builtin", " request_approval "),
+    ] {
+        let (vm, posts, _) = fixture(false, false).await;
+        let home = tempfile::tempdir().unwrap();
+        let folder = Arc::new(AgentFolder::new(Some(home.path().into())));
+        let original = folder.open().unwrap().agent;
+        let source = original.replace(
+            "  tools:",
+            &format!("  tools:\n    - kind: {kind}\n      name: '{name}'"),
+        );
+        assert_ne!(source, original);
+        folder.save(source.clone()).unwrap();
+        let run = ExampleRun::new(tokio::runtime::Handle::current(), true, folder.clone());
+        run.start(vm.clone());
+        let rejected = finished(&run, &vm).await;
+        assert_eq!(rejected.error, Some("unsupportedTool"));
+        assert!(rejected.report.is_none());
+        assert!(rejected.acknowledged.is_empty() && rejected.pending.is_none());
+        assert!(posts.lock().unwrap().is_empty());
+        assert_eq!(folder.open().unwrap().agent, source);
+        folder.save(original).unwrap();
+        run.start(vm.clone());
+        let passed = finished(&run, &vm).await;
+        assert_eq!(passed.error, None);
+        assert_eq!(
+            passed.report.unwrap().verdict,
+            bridge_engine::engine::run::Verdict::Passed
+        );
+        assert_eq!(posts.lock().unwrap().len(), 2);
+        vm.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
 async fn legacy_untitled_sample_is_preserved_and_remains_manually_runnable() {
     let (vm, posts, _) = fixture(false, false).await;
     let home = tempfile::tempdir().unwrap();

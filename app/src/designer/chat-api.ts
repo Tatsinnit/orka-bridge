@@ -1,9 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { unsupportedToolMessage } from './built-in-tools';
 import { isDocumentId } from './agent-api';
 export const chatStates = ['ready', 'preparing', 'working', 'waitingForInput', 'waitingForSession', 'observationLost', 'requestingStop', 'stopRequested', 'stopUnconfirmed', 'contextUnavailable'] as const;
 export const chatErrors = {
   invalidMessage: 'Write a shorter message before trying again.',
   busy: 'The local cluster is busy. Wait for the current test or conversation, then try again.',
+  unsupportedTool: unsupportedToolMessage,
   source: 'Check your saved agent file before trying again.',
   model: 'Connect the AI in Clusters and check the model in your agent file.',
   connection: 'The connection was lost. Reconnect to check what happened; do not resend the message.',

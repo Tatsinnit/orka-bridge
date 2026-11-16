@@ -67,6 +67,56 @@ async fn two_turns_reuse_frozen_agent_and_session_and_drain_cursor_events() {
     assert!(g.requests.iter().any(|r| r.after == Some(1)));
 }
 
+#[tokio::test]
+async fn approval_tool_preflight_preserves_context_and_removal_restores_chat() {
+    for (kind, name) in [
+        ("builtin", "request_approval"),
+        ("tool", "request_approval"),
+        ("builtin", " request_approval "),
+    ] {
+        let f = Fixture::new().await;
+        let chat = owner();
+        let id = f.folder.document_id();
+        chat.send(f.vm.clone(), f.folder.clone(), "First question".into())
+            .unwrap();
+        ready(&chat, id).await;
+        let original = f.folder.open().unwrap().agent;
+        let source = original.replace(
+            "  tools:",
+            &format!("  tools:\n    - kind: {kind}\n      name: '{name}'"),
+        );
+        assert_ne!(source, original);
+        f.folder.save(source.clone()).unwrap();
+        chat.send(f.vm.clone(), f.folder.clone(), "Unsupported".into())
+            .unwrap();
+        let rejected = until(&chat, id, |s| !s.busy).await;
+        assert_eq!(
+            serde_json::to_value(rejected.error).unwrap(),
+            "unsupportedTool"
+        );
+        assert_eq!(rejected.state, ChatState::Ready);
+        assert!(rejected.can_send);
+        assert_eq!(rejected.versions.len(), 1);
+        assert_eq!(rejected.versions[0].turns.len(), 1);
+        assert_eq!(f.guest.lock().unwrap().posts("tasks").len(), 1);
+        assert_eq!(f.guest.lock().unwrap().posts("agents").len(), 1);
+        assert_eq!(f.folder.open().unwrap().agent, source);
+        f.folder.save(original).unwrap();
+        chat.send(f.vm.clone(), f.folder.clone(), "Follow-up".into())
+            .unwrap();
+        let passed = ready(&chat, id).await;
+        assert_eq!(passed.error, None);
+        assert_eq!(passed.versions.len(), 1);
+        assert_eq!(passed.versions[0].turns.len(), 2);
+        assert_eq!(
+            passed.versions[0].turns[1].answer.as_deref(),
+            Some("A real observed answer.")
+        );
+        assert_eq!(f.guest.lock().unwrap().posts("agents").len(), 1);
+        assert_eq!(f.guest.lock().unwrap().posts("tasks").len(), 2);
+    }
+}
+
 // Status/remount and a dropped send waiter may not create duplicate remote work.
 #[tokio::test]
 async fn status_is_read_only_and_workers_outlive_callers() {

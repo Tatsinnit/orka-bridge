@@ -4,7 +4,7 @@ import type { CatalogTool, WorkspaceCatalogReply } from '../catalog';
 import { Button, CloseIcon } from '../components/Button';
 import { SAMPLE_DOCUMENT_ID } from './agent-api';
 import { addTool, changeDescription, changeInstructions, changeModel, changeSoulInline, changeSoulReference, readForm, removeTool } from './agent-form';
-import { builtInToolDescriptions, builtInTools } from './built-in-tools';
+import { builtInToolDescriptions, builtInTools, unsupportedLocalTool, unsupportedToolMessage, unsupportedToolReason } from './built-in-tools';
 import FileLocation from './FileLocation';
 
 function Unavailable({ label, reason, children, focusRef }: { label: string; reason: string; children: ReactNode; focusRef?: Ref<HTMLSpanElement> }) {
@@ -109,16 +109,18 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
         {toolReason ? <Unavailable label="Add a tool" reason={toolReason} focusRef={addPlaceholder}><Button kind="secondary" type="button" disabled title={toolReason}>Add a tool</Button></Unavailable>
           : <Button kind="secondary" type="button" ref={add} aria-expanded={picker} aria-controls={`${id}-picker`} onClick={() => { if (picker) close(); else setPicker(true); }}><span aria-hidden="true">+ </span>Add a tool</Button>}
       </div>
+      {!remote && form.tools.some(tool => tool.name && unsupportedLocalTool(tool.name)) && <p role="alert">{unsupportedToolMessage}</p>}
       {toolReason && !catalogLoading && <p className="muted">{toolReason}</p>}
       {picker && !toolReason && <div role="dialog" aria-label="Choose a tool" ref={popover} popover="auto" id={`${id}-picker`} className="tool-picker" onToggle={event => { if (event.newState === 'closed') { setPicker(false); setQuery(''); } }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); close(); } }}>
         <Button kind="icon" className="picker-close" aria-label="Close picker" title="Close picker" onClick={close}><CloseIcon /></Button>
         <label htmlFor={`${id}-search`}>Find a tool</label>
         <input className="field" id={`${id}-search`} type="search" autoFocus value={query} onChange={event => setQuery(event.target.value)} />
         <p className="muted">Choose a tool to add to your agent.</p>
-        <ul aria-label="Cluster tools">{choices?.map(tool => <li key={`${tool.kind}:${tool.name}`}><button type="button" onClick={() => { change(addTool(source, tool.name, tool.kind)); close(); }}>
+        <ul aria-label="Cluster tools">{choices?.map(tool => <li key={`${tool.kind}:${tool.name}`}><button type="button" disabled={!remote && unsupportedLocalTool(tool.name)} onClick={() => { change(addTool(source, tool.name, tool.kind)); close(); }}>
           <span className="tool-option-heading"><span>{tool.kind === 'builtin' ? labelFor(tool.name) : tool.name}</span><span className="muted">{tool.kind === 'builtin' ? 'Built-in' : 'Cluster tool'}</span></span>
           {tool.kind === 'builtin' && labelFor(tool.name) !== tool.name && <code>{tool.name}</code>}
           <span className="tool-description">{toolDescription(tool)}</span>
+          {!remote && unsupportedLocalTool(tool.name) && <span className="tool-description">{unsupportedToolReason}</span>}
           {tool.available === false && <span className="muted">Observed unavailable</span>}
         </button></li>)}</ul>
         {!choices?.length && <p className="muted">{tools?.length ? 'No matching tools to add.' : 'No tools listed by this cluster.'}</p>}

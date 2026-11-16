@@ -1,3 +1,11 @@
+import unsupportedTools from './unsupported-tools.json';
+
+// Orka 3cb1f0df: internal/controller/task_controller.go, validateAITaskAgentCompatibility.
+// Match effective names: Orka resolves built-ins before same-named Tool resources.
+export const unsupportedLocalTool = (name: string) => unsupportedTools.includes(name.trim());
+export const unsupportedToolReason = 'Approval tools need autonomous coordination, which Bridge does not support for local tests or Chat.';
+export const unsupportedToolMessage = 'Remove request_approval before running local tests or Chat. No work was submitted.';
+
 // Creator-facing descriptions for common built-ins; unknown tools keep their supplied text.
 export const builtInToolDescriptions: Readonly<Record<string, string>> = {
   web_fetch: 'Read the contents of a web page at an address.',

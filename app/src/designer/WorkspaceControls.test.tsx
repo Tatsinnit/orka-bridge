@@ -58,6 +58,27 @@ test.each(['__proto__', 'constructor', 'toString'])('unknown built-in %s renders
   await user.click(screen.getByRole('button', { name: new RegExp(name) }));
   expect(readForm(changed.mock.calls[0][0]).tools[0]).toMatchObject({ name, kind: 'builtin' });
 });
+test.each(['builtin', 'tool'] as const)('approval %s is explained but cannot be added, even through search', async kind => {
+  const user = userEvent.setup(); const changed = vi.fn();
+  render(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, tools: { state: 'ready', items: [{ kind, name: 'request_approval', description: 'Ask a person.' }] } }} onChange={changed} />);
+  await user.click(screen.getByRole('button', { name: 'Add a tool' }));
+  await user.type(screen.getByRole('searchbox'), 'request_approval');
+  const option = screen.getByRole('button', { name: /request_approval/ });
+  expect(option.matches(':disabled')).toBe(true);
+  expect(screen.getByText('Approval tools need autonomous coordination, which Bridge does not support for local tests or Chat.')).toBeTruthy();
+  await user.click(option);
+  expect(changed).not.toHaveBeenCalled();
+});
+test('a saved approval declaration stays visible and unchanged until explicitly removed', async () => {
+  const user = userEvent.setup(); const changed = vi.fn();
+  const saved = source.replace('tools: []', 'tools: [{kind: builtin, name: request_approval}]');
+  render(<AgentParts source={saved} readOnly={false} onChange={changed} />);
+  expect(screen.getByText('Ask for approval')).toBeTruthy();
+  expect(screen.getByText(/Remove request_approval before running local tests or Chat/)).toBeTruthy();
+  expect(changed).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Remove Ask for approval' }));
+  expect(readForm(changed.mock.calls[0][0]).tools).toEqual([]);
+});
 test('tool search includes the friendly description shown in the picker', async () => {
   const user = userEvent.setup(); render(<AgentParts source={source} readOnly={false} catalog={catalog} onChange={() => {}} />);
   await user.click(screen.getByRole('button', { name: 'Add a tool' }));

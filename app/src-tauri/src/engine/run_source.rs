@@ -347,6 +347,18 @@ impl ParsedAgent {
             soul: agent.kmx.soul,
         })
     }
+    /// Local authoring does not emit the autonomous coordination required by
+    /// Orka's request_approval compatibility check (image pin 3cb1f0df).
+    pub fn has_unsupported_local_tool(&self) -> bool {
+        use std::sync::LazyLock;
+        static NAMES: LazyLock<Vec<String>> = LazyLock::new(|| {
+            serde_json::from_str(include_str!("../../../src/designer/unsupported-tools.json"))
+                .expect("bundled unsupported tool names")
+        });
+        self.tools()
+            .iter()
+            .any(|name| NAMES.iter().any(|unsupported| unsupported == name.trim()))
+    }
     pub fn spec(&self, provider: &str) -> serde_json::Value {
         let mut spec = serde_json::json!({"providerRef":{"name":provider},"model":{"name":self.model()},"systemPrompt":{"inline":self.prompt()},"tools":self.tools().iter().map(|name| serde_json::json!({"name":name})).collect::<Vec<_>>()});
         if let Some(soul) = self.soul() {
