@@ -18,6 +18,54 @@
     }
   },
   "appCandidates": {
+    "v0.1.2": {
+      "runId": 43876543370,
+      "workflowId": 406543958,
+      "runAttempt": 1,
+      "buildCommit": "ff8258bbfee15c562bbb211a46f7a3ef53c20087",
+      "artifacts": {
+        "bridge-windows-candidate": {
+          "id": 14231775454,
+          "sha256": "2cc191fb9140813e6f7c758ed2793eae88e7242c6cac2b16b85f95c8a1251215",
+          "files": {
+            "windows-after.json": {
+              "bytes": 191,
+              "sha256": "04c445061b4170d1e022cfe3f7d6e91b1efbd270396e454577fd41e6a756fa9a"
+            },
+            "bridge-windows-x64.zip": {
+              "bytes": 57881452,
+              "sha256": "08566144dde02895b2c0caa1ed178f44238f3ace27c36fd67f8a13784482214d"
+            },
+            "windows-before.json": {
+              "bytes": 102,
+              "sha256": "21a90963953e4df5b7d5cbd0152cb938625d4032746fe0829bbe3f94cb54949a"
+            },
+            "bridge-windows-runtime-source.zip": {
+              "bytes": 930666861,
+              "sha256": "1f1d8d6409a744a80bb726c243f864701298f4f94af01bee4487a4df023fdfcb"
+            }
+          }
+        },
+        "bridge-macos-candidate": {
+          "id": 14229529000,
+          "sha256": "3da1859a1d3f5636d32cc92f75da262bb2c5c70c766be439442d0b4e3fad4b65",
+          "files": {
+            "bridge-macos-arm64.tar.gz": {
+              "bytes": 11218731,
+              "sha256": "45003eb22d9a9398d0ebddd5302c990b1ba4a896cc2f15c0a5764fd44d249950"
+            },
+            "macos-after.json": {
+              "bytes": 142,
+              "sha256": "6e7d5cffced4b3327a1e7554fe1e8f66c9652f9b0598b40063880d556616ea0c"
+            },
+            "macos-before.json": {
+              "bytes": 99,
+              "sha256": "8a2ad29ff1153d6384a2784f6e2665ee3e38c1c37fa128e1e1aeb80ff72f5880"
+            }
+          }
+        }
+      }
+    },
     "v0.1.1": {
       "runId": 43778672556,
       "workflowId": 406543958,
