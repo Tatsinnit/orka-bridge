@@ -56,6 +56,8 @@ fn main() {
             "send_history_remove",
             "send_history_check",
             "send_history_cancel",
+            "send_agent_focus",
+            "send_agent_check",
             "send_cancel",
             "send_stop",
             "setup_requirements",

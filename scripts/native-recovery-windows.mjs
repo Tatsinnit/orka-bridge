@@ -169,7 +169,7 @@ try {
         rows: shown('.place-row').map(row => ({ name: rect(row.querySelector('.place-summary')), pill: rect(row.querySelector('.pill')), action: rect(row.querySelector('button')), row: rect(row) })),
         checks: shown('.cluster-checks li').map(row => ({ row: rect(row), card: rect(row.closest('.cluster-card')) })),
         setup: (() => { const root = shown('.workspace-setup-grid')[0]; if (!root) return null; const get = selector => rect(root.querySelector(selector)); return { progress: get('.setup-progress'), model: get('.setup-model-slot'), meet: get('.workspace-meet') }; })(),
-        designer: (() => { const root = shown('.designer-work')[0]; if (!root) return null; const get = selector => rect([...root.querySelectorAll(selector)].find(node => node.getClientRects().length)); return { tests: get('.designer-tests:not([hidden])'), editor: get('.designer-file'), send: get('.send-panel[data-send-open="true"]:not([hidden])'), history: get('.send-history') }; })(),
+        designer: (() => { const root = shown('.designer-work')[0]; if (!root) return null; const get = selector => rect([...root.querySelectorAll(selector)].find(node => node.getClientRects().length)); return { tests: get('.designer-tests:not([hidden])'), editor: get('.designer-file'), send: get('.send-panel:not([hidden])'), history: get('.send-history') }; })(),
         fallback: { file: rect(shown('.designer > .designer-file')[0]), history: rect(shown('.designer > .designer-checks .send-history')[0]) },
       };
     })()`);
@@ -198,9 +198,9 @@ try {
     const designer = layout.designer;
     if (designer?.editor && designer.tests) {
       if (layout.width > 820 ? Math.abs(designer.tests.y - designer.editor.y) > 2 || designer.tests.x <= designer.editor.x : designer.tests.y < designer.editor.bottom - 2) fail('editor/test column priority is wrong');
-      if (designer.history && designer.history.y < Math.max(designer.editor.bottom, layout.width <= 820 ? designer.tests.bottom : 0) - 2) fail('history precedes current work');
+      if (designer.send && (designer.send.y < designer.tests.bottom - 2 || Math.abs(designer.send.x - designer.tests.x) > 2)) fail('Send is not below local tests in their shared stack');
+      if (designer.send && designer.history && designer.history.y < designer.send.bottom - 2) fail('history precedes the current Send');
     }
-    if (designer?.send && layout.width <= 820 && designer.send.bottom > designer.editor.y + 2) fail('Send does not lead compact work');
     await writeFile(join(output, `${theme}-${size}-${name}-layout.json`), JSON.stringify(layout, null, 2));
   }
   // Setup-progress states: renderer fixtures for transfer, startup, ready and a queued model choice.
@@ -463,7 +463,7 @@ try {
       const state = await evaluate(`({ historyHidden: !document.querySelector('.designer-checks .send-history')?.getClientRects().length, catalog: window.__bridgeCatalogCalls, runPrimary: [...document.querySelectorAll('.example-run button')].some(button => button.textContent === 'Run tests' && button.classList.contains('button-primary')) })`);
       if (await evaluate(`document.body.innerText.includes('Your agent selection could not be saved')`)) throw Error('Designer fixture failed to acknowledge document selection');
       if (name === 'designer' && (state.catalog.length || state.runPrimary)) throw Error('Disconnected Designer presents a runnable primary/catalog: ' + JSON.stringify(state));
-      if (name !== 'designer-remote' && !state.historyHidden) throw Error('Unopened local Send/history card is visible');
+      if (!await evaluate(`!!document.querySelector('.send-panel')?.getClientRects().length`)) throw Error('The stable Send card is missing beside local tests');
       if (name === 'designer-remote' && (state.historyHidden || !state.catalog.some(call => call.command === 'cluster_catalog' && call.args.targetId === '00000000-0000-4000-8000-000000000002' && call.args.providerId === '00000000-0000-4000-8000-000000000003'))) throw Error('Remote catalog is not scoped to the selected cluster/AI');
     }
     if (name.startsWith('local-cancel-')) {
@@ -587,10 +587,13 @@ try {
         const tests = document.querySelector('.designer-tests').getBoundingClientRect();
         const editor = document.querySelector('.designer-file').getBoundingClientRect();
         const send = document.querySelector('.designer-checks').getBoundingClientRect();
-        return { tests: { x: tests.x, y: tests.y, bottom: tests.bottom }, editor: { x: editor.x, y: editor.y, bottom: editor.bottom }, sendY: send.y, width: innerWidth, height: innerHeight, scrollWidth: document.querySelector('main').scrollWidth };
+        return { tests: { x: tests.x, y: tests.y, right: tests.right, bottom: tests.bottom }, editor: { x: editor.x, y: editor.y, right: editor.right, bottom: editor.bottom }, send: { x: send.x, y: send.y, right: send.right, bottom: send.bottom }, sendY: send.y, width: innerWidth, height: innerHeight, scrollWidth: document.querySelector('main').scrollWidth };
       })()`);
-      if (name !== 'designer-remote' && (size === 'wide' ? Math.abs(layout.tests.y - layout.editor.y) > 2 || layout.tests.x <= layout.editor.x : layout.editor.bottom > layout.tests.y + 2)) throw Error(`Editor-first layout failed: ${JSON.stringify(layout)}`);
-      if (layout.scrollWidth > layout.width + 2) throw Error(`Designer overflow: ${JSON.stringify(layout)}`);
+      // Local tests and Send share a right-hand stack; compact widths move that stack below the editor.
+      if (size === 'wide' ? Math.abs(layout.tests.y - layout.editor.y) > 2 || layout.tests.x < layout.editor.right - 2
+        : layout.tests.y < layout.editor.bottom - 2 || Math.abs(layout.tests.x - layout.editor.x) > 2 || Math.abs(layout.tests.right - layout.editor.right) > 2) throw Error(`Test visibility failed: ${JSON.stringify(layout)}`);
+      if (Math.abs(layout.send.x - layout.tests.x) > 2 || Math.abs(layout.send.right - layout.tests.right) > 2
+        || layout.send.y < layout.tests.bottom - 2 || layout.scrollWidth > layout.width + 2) throw Error(`Editor/Send layout failed: ${JSON.stringify(layout)}`);
       await writeFile(join(output, `${theme}-${size}-${name}-columns.json`), JSON.stringify(layout, null, 2));
     }
     if (['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale'].includes(name)) await evaluate(`document.querySelector('.example-run').scrollIntoView({ block: 'start' })`);

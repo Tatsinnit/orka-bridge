@@ -27,12 +27,12 @@ function native(check: unknown = preflight, initial: unknown = null) {
   return { ipc, setCheck(value: unknown) { check = value; }, setView(value: unknown) { view = value; }, setBusy(value: unknown) { busy = value; } };
 }
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
-const panel = (blocked?: string) => <Send place={place} source={source} stale={false} visible remote blocked={blocked} />;
+const panel = (blocked?: string) => <Send place={place} source={source} stale={false} blocked={blocked} onSeeInOverview={() => undefined} />;
 
 test.each([
   ['create', 'Send and run tests'],
   ['update', 'Update agent and run tests'],
-  ['unchanged', 'Run cluster tests again'],
+  ['unchanged', 'Update agent and run tests'],
 ])('%s action follows native effective-spec decision', async (action, label) => {
   const { ipc } = native({ ...preflight, action, canSeparate: action !== 'create' });
   render(panel());
@@ -85,7 +85,7 @@ test('a finished Send refreshes its native binding decision before another click
   await userEvent.click(screen.getByRole('button', { name: 'Send and run tests' }));
   await screen.findByRole('button', { name: 'Cancel tests' });
   state.setCheck({ ...preflight, action: 'unchanged', canSeparate: true });
-  state.setView({ ...active, state: 'complete', stage: 'done', report: { verdict: 'passed', cases: [{ id: 'test', question: 'Question', phase: 'Succeeded', answer: 'Answer', completedTools: [], assertions: [{ id: 'check', kind: 'contains', expected: 'Answer', verdict: 'passed' }], verdict: 'passed' }] } });
+  state.setView({ ...active, acknowledged: [{ kind: 'Agent', name: 'bridge-run-frozen', uid: 'uid-agent' }], state: 'complete', stage: 'done', report: { verdict: 'passed', cases: [{ id: 'test', question: 'Question', phase: 'Succeeded', answer: 'Answer', completedTools: [], assertions: [{ id: 'check', kind: 'contains', expected: 'Answer', verdict: 'passed' }], verdict: 'passed' }] } });
   await waitFor(() => expect((screen.getByRole('button', { name: 'Run cluster tests again' }) as HTMLButtonElement).disabled).toBe(false));
 });
 
@@ -106,7 +106,7 @@ test('read-only Check again refreshes a recovered binding without submitting wor
   await screen.findByText('Earlier work is not confirmed.');
   state.setCheck({ ...preflight, action: 'unchanged', canSeparate: true });
   await userEvent.click(screen.getByRole('button', { name: 'Check again' }));
-  await waitFor(() => expect((screen.getByRole('button', { name: 'Run cluster tests again' }) as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Update agent and run tests' }) as HTMLButtonElement).disabled).toBe(false));
   expect(state.ipc.mock.calls.some(([cmd]) => cmd === 'send_start')).toBe(false);
 });
 

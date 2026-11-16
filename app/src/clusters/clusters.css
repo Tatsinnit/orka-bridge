@@ -37,8 +37,10 @@
 .cluster-details dt { color: var(--color-text-secondary); }
 .cluster-details dd { margin: 0; }
 .send-entry { position: relative; }
-.send-warning { max-width: 340px; padding: 12px; margin-top: 8px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-page); }
-.send-warning p { margin: 0 0 8px; }
+/* Non-modal popover placed by Send with measured, viewport-clamped coordinates; it overlays and never moves the page. */
+.send-warning { position: fixed; inset: auto; margin: 0; width: 340px; max-width: calc(100vw - 16px); padding: 12px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-row); background: var(--color-card); color: var(--color-text); box-shadow: 0 8px 32px rgb(0 0 0 / .2); }
+.send-warning:popover-open { display: grid; height: fit-content; align-content: start; gap: 12px; }
+.send-warning p { margin: 0; }
 .send-panel { min-width: 0; padding: 16px; }
 .send-panel > p { max-width: 65ch; }
 .send-panel > .cluster-details { margin: 16px 0; }

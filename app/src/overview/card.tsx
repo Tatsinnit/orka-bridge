@@ -22,7 +22,7 @@ export function AgentCard({ card, byAgent, actions }: { card: Card; byAgent: boo
   const label = (verb: string) => `${verb} ${card.subject}${card.remote ? ` on ${card.place}` : ''}`;
   const run = (kind: 'open' | 'chat' | 'run') => { if (card.documentId) ({ open: actions.onOpen, chat: actions.onChat, run: actions.onRun })[kind]?.(card.documentId); };
   const title = byAgent ? card.place : card.title;
-  return <article className="card overview-card" aria-label={`${title}${card.pill ? `, ${card.pill}` : ''}`}>
+  return <article className="card overview-card" data-card-key={card.key} tabIndex={-1} aria-label={`${title}${card.pill ? `, ${card.pill}` : ''}`}>
     <header className="overview-card-head">
       <h3>{title}</h3>
       {card.status && <StatusPill state={card.status}>{card.pill}</StatusPill>}

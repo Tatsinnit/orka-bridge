@@ -1,5 +1,5 @@
 import { Button } from './components/Button';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ComponentProps, useCallback, useEffect, useRef, useState } from 'react';
 import mark from './assets/orka-mark.svg';
 import Setup, { type LocalClusterControl } from './setup/Setup';
 import { firstTestPending, retireFirstTest, useFirstTest } from './setup/first-test';
@@ -14,6 +14,7 @@ import { workspaceRecovery } from './setup/recovery-info';
 import { preflightRecovery } from './setup/preflight-state';
 import { setupView } from './setup/progress';
 import { runCall, type RunSnapshot } from './designer/run-api';
+import { sendAgentFocus } from './clusters/send-api';
 import { agentInfo, sameSource, type SaveState, type SourceId } from './designer/agent-api';
 
 const pages = ['Overview', 'Designer', 'Clusters'] as const;
@@ -48,6 +49,18 @@ export default function App() {
   const content = useRef<HTMLElement>(null);
   useEffect(() => { if (content.current) content.current.scrollTop = 0; }, [page]);
   const [exampleOpen, setExampleOpen] = useState(false);
+  const [overviewFocus, setOverviewFocus] = useState<ComponentProps<typeof Overview>['focus']>();
+  const [overviewPending, setOverviewPending] = useState(false);
+  const focusRequest = useRef(0);
+  useEffect(() => { if (page !== 'Overview') { focusRequest.current++; setOverviewFocus(undefined); setOverviewPending(false); } }, [page]);
+  // Navigation never changes the Send destination or the local VM; native derives the target from that Send's own record.
+  const seeInOverview = useCallback(async (sendId: string) => {
+    const id = ++focusRequest.current;
+    setDocumentAction(undefined); setOverviewFocus({ id, sendId }); setOverviewPending(true); setPage('Overview');
+    const target = await sendAgentFocus(sendId);
+    if (id !== focusRequest.current) return;
+    setOverviewFocus({ id, sendId, target }); setOverviewPending(false);
+  }, []);
   const [documentId, setDocumentId] = useState(SAMPLE_DOCUMENT_ID);
   const [newAgentRequest, setNewAgentRequest] = useState(0);
   const [agentsRevision, setAgentsRevision] = useState(0);
@@ -188,11 +201,11 @@ export default function App() {
     : cases ? 'tests passing' : 'ready to edit';
   const tabStatus: Record<Page, string> = {
     Overview: overviewCounts,
-    Designer: agentName ? `${agentName}, ${remote ? 'tests on your cluster' : agentStatus}` : !exampleOpen ? 'No agent open'
+    Designer: agentName ? `${agentName}, ${agentStatus}` : !exampleOpen ? 'No agent open'
       : exampleState === 'failed' ? 'Example unavailable' : exampleState === 'loaded' ? 'Agent file' : 'Opening example…',
     Clusters: remote ? place.target ? 'Access confirmed' : 'Choose a cluster' : welcome ? 'Start here' : view.tabLine,
   };
-  const tabTone = remote || exampleReadOnly ? 'not-started' : stale || (run?.sourceCurrent === false && !!run.report) ? 'stale' : run?.state === 'running' ? 'running' : run?.cancellation === 'unconfirmed' ? 'needs-you' : run?.report?.verdict === 'failed' ? 'failed' : run?.report?.verdict === 'passed' ? 'passed' : 'not-started';
+  const tabTone = exampleReadOnly ? 'not-started' : stale || (run?.sourceCurrent === false && !!run.report) ? 'stale' : run?.state === 'running' ? 'running' : run?.cancellation === 'unconfirmed' ? 'needs-you' : run?.report?.verdict === 'failed' ? 'failed' : run?.report?.verdict === 'passed' ? 'passed' : 'not-started';
   const catalogConnected = run?.modelConnected ?? model === 'connected';
   const catalogReady = remote ? !!place.target && !!place.providerId : !workspaceBusy && setup?.selected === 'localVm' && workspaceReady && setup.model !== 'locked' && catalogConnected;
   const openDesigner = (id?: string, create = false) => {
@@ -212,7 +225,8 @@ export default function App() {
     else void selectedDocument().then(selected => open(selected ?? SAMPLE_DOCUMENT_ID));
   };
   const openOverviewDocument = (id: string, action: 'open' | 'chat' | 'run') => {
-    if (remote) choosePlace({ kind: 'thisComputer' });
+    // Chat still needs the local cluster; opening or running local tests keeps the selected Send destination.
+    if (remote && action === 'chat') choosePlace({ kind: 'thisComputer' });
     openDesigner(id);
     setDocumentAction({ id: ++actionSequence.current, documentId: id, action });
   };
@@ -260,12 +274,13 @@ export default function App() {
           <Setup ref={localCluster} place={place} onPlace={choosePlace} onLocalView={setLocalSetupView} onWorkspaceAction={observeWorkspaceAction} active={page === 'Clusters'} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={checkFirstTest} onStarting={() => setSetupReadOnly(true)} onStatus={observeSetup} onModelState={observeModel} onWelcome={setWelcome}
             onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)} onOpenAgent={() => openDesigner()} />
         </div>
-        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={catalogReady ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} /></div>}
+        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogKey={catalogReady ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} onSeeInOverview={seeInOverview} /></div>}
         <Overview onNewAgent={() => openDesigner(undefined, true)} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} activeDocumentId={firstTest === 'running' ? SAMPLE_DOCUMENT_ID : run?.busy?.documentId} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} workspaceNote={overviewWorkspaceNote} filesRevision={agentsRevision} onCounts={setOverviewCounts}
           onOpenDocument={id => openOverviewDocument(id, 'open')}
           onChatDocument={id => openOverviewDocument(id, 'chat')}
           onRunDocument={id => openOverviewDocument(id, 'run')}
-          onOpenExample={() => { if (remote) choosePlace({ kind: 'thisComputer' }); openDesigner(SAMPLE_DOCUMENT_ID); }}
+          onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)}
+          focus={overviewFocus} focusPending={overviewPending} onRetryFocus={seeInOverview}
           onChooseWorkspace={() => setPage('Clusters')} />
         {page === 'Designer' && !exampleOpen && <p role="status">Opening your agent…</p>}
       </main>

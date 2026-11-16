@@ -126,6 +126,7 @@ impl Wire {
                     return;
                 }
                 if (mode == "hang" && method == "POST")
+                    || (mode == "update-hang" && method == "PUT")
                     || (mode == "hang-tools" && path.starts_with("/api/v1/tools?"))
                 {
                     // Wait for the owner's close to tear down the actual websocket.

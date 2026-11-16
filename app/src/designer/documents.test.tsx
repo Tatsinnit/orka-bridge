@@ -33,7 +33,7 @@ test('foreign busy names the owner without its result, resources or Stop control
   native(); mockIPC(command => command.startsWith('agent_run')
     ? { ...idle, documentId: b, canRun: false, busy: { documentId: a, name: 'alpha' } }
     : { documentId: b, view: null, busy: { documentId: a, name: 'alpha' } });
-  render(<><Run documentId={b} /><Send documentId={b} place={{ kind: 'thisComputer' }} stale={false} visible remote={false} /></>);
+  render(<><Run documentId={b} /><Send documentId={b} place={{ kind: 'thisComputer' }} stale={false} /></>);
   expect(await screen.findByText('alpha is running a test.')).toBeTruthy();
   expect(await screen.findByText('alpha is sending tests.')).toBeTruthy();
   expect(screen.queryByText('Only A answer')).toBeNull();

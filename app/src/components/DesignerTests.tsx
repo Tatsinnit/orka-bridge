@@ -19,7 +19,7 @@ export function DesignerTests({ definitions, report, stale, running, vendor }: P
     {rows.map(({ definition: d, result }) => {
       const state: Status = stale && result ? 'stale' : !result ? 'not-started' : result.verdict === 'unknown' ? 'stale' : result.verdict === 'cancelled' ? 'not-started' : result.verdict;
       const label = stale && result ? 'Earlier result' : !result ? running ? 'Awaiting result' : 'Not started' : result.phase === 'NotRun' ? 'Not run' : result.verdict === 'cancelled' ? 'Cancelled' : result.verdict === 'unknown' ? 'Unknown' : undefined;
-      return <Disclosure className="test-result" key={`${d.id}:${result?.verdict ?? 'idle'}:${stale}`} defaultOpen={!!result && result.verdict !== 'passed'} label={<>
+      return <Disclosure className="test-result" data-result-id={d.id} key={`${d.id}:${result?.verdict ?? 'idle'}:${stale}`} defaultOpen={!!result && result.verdict !== 'passed'} label={<>
         <span className="test-name">{d.title ? <><span>{d.title}</span><code>{d.id}</code></> : <code>{d.id}</code>}</span>
         <StatusPill state={state}>{label}</StatusPill>
       </>}>

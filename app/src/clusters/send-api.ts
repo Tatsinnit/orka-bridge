@@ -156,3 +156,22 @@ export async function sendCall(command: 'send_start' | 'send_status' | 'send_can
   } catch { /* No native diagnostics or credentials reach the screen. */ }
   throw Error('Send information could not be read. Nothing was retried. Reopen this view to check the result.');
 }
+/** Where Overview shows the agent a Send recorded; every field is native-owned, derived from that Send's own history. */
+export type AgentFocus = { key: string; name: string; namespace: string; uid: string };
+export type AgentCheck = 'present' | 'gone' | 'cannotCheck';
+const bounded = (v: unknown) => typeof v === 'string' && v.length > 0 && v.length <= 4096;
+export async function sendAgentFocus(sendId: string): Promise<AgentFocus | undefined> {
+  if (!isTauri()) return undefined;
+  try {
+    const v: unknown = await invoke('send_agent_focus', { sendId });
+    if (typeof v === 'object' && v !== null && Object.keys(v).sort().join(',') === 'key,name,namespace,uid') {
+      const r = v as Record<string, unknown>;
+      if (bounded(r.key) && bounded(r.name) && bounded(r.namespace) && bounded(r.uid)) return v as AgentFocus;
+    }
+  } catch { /* An unacknowledged Send has no agent to open. */ }
+}
+/** Read-only; anything but a well-formed answer is cannotCheck, never gone. */
+export async function sendAgentCheck(sendId: string): Promise<AgentCheck> {
+  if (isTauri()) { try { const v: unknown = await invoke('send_agent_check', { sendId }); if (v === 'present' || v === 'gone') return v; } catch { /* Not evidence of deletion. */ } }
+  return 'cannotCheck';
+}

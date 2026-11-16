@@ -3,7 +3,7 @@ use super::*;
 use bridge_engine::{
     agent_folder::AgentFolder,
     clusters::commands::ClusterSession,
-    send::{SendOwner, SendState},
+    send::{AgentCheck, SendOwner, SendState},
 };
 use bridge_runtime_protocol::SnapshotId;
 

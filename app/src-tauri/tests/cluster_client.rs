@@ -260,10 +260,12 @@ async fn overview_scoped_refresh_does_not_wait_for_unrelated_global_read() {
         result = bridge_engine::overview_places::list_one(&session, None, &key) => reply(result)["places"].clone(),
         _ = &mut blocked => panic!("scoped read waited for the unrelated inventory"),
     };
-    assert_eq!(healthy.as_array().unwrap().len(), 1);
-    assert_eq!(healthy[0]["key"], key);
-    assert_eq!(healthy[0]["stale"], false);
-    assert_eq!(healthy[0]["agents"][0]["uid"], "healthy-agent");
+    // Focused navigation refreshes one destination, but still displays the cached board.
+    assert_eq!(healthy.as_array().unwrap().len(), 2);
+    assert_eq!(healthy[0]["stale"], true);
+    assert_eq!(healthy[1]["key"], key);
+    assert_eq!(healthy[1]["stale"], false);
+    assert_eq!(healthy[1]["agents"][0]["uid"], "healthy-agent");
     let offline = reply(session.places());
     assert_eq!(offline["places"][0]["stale"], true);
     assert_eq!(offline["places"][0]["observedAt"], Value::Null);

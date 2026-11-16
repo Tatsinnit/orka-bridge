@@ -3,6 +3,8 @@
 //! observation; only explicit cancellation intent opens a control transport.
 use crate::clusters::preflight::SendAction;
 pub use crate::clusters::preflight::SendCheck;
+#[path = "send_agent.rs"]
+mod agent;
 #[path = "send_binding.rs"]
 mod binding;
 use crate::{
@@ -23,6 +25,7 @@ use crate::{
         TargetUids,
     },
 };
+pub use agent::{AgentCheck, AgentFocus};
 use binding::Binding;
 use bridge_runtime_protocol::{SnapshotId, Uuid};
 use serde::Serialize;
@@ -1229,7 +1232,13 @@ impl SendOwner {
         let prepared = if bound.acknowledged.is_some() {
             let receipt = if action == SendAction::Update {
                 match self
-                    .update_deployment(&mut bound, runner.transport(), desired)
+                    .update_deployment(
+                        &mut bound,
+                        runner.transport(),
+                        desired,
+                        stop,
+                        previous.as_ref().ok_or(Stage::Storage)?,
+                    )
                     .await
                 {
                     Ok(receipt) => receipt,

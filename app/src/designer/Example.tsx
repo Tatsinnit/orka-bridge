@@ -21,11 +21,11 @@ import Send, { SendEntry, SendHistory } from '../clusters/Send';
 
 export type DocumentAction = { id: number; documentId: string; action: 'open' | 'chat' | 'run' };
 
-export default function Example({ sampleRevision = 0, actionRequest, onActionHandled, agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, onStopLocalCluster, actions, onPair, onRun, onSaveState, onStale }: {
+export default function Example({ sampleRevision = 0, actionRequest, onActionHandled, agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, onStopLocalCluster, actions, onPair, onRun, onSaveState, onStale, onSeeInOverview }: {
   actionRequest?: DocumentAction; onActionHandled?: (id: number) => void;
   sampleRevision?: number; agentsRevision?: number; onRegistered?: () => void; documentId?: string; persistInitialSelection?: boolean; openDocumentRequest?: number; newAgentRequest?: number; onNewAgentHandled?: () => void; onDocument?: (id: string) => void; active?: boolean; setupPending?: boolean; remote?: boolean; catalogKey?: number; place?: SelectedPlace; onChooseCluster?: () => void; onStopLocalCluster?: () => void; actions?: ReactNode;
   onPair?: (pair: AgentPair | undefined, documentId: string) => void; onRun?: (snapshot: RunSnapshot | undefined, documentId: string) => void;
-  onSaveState?: (state: SaveState, documentId: string) => void; onStale?: (stale: boolean, documentId: string) => void;
+  onSaveState?: (state: SaveState, documentId: string) => void; onStale?: (stale: boolean, documentId: string) => void; onSeeInOverview?: (sendId: string) => void;
 }) {
   const [boundDocument, setBoundDocument] = useState(documentId);
   const [requestedDocument, setRequestedDocument] = useState(documentId);
@@ -77,15 +77,18 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
   const [view, setView] = useState<'Agent' | 'Chat' | 'File'>('Agent');
   const [stale, setStale] = useState(false);
   const observePendingSoul = useCallback((pending: boolean) => { pendingSoulCurrent.current = pending; setPendingSoul(pending); if (pending) setStale(true); }, []);
-  const [sendOpen, setSendOpen] = useState(false);
-  const [sendVisible, setSendVisible] = useState(false);
   const editInstructions = () => { setView('Agent'); requestAnimationFrame(() => { const editor = document.querySelector<HTMLTextAreaElement>('.instructions-editor'); editor?.focus(); editor?.scrollIntoView?.({ block: 'center' }); }); };
   const [localRun, setLocalRun] = useState<RunSnapshot>();
   const observeRun = useCallback((value: RunSnapshot | undefined) => { setLocalRun(value); onRun?.(value, boundDocument); }, [onRun, boundDocument]);
   const openSend = () => {
-    setSendOpen(true);
     requestAnimationFrame(() => { const panel = document.querySelector<HTMLElement>('.send-panel'); panel?.focus(); panel?.scrollIntoView?.({ block: 'start' }); });
   };
+  // One keyboard target: the failing local result, which then offers Edit instructions.
+  const focusLocalResult = (testId: string) => requestAnimationFrame(() => {
+    const result = [...document.querySelectorAll<HTMLElement>('.designer-tests [data-result-id]')].find(node => node.dataset.resultId === testId);
+    const summary = result?.querySelector<HTMLElement>('summary');
+    if (summary) summary.focus(); else editInstructions();
+  });
   const latest = useRef(''); const saved = useRef(''); const busy = useRef(false);
   const confirmed = useRef<AgentPair | undefined>(undefined);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -148,7 +151,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
       if (next === boundDocument) return;
       reloadEpoch.current++; reloadAdmitted.current = false; setReloading(false);
       confirmed.current = undefined; setPair(undefined); setDraft(''); latest.current = saved.current = '';
-      setLocalRun(undefined); setStale(false); setError(undefined); setSendOpen(false); setSelectionError(undefined);
+      setLocalRun(undefined); setStale(false); setError(undefined); setSelectionError(undefined);
       onPair?.(undefined, next); onRun?.(undefined, next); setBoundDocument(next); onDocument?.(next);
     }, () => {
       if (!mounted.current || requestedNow.current !== next) return;
@@ -163,12 +166,12 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     if (!actionRequest || handledAction.current === actionRequest.id) return;
     handledAction.current = actionRequest.id; onActionHandled?.(actionRequest.id);
   };
-  const actionReady = !!actionRequest && actionRequest.id !== handledAction.current && active && (actionRequest.action !== 'run' || !setupPending && !remote)
+  const actionReady = !!actionRequest && actionRequest.id !== handledAction.current && active && (actionRequest.action !== 'run' || !setupPending)
     && handledOpen.current === openDocumentRequest && !selectionNeeded && !selecting && !selectionError && !creating && !wantsCreate && !reloading
     && documentId === boundDocument && actionRequest.documentId === boundDocument && pair?.documentId === boundDocument && saveState === 'saved' && !pendingSoul;
   useEffect(() => {
     if (!actionRequest || actionRequest.id === handledAction.current) return;
-    if (!active || actionRequest.action === 'run' && (setupPending || remote) || actionRequest.documentId !== documentId || creating || wantsCreate || selectionError || saveState === 'error' || error && !pair) { finishAction(); return; }
+    if (!active || actionRequest.action === 'run' && setupPending || actionRequest.documentId !== documentId || creating || wantsCreate || selectionError || saveState === 'error' || error && !pair) { finishAction(); return; }
     if (!actionReady) return;
     setView(actionRequest.action === 'chat' ? 'Chat' : 'Agent');
     if (actionRequest.action !== 'run') finishAction();
@@ -236,14 +239,13 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
         </select></label>}
         <Button type="button" kind="secondary" className="new-agent-entry" onClick={() => setWantsCreate(true)}>New agent</Button>
         {actions}
-        {view !== 'Chat' && <SendEntry blocked={sendBlocked} failingCheck={!stale && localRun?.sourceCurrent !== false ? localRun?.report?.cases.find(c => c.verdict === 'failed')?.id : undefined}
-          onProceed={openSend} onFix={editInstructions} />}
+        {view !== 'Chat' && <SendEntry blocked={sendBlocked} onProceed={openSend} />}
       </div>
     </div>
     {selectionError && <p role="alert">{selectionError}</p>}
     {!pair ? error ? <div className="designer-file card"><p role="alert">{error}</p><div className="heading-actions"><Button type="button" kind="secondary" onClick={() => { setError(undefined); requestDocument(boundDocument); setOpenAttempt(value => value + 1); }}>Try opening again</Button></div></div> : <div className="designer-file card designer-skeleton" role="status" aria-label="Opening your agent" aria-busy="true"><span className="sr-only">Opening your agent…</span><div aria-hidden="true"><div className="skeleton-field skeleton-prompt" /><div className="skeleton-field" /><div className="skeleton-field" /><div className="skeleton-field" /></div></div> : <>
       <div hidden={view !== 'Chat'}><Chat key={boundDocument} documentId={boundDocument} blocked={chatBlocked} /></div>
-      <div hidden={view === 'Chat'} className={`designer-work${remote ? ' designer-remote' : ''}`}>
+      <div hidden={view === 'Chat'} className="designer-work">
       <div className="designer-editing">
       <div className="designer-file card">
         <div className="file-toolbar"><h2>{view === 'File' ? `${pair.name ?? 'web-reader'}.agent.md` : 'Instructions and settings'}</h2><span className="muted" role="status">{saveLabel}</span></div>
@@ -259,15 +261,17 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
         {pair.storage && <p className="muted">{storageCopy[pair.storage]}</p>}
         {error && <div className="save-error"><p role="alert">{error}</p><Button kind="primary" className="action-spaced" type="button" onClick={() => { void flush(true); }}>Try saving again</Button></div>}
       </div>
-      <div className="designer-checks" hidden={!remote && !sendOpen && !sendVisible}>
-        <Send onVisibilityChange={setSendVisible} documentId={boundDocument} place={place} source={pair.source} model={readForm(draft).model} local={localRun} stale={stale} blocked={sendBlocked} visible={sendOpen} remote={remote} onChooseCluster={onChooseCluster} onReloadSource={reloadSource} />
-        {remote && testSource}
       </div>
-      </div>
-      <div className="designer-tests card" hidden={remote}>
+      <div className="designer-side">
+      <section className="designer-tests" aria-label="This computer"><h2 className="section-label">This computer</h2><div className="card">
         {setupPending ? <div><h3>Tests</h3><span className="coming-control" tabIndex={0} role="group" aria-label="Run tests: Wait for the local cluster and AI to be ready" title="Wait for the local cluster and AI to be ready"><Button type="button" kind="secondary" className="action-spaced" disabled title="Wait for the local cluster and AI to be ready">Run tests</Button><span className="control-tip" aria-hidden="true">Wait for the local cluster and AI to be ready</span></span><p className="muted">The local cluster is getting ready. Connect the AI in Clusters before running a test.</p>{onChooseCluster && <Button type="button" kind="primary" onClick={onChooseCluster}>Go to Clusters</Button>}</div>
-          : <Run tests={remote ? undefined : pair.tests} onChooseCluster={onChooseCluster} onEditInstructions={editInstructions} onStopLocalCluster={onStopLocalCluster} documentId={boundDocument} source={pair.source} onSnapshot={observeRun} blocked={remote || pendingSoul || saveState !== 'saved'} stale={stale} startRequest={actionReady && view === 'Agent' && actionRequest?.action === 'run' ? actionRequest.id : undefined} onStartRequestHandled={finishAction} onStart={() => { if (latest.current === draft) setStale(false); }} />}
-        {setupPending && !remote && <><DesignerTests definitions={testDefinitions(pair.tests)} stale={false} /><Details hint="Test file">{testSource}</Details></>}
+          : <Run tests={pair.tests} onChooseCluster={onChooseCluster} onStopLocalCluster={onStopLocalCluster} onEditInstructions={editInstructions} documentId={boundDocument} source={pair.source} onSnapshot={observeRun} blocked={pendingSoul || saveState !== 'saved'} stale={stale} startRequest={actionReady && view === 'Agent' && actionRequest?.action === 'run' ? actionRequest.id : undefined} onStartRequestHandled={finishAction} onStart={() => { if (latest.current === draft) setStale(false); }} />}
+        {/* Run shows the test list and test file itself; this copy is only for the not-ready state. */}
+        {setupPending && <><DesignerTests definitions={testDefinitions(pair.tests)} stale={false} /><Details hint="Test file">{testSource}</Details></>}
+      </div></section>
+      <section className="designer-checks" aria-label="Team cluster"><h2 className="section-label">Team cluster</h2>
+        <Send documentId={boundDocument} place={place} source={pair.source} model={readForm(draft).model} local={localRun} stale={stale} blocked={sendBlocked} onSeeInOverview={onSeeInOverview} onFixLocal={focusLocalResult} onChooseCluster={onChooseCluster} onReloadSource={reloadSource} />
+      </section>
       </div>
       </div>
     </>}

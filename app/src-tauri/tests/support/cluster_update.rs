@@ -514,3 +514,133 @@ async fn unfinished_bound_tasks_block_normal_send_but_separate_preserves_control
     assert_eq!(same["state"], "complete");
     assert_eq!(s.agent_posts().len(), 2);
 }
+#[tokio::test]
+async fn stop_or_quit_during_the_agent_update_returns_without_tasks_and_stays_uncertain() {
+    for quit in [false, true] {
+        let s = setup().await;
+        s.finish(&id(&s.start().await)).await;
+        edit(&s);
+        *s.api.wire.mode.lock().unwrap() = "update-hang";
+        let started = id(&s.start().await);
+        until(|| puts(&s).len() == 1).await;
+        let writes = s.api.wire.posts();
+        // A pending PUT used to ignore Stop until the operation deadline.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            if quit {
+                s.owner.shutdown().await
+            } else {
+                s.owner.stop(&started).await;
+            }
+        })
+        .await
+        .expect("Stop must interrupt the pending update");
+        let stopped = s.view(Some(&started));
+        assert_eq!(stopped["state"], "unknown", "quit={quit}: {stopped}");
+        assert_eq!(stopped["error"], "updateUnconfirmed");
+        assert_eq!((s.api.wire.posts(), puts(&s).len()), (writes, 1));
+        *s.api.wire.mode.lock().unwrap() = "";
+        let check = reply(s.owner.preflight(&s.target, &s.provider).await);
+        assert_eq!(check["action"], "blocked", "quit={quit}: {check}");
+        assert_eq!(check["canSeparate"], true);
+        assert!(s.owner.history_details(&started).unwrap().interrupted);
+        assert_eq!((s.api.wire.posts(), puts(&s).len()), (writes, 1));
+    }
+}
+#[tokio::test]
+async fn see_in_overview_reads_only_the_recorded_agent_by_send_id() {
+    let s = setup().await;
+    let first = id(&s.start().await);
+    let done = s.finish(&first).await;
+    let uid = done["acknowledged"][0]["uid"].as_str().unwrap().to_string();
+    let focus = s.owner.agent_focus(&first).unwrap();
+    assert_eq!(
+        (focus.uid.as_str(), focus.namespace.as_str()),
+        (uid.as_str(), "agents")
+    );
+    assert_eq!(focus.name, done["agentName"].as_str().unwrap());
+    let writes = (s.api.wire.posts(), puts(&s).len());
+    assert_eq!(
+        s.owner.agent_check(&first).await.unwrap(),
+        AgentCheck::Present
+    );
+    s.idle_forwards().await;
+    // A same-named replacement is another agent; the recorded one is gone.
+    let path = format!("/api/v1/agents/{}", focus.name);
+    let kept = s
+        .api
+        .wire
+        .objects
+        .lock()
+        .unwrap()
+        .get(&path)
+        .cloned()
+        .unwrap();
+    s.api.wire.objects.lock().unwrap().get_mut(&path).unwrap()["metadata"]["uid"] =
+        json!("replacement");
+    assert_eq!(s.owner.agent_check(&first).await.unwrap(), AgentCheck::Gone);
+    s.idle_forwards().await;
+    s.api.wire.objects.lock().unwrap().remove(&path);
+    assert_eq!(s.owner.agent_check(&first).await.unwrap(), AgentCheck::Gone);
+    s.idle_forwards().await;
+    // Unconfirmed access is never read as deletion.
+    s.api
+        .wire
+        .objects
+        .lock()
+        .unwrap()
+        .insert(path.clone(), kept.clone());
+    // A malformed answer (no UID, or another name) proves nothing about deletion.
+    s.api.wire.objects.lock().unwrap().get_mut(&path).unwrap()["metadata"]["uid"] = Value::Null;
+    assert_eq!(
+        s.owner.agent_check(&first).await.unwrap(),
+        AgentCheck::CannotCheck
+    );
+    s.idle_forwards().await;
+    s.api
+        .wire
+        .objects
+        .lock()
+        .unwrap()
+        .insert(path.clone(), kept.clone());
+    s.api.wire.objects.lock().unwrap().get_mut(&path).unwrap()["metadata"]["name"] =
+        json!("someone-else");
+    assert_eq!(
+        s.owner.agent_check(&first).await.unwrap(),
+        AgentCheck::CannotCheck
+    );
+    s.idle_forwards().await;
+    s.api.wire.objects.lock().unwrap().insert(path, kept);
+    s.fresh.lock().unwrap().clusters[0]
+        .cluster
+        .as_mut()
+        .unwrap()
+        .server = Some("https://different.invalid".into());
+    assert_eq!(
+        s.owner.agent_check(&first).await.unwrap(),
+        AgentCheck::CannotCheck
+    );
+    assert_eq!((s.api.wire.posts(), puts(&s).len()), writes);
+    assert!(s.owner.agent_focus("not-a-send").is_err());
+}
+#[tokio::test]
+async fn an_unacknowledged_first_create_has_no_agent_to_open_but_a_stopped_update_keeps_its_owner()
+{
+    let s = setup().await;
+    *s.api.wire.mode.lock().unwrap() = "reject-agent403";
+    let rejected = id(&s.start().await);
+    s.finish(&rejected).await;
+    assert!(s.owner.agent_focus(&rejected).is_err());
+    *s.api.wire.mode.lock().unwrap() = "";
+    let first = id(&s.start().await);
+    let owned = s.finish(&first).await["acknowledged"][0]["uid"].clone();
+    edit(&s);
+    *s.api.wire.mode.lock().unwrap() = "update-hang";
+    let stopped = id(&s.start().await);
+    until(|| puts(&s).len() == 1).await;
+    s.owner.stop(&stopped).await;
+    // The view may lack the receipt, but the attempt still records the agent it was updating.
+    assert_eq!(
+        s.owner.agent_focus(&stopped).unwrap().uid,
+        owned.as_str().unwrap()
+    );
+}

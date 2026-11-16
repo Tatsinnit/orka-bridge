@@ -567,6 +567,23 @@ async fn send_history_check(
     state.inner().history_check(&send_id).await
 }
 #[tauri::command]
+async fn send_agent_focus(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send::AgentFocus, &'static str> {
+    let owner = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || owner.agent_focus(&send_id))
+        .await
+        .map_err(|_| "storage")?
+}
+#[tauri::command]
+async fn send_agent_check(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send::AgentCheck, &'static str> {
+    state.inner().agent_check(&send_id).await
+}
+#[tauri::command]
 fn send_cancel(
     document_id: DocumentId,
     send_id: String,
@@ -712,6 +729,8 @@ fn main() {
             send_history_remove,
             send_history_check,
             send_history_cancel,
+            send_agent_focus,
+            send_agent_check,
             send_cancel,
             send_stop
         ])

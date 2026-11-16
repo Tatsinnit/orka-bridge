@@ -1,6 +1,7 @@
 //! Display/identity metadata only. Never deserialize a runtime binding or capability.
 use super::TargetBinding;
 use crate::agent_folder::{invalid, read, replace};
+use crate::send_summary::AttemptSummary;
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, io, path::PathBuf};
@@ -36,7 +37,7 @@ impl From<&TargetBinding> for Identity {
 }
 impl Identity {
     pub fn key(&self) -> String {
-        serde_json::to_string(&(
+        key_of(
             &self.context_name,
             &self.cluster_identity,
             &self.service_namespace,
@@ -44,8 +45,7 @@ impl Identity {
             &self.deployment_namespace,
             &self.deployment_uid,
             &self.watched_namespace,
-        ))
-        .unwrap()
+        )
     }
     fn valid(&self) -> bool {
         // TargetView's renderer boundary limits display text to 2048 UTF-16 units;
@@ -78,6 +78,43 @@ impl Identity {
                 .iter()
                 .all(|s| s.len() <= 4096 && text(s, 4096))
     }
+}
+fn key_of(
+    context: &str,
+    cluster_identity: &Option<String>,
+    svc_ns: &str,
+    svc_uid: &str,
+    dep_ns: &str,
+    dep_uid: &str,
+    ns: &str,
+) -> String {
+    serde_json::to_string(&(
+        context,
+        cluster_identity,
+        svc_ns,
+        svc_uid,
+        dep_ns,
+        dep_uid,
+        ns,
+    ))
+    .unwrap()
+}
+/// The Place key a recorded attempt's destination has in Overview. It is rebuilt from the attempt's frozen
+/// identity (the display text only supplies the context name), so it never follows a name that has since moved.
+pub(super) fn attempt_key(attempt: &AttemptSummary) -> Option<String> {
+    let t = &attempt.target_uids;
+    let context = attempt
+        .target_display
+        .strip_suffix(&format!(" \u{b7} {}", t.watched_namespace))?;
+    Some(key_of(
+        context,
+        &t.cluster_identity,
+        &t.service_namespace,
+        &t.service_uid,
+        &t.deployment_namespace,
+        &t.deployment_uid,
+        &t.watched_namespace,
+    ))
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

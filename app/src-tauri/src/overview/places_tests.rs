@@ -303,3 +303,21 @@ fn metadata_rejects_out_of_contract_text_times_counts_and_nested_unknown_fields(
         assert_eq!(std::fs::read(&file).unwrap(), bytes);
     }
 }
+#[test]
+fn an_attempts_destination_key_is_overviews_place_key_and_follows_frozen_identity() {
+    assert_eq!(attempt_key(&record()), Some(place().key));
+    // A replaced deployment is a different place, whatever its name says.
+    let mut replaced = record();
+    replaced.target_uids.deployment_uid = "replacement".into();
+    assert_ne!(attempt_key(&replaced), Some(place().key));
+    // Copied UIDs or legacy history must not focus a live card on another cluster.
+    let mut copied = record();
+    copied.target_uids.cluster_identity = Some("b".repeat(64));
+    assert_ne!(attempt_key(&copied), Some(place().key));
+    copied.target_uids.cluster_identity = None;
+    assert_ne!(attempt_key(&copied), Some(place().key));
+    // Display text that does not name the recorded namespace cannot become a key.
+    let mut odd = record();
+    odd.target_display = "team".into();
+    assert_eq!(attempt_key(&odd), None);
+}

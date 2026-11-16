@@ -74,12 +74,13 @@ test('single-target discovery keeps This computer selected and successful Use se
   const run = await screen.findByRole('button', { name: 'Run tests' });
   await waitFor(() => expect(run.matches(':disabled')).toBe(false));
   expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
+  expect(screen.getByRole('button', { name: 'Send and run tests' }).matches(':disabled')).toBe(true);
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Use this cluster' }));
   await screen.findAllByText('Access confirmed');
   expect(document.querySelector('.host-chip')?.textContent).toContain(context.name);
   await user.click(screen.getByRole('button', { name: 'Designer' }));
-  expect(screen.getByRole('button', { name: 'Run all tests' }).matches(':disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Send and run tests' }).matches(':disabled')).toBe(true);
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('setup_change_local');
   expect(ipc.mock.calls.map(([c]) => c)).not.toContain('agent_run');
 });
@@ -221,6 +222,7 @@ test('local-result observation continues while remote access is unconfirmed', as
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Send and run tests' }).matches(':disabled')).toBe(true);
 });
 
 test('expert_skip_selects_cluster_without_vm', async () => {

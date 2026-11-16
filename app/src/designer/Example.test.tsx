@@ -18,6 +18,8 @@ function native(save?: (content: string) => unknown) {
     if (command === 'agent_open') return pair;
     if (command === 'agent_save') return save ? save((args as { content: string }).content) : { ...pair, agent: (args as { content: string }).content };
     if (command === 'agent_run_status' || command === 'agent_run') return idle;
+    if (command === 'send_status') return { documentId: pair.documentId, view: null, busy: null };
+    if (command === 'send_history') return [];
     throw Error(`Unexpected command ${command}`);
   });
 }
@@ -97,24 +99,21 @@ test('opens the owned pair without a VM and exposes a keyboard File switch', asy
   screen.getByRole('button', { name: 'File' }).focus(); await user.keyboard('{Enter}');
   expect((screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement).value).toBe(pair.agent);
 });
-test('the editor leads local tests in reading order and hides unopened Send history', async () => {
+test('the editor leads and local tests sit above the Team cluster Send card, with history inside it', async () => {
   native(); const user = userEvent.setup(); const { container } = render(<Example />);
   const run = await screen.findByRole('region', { name: 'Tests on the local cluster' });
   const editor = container.querySelector('.designer-file')!;
-  expect(screen.queryByRole('region', { name: 'Past Sends' })).toBeNull();
+  const history = screen.getByRole('region', { name: 'Past Sends' });
   expect(editor.compareDocumentPosition(run) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(run.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(run.closest('.designer-tests')).toBeTruthy();
+  expect(history.closest('.designer-tests')).toBeNull();
+  expect(history.closest('.designer-checks')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'File' }));
   expect(screen.getByRole('textbox', { name: 'Agent file' })).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Tests on the local cluster' })).toBe(run);
-  await user.click(screen.getByRole('button', { name: 'Send to a cluster' }));
-  const history = screen.getByRole('region', { name: 'Past Sends' });
-  expect(editor.closest('.designer-editing')).toBe(history.closest('.designer-editing'));
-  expect(run.closest('.designer-editing')).toBeNull();
-  expect(history.classList.contains('card')).toBe(true);
-  expect(editor.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
-test('setup-pending editor leads tests and remote places keep the Send history', async () => {
+test('setup-pending local tests stay disabled, and a selected cluster keeps both areas in view', async () => {
   native(); const { container, rerender } = render(<Example setupPending />);
   await screen.findByRole('textbox', { name: 'Instructions' });
   const pending = screen.getByRole('button', { name: 'Run tests' });
@@ -122,10 +121,10 @@ test('setup-pending editor leads tests and remote places keep the Send history',
   expect(container.querySelector('.designer-file')!.compareDocumentPosition(pending) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(pending.classList.contains('button-primary')).toBe(false);
   rerender(<Example remote />);
-  expect(screen.queryByRole('region', { name: 'Tests on the local cluster' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Run tests' })).toBeNull();
-  expect(screen.getByRole('region', { name: 'Past Sends' }).closest('.designer-editing')).toBeTruthy();
-  expect(screen.getByText('Checks from disk')).toBeTruthy();
+  expect(await screen.findByRole('region', { name: 'Tests on the local cluster' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Team cluster' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Past Sends' }).closest('.designer-checks')).toBeTruthy();
+  expect(screen.getByText('Checks from disk').closest('.designer-tests')).toBeTruthy();
 });
 test('does not claim Saved or allow Run before the commit reply', async () => {
   let finish!: (value: unknown) => void; let saved = '';

@@ -26,7 +26,7 @@ function native(history: unknown) {
   });
   mockIPC(ipc); return ipc;
 }
-const panel = () => <Send place={{ kind: 'thisComputer' }} source={source} stale={false} visible remote={false} />;
+const panel = () => <Send place={{ kind: 'thisComputer' }} source={source} stale={false} />;
 const legacy = { id: summary.id, documentId: null, model: null, capturedAt: null, report: null, interrupted: false, canCheck: false, canRemove: false, detailState: 'legacy', availability: null };
 const saved = {
   ...legacy, documentId: SAMPLE_DOCUMENT_ID, model: 'test-model', capturedAt: 1794412801,
@@ -99,7 +99,7 @@ test('history read failure is explicit and retry only rereads local summaries', 
 
 test('saved history remains readable without a selected cluster or permission to send during setup', async () => {
   const ipc = native([summary]);
-  render(<Send place={{ kind: 'thisComputer' }} source={source} stale={false} visible={false} remote={false} blocked="Read-only during setup" />);
+  render(<Send place={{ kind: 'thisComputer' }} source={source} stale={false} blocked="Read-only during setup" />);
   expect(await screen.findByRole('region', { name: 'Past Sends' })).toBeTruthy();
   expect(screen.getByText('bridge-run-before-restart')).toBeTruthy();
   expect(ipc.mock.calls.every(([command]) => ['send_status', 'send_history'].includes(command))).toBe(true);

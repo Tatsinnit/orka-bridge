@@ -27,7 +27,7 @@ function native(view: unknown = active) {
   mockIPC(ipc); return ipc;
 }
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
-function panel() { return <Send place={place} source={source} stale={false} visible remote />; }
+function panel() { return <Send place={place} source={source} stale={false} />; }
 
 test('Cancel tests uses explicit cancellation IPC, never Stop, and promptly announces progress', async () => {
   const ipc = native(); render(panel());
@@ -64,7 +64,7 @@ test.each([
 test('confirmed cancellation renders cancelled and Not run separately, keeping completed answers', async () => {
   native({ ...active, state: 'complete', stage: 'done', report, cancellation: 'confirmed' }); render(panel());
   expect(await screen.findByText('Tests cancelled on the cluster. Completed answers kept.')).toBeTruthy();
-  expect(screen.getByText('Not run')).toBeTruthy();
+  expect(within(document.querySelector('.test-results') as HTMLElement).getByText('Not run')).toBeTruthy();
   expect(screen.getByText('Completed answer kept')).toBeTruthy();
   const cancelled = screen.getByText('cancelled', { selector: 'code' }).closest('details')!;
   expect(cancelled.textContent).toContain('Cancelled');
@@ -91,7 +91,7 @@ test('a completed race retains its passing result without claiming tests were ca
   native({ ...active, state: 'complete', stage: 'done', report: { verdict: 'passed', cases: [passed] }, cancellation: 'confirmed' }); render(panel());
   expect(await screen.findByText('Tests finished before cancellation.')).toBeTruthy();
   expect(screen.queryByText('Tests cancelled on the cluster. Completed answers kept.')).toBeNull();
-  expect(screen.getByText('1 of 1 passed')).toBeTruthy();
+  expect(screen.getByText('1 of 1 tests passed')).toBeTruthy();
 });
 
 test('saved cancellation is explicit and retains answers when a retry fails', async () => {

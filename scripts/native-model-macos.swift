@@ -284,7 +284,9 @@ func scroll(_ pixels: Int32) {
 func seek(_ label: String, _ pixels: Int32) throws -> [VNRecognizedTextObservation] {
     for _ in 0..<6 {
         let seen = try capture("local-probe", [])
-        if seen.contains(where: { ($0.topCandidates(1).first?.string ?? "").contains(label) }) || nativeChatTextIsVisible(label) {
+        // The large progress label must be visible in the pixels: AX can also report
+        // the hidden setup panel's copy at coordinates inside this same window.
+        if seen.contains(where: { ($0.topCandidates(1).first?.string ?? "").contains(label) }) || label != "Waiting for answers" && nativeChatTextIsVisible(label) {
             if label == "Run tests" && enabledButton(label) == nil { Thread.sleep(forTimeInterval: 0.3); continue }
             if ["Connect the AI", "Check again", "Change", "Remove key"].contains(label),
                 enabledButton(label).flatMap(nativeBounds).map({ window()!.1.contains($0) }) != true {
@@ -405,6 +407,81 @@ _ = try seek("The answer did not include", -100)
 scroll(-180)
 _ = try capture("local-story-minimum", ["No date was given", "2099-12-31"])
 localSize(540, 900)
+// Both local results and the cluster Send stay visible. This separate fixture
+// has no send_start handler; opening/dismissing the warning cannot mutate anything.
+localSize(1280, 800)
+click("Clusters", [])
+scroll(4000)
+if enabledButton("Back to clusters") != nil { click("Back to clusters", []) }
+_ = try seek("Connect", -150)
+click("Connect", [])
+_ = try seek("Use this cluster", -150)
+click("Use this cluster", [])
+_ = try seek("Open your agent", -150)
+click("Open your agent", [])
+func focusedButtonTitle() -> String? {
+    var focused: CFTypeRef?
+    let app = AXUIElementCreateApplication(child.processIdentifier)
+    guard AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+        let focused else { return nil }
+    let element = focused as! AXUIElement
+    return attribute(element, "AXTitle") as? String ?? attribute(element, "AXDescription") as? String
+}
+for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact")] {
+    localSize(CGFloat(width), CGFloat(height))
+    scroll(4000)
+    _ = try seek("Send and run tests", -200)
+    guard let send = enabledButton("Send and run tests"), let before = nativeBounds(send) else {
+        fatalError("Ready Send action missing beside local results")
+    }
+    click("Send and run tests", [])
+    let warning = try capture("local-send-warning-\(size)", ["Local test", "failed", "Fix it first", "Send anyway"])
+    guard let message = warning.first(where: { ($0.topCandidates(1).first?.string ?? "").contains("Local test") }),
+        let fix = warning.first(where: { ($0.topCandidates(1).first?.string ?? "").contains("Fix it first") }) else {
+        fatalError("Warning message and primary action need visible native bounds")
+    }
+    require((message.boundingBox.minY - fix.boundingBox.maxY) * window()!.1.height < 160,
+            "Warning must fit its content rather than stretch to viewport height")
+    require(focusedButtonTitle() == "Fix it first", "Warning must initially focus Fix it first")
+    guard let after = nativeBounds(send) else { fatalError("Send action lost its bounds") }
+    require(abs(before.minY - after.minY) < 2 && abs(before.minX - after.minX) < 2,
+            "Warning must overlay, not shift the Send control")
+    for down in [true, false] {
+        CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: down)?.post(tap: .cghidEventTap)
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+    require(focusedButtonTitle() == "Send and run tests", "Escape must return focus to Send")
+    click("Send and run tests", [])
+    click("Fix it first", [])
+    _ = try seek("Edit instructions", 150)
+    _ = try capture("local-send-fix-result-\(size)", ["Which date is shown", "No date was given", "Edit instructions"])
+}
+// Return through the local row, without stopping either destination. The
+// remaining pre-existing editor/Chat walk continues on This computer.
+click("Clusters", [])
+scroll(4000)
+if enabledButton("Back to clusters") != nil { click("Back to clusters", []) }
+let localAction = nativeElements().first { element in
+    guard attribute(element, "AXRole") as? String == "AXButton" else { return false }
+    var parent = element
+    for _ in 0..<12 {
+        if attribute(parent, "AXDescription") as? String == "This computer" { return true }
+        guard let next = attribute(parent, "AXParent") else { break }
+        parent = next as! AXUIElement
+    }
+    return false
+}
+guard let localAction, let localBounds = nativeBounds(localAction), window()!.1.contains(localBounds) else {
+    fatalError("This computer's action was not visible after warning proof")
+}
+for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+    CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: CGPoint(x: localBounds.midX, y: localBounds.midY), mouseButton: .left)?.post(tap: .cghidEventTap)
+}
+Thread.sleep(forTimeInterval: 0.5)
+_ = try seek("Use this computer", -150)
+click("Use this computer", [])
+click("Designer", [])
+scroll(4000)
 // Edit the fixture's Instructions field through the native text control. Its
 // writer is in-memory only, so no creator file or credential can be changed.
 scroll(4000)
@@ -441,7 +518,7 @@ func nativeResultTextIsVisible(_ expected: String) -> Bool {
             let text = attribute(element, "AXValue") as? String,
             (text == expected || (expected == "Observed for" ? text.hasPrefix("Observed for ") : text.hasPrefix("The answer did not include") && text.contains(expected))),
             let bounds = nativeBounds(element) else { return false }
-        return window()!.1.contains(bounds)
+        return bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)
     }
 }
 func nativeChatTextIsVisible(_ expected: String) -> Bool {
@@ -449,7 +526,8 @@ func nativeChatTextIsVisible(_ expected: String) -> Bool {
         guard attribute(element, "AXRole") as? String == "AXStaticText",
             let text = attribute(element, "AXValue") as? String,
             text.contains(expected), let bounds = nativeBounds(element) else { return false }
-        return window()!.1.contains(bounds)
+        // WebKit exposes clipped or screen-reader-only text with zero/one-pixel bounds.
+        return bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)
     }
 }
 func waitForButton(_ label: String) {
