@@ -160,12 +160,12 @@ func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
 }
-func nativeElements() -> [AXUIElement] {
-    var nodes = [AXUIElementCreateApplication(app.processIdentifier)]
+func nativeElements(_ root: AXUIElement? = nil) -> [AXUIElement] {
+    var nodes = [root ?? AXUIElementCreateApplication(app.processIdentifier)]
     var index = 0
     while index < nodes.count && nodes.count < 4000 {
         let element = nodes[index]; index += 1
-        for key in ["AXChildren", "AXWindows"] {
+        for key in ["AXChildren", "AXWindows", "AXSheets"] {
             for child in attribute(element, key) as? [AXUIElement] ?? []
                 where !nodes.contains(where: { CFEqual($0, child) }) { nodes.append(child) }
         }
@@ -350,10 +350,18 @@ func capture(_ name: String, _ page: String, afterFrame: (() throws -> Void)? = 
     try recognized.write(toFile: "\(output)/\(name).ocr.txt", atomically: true, encoding: .utf8)
     if name == "new-agent-probe" || name == "send-probe" || name == "cluster-probe" || name == "overview-probe" || name.hasPrefix("overview-fixture-") { return observations }
     if name.hasPrefix("new-agent-") {
-        let expected = name == "new-agent-created" ? "native-helper" : "New agent"
-        let heading = observations.contains { observation in
-            let top = 1 - observation.boundingBox.maxY
-            return top > 0.10 && top < 0.25 && observation.topCandidates(1).first?.string == expected
+        let expected = name == "new-agent-created" ? "native-helper" : name == "new-agent-repo-created" ? "web-reader" : "New agent"
+        let heading: Bool
+        if name.hasPrefix("new-agent-repo-") {
+            // These captures use 900pt content: bind the actual visible page heading,
+            // not a normalized band inherited from the 800pt creation screenshots.
+            heading = nativeTextBounds(expected, heading: true).count == 1
+                && observations.contains { $0.topCandidates(1).first?.string == expected }
+        } else {
+            heading = observations.contains { observation in
+                let top = 1 - observation.boundingBox.maxY
+                return top > 0.10 && top < 0.25 && observation.topCandidates(1).first?.string == expected
+            }
         }
         require(heading, "Native creation screenshot is missing \(expected)")
         print("PASS \(name): native owned-agent creation, no workspace or model")
@@ -538,6 +546,17 @@ func scrollMain(_ pixels: Int32) {
     scroll?.location = CGPoint(x: rect.maxX - 20, y: rect.midY)
     scroll?.post(tap: .cghidEventTap)
     Thread.sleep(forTimeInterval: 0.3)
+}
+func setContent(_ width: CGFloat, _ height: CGFloat) {
+    guard let nativeWindow = nativeElements().first(where: { attribute($0, "AXRole") as? String == "AXWindow" }) else {
+        fail("Cannot find the current native window")
+    }
+    let frame = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: width, height: height),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable])
+    var size = frame.size
+    require(AXUIElementSetAttributeValue(nativeWindow, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!) == .success, "Cannot resize native window")
+    Thread.sleep(forTimeInterval: 0.5)
+    require(abs(window()!.1.width - size.width) < 3 && abs(window()!.1.height - size.height) < 3, "Native \(width)x\(height) content area not verified")
 }
 func clickSendControl(_ label: String, scrolling pixels: Int32) throws {
     // Disabling Start during IPC can reset WebKit's keyboard focus. Locate the
@@ -912,17 +931,6 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         if !visibleButtons("Back to clusters").isEmpty { clickButton("Back to clusters") }
         clickButton("Add a cluster")
         scrollMain(1000)
-    }
-    func setContent(_ width: CGFloat, _ height: CGFloat) {
-        guard let nativeWindow = nativeElements().first(where: { attribute($0, "AXRole") as? String == "AXWindow" }) else {
-            fail("Cannot find the current native window")
-        }
-        let frame = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: width, height: height),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable])
-        var size = frame.size
-        require(AXUIElementSetAttributeValue(nativeWindow, kAXSizeAttribute as CFString, AXValueCreate(.cgSize, &size)!) == .success, "Cannot resize native window")
-        Thread.sleep(forTimeInterval: 0.5)
-        require(abs(window()!.1.width - size.width) < 3 && abs(window()!.1.height - size.height) < 3, "Native \(width)x\(height) content area not verified")
     }
     // Exercise the existing conditional field and a denial, without issuing a token.
     func chooseFixture(_ index: Int) throws -> [VNRecognizedTextObservation] {
@@ -1561,5 +1569,105 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     require(savedOpened, "Saved passing Send details were not reachable")
     try clickSendControl("published-checksum", scrolling: -100)
     try capture("send-history-answer", "Designer")
+}
+do {
+    // Run after the sample/Send checks: a second web-reader must not make their selectors ambiguous.
+    let repo = FileManager.default.temporaryDirectory.appendingPathComponent("bridge-own-repo-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: false)
+    let selectedRepo = repo.resolvingSymlinksInPath()
+    let git = Process() // Fixture setup only; the product must never invoke Git for this storage.
+    git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    git.arguments = ["init", "--quiet", selectedRepo.path]
+    try git.run(); git.waitUntilExit()
+    require(git.terminationStatus == 0, "Cannot initialize disposable own-repo fixture")
+    defer { try? FileManager.default.removeItem(at: selectedRepo) }
+    func typeText(_ text: String) {
+        for character in text.utf16 {
+            var unit = character
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)!
+                event.keyboardSetUnicodeString(stringLength: 1, unicodeString: &unit)
+                event.flags = []; event.post(tap: .cghidEventTap)
+            }
+        }
+    }
+    setContent(1280, 900)
+    clickTab("Designer", [])
+    scrollMain(1000) // The preceding saved Send detail can leave the heading below the viewport.
+    clickDesignerView("Agent")
+    clickButton("New agent")
+    typeText("web-reader")
+    key(48)
+    let form = try capture("new-agent-probe", "Designer")
+    clickText("Your own repo", in: form)
+    require(nativeButtons("Create").count == 1 && attribute(nativeButtons("Create")[0], "AXEnabled") as? Bool == false,
+            "Own-repo Create must wait for a native folder selection")
+    clickButton("Choose repo")
+    var panel: AXUIElement?
+    for _ in 0..<50 {
+        // rfd sets NSSavePanel.message (not its title), and a parented panel is a sheet.
+        let matches = nativeElements().filter { candidate in
+            let role = attribute(candidate, "AXRole") as? String
+            guard role == "AXSheet" || role == "AXWindow" && attribute(candidate, "AXTitle") as? String != "Bridge" else { return false }
+            return nativeElements(candidate).contains { attribute($0, "AXRole") as? String == "AXStaticText"
+                && attribute($0, "AXValue") as? String == "Choose your repo" }
+        }
+        require(matches.count < 2, "Ambiguous native repo chooser")
+        panel = matches.first
+        if panel != nil { break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    guard let chooser = panel, let chooserBounds = nativeBounds(chooser) else { fail("Native repo folder chooser missing") }
+    // Drive the real NSOpenPanel's Go to Folder sheet; never inject picker IPC.
+    for down in [true, false] {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: 5, keyDown: down)!
+        event.flags = [.maskCommand, .maskShift]; event.post(tap: .cghidEventTap)
+    }
+    Thread.sleep(forTimeInterval: 0.3)
+    typeText(selectedRepo.path)
+    key(36)
+    var navigated = false
+    for _ in 0..<50 {
+        let elements = nativeElements(chooser)
+        let goSheetOpen = elements.contains { !CFEqual($0, chooser) && attribute($0, "AXRole") as? String == "AXSheet" }
+        if !goSheetOpen && elements.contains(where: { element in
+            ["AXValue", "AXTitle"].contains { attribute(element, $0) as? String == selectedRepo.lastPathComponent }
+        }) { navigated = true; break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    require(navigated, "Native folder chooser did not navigate to the disposable repo")
+    let shot = Process()
+    shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    shot.arguments = ["-x", "-R", "\(Int(chooserBounds.minX)),\(Int(chooserBounds.minY)),\(Int(chooserBounds.width)),\(Int(chooserBounds.height))",
+                      "\(output)/new-agent-repo-chooser.png"]
+    try shot.run(); shot.waitUntilExit()
+    require(shot.terminationStatus == 0, "Cannot capture native repo chooser")
+    key(36) // Confirm the current folder using the real panel default action.
+    let preview = selectedRepo.appendingPathComponent("web-reader").path + "/"
+    let copy = "Files save automatically. You manage commits in this repo."
+    for _ in 0..<50 {
+        if nativeTextIsVisible(preview) && !visibleButtons("Change repo").isEmpty { break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    scrollMain(12000)
+    require(nativeTextIsVisible(preview) && nativeTextIsVisible(copy), "Selected repo path or own-repo saving explanation missing")
+    try capture("new-agent-repo-selected", "Designer")
+    clickButton("Create")
+    let folder = selectedRepo.appendingPathComponent("web-reader")
+    let agent = folder.appendingPathComponent("web-reader.agent.md")
+    let tests = folder.appendingPathComponent("web-reader.agent.test.md")
+    for _ in 0..<50 {
+        if FileManager.default.fileExists(atPath: tests.path) && nativeButtons("Create").isEmpty && nativeTextIsVisible("Instructions") { break }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    require(try String(contentsOf: agent, encoding: .utf8).contains("name: \"web-reader\"\n"), "Own-repo web-reader was not created")
+    require(try String(contentsOf: tests, encoding: .utf8).contains("web_fetch"), "Own-repo starter check missing")
+    require(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() == ["web-reader.agent.md", "web-reader.agent.test.md"],
+            "Own-repo agent folder must contain only the pair, no nested .git or marker")
+    require(try FileManager.default.contentsOfDirectory(atPath: selectedRepo.path).sorted() == [".git", "web-reader"],
+            "Creation added unexpected repo-root files or markers")
+    scrollMain(12000)
+    require(nativeTextIsVisible(copy), "Created own-repo editor lost its storage explanation")
+    try capture("new-agent-repo-created", "Designer")
 }
 requireNoLocalWorkspace()

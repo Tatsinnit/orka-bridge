@@ -44,7 +44,7 @@ pub(crate) fn valid_name(name: &str) -> bool {
         && alnum(bytes[0])
         && alnum(bytes[bytes.len() - 1])
         && bytes.iter().all(|b| alnum(*b) || *b == b'-')
-        && !matches!(name, "web-reader" | "con" | "prn" | "aux" | "nul")
+        && !matches!(name, "con" | "prn" | "aux" | "nul")
         && !(name.len() == 4
             && (name.starts_with("com") || name.starts_with("lpt"))
             && matches!(bytes[3], b'1'..=b'9'))
@@ -63,6 +63,7 @@ pub struct AgentPair {
     pub agent: String,
     pub tests: String,
     pub source: SnapshotId,
+    pub storage: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 }
@@ -75,6 +76,7 @@ pub struct AgentFolder {
     sample: bool,
     id: DocumentId,
     lock: Mutex<()>,
+    repo: Option<crate::agents::repo::Access>,
 }
 pub(crate) fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
@@ -215,9 +217,16 @@ impl AgentFolder {
             sample: true,
             id: DocumentId::SAMPLE,
             lock: Mutex::new(()),
+            repo: None,
         }
     }
     pub(crate) fn created(home: Option<PathBuf>, name: &str, id: DocumentId) -> Result<Self> {
+        if name == "web-reader" {
+            return Err("The sample name is reserved in the Bridge folder.");
+        }
+        Self::named(home, name, id)
+    }
+    fn named(home: Option<PathBuf>, name: &str, id: DocumentId) -> Result<Self> {
         if !valid_name(name) || id == DocumentId::SAMPLE {
             return Err("The agent name or identity is invalid.");
         }
@@ -230,7 +239,23 @@ impl AgentFolder {
             sample: false,
             id,
             lock: Mutex::new(()),
+            repo: None,
         })
+    }
+    pub(crate) fn in_repo(
+        name: &str,
+        id: DocumentId,
+        repo: crate::agents::repo::Access,
+    ) -> Result<Self> {
+        let mut folder = Self::named(None, name, id)?;
+        folder.repo = Some(repo);
+        Ok(folder)
+    }
+    fn commit(&self, root: &Dir, pair: &AgentPair) -> io::Result<()> {
+        if self.repo.is_some() {
+            return Ok(());
+        }
+        git::commit(root, pair, &self.agent, &self.tests)
     }
     pub(crate) fn seed_created(&self, root: &Dir, model: Option<&str>) -> io::Result<()> {
         // JSON string quoting is also YAML scalar quoting, including YAML keywords.
@@ -249,11 +274,15 @@ impl AgentFolder {
             &format!("# {} tests", self.name),
             1,
         );
-        replace(root, MARKER, &self.owner)?;
+        if self.repo.is_none() {
+            replace(root, MARKER, &self.owner)?;
+        }
         replace(root, &self.agent, agent.as_bytes())?;
         replace(root, &self.tests, tests.as_bytes())?;
-        Self::init_history(root)?;
-        git::commit(root, &self.pair(root)?, &self.agent, &self.tests)?;
+        if self.repo.is_none() {
+            Self::init_history(root)?;
+        }
+        self.commit(root, &self.pair(root)?)?;
         sync(root)
     }
     fn init_history(root: &Dir) -> io::Result<()> {
@@ -270,6 +299,11 @@ impl AgentFolder {
         replace(&git, "HEAD", b"")
     }
     pub(crate) fn verify_created(&self, root: &Dir) -> io::Result<()> {
+        if let Some(repo) = &self.repo {
+            let _guard = repo.lock(self.id, true)?;
+            self.pair(root)?;
+            return Ok(());
+        }
         let mut marker = shared_marker(root)?;
         let mut ownership = Vec::new();
         (&mut marker).take(129).read_to_end(&mut ownership)?;
@@ -282,7 +316,7 @@ impl AgentFolder {
     pub(crate) fn created_id(home: Option<PathBuf>, name: &str) -> Result<DocumentId> {
         // Constructing an owner does not grant authority: validate the native marker
         // and the bound pair/Git layout before the registry can publish its identity.
-        if !valid_name(name) {
+        if !valid_name(name) || name == "web-reader" {
             return Err("The agent name is invalid.");
         }
         let root = Self::open_root(&home, name).map_err(|_| "The created agent is unavailable.")?;
@@ -313,6 +347,9 @@ impl AgentFolder {
         Ok(id)
     }
     fn root(&self) -> io::Result<Dir> {
+        if let Some(repo) = &self.repo {
+            return repo.root(&self.name);
+        }
         Self::open_root(&self.home, &self.name)
     }
     fn open_root(home: &Option<PathBuf>, name: &str) -> io::Result<Dir> {
@@ -337,6 +374,10 @@ impl AgentFolder {
             Err(_) => return Err("The saved file is unreadable."),
         };
         (|| -> io::Result<AgentPair> {
+            if let Some(repo) = &self.repo {
+                let _guard = repo.lock(self.id, true)?;
+                return self.pair(&repo.root(&self.name)?);
+            }
             let mut marker = shared_marker(&root)?;
             let mut ownership = Vec::new();
             (&mut marker).take(129).read_to_end(&mut ownership)?;
@@ -351,18 +392,7 @@ impl AgentFolder {
         .map_err(|_| "The saved file is unreadable.")
     }
     pub(crate) fn available(&self) -> bool {
-        (|| -> io::Result<()> {
-            let root = self.root()?;
-            let mut marker = shared_marker(&root)?;
-            let mut ownership = Vec::new();
-            (&mut marker).take(129).read_to_end(&mut ownership)?;
-            if ownership != self.owner {
-                return Err(invalid());
-            }
-            self.pair(&root)?;
-            git::inspect(&root)
-        })()
-        .is_ok()
+        self.inspect().is_ok_and(|pair| pair.is_some())
     }
     fn with<T>(&self, work: impl FnOnce(&Dir) -> io::Result<T>) -> Result<T> {
         let _guard = self
@@ -370,6 +400,12 @@ impl AgentFolder {
             .lock()
             .map_err(|_| "The local agent folder is unavailable.")?;
         let operation = || -> io::Result<T> {
+            if let Some(repo) = &self.repo {
+                let _guard = repo.lock(self.id, false)?;
+                let root = repo.root(&self.name)?;
+                sync(&root)?;
+                return work(&root);
+            }
             if !self.sample {
                 let root = self.root()?;
                 let mut opts = options();
@@ -436,9 +472,12 @@ impl AgentFolder {
             sync(&root)?;
             work(&root)
         };
-        operation().map_err(|_| "The local agent folder could not be read or saved. Check that it is a Bridge-managed folder with regular files, then retry.")
+        operation().map_err(|_| "The agent folder could not be read or saved. Check that it is still available with regular agent files and is writable, then retry.")
     }
     pub(crate) fn file_path(&self) -> Option<PathBuf> {
+        if let Some(repo) = &self.repo {
+            return Some(repo.file_path(&self.name).join(&self.agent));
+        }
         self.home.as_ref().map(|home| {
             home.join("Orka")
                 .join("agents")
@@ -460,21 +499,46 @@ impl AgentFolder {
             agent,
             tests,
             source,
+            storage: if self.repo.is_some() {
+                "repo"
+            } else {
+                "bridge"
+            },
             path: self.display_path(),
         })
     }
     pub fn open(&self) -> Result<AgentPair> {
         self.with(|root| {
             let pair = self.pair(root)?;
-            git::commit(root, &pair, &self.agent, &self.tests)?; // Dirty reopen is committed, never silently reported Saved.
+            self.commit(root, &pair)?; // Dirty Bridge reopen is committed, never silently reported Saved.
             Ok(pair)
         })
     }
     pub fn save(&self, content: String) -> Result<AgentPair> {
+        self.save_with_source(content, None)
+    }
+    pub fn save_with_source(
+        &self,
+        content: String,
+        expected_source: Option<SnapshotId>,
+    ) -> Result<AgentPair> {
         if content.len() > MAX_FILE {
             return Err("The agent file is too large to save.");
         }
-        self.with(|root| self.save_pair(root, self.pair(root)?, content))
+        self.with(|root| {
+            let pair = self.pair(root)?;
+            // Repo edits have no Bridge history backup. Compare under the same
+            // document/cross-process lock as replacement; check-file edits are independent.
+            if self.repo.is_some()
+                && !expected_source.as_ref().is_some_and(|expected| {
+                    expected.valid()
+                        && (expected.agent == pair.source.agent || content == pair.agent)
+                })
+            {
+                return Ok(Err("The agent file changed on disk."));
+            }
+            self.save_pair(root, pair, content).map(Ok)
+        })?
     }
     /// Setup-only: never rewrite edited files or an already prepared example.
     pub fn prepare_example_model(&self, model: &str) -> Result<AgentPair> {
@@ -494,26 +558,26 @@ impl AgentFolder {
         })
     }
     fn save_pair(&self, root: &Dir, mut pair: AgentPair, content: String) -> io::Result<AgentPair> {
-        git::validate(root)?;
+        if self.repo.is_none() {
+            git::validate(root)?;
+        }
         if pair.agent != content {
-            // Preserve edits from another editor before replacing the disk version.
-            git::commit(root, &pair, &self.agent, &self.tests)?;
+            // Bridge history preserves edits from another editor before replacement.
+            self.commit(root, &pair)?;
             replace(root, &self.agent, content.as_bytes())?;
             pair.agent = content;
             pair.source = SnapshotId::of(pair.agent.as_bytes(), pair.tests.as_bytes());
         }
-        git::commit(root, &pair, &self.agent, &self.tests)?; // Failure leaves draft bytes; retry reconciles disk with HEAD.
+        self.commit(root, &pair)?; // Failure leaves draft bytes; retry reconciles disk with HEAD.
         Ok(pair)
     }
     /// Trusted native Send seam only; never exposed through IPC.
     pub fn source(&self) -> Result<(PathBuf, AgentDocument)> {
         self.open()?;
         Ok((
-            self.home
-                .as_ref()
-                .unwrap()
-                .join("Orka/agents")
-                .join(&self.name),
+            self.file_path()
+                .and_then(|path| path.parent().map(PathBuf::from))
+                .ok_or("The agent source is unavailable.")?,
             AgentDocument {
                 agent: self.agent.clone().into(),
                 tests: self.tests.clone().into(),
@@ -524,7 +588,7 @@ impl AgentFolder {
     pub fn capture_agent(&self) -> Result<Vec<u8>> {
         self.with(|root| {
             let pair = self.pair(root)?;
-            git::commit(root, &pair, &self.agent, &self.tests)?;
+            self.commit(root, &pair)?;
             let bytes = read(root, &self.agent, MAX_FILE)?;
             if bytes != pair.agent.as_bytes() {
                 return Err(invalid());
@@ -535,7 +599,7 @@ impl AgentFolder {
     pub fn capture(&self) -> Result<Snapshot> {
         self.with(|root| {
             let pair = self.pair(root)?;
-            git::commit(root, &pair, &self.agent, &self.tests)?;
+            self.commit(root, &pair)?;
             let snapshot = Snapshot::capture_dir(
                 root,
                 &AgentDocument {

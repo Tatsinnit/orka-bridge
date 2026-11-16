@@ -1,4 +1,4 @@
-# CI-only integrated debug shell. No workspace selection, VM, credentials or injected Ready state.
+# CI-only integrated debug shell. Disposable own-repo selection only; no workspace/VM/credentials or injected Ready state.
 param([Parameter(Mandatory)][string]$Executable, [Parameter(Mandatory)][string]$Output)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Hosted CI walk only; never run against an existing user profile' }
@@ -381,13 +381,82 @@ try {
         Wait-For 'Second launch did not restore original window' { ![NativeWalk]::IsIconic($script:hwnd) } | Out-Null
         Retained; Capture 'reopened-second-launch-minimized'
         if (@(Get-Process -Name orka-bridge).Count -ne 1) { throw 'A second Bridge process survived' }
+        # Append creation after retention checks so their sample document and File view stay unchanged.
+        $repo = Join-Path $env:RUNNER_TEMP "bridge-own-repo-$theme-$([Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $repo | Out-Null
+        & git init --quiet $repo # Fixture setup only; the product must never invoke Git for this storage.
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize disposable own-repo fixture' }
+        Press (Wait-For 'New agent button missing' { Find-Control $script:window 'New agent' $button })
+        $name = Wait-For 'New agent Name field missing' { Find-Control $script:window 'Name' ([System.Windows.Automation.ControlType]::Edit) }
+        Press $name
+        [System.Windows.Forms.SendKeys]::SendWait('web-reader')
+        Press (Wait-For 'Own-repo choice did not settle' {
+            $control = Find-Control $script:window 'Your own repo' ([System.Windows.Automation.ControlType]::RadioButton)
+            if ($control -and $control.Current.IsEnabled -and !$control.Current.IsOffscreen) { $control }
+        })
+        $create = Wait-For 'Own-repo Create did not disable' {
+            $control = Find-Control $script:window 'Create' $button
+            if ($control -and !$control.Current.IsEnabled) { $control }
+        }
+        if ($create.Current.IsEnabled) { throw 'Own-repo Create must wait for a native folder selection' }
+        Press (Wait-For 'Choose repo button missing' { Find-Control $script:window 'Choose repo' $button })
+        $dialog = Wait-For 'Native repo folder chooser missing' {
+            $control = Find-Control $desktop 'Choose your repo' ([System.Windows.Automation.ControlType]::Window)
+            if ($control -and $control.Current.ProcessId -eq $script:app.Id -and !$control.Current.IsOffscreen) { $control }
+        }
+        [NativeWalk]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle) | Out-Null
+        # Drive the actual IFileOpenDialog address bar, not a renderer picker reply.
+        [System.Windows.Forms.SendKeys]::SendWait('^l')
+        # The hosted shell exposes the focused address editor as a Pane without
+        # ValuePattern. Type into its Ctrl+L selection, as shown by native capture.
+        if ([NativeWalk]::GetForegroundWindow() -ne [IntPtr]$dialog.Current.NativeWindowHandle) { throw 'Native repo chooser lost focus' }
+        [System.Windows.Forms.SendKeys]::SendWait($repo)
+        [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+        Wait-For 'Native folder chooser did not navigate to the disposable repo' {
+            (Get-UiNames $dialog) -ccontains (Split-Path $repo -Leaf)
+        } | Out-Null
+        Capture 'new-agent-repo-chooser' $true
+        # IDOK is the native folder selection action, independent of its system wording.
+        $choose = Wait-For 'Native folder chooser selection action missing' {
+            $control = $dialog.FindFirst($children, [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty, '1'))
+            if ($control -and $control.Current.IsEnabled -and !$control.Current.IsOffscreen) { $control }
+        }
+        Press $choose
+        $folder = Join-Path $repo 'web-reader'
+        # Rust's canonicalized drive path includes the extended-length prefix.
+        $displayFolder = "\\?\$folder\"
+        $copy = 'Files save automatically. You manage commits in this repo.'
+        Wait-For 'Selected repo path or own-repo saving explanation missing' {
+            $path = Find-Control $script:window $displayFolder $null
+            $explanation = Find-Control $script:window $copy $null
+            $change = Find-Control $script:window 'Change repo' $button
+            $path -and !$path.Current.IsOffscreen -and $explanation -and !$explanation.Current.IsOffscreen -and $change -and $change.Current.IsEnabled
+        } | Out-Null
+        Capture 'new-agent-repo-selected'
+        Press (Find-Control $script:window 'Create' $button)
+        $agent = Join-Path $folder 'web-reader.agent.md'
+        $tests = Join-Path $folder 'web-reader.agent.test.md'
+        Wait-For 'Own-repo web-reader pair or created editor missing' {
+            $editor = Find-Control $script:window 'Agent file' ([System.Windows.Automation.ControlType]::Edit)
+            $explanation = Find-Control $script:window $copy $null
+            (Test-Path $agent) -and (Test-Path $tests) -and $editor -and !$editor.Current.IsOffscreen -and $explanation -and !(Find-Control $script:window 'Create' $button)
+        } | Out-Null
+        if (![IO.File]::ReadAllText($agent).Contains('name: "web-reader"') -or ![IO.File]::ReadAllText($tests).Contains('web_fetch')) { throw 'Own-repo starter pair has incorrect contents' }
+        if ((@(Get-ChildItem -Force $folder | Sort-Object Name | ForEach-Object Name) -join ',') -cne 'web-reader.agent.md,web-reader.agent.test.md') { throw 'Own-repo agent folder must contain only the pair, no nested .git or marker' }
+        if ((@(Get-ChildItem -Force $repo | Sort-Object Name | ForEach-Object Name) -join ',') -cne '.git,web-reader') { throw 'Creation added unexpected repo-root files or markers' }
+        Capture 'new-agent-repo-created'
+        # The next theme reuses this profile. Native list() puts the original sample first.
+        $selector = Find-Control $script:window 'Agent' ([System.Windows.Automation.ControlType]::ComboBox)
+        Press $selector
+        [System.Windows.Forms.SendKeys]::SendWait('{HOME}{ENTER}')
+        Wait-For 'Original sample selection was not restored' { Find-Control $script:window 'Saved on this computer with local Git history. Nothing is uploaded.' $null } | Out-Null
         $commands = Tray-Menu
         Capture 'menu-stop' $true
         Press $commands[1]; Wait-Exit
         # File > Quit is exercised by the native menu/failed-stop subprocess test,
         # not by a duplicate GUI lookup through this runner's incomplete UIA tree.
         if ((Test-Path $selected) -or (Test-Path $vmData)) { throw 'Saved local selection or VM data appeared' }
-        "PASS $theme`: native Close/hide, tray menu/Open, same PID $script:originalPid/window $script:hwnd, File view/edited text retained, hidden/minimized second launches, menu stop. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof. OS popup theme is captured as drawn, not forced by product hooks." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
+        "PASS $theme`: native own-repo chooser, selected path/copy, web-reader starter pair only (no nested Git/marker); native Close/hide, tray menu/Open, same PID $script:originalPid/window $script:hwnd, File view/edited text retained, hidden/minimized second launches, menu stop. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof. OS popup theme is captured as drawn, not forced by product hooks." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
     }
 } catch {
     $failure = $_

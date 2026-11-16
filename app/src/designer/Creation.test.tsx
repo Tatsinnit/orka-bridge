@@ -45,7 +45,8 @@ test('creates during setup, previews the native location and both files, and ope
   expect(await screen.findByText('/home/creator/Orka/agents/helper/')).toBeTruthy();
   expect(screen.getByText('helper.agent.md')).toBeTruthy();
   expect(screen.getByText('helper.agent.test.md')).toBeTruthy();
-  expect(screen.queryByLabelText('Your own repo')).toBeNull();
+  expect((screen.getByRole('radio', { name: "Bridge's folder" }) as HTMLInputElement).checked).toBe(true);
+  expect((screen.getByRole('radio', { name: 'Your own repo' }) as HTMLInputElement).checked).toBe(false);
   await user.click(screen.getByRole('button', { name: 'Create' }));
   expect(await screen.findByRole('heading', { name: 'helper', level: 1 })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Run tests' }).matches(':disabled')).toBe(true);

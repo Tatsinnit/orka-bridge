@@ -3,14 +3,14 @@ use super::*;
 use crate::agent_folder::sync;
 use bridge_runtime_protocol::Uuid;
 
-const CREATE_ERROR: &str = "The agent could not be created. Check the Bridge folder is writable, then retry. Existing files have been kept.";
+const CREATE_ERROR: &str = "The agent could not be created. Check the selected folder is writable, then retry. Existing files have been kept.";
 const COLLISION: &str =
     "That agent name is already in use or has an unfinished creation. Choose another name.";
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct Identity([u64; 2]);
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct Identity([u64; 2]);
 impl Identity {
-    pub(super) fn read(dir: &Dir) -> io::Result<Self> {
+    pub(crate) fn read(dir: &Dir) -> io::Result<Self> {
         #[cfg(unix)]
         {
             use cap_std::fs::MetadataExt;
@@ -41,19 +41,22 @@ pub(super) struct Pending {
     pub(super) name: String,
     stage: String,
     identity: Identity,
+    #[serde(default, skip_serializing_if = "Storage::is_bridge")]
+    pub(super) storage: Storage,
 }
 impl Pending {
     pub(super) fn valid(&self) -> bool {
-        valid_name(&self.name)
+        self.storage.valid_name(&self.name)
             && self.id != DocumentId::SAMPLE
             && self.stage == format!(".bridge-create-{}", self.id.0)
     }
-    fn matches(&self, parent: &Dir, leaf: &str, home: &Option<PathBuf>) -> io::Result<()> {
+    fn matches(&self, parent: &Dir, leaf: &str, agents: &Agents) -> io::Result<()> {
         let root = parent.open_dir_nofollow(leaf)?;
         if Identity::read(&root)? != self.identity {
             return Err(invalid());
         }
-        AgentFolder::created(home.clone(), &self.name, self.id)
+        agents
+            .folder(&self.registration())
             .map_err(|_| invalid())?
             .verify_created(&root)
     }
@@ -61,7 +64,7 @@ impl Pending {
         Registration {
             id: self.id,
             name: self.name.clone(),
-            storage: Storage::Bridge,
+            storage: self.storage.clone(),
         }
     }
 }
@@ -92,19 +95,20 @@ impl Agents {
         if registry.pending.is_empty() {
             return Ok(());
         }
-        let parent = match self.creation_dir(false) {
-            Ok(parent) => parent,
-            Err(_) => return Ok(()), // Missing/replaced directories do not confer recovery authority.
-        };
         let mut recovered = Vec::new();
         for pending in &registry.pending {
+            let parent = match &pending.storage {
+                Storage::Bridge => self.creation_dir(false),
+                Storage::Repo(binding) => binding.open_parent(),
+            };
+            let Ok(parent) = parent else { continue }; // Missing/replaced parents confer no authority.
             if matches!(parent.symlink_metadata(&pending.name), Err(e) if e.kind() == io::ErrorKind::NotFound)
-                && pending.matches(&parent, &pending.stage, &self.home).is_ok()
+                && pending.matches(&parent, &pending.stage, self).is_ok()
             {
                 // No fallback to replacing rename, even on an unsupported filesystem.
                 let _ = publish_no_replace(&parent, &pending.stage, &pending.name);
             }
-            if pending.matches(&parent, &pending.name, &self.home).is_ok() {
+            if pending.matches(&parent, &pending.name, self).is_ok() {
                 sync(&parent).map_err(|_| CREATE_ERROR)?;
                 recovered.push(pending.registration());
             }
@@ -119,8 +123,16 @@ impl Agents {
         Ok(())
     }
     pub fn create(&self, name: &str, model: Option<&str>) -> Result<DocumentId> {
-        if !valid_name(name) {
-            return Err("Use 1–63 lowercase letters, digits or hyphens, beginning and ending with a letter or digit. Reserved device names and web-reader are unavailable.");
+        self.create_with_repo(name, model, None)
+    }
+    pub fn create_with_repo(
+        &self,
+        name: &str,
+        model: Option<&str>,
+        repo_selection: Option<Uuid>,
+    ) -> Result<DocumentId> {
+        if !valid_name(name) || (repo_selection.is_none() && name == "web-reader") {
+            return Err("Use 1–63 lowercase letters, digits or hyphens, beginning and ending with a letter or digit. Reserved device names are unavailable; web-reader is reserved only in Bridge\'s folder.");
         }
         if model.is_some_and(|m| {
             m.is_empty()
@@ -132,13 +144,35 @@ impl Agents {
                 "The default model is invalid. Reload the model catalog or retry without it.",
             );
         }
-        self.mutate(|registry, data| {
-            if registry.agents.iter().any(|r| r.name == name)
-                || registry.pending.iter().any(|p| p.name == name)
+        let mut selection = self.selection.lock().map_err(|_| CREATE_ERROR)?;
+        let selected = match repo_selection {
+            None => None,
+            Some(id) => Some(
+                selection
+                    .as_ref()
+                    .filter(|s| s.id == id)
+                    .ok_or("Choose your repo again before creating the agent.")?,
+            ),
+        };
+        let result = self.mutate(|registry, data| {
+            let destination = selected.map(|s| &s.identity);
+            if registry
+                .agents
+                .iter()
+                .any(|r| r.name == name && r.storage.destination() == destination)
+                || registry
+                    .pending
+                    .iter()
+                    .any(|p| p.name == name && p.storage.destination() == destination)
             {
                 return Err(COLLISION);
             }
-            let parent = self.creation_dir(true).map_err(|_| CREATE_ERROR)?;
+            let parent = if let Some(selected) = selected {
+                selected.revalidate().map_err(|_| CREATE_ERROR)?;
+                selected.root.try_clone().map_err(|_| CREATE_ERROR)?
+            } else {
+                self.creation_dir(true).map_err(|_| CREATE_ERROR)?
+            };
             match parent.symlink_metadata(name) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => (),
                 Ok(_) => return Err(COLLISION),
@@ -158,7 +192,19 @@ impl Agents {
                 .create_dir_with(&stage, &builder)
                 .map_err(|_| CREATE_ERROR)?;
             let root = parent.open_dir_nofollow(&stage).map_err(|_| CREATE_ERROR)?;
-            let folder = AgentFolder::created(self.home.clone(), name, id)?;
+            let identity = Identity::read(&root).map_err(|_| CREATE_ERROR)?;
+            let storage = selected.map_or(Storage::Bridge, |s| {
+                Storage::Repo(repo::Binding {
+                    path: s.path.clone(),
+                    parent: s.identity.clone(),
+                    child: identity.clone(),
+                })
+            });
+            let folder = self.folder(&Registration {
+                id,
+                name: name.into(),
+                storage: storage.clone(),
+            })?;
             folder
                 .seed_created(&root, model)
                 .map_err(|_| CREATE_ERROR)?;
@@ -167,13 +213,17 @@ impl Agents {
                 id,
                 name: name.into(),
                 stage,
-                identity: Identity::read(&root).map_err(|_| CREATE_ERROR)?,
+                identity,
+                storage,
             };
             registry.pending.push(pending.clone());
             registry.save(data)?; // Must be durable before the destination can become visible.
 
             // cap-std Windows directory handles do not share DELETE access.
             drop(root);
+            if let Some(selected) = selected {
+                selected.revalidate().map_err(|_| CREATE_ERROR)?;
+            }
             publish_no_replace(&parent, &pending.stage, name).map_err(|e| {
                 if matches!(
                     e,
@@ -186,12 +236,18 @@ impl Agents {
             })?;
             sync(&parent).map_err(|_| CREATE_ERROR)?;
             pending
-                .matches(&parent, name, &self.home)
+                .matches(&parent, name, self)
                 .map_err(|_| CREATE_ERROR)?;
             registry.agents.push(pending.registration());
             registry.pending.retain(|p| p.id != id);
             Ok(id)
-        })
+        });
+        if result.is_ok() && repo_selection.is_some() {
+            // A failed create stays retryable; success releases the selected
+            // directory handle (which otherwise prevents Windows repo moves).
+            *selection = None;
+        }
+        result
     }
 }
 

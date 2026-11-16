@@ -35,6 +35,13 @@ as `licenses/yaml-ISC.txt` in the same app artifact directories.
 The Tauri JavaScript API is distributed under its MIT license option.
 Its complete notice is shipped as `licenses/Tauri-API-MIT.txt`.
 
+## Native folder picker
+
+The folder picker uses tauri-plugin-dialog 2.8.4, tauri-plugin-fs 2.7.1 and
+rfd 0.17.2 under their MIT license options. Their complete upstream notices
+are shipped as `licenses/tauri-plugin-dialog-MIT.txt`,
+`licenses/tauri-plugin-fs-MIT.txt` and `licenses/rfd-MIT.txt`.
+
 ## Embedded Git
 
 The app includes git2 0.21.0 and libgit2-sys 0.18.8+1.9.7 under their MIT

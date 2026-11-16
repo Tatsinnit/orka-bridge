@@ -26,10 +26,22 @@ export async function creationRoot(): Promise<string | undefined> {
   if (!isTauri()) return;
   try { const path: unknown = await invoke('agent_creation_root'); if (displayPath(path)) return path; } catch { /* Display only. */ }
 }
-export async function createDocument(name: string, model?: string): Promise<string> {
+export type RepoSelection = { id: string; path: string };
+export async function pickRepo(): Promise<RepoSelection | null> {
   if (isTauri()) {
     try {
-      const id: unknown = await invoke('agent_create', { name, ...(model ? { model } : {}) });
+      const value: unknown = await invoke('agent_pick_repo');
+      if (value === null) return null;
+      if (typeof value === 'object' && value !== null && Object.keys(value).sort().join(',') === 'id,path'
+        && 'id' in value && isDocumentId(value.id) && 'path' in value && displayPath(value.path)) return { id: value.id, path: value.path };
+    } catch { /* Native paths and Git diagnostics are not UI text. */ }
+  }
+  throw Error('Choose an existing local Git working checkout. Check that the folder is accessible, then try again.');
+}
+export async function createDocument(name: string, model?: string, repoSelection?: string): Promise<string> {
+  if (isTauri()) {
+    try {
+      const id: unknown = await invoke('agent_create', { name, ...(model ? { model } : {}), ...(repoSelection ? { repoSelection } : {}) });
       if (isDocumentId(id)) return id;
     } catch { /* Do not echo native paths or file contents. */ }
   }

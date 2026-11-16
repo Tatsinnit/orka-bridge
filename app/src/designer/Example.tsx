@@ -2,7 +2,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { SAMPLE_DOCUMENT_ID, agentCall, agentInfo, type AgentPair, type SaveState } from './agent-api';
+import { SAMPLE_DOCUMENT_ID, REPO_SAVE_CONFLICT, agentCall, agentInfo, storageCopy, type AgentPair, type SaveState } from './agent-api';
 import Run from './Run';
 import Chat from './Chat';
 import { readWorkspaceCatalog, type WorkspaceCatalogReply } from '../catalog';
@@ -84,6 +84,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     requestAnimationFrame(() => { const panel = document.querySelector<HTMLElement>('.send-panel'); panel?.focus(); panel?.scrollIntoView?.({ block: 'start' }); });
   };
   const latest = useRef(''); const saved = useRef(''); const busy = useRef(false);
+  const confirmed = useRef<AgentPair | undefined>(undefined);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const lineEnding = useRef('\n'); const needsCommit = useRef(false);
   const [openAttempt, setOpenAttempt] = useState(0);
@@ -94,7 +95,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     const open = agentCall('agent_open', undefined, boundDocument);
     void open.then(value => {
       if (!mounted || request !== reloadEpoch.current) return;
-      setPair(value); setDraft(value.agent); latest.current = saved.current = value.agent;
+      confirmed.current = value; setPair(value); setDraft(value.agent); latest.current = saved.current = value.agent;
       lineEnding.current = value.agent.includes('\r\n') ? '\r\n' : '\n'; onPair?.(value, boundDocument);
     }, () => { if (mounted && request === reloadEpoch.current) { setError('Your agent folder could not be opened. Open it again from Designer.'); onPair?.(undefined, boundDocument); } });
     return () => { mounted = false; };
@@ -110,14 +111,15 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     try {
       do {
         const content = latest.current;
-        const value = await agentCall('agent_save', content, boundDocument);
+        const expectedSource = confirmed.current?.storage === 'repo' ? confirmed.current.source : undefined;
+        const value = await agentCall('agent_save', content, boundDocument, expectedSource);
         if (value.agent !== content) throw Error('Save did not confirm the current file.');
-        saved.current = content; setPair(value); onPair?.(value, boundDocument);
+        saved.current = content; confirmed.current = value; setPair(value); onPair?.(value, boundDocument);
         // Fingerprinted replies let Run distinguish older results from unsaved edits.
         if (value.source) setStale(latest.current !== content);
       } while (latest.current !== saved.current);
       needsCommit.current = false; setSaveState('saved');
-    } catch { needsCommit.current = true; setSaveState('error'); setError('Your changes could not be saved. Your draft is still here.'); }
+    } catch (failure) { needsCommit.current = true; setSaveState('error'); setError(failure instanceof Error && failure.message === REPO_SAVE_CONFLICT ? REPO_SAVE_CONFLICT : 'Your changes could not be saved. Your draft is still here.'); }
     finally { busy.current = false; }
   }, [onPair, boundDocument]);
   useEffect(() => {
@@ -142,7 +144,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
       setSelectionNeeded(false); setSelectionError(undefined);
       if (next === boundDocument) return;
       reloadEpoch.current++; reloadAdmitted.current = false; setReloading(false);
-      setPair(undefined); setDraft(''); latest.current = saved.current = '';
+      confirmed.current = undefined; setPair(undefined); setDraft(''); latest.current = saved.current = '';
       setLocalRun(undefined); setStale(false); setError(undefined); setSendOpen(false); setSelectionError(undefined);
       onPair?.(undefined, next); onRun?.(undefined, next); setBoundDocument(next); onDocument?.(next);
     }, () => {
@@ -185,7 +187,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
       // A file read must not replace edits made while it was in flight, including
       // the separate soul field whose draft is not yet in latest.current.
       if (request !== reloadEpoch.current || latest.current !== before || saved.current !== before || busy.current || needsCommit.current || pendingSoulCurrent.current) return;
-      setPair(value); setDraft(value.agent); latest.current = saved.current = value.agent;
+      confirmed.current = value; setPair(value); setDraft(value.agent); latest.current = saved.current = value.agent;
       lineEnding.current = value.agent.includes('\r\n') ? '\r\n' : '\n';
       setStale(false); onPair?.(value, boundDocument);
     } catch (failure) {
@@ -199,6 +201,8 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     if (sampleRevision && boundDocument === SAMPLE_DOCUMENT_ID) void reloadSource(true).catch(() => { /* Keep the current draft on an unreadable refresh. */ });
   }, [sampleRevision, boundDocument]);
   const info = { ...agentInfo(draft), description: readForm(draft).description };
+  const nameCounts = new Map<string, number>();
+  for (const entry of entries ?? []) nameCounts.set(entry.name, (nameCounts.get(entry.name) ?? 0) + 1);
   const saveLabel = pendingSoul ? 'Unsaved changes' : { saved: '', dirty: 'Unsaved changes', saving: 'Saving…', error: 'Not saved' }[saveState];
   const sendBlocked = !pair ? error ? 'Reopen your agent before sending' : 'Wait for your agent folder to open'
     : reloading ? 'Wait for your saved files to reload' : setupPending ? 'Wait for the local cluster to be ready before sending'
@@ -225,7 +229,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
         </div>
         {entries && <label className="agent-selector"><span className="sr-only">Agent</span><select className="field" disabled={selecting} title={selecting ? 'Opening your agent' : undefined} value={boundDocument} onChange={event => { setSelectionError(undefined); setWantsCreate(false); onNewAgentHandled?.(); requestDocument(event.target.value); }}>
           {!entries.some(entry => entry.id === boundDocument) && <option value={boundDocument}>{pair?.name ?? 'Current agent'}</option>}
-          {entries.map(entry => <option key={entry.id} value={entry.id}>{entry.name}{entry.available ? '' : ' (unavailable)'}</option>)}
+          {entries.map(entry => <option key={entry.id} value={entry.id}>{entry.name}{(nameCounts.get(entry.name) ?? 0) > 1 ? ` (${entry.path ?? 'location unavailable'})` : ''}{entry.available ? '' : ' (unavailable)'}</option>)}
         </select></label>}
         <Button type="button" kind="secondary" className="new-agent-entry" onClick={() => setWantsCreate(true)}>New agent</Button>
         {actions}
@@ -249,6 +253,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
           <AgentParts source={draft} path={pair.path} documentId={boundDocument} readOnly={false} setupPending={setupPending} catalog={currentCatalog?.reply} catalogLoading={catalogEnabled && !currentCatalog} remote={remote} onPendingEdit={observePendingSoul} onChange={edit} />
           {currentCatalog && (!currentCatalog.reply || currentCatalog.reply.models.state === 'unavailable' || currentCatalog.reply.tools.state === 'unavailable') && <Button type="button" kind="secondary" onClick={() => setCatalogAttempt(attempt => attempt + 1)}>Refresh tools and models</Button>}
         </div>
+        {pair.storage && <p className="muted">{storageCopy[pair.storage]}</p>}
         {error && <div className="save-error"><p role="alert">{error}</p><Button kind="primary" className="action-spaced" type="button" onClick={() => { void flush(true); }}>Try saving again</Button></div>}
       </div>
       <div className="designer-checks" hidden={!remote && !sendOpen && !sendVisible}>

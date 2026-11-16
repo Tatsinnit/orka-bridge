@@ -150,13 +150,59 @@ async fn agent_selected(state: tauri::State<'_, Arc<Agents>>) -> Result<Document
 async fn agent_create(
     name: String,
     model: Option<String>,
+    repo_selection: Option<bridge_runtime_protocol::Uuid>,
     state: tauri::State<'_, Arc<Agents>>,
 ) -> Result<DocumentId, &'static str> {
     let agents = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || agents.create(&name, model.as_deref()))
-        .await
-        .map_err(|_| "The agent could not be created. Existing files have been kept.")?
+    tauri::async_runtime::spawn_blocking(move || {
+        agents.create_with_repo(&name, model.as_deref(), repo_selection)
+    })
+    .await
+    .map_err(|_| "The agent could not be created. Existing files have been kept.")?
 }
+#[derive(Default)]
+struct RepoPicker(Arc<tokio::sync::Mutex<()>>);
+
+#[tauri::command]
+async fn agent_pick_repo(
+    window: tauri::WebviewWindow,
+    picker: tauri::State<'_, RepoPicker>,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<Option<bridge_engine::agents::RepoSelection>, &'static str> {
+    use tauri_plugin_dialog::DialogExt;
+    if window.label() != "main" {
+        return Err("The repo picker is unavailable.");
+    }
+    let admission = picker
+        .0
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| "The repo picker is already open.")?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Choose your repo")
+        .pick_folder(move |path| {
+            // Keep admission with the actual dialog even if its IPC future is dropped.
+            let _ = send.send((path, admission));
+        });
+    let (path, _admission) = receive
+        .await
+        .map_err(|_| "The repo picker is unavailable. Try again.")?;
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let path = path
+        .into_path()
+        .map_err(|_| "Choose a local Git working checkout.")?;
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.bind_repo(&path).map(Some))
+        .await
+        .map_err(|_| "The repo could not be selected. Try again.")?
+}
+
 #[tauri::command]
 async fn agent_select(
     document_id: DocumentId,
@@ -185,12 +231,17 @@ async fn agent_open(
 async fn agent_save(
     document_id: DocumentId,
     content: String,
+    expected_source: Option<bridge_runtime_protocol::SnapshotId>,
     state: tauri::State<'_, Arc<Agents>>,
 ) -> Result<AgentPair, &'static str> {
     let agents = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || agents.get(document_id)?.save(content))
-        .await
-        .map_err(|_| "The local agent folder is unavailable.")?
+    tauri::async_runtime::spawn_blocking(move || {
+        agents
+            .get(document_id)?
+            .save_with_source(content, expected_source)
+    })
+    .await
+    .map_err(|_| "The local agent folder is unavailable.")?
 }
 
 #[tauri::command]
@@ -551,6 +602,8 @@ fn main() {
             }
         })
         .manage(shutdown.clone())
+        .manage(RepoPicker::default())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             lifecycle::show(app)
         }))
@@ -636,6 +689,7 @@ fn main() {
             overview_places,
             agent_selected,
             agent_create,
+            agent_pick_repo,
             agent_select,
             agent_creation_root,
             agent_open,

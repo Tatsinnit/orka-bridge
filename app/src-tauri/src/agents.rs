@@ -18,6 +18,9 @@ use std::{
 #[path = "agents_creation.rs"]
 mod creation;
 use creation::Pending;
+#[path = "agents_repo.rs"]
+pub(crate) mod repo;
+pub use repo::RepoSelection;
 
 #[cfg(test)]
 #[path = "agents_creation_tests.rs"]
@@ -63,12 +66,32 @@ pub struct AgentEntry {
     pub path: Option<String>,
     pub available: bool,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Storage {
+    #[default]
     Bridge,
+    Repo(repo::Binding),
 }
-#[derive(Clone, Serialize, Deserialize)]
+impl Storage {
+    fn is_bridge(&self) -> bool {
+        matches!(self, Self::Bridge)
+    }
+    fn valid_name(&self, name: &str) -> bool {
+        valid_name(name)
+            && match self {
+                Self::Bridge => name != "web-reader",
+                Self::Repo(binding) => binding.valid(),
+            }
+    }
+    fn destination(&self) -> Option<&creation::Identity> {
+        match self {
+            Self::Bridge => None,
+            Self::Repo(binding) => Some(&binding.parent),
+        }
+    }
+}
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Registration {
     id: DocumentId,
@@ -117,15 +140,16 @@ impl Registry {
         if value.version != 1
             || value.agents.iter().any(|entry| {
                 entry.id == DocumentId::SAMPLE
-                    || !valid_name(&entry.name)
+                    || !entry.storage.valid_name(&entry.name)
                     || !ids.insert(entry.id)
-                    || !names.insert(&entry.name)
+                    || !names.insert((entry.storage.destination(), &entry.name))
             })
             || (value.selected != DocumentId::SAMPLE && !ids.contains(&value.selected))
-            || value
-                .pending
-                .iter()
-                .any(|entry| !entry.valid() || !ids.insert(entry.id) || !names.insert(&entry.name))
+            || value.pending.iter().any(|entry| {
+                !entry.valid()
+                    || !ids.insert(entry.id)
+                    || !names.insert((entry.storage.destination(), &entry.name))
+            })
         {
             return Err(invalid());
         }
@@ -138,7 +162,8 @@ pub struct Agents {
     home: Option<PathBuf>,
     app_data: Option<PathBuf>,
     sample: Arc<AgentFolder>,
-    access: Mutex<HashMap<DocumentId, (String, Arc<AgentFolder>)>>,
+    access: Mutex<HashMap<DocumentId, (Registration, Arc<AgentFolder>)>>,
+    selection: Mutex<Option<repo::Selection>>,
 }
 impl Agents {
     pub fn new(home: Option<PathBuf>, app_data: Option<PathBuf>) -> Self {
@@ -147,6 +172,7 @@ impl Agents {
             home,
             app_data,
             access: Mutex::new(HashMap::new()),
+            selection: Mutex::new(None),
         }
     }
     pub fn sample(&self) -> Arc<AgentFolder> {
@@ -223,6 +249,19 @@ impl Agents {
         self.reconcile(&mut registry, &root)?;
         work(&mut registry, &root)
     }
+    fn folder(&self, entry: &Registration) -> Result<AgentFolder> {
+        match &entry.storage {
+            Storage::Bridge => AgentFolder::created(self.home.clone(), &entry.name, entry.id),
+            Storage::Repo(binding) => AgentFolder::in_repo(
+                &entry.name,
+                entry.id,
+                repo::Access::new(
+                    binding.clone(),
+                    self.root(false).map_err(|_| ERROR)?.ok_or(ERROR)?,
+                ),
+            ),
+        }
+    }
     /// One registry snapshot and one inspection per owned folder; no selection writes.
     pub fn inspect_files<T>(
         &self,
@@ -241,7 +280,7 @@ impl Agents {
         };
         observe(&self.sample);
         for entry in registry.agents {
-            let folder = AgentFolder::created(self.home.clone(), &entry.name, entry.id)?;
+            let folder = self.folder(&entry)?;
             observe(&folder);
         }
         Ok(files)
@@ -255,7 +294,7 @@ impl Agents {
             available: self.sample.available(),
         }];
         for entry in registry.agents {
-            let folder = AgentFolder::created(self.home.clone(), &entry.name, entry.id)?;
+            let folder = self.folder(&entry)?;
             entries.push(AgentEntry {
                 id: entry.id,
                 name: entry.name,
@@ -276,13 +315,13 @@ impl Agents {
             .iter()
             .find(|entry| entry.id == id)
             .ok_or("The agent is not registered.")?;
-        if let Some((name, folder)) = cache.get(&id) {
-            if name == &entry.name {
+        if let Some((registration, folder)) = cache.get(&id) {
+            if registration == entry {
                 return Ok(folder.clone());
             }
         }
-        let folder = Arc::new(AgentFolder::created(self.home.clone(), &entry.name, id)?);
-        cache.insert(id, (entry.name.clone(), folder.clone()));
+        let folder = Arc::new(self.folder(entry)?);
+        cache.insert(id, (entry.clone(), folder.clone()));
         Ok(folder)
     }
     pub fn selected(&self) -> Result<DocumentId> {
@@ -299,7 +338,7 @@ impl Agents {
     }
     /// Trusted native seam for an already-published owned folder; no creation or import.
     pub fn register_created(&self, name: &str) -> Result<DocumentId> {
-        if !valid_name(name) {
+        if !Storage::Bridge.valid_name(name) {
             return Err("The agent name is invalid.");
         }
         self.mutate(|registry, _| {
@@ -307,14 +346,14 @@ impl Agents {
             if registry
                 .pending
                 .iter()
-                .any(|entry| entry.id == id || entry.name == name)
+                .any(|entry| entry.id == id || (entry.storage.is_bridge() && entry.name == name))
             {
                 return Err("The agent has an unfinished creation. Choose another name.");
             }
             if let Some(entry) = registry
                 .agents
                 .iter()
-                .find(|entry| entry.id == id || entry.name == name)
+                .find(|entry| entry.id == id || (entry.storage.is_bridge() && entry.name == name))
             {
                 return if entry.id == id && entry.name == name {
                     Ok(id)

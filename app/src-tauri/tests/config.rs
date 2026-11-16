@@ -53,6 +53,9 @@ fn release_context_embeds_fonts_and_all_license_notices() {
         "licenses/libz-sys-MIT.txt",
         "licenses/zlib-LICENSE.txt",
         "licenses/sha1-MIT.txt",
+        "licenses/tauri-plugin-dialog-MIT.txt",
+        "licenses/tauri-plugin-fs-MIT.txt",
+        "licenses/rfd-MIT.txt",
     ] {
         assert!(!assets
             .get(&name.into())
@@ -103,6 +106,10 @@ fn agent_commands_are_granted_only_to_local_main_window() {
         "agent_chat_new",
         "agents_list",
         "agent_selected",
+        "agent_create",
+        "agent_select",
+        "agent_creation_root",
+        "agent_pick_repo",
         "agent_open",
         "agent_save",
         "agent_reveal",
@@ -127,7 +134,15 @@ fn agent_commands_are_granted_only_to_local_main_window() {
             )
             .is_none());
     }
-    for command in ["agent_chat", "agent_chat_request", "agent_chat_delete"] {
+    for command in [
+        "agent_chat",
+        "agent_chat_request",
+        "agent_chat_delete",
+        "plugin:dialog|open",
+        "plugin:dialog|save",
+        "plugin:fs|read_file",
+        "plugin:fs|write_file",
+    ] {
         assert!(authority
             .resolve_access(command, "main", "main", &Origin::Local)
             .is_none());
