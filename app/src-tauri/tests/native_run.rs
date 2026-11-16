@@ -1165,14 +1165,13 @@ async fn credit_phase_uses_only_failed_task_status_evidence_and_never_copies_it(
             "Succeeded",
         ),
     ] {
-        let fixture = Fixture::start(Behavior {
+        let transport = VerdictTransport::new(Behavior {
             phase,
             message,
             answer: Some(answer),
             ..Behavior::default()
-        })
-        .await;
-        let runner = fixture.runner();
+        });
+        let runner = NativeRunner::with_transport(&transport);
         let handle = runner.submit(pair()).await.unwrap();
         let report = runner.observe(&handle).await.unwrap();
         assert_eq!(report.cases[0].phase, expected, "{message}");
@@ -1211,6 +1210,163 @@ async fn cancelled_is_neutral_has_no_assertions_and_reads_evidence_once() {
             .count(),
         1
     );
+}
+
+// Verdict proofs use raw responses without an unrelated loopback scheduling deadline.
+// Real HTTP mapping, status and timeout behavior remain in the HTTP fixture tests.
+struct VerdictTransport {
+    behavior: Behavior,
+    objects: Mutex<HashMap<String, Value>>,
+    event_reads: Mutex<usize>,
+}
+impl VerdictTransport {
+    fn new(behavior: Behavior) -> Self {
+        assert!(behavior.fault.is_empty());
+        Self {
+            behavior,
+            objects: Mutex::new(HashMap::new()),
+            event_reads: Mutex::new(0),
+        }
+    }
+}
+impl RunTransport for &VerdictTransport {
+    fn namespace(&self) -> &str {
+        "sandbox"
+    }
+    fn provider(&self) -> &str {
+        "provider"
+    }
+    fn limits(&self) -> RunLimits {
+        RunLimits {
+            request_timeout: Duration::from_millis(50),
+            operation_timeout: Duration::from_secs(2),
+            poll_interval: Duration::from_millis(1),
+        }
+    }
+    fn request<'a>(
+        &'a self,
+        path: &'a str,
+        after: Option<u64>,
+        body: Option<&'a Value>,
+        _: tokio::time::Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async move {
+            let b = self.behavior;
+            let mut objects = self.objects.lock().unwrap();
+            if let Some(body) = body {
+                assert!(matches!(path, "agents" | "tasks"), "{path}");
+                let mut resource = json!({
+                    "apiVersion": "core.orka.ai/v1alpha1",
+                    "kind": if path == "agents" { "Agent" } else { "Task" },
+                    "metadata": {"name": body["name"], "namespace": body["namespace"],
+                        "uid": format!("uid-{}", body["name"].as_str().unwrap()), "generation": 1},
+                    "spec": body["spec"], "status": {"phase": b.phase, "message": b.message}
+                });
+                if path == "agents" {
+                    resource["spec"]["defaulted"] = json!(true);
+                } else {
+                    resource["spec"]["timeout"] = json!("2m0s");
+                    resource["spec"]["retryPolicy"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("maxRetries");
+                }
+                objects.insert(
+                    format!("{path}/{}", body["name"].as_str().unwrap()),
+                    resource.clone(),
+                );
+                resource.as_object_mut().unwrap().remove("apiVersion");
+                resource.as_object_mut().unwrap().remove("kind");
+                return Ok(resource);
+            }
+            if path.ends_with("/result") {
+                return b
+                    .answer
+                    .map(|answer| json!({"result": answer}))
+                    .ok_or(ErrorKind::NotFound);
+            }
+            if let Some(task_path) = path.strip_suffix("/events") {
+                let mut reads = self.event_reads.lock().unwrap();
+                *reads += 1;
+                if b.events == "disabled" {
+                    return Err(ErrorKind::Response);
+                }
+                let task = task_path.strip_prefix("tasks/").unwrap();
+                let agent = objects.values().find(|o| o["kind"] == "Agent").unwrap()["metadata"]
+                    ["name"]
+                    .clone();
+                let after = after.unwrap();
+                let seq = after + 1;
+                let typ = match b.events {
+                    "started" => "ToolCallStarted",
+                    "failed" => "ToolCallFailed",
+                    _ => "ToolCallCompleted",
+                };
+                let mut event = json!({"namespace":"sandbox", "streamType":"task", "streamID":task,
+                    "seq":seq, "type":typ, "taskName":task, "agentName":agent,
+                    "toolName":"web_fetch", "toolCallID":"call-1"});
+                match b.events {
+                    "wrong-task" => event["taskName"] = json!("unrelated"),
+                    "wrong-agent" => event["agentName"] = json!("unrelated"),
+                    "wrong-event-stream" => event["streamID"] = json!("unrelated"),
+                    "no-call-id" => event["toolCallID"] = json!(""),
+                    "gap" => event["seq"] = json!(seq + 1),
+                    "repeated-seq" => event["seq"] = json!(after),
+                    "complete" | "missing" | "late" | "started" | "failed" | "wrong-stream"
+                    | "wrong-namespace" | "wrong-cursor" => {}
+                    other => panic!("unsupported verdict events: {other}"),
+                }
+                let empty = b.events == "missing" || (b.events == "late" && *reads < 3);
+                let mut page = json!({"namespace":"sandbox", "streamType":"task", "streamID":task,
+                    "afterSeq":after, "latestSeq":if empty {after} else {seq},
+                    "events":if empty {vec![]} else {vec![event]}});
+                match b.events {
+                    "wrong-stream" => page["streamID"] = json!("unrelated"),
+                    "wrong-namespace" => page["namespace"] = json!("elsewhere"),
+                    "wrong-cursor" => page["afterSeq"] = json!(99),
+                    _ => {}
+                }
+                return Ok(page);
+            }
+            Ok(objects
+                .get(path)
+                .unwrap_or_else(|| panic!("unexpected verdict GET {path}"))
+                .clone())
+        })
+    }
+}
+
+#[tokio::test]
+async fn http_missing_result_and_disabled_events_remain_unknown() {
+    for (behavior, assertion) in [
+        (
+            Behavior {
+                answer: None,
+                ..Behavior::default()
+            },
+            0,
+        ),
+        (
+            Behavior {
+                events: "disabled",
+                ..Behavior::default()
+            },
+            1,
+        ),
+    ] {
+        let fixture = Fixture::start(behavior).await;
+        let runner = fixture.runner();
+        let h = runner.submit(pair()).await.unwrap();
+        let report = runner.observe(&h).await.unwrap();
+        assert_eq!(
+            report.cases[0].assertions[assertion].verdict,
+            Verdict::Unknown
+        );
+        assert_eq!(report.verdict, Verdict::Unknown);
+        let requests = fixture.requests.lock().unwrap();
+        assert!(requests.iter().any(|(p, _)| p.contains("/result?")));
+        assert!(requests.iter().any(|(p, _)| p.contains("/events?")));
+    }
 }
 
 #[tokio::test]
@@ -1264,10 +1420,13 @@ async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evi
             Verdict::Passed,
         ),
     ] {
-        let fixture = Fixture::start(behavior).await;
-        let runner = fixture.runner();
+        let transport = VerdictTransport::new(behavior);
+        let runner = NativeRunner::with_transport(&transport);
         let h = runner.submit(pair()).await.unwrap();
         let report = runner.observe(&h).await.unwrap();
+        if behavior.events == "late" {
+            assert_eq!(*transport.event_reads.lock().unwrap(), 3);
+        }
         assert_eq!(report.cases[0].assertions[0].verdict, contains);
         assert_eq!(report.cases[0].assertions[1].verdict, tool);
         if tool == Verdict::Passed {
@@ -1293,12 +1452,11 @@ async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evi
         "gap",
         "repeated-seq",
     ] {
-        let fixture = Fixture::start(Behavior {
+        let transport = VerdictTransport::new(Behavior {
             events,
             ..Behavior::default()
-        })
-        .await;
-        let runner = fixture.runner();
+        });
+        let runner = NativeRunner::with_transport(&transport);
         let h = runner.submit(pair()).await.unwrap();
         let report = runner.observe(&h).await.unwrap();
         assert_eq!(
