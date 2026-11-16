@@ -116,13 +116,20 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
         <label htmlFor={`${id}-search`}>Find a tool</label>
         <input className="field" id={`${id}-search`} type="search" autoFocus value={query} onChange={event => setQuery(event.target.value)} />
         <p className="muted">Choose a tool to add to your agent.</p>
-        <ul aria-label="Cluster tools">{choices?.map(tool => <li key={`${tool.kind}:${tool.name}`}><button type="button" disabled={!remote && unsupportedLocalTool(tool.name)} onClick={() => { change(addTool(source, tool.name, tool.kind)); close(); }}>
-          <span className="tool-option-heading"><span>{tool.kind === 'builtin' ? labelFor(tool.name) : tool.name}</span><span className="muted">{tool.kind === 'builtin' ? 'Built-in' : 'Cluster tool'}</span></span>
-          {tool.kind === 'builtin' && labelFor(tool.name) !== tool.name && <code>{tool.name}</code>}
-          <span className="tool-description">{toolDescription(tool)}</span>
-          {!remote && unsupportedLocalTool(tool.name) && <span className="tool-description">{unsupportedToolReason}</span>}
-          {tool.available === false && <span className="muted">Observed unavailable</span>}
-        </button></li>)}</ul>
+        <ul aria-label="Cluster tools">{choices?.map((tool, index) => {
+          const blocked = !remote && unsupportedLocalTool(tool.name);
+          const label = tool.kind === 'builtin' ? labelFor(tool.name) : tool.name;
+          const reasonId = `${id}-tool-reason-${index}`;
+          return <li key={`${tool.kind}:${tool.name}`}><div role={blocked ? 'group' : undefined} tabIndex={blocked ? 0 : undefined} aria-label={blocked ? label : undefined} aria-describedby={blocked ? reasonId : undefined}>
+            <button type="button" disabled={blocked} onClick={() => { change(addTool(source, tool.name, tool.kind)); close(); }}>
+              <span className="tool-option-heading"><span>{label}</span><span className="muted">{tool.kind === 'builtin' ? 'Built-in' : 'Cluster tool'}</span></span>
+              {tool.kind === 'builtin' && labelFor(tool.name) !== tool.name && <code>{tool.name}</code>}
+              <span className="tool-description">{toolDescription(tool)}</span>
+              {tool.available === false && <span className="muted">Observed unavailable</span>}
+            </button>
+            {blocked && <p className="tool-unavailable-reason" id={reasonId}>{unsupportedToolReason}</p>}
+          </div></li>;
+        })}</ul>
         {!choices?.length && <p className="muted">{tools?.length ? 'No matching tools to add.' : 'No tools listed by this cluster.'}</p>}
       </div>}
     </section>

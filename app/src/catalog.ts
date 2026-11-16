@@ -44,11 +44,21 @@ function catalog(v: unknown, remote: boolean): v is WorkspaceCatalogReply {
 export async function readWorkspaceCatalog(signal: AbortSignal, remote?: { targetId: string; providerId: string }): Promise<WorkspaceCatalogReply | undefined> {
   const id = (value: string) => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
   if (signal.aborted || !isTauri() || remote && (!id(remote.targetId) || !id(remote.providerId))) return undefined;
-  try {
-    const value: unknown = remote ? await invoke('cluster_catalog', remote) : await invoke('workspace_catalog');
-    if (!signal.aborted && catalog(value, !!remote)) return value;
-  } catch {
-    // Native/guest diagnostics and arbitrary error text never reach the renderer.
+  while (!signal.aborted) {
+    try {
+      const value: unknown = remote ? await invoke('cluster_catalog', remote) : await invoke('workspace_catalog');
+      return !signal.aborted && catalog(value, !!remote) ? value : undefined;
+    } catch (failure) {
+      // Busy means another native operation owns the connection, not a failed catalog.
+      // Never replay a guest/binding failure or match arbitrary diagnostic text.
+      if (remote || failure !== 'catalogBusy' || signal.aborted) return undefined;
+      await new Promise<void>(resolve => {
+        const finish = () => { clearTimeout(timer); signal.removeEventListener('abort', finish); resolve(); };
+        const timer = setTimeout(finish, 500);
+        signal.addEventListener('abort', finish, { once: true });
+        if (signal.aborted) finish();
+      });
+    }
   }
   return undefined;
 }

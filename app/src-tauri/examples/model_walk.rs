@@ -185,6 +185,7 @@ fn main() {
         std::env::var_os("BRIDGE_MODEL_CHECK_RELEASE").map(std::path::PathBuf::from);
     // A bounded state selector for setup renderer captures, never part of the app.
     let setup_progress = std::env::var_os("BRIDGE_SETUP_PROGRESS").map(std::path::PathBuf::from);
+    let catalog_release = std::env::var_os("BRIDGE_CATALOG_RELEASE").map(std::path::PathBuf::from);
     // The driver's selector for the automatic first-test outcome: absent is the fixed failed report.
     let first_outcome = std::env::var_os("BRIDGE_FIRST_TEST_OUTCOME").map(std::path::PathBuf::from);
     let outcome = move || {
@@ -285,14 +286,21 @@ fn main() {
                     json!(null)
                 }
                 // Catalog choices are synthetic and never execute a tool or model.
-                "workspace_catalog" => json!({
+                "workspace_catalog" => {
+                    if catalog_release.as_ref().is_some_and(|path| !path.is_file()) {
+                        invoke.resolver.reject("catalogBusy");
+                        return true;
+                    }
+                    json!({
                     "defaultModel":"gpt-5.6-terra",
                     "models":{"state":"ready", "items":[{"id":"gpt-5.6-terra"}]},
                     "tools":{"state":"ready", "items":[
                         {"kind":"builtin", "name":"web_fetch", "description":"Read a web page"},
-                        {"kind":"builtin", "name":"file_read", "description":"Read a file"}
+                        {"kind":"builtin", "name":"file_read", "description":"Read a file"},
+                        {"kind":"builtin", "name":"request_approval", "description":"Ask a person to approve an action."}
                     ]}
-                }),
+                })
+                },
                 // Only a synthetic destination for the failed-local-test popover walk.
                 // No Send command is implemented: Fix it first and Escape must not submit.
                 "cluster_places" => json!({"places":[{

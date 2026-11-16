@@ -70,14 +70,37 @@ async fn catalog_does_not_probe_unsupported_or_disconnected_workspaces() {
     *vm.inner.session.lock().await = Some(Box::new(NoProbe));
     assert_eq!(
         vm.workspace_catalog(setup).await.unwrap_err(),
-        if supported {
-            "The connected workspace catalog is unavailable."
-        } else {
-            "The workspace catalog is unavailable for this image."
-        }
+        crate::catalog::CatalogError::CatalogUnavailable
     );
     assert_eq!(vm.model_connected(), connected);
 }
+#[tokio::test]
+#[cfg(any(
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+async fn catalog_reports_busy_without_queuing_or_probing_the_owned_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let setup = Arc::new(SetupStore::new(Some(dir.path().into())));
+    let vm = LocalVm::unavailable();
+    {
+        let mut state = vm.inner.state.lock().unwrap();
+        state.phase = LocalVmStatus::Ready;
+        state.model_connected = true;
+    }
+    let held = vm.inner.session.lock().await;
+    assert_eq!(
+        vm.workspace_catalog(setup.clone()).await.unwrap_err(),
+        crate::catalog::CatalogError::CatalogBusy
+    );
+    drop(held);
+    // The slot is now free but has no live session: this is not a busy retry.
+    assert_eq!(
+        vm.workspace_catalog(setup).await.unwrap_err(),
+        crate::catalog::CatalogError::CatalogUnavailable
+    );
+}
+
 #[test]
 fn reset_result_only_clears_acknowledgment_and_stale_failure_on_success() {
     let vm = LocalVm::unavailable();

@@ -1,9 +1,10 @@
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { readWorkspaceCatalog } from './catalog';
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), native: true }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: ipc.invoke, isTauri: () => ipc.native }));
 const fixture = { defaultModel: 'm:exact', models: { state: 'ready', items: [{ id: 'm:exact' }, { id: 'other', pickerEnabled: false, chatSupported: true }] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch' }, { kind: 'tool', name: 'custom', description: '<script>plain text</script>', available: false }] } };
 beforeEach(() => { ipc.invoke.mockReset(); ipc.native = true; });
+afterEach(() => { vi.useRealTimers(); });
 const read = () => readWorkspaceCatalog(new AbortController().signal);
 const remote = { targetId: '39dc68be-f597-4535-8ebd-7759f544b27a', providerId: '39dc68be-f597-4535-8ebd-7759f544b27b' };
 test('remote catalog uses only selected native ids and permits an absent configured default', async () => {
@@ -49,6 +50,42 @@ test('a workspace change aborts an outstanding read and a pre-aborted read never
   controller.abort(); finish(fixture); expect(await pending).toBeUndefined();
   ipc.invoke.mockClear(); expect(await readWorkspaceCatalog(controller.signal)).toBeUndefined();
   expect(ipc.invoke).not.toHaveBeenCalled();
+});
+test('a busy native connection keeps the first catalog read pending until released', async () => {
+  vi.useFakeTimers();
+  ipc.invoke.mockRejectedValueOnce('catalogBusy').mockRejectedValueOnce('catalogBusy').mockResolvedValue(fixture);
+  let settled = false;
+  const pending = read().then(value => { settled = true; return value; });
+  await vi.advanceTimersByTimeAsync(499);
+  expect(settled).toBe(false); expect(ipc.invoke).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(settled).toBe(false); expect(ipc.invoke).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(await pending).toEqual(fixture);
+  expect(ipc.invoke).toHaveBeenCalledTimes(3);
+});
+test.each(['waiting', 'in-flight'])('aborting a busy catalog while %s prevents further native calls', async phase => {
+  vi.useFakeTimers(); const controller = new AbortController();
+  let fail!: (reason: unknown) => void;
+  ipc.invoke.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+  const pending = readWorkspaceCatalog(controller.signal);
+  if (phase === 'waiting') { fail('catalogBusy'); await vi.advanceTimersByTimeAsync(0); }
+  controller.abort();
+  if (phase === 'in-flight') fail('catalogBusy');
+  expect(await pending).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(ipc.invoke).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+});
+test.each(['catalogUnavailable', 'unknown', { message: 'catalogBusy' }])('actual failures never retry (%j)', async failure => {
+  vi.useFakeTimers(); ipc.invoke.mockRejectedValue(failure);
+  expect(await read()).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(ipc.invoke).toHaveBeenCalledTimes(1);
+});
+test('a remote failure cannot opt into the local busy observation loop', async () => {
+  vi.useFakeTimers(); ipc.invoke.mockRejectedValue('catalogBusy');
+  expect(await readWorkspaceCatalog(new AbortController().signal, remote)).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(5000); expect(ipc.invoke).toHaveBeenCalledTimes(1);
 });
 test('preview and native failure return no untrusted error text', async () => {
   ipc.native = false; expect(await read()).toBeUndefined(); expect(ipc.invoke).not.toHaveBeenCalled();

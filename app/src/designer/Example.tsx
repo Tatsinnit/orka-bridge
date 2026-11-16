@@ -21,9 +21,9 @@ import Send, { SendEntry, SendHistory } from '../clusters/Send';
 
 export type DocumentAction = { id: number; documentId: string; action: 'open' | 'chat' | 'run' };
 
-export default function Example({ sampleRevision = 0, actionRequest, onActionHandled, agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, onStopLocalCluster, actions, onPair, onRun, onSaveState, onStale, onSeeInOverview }: {
+export default function Example({ sampleRevision = 0, actionRequest, onActionHandled, agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogPaused = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, onStopLocalCluster, actions, onPair, onRun, onSaveState, onStale, onSeeInOverview }: {
   actionRequest?: DocumentAction; onActionHandled?: (id: number) => void;
-  sampleRevision?: number; agentsRevision?: number; onRegistered?: () => void; documentId?: string; persistInitialSelection?: boolean; openDocumentRequest?: number; newAgentRequest?: number; onNewAgentHandled?: () => void; onDocument?: (id: string) => void; active?: boolean; setupPending?: boolean; remote?: boolean; catalogKey?: number; place?: SelectedPlace; onChooseCluster?: () => void; onStopLocalCluster?: () => void; actions?: ReactNode;
+  sampleRevision?: number; agentsRevision?: number; onRegistered?: () => void; documentId?: string; persistInitialSelection?: boolean; openDocumentRequest?: number; newAgentRequest?: number; onNewAgentHandled?: () => void; onDocument?: (id: string) => void; active?: boolean; setupPending?: boolean; remote?: boolean; catalogPaused?: boolean; catalogKey?: number; place?: SelectedPlace; onChooseCluster?: () => void; onStopLocalCluster?: () => void; actions?: ReactNode;
   onPair?: (pair: AgentPair | undefined, documentId: string) => void; onRun?: (snapshot: RunSnapshot | undefined, documentId: string) => void;
   onSaveState?: (state: SaveState, documentId: string) => void; onStale?: (stale: boolean, documentId: string) => void; onSeeInOverview?: (sendId: string) => void;
 }) {
@@ -56,14 +56,14 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
   const catalogIdentity = `${catalogKey}/${remote}/${targetId}/${providerId}`;
   const catalogEnabled = catalogKey !== undefined && !setupPending && (!remote || !!targetId && !!providerId);
   useEffect(() => {
-    if (!catalogEnabled || catalogKey === undefined) return;
+    if (!catalogEnabled || catalogPaused || catalogKey === undefined) return;
     const controller = new AbortController();
     void readWorkspaceCatalog(controller.signal, remote && targetId && providerId ? { targetId, providerId } : undefined).then(reply => {
       if (!controller.signal.aborted) setCatalog({ key: catalogIdentity, attempt: catalogAttempt, reply });
     });
     return () => controller.abort();
-  }, [catalogEnabled, catalogKey, catalogIdentity, catalogAttempt, remote, targetId, providerId]);
-  const currentCatalog = catalogEnabled && catalog?.key === catalogIdentity && catalog.attempt === catalogAttempt ? catalog : undefined;
+  }, [catalogEnabled, catalogPaused, catalogKey, catalogIdentity, catalogAttempt, remote, targetId, providerId]);
+  const currentCatalog = catalogEnabled && !catalogPaused && catalog?.key === catalogIdentity && catalog.attempt === catalogAttempt ? catalog : undefined;
   const [pair, setPair] = useState<AgentPair>();
   useEffect(() => { let mounted = true; void listDocuments().then(value => { if (mounted) setEntries(value); }); return () => { mounted = false; }; }, [boundDocument, creating, pair?.documentId, agentsRevision, listAttempt]);
   const [draft, setDraft] = useState('');

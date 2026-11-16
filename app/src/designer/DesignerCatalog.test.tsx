@@ -32,6 +32,44 @@ test.each(['target', 'provider'])('remote catalog is scoped to the selected %s a
   expect(Object.keys(args[0] as object).sort()).toEqual(['providerId', 'targetId']);
 });
 
+test('a busy first catalog stays loading and becomes a tool list without Refresh', async () => {
+  vi.stubGlobal('isTauri', true); let held = true;
+  mockIPC(command => {
+    if (command === 'agent_open') return pair;
+    if (command === 'workspace_catalog') { if (held) throw 'catalogBusy'; return catalog('ready-model'); }
+    return null;
+  });
+  const user = userEvent.setup(); render(<Example catalogKey={1} />);
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  expect(screen.getByText('Loading available tools and models…')).toBeTruthy();
+  expect(screen.queryByText(/Tools could not be read/)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Refresh tools and models' })).toBeNull();
+  held = false;
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Add a tool' }).matches(':disabled')).toBe(false));
+  await user.click(screen.getByRole('button', { name: 'Add a tool' }));
+  expect(screen.getByText('Read the contents of a web page at an address.')).toBeTruthy();
+  expect(screen.queryByText('Loading available tools and models…')).toBeNull();
+});
+
+test('Stop clears a busy catalog wait and an older read cannot restart discovery', async () => {
+  vi.stubGlobal('isTauri', true); let calls = 0;
+  mockIPC(command => {
+    if (command === 'agent_open') return pair;
+    if (command === 'workspace_catalog') { calls++; throw 'catalogBusy'; }
+    return null;
+  });
+  const view = render(<Example catalogKey={1} />);
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  await waitFor(() => expect(calls).toBeGreaterThan(1));
+  expect(screen.getByText('Loading available tools and models…')).toBeTruthy();
+  view.rerender(<Example setupPending />);
+  expect(screen.queryByText('Loading available tools and models…')).toBeNull();
+  expect(screen.getByText('Tools will be available when the local cluster is ready.', { selector: 'p' })).toBeTruthy();
+  const stoppedCalls = calls;
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); });
+  expect(calls).toBe(stoppedCalls);
+});
+
 test('failure guidance opens the editable instructions without rerunning tests', async () => {
   vi.stubGlobal('isTauri', true); const runs: string[] = [];
   mockIPC(command => {

@@ -40,12 +40,14 @@ let child = Process()
 child.executableURL = URL(fileURLWithPath: CommandLine.arguments[2])
 let keyCheckRelease = URL(fileURLWithPath: output).appendingPathComponent("key-check-release-\(UUID().uuidString)")
 let setupProgress = URL(fileURLWithPath: output).appendingPathComponent("setup-progress-\(UUID().uuidString)")
+let catalogRelease = URL(fileURLWithPath: output).appendingPathComponent("catalog-release-\(UUID().uuidString)")
+defer { try? FileManager.default.removeItem(at: catalogRelease) }
 // Written only for the fresh-profile first-test outcomes; absent keeps the fixed failed report.
 let firstTestOutcome = URL(fileURLWithPath: output).appendingPathComponent("first-test-outcome-\(UUID().uuidString)")
 defer { try? FileManager.default.removeItem(at: firstTestOutcome) }
 try "installing".write(to: setupProgress, atomically: true, encoding: .utf8)
 defer { try? FileManager.default.removeItem(at: setupProgress) }
-child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path, "BRIDGE_SETUP_PROGRESS": setupProgress.path, "BRIDGE_FIRST_TEST_OUTCOME": firstTestOutcome.path]) { _, fixture in fixture }
+child.environment = ProcessInfo.processInfo.environment.merging(["BRIDGE_MODEL_CHECK_RELEASE": keyCheckRelease.path, "BRIDGE_SETUP_PROGRESS": setupProgress.path, "BRIDGE_FIRST_TEST_OUTCOME": firstTestOutcome.path, "BRIDGE_CATALOG_RELEASE": catalogRelease.path]) { _, fixture in fixture }
 try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
@@ -395,6 +397,23 @@ click("Connect the AI", rows)
 _ = try seek("Tests on the local cluster", -200)
 let firstResult = try capture("local-first-test-result", ["Tests on the local cluster", "1 of 2 passed"])
 require(!firstResult.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").contains("Your agent selection could not be saved"), "Fixture rejected its owned agent selection")
+// The native fixture reports the same finite Busy error as a held VM connection.
+// This proves first-open renderer loading/recovery, not live guest discovery.
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try capture("local-catalog-first-loading-\(size)", ["Loading available tools and models"])
+    require(!nativeTextExists("Tools could not be read from this cluster. Check Clusters or edit File view."), "Busy catalog must not become an error")
+    require(enabledButton("Refresh tools and models") == nil, "Busy catalog must not require Refresh")
+}
+try "ready".write(to: catalogRelease, atomically: true, encoding: .utf8)
+localSize(1280, 800); scroll(4000)
+waitForButton("Add a tool"); click("Add a tool", [])
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height))
+    _ = try capture("local-catalog-first-open-\(size)", ["Find a tool", "Read a file"])
+}
+click("Close picker", [])
+localSize(1280, 800); scroll(4000)
 click("Clusters", [])
 rows = try capture("local-first-test-failed", ["This computer", "Its test failed", "See what it answered"])
 func reveal(_ label: String) {
@@ -839,6 +858,14 @@ for (width, height, size) in [(1280, 800, "wide"), (900, 800, "medium"), (540, 9
     require(search.count == 1, "Expected the labeled picker search field")
     require(nativeBounds(search[0]).map { abs($0.height - 32) < 2 } == true, "Picker search must be 32px high")
     _ = try capture("local-controls-picker-\(size)", ["Find a tool", "Read a file"])
+    let approvalReason = "Approval tools need autonomous coordination, which Bridge does not support for local tests or Chat."
+    let approvalButtons = nativeElements().filter { element in
+        attribute(element, "AXRole") as? String == "AXButton"
+            && ["AXTitle", "AXDescription"].contains { (attribute(element, $0) as? String)?.contains("request_approval") == true }
+    }
+    require(approvalButtons.count == 1 && attribute(approvalButtons[0], "AXEnabled") as? Bool == false, "Approval tool must stay disabled locally")
+    require(nativeResultTextIsVisible(approvalReason), "Approval reason must be fully visible in the picker")
+    _ = try capture("local-approval-tool-\(size)", ["Find a tool", "Ask for approval", approvalReason])
     guard let close = enabledButton("Close picker"), let bounds = nativeBounds(close) else {
         fatalError("Labeled picker X missing")
     }

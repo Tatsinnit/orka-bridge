@@ -303,7 +303,7 @@ try {
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
   // first-test-passed, -unknown and -lost-reply each own one fresh automatic attempt after a page reload.
-  const actionFixtures = ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-memory', 'local-preflight-mixed', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'local-stop-failed', 'local-stop-lost-reply', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-file', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
+  const actionFixtures = ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-memory', 'local-preflight-mixed', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'local-stop-failed', 'local-stop-lost-reply', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-catalog-busy', 'designer-file', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
@@ -568,6 +568,7 @@ try {
         if (designer && command === 'agent_selected') return documentId;
         if (designer && (command === 'workspace_catalog' || command === 'cluster_catalog')) {
           window.__bridgeCatalogCalls.push({ command, args });
+          if (name === 'designer-catalog-busy' && !window.__bridgeCatalogReleased) throw 'catalogBusy';
           return { defaultModel: 'fixture-model', models: { state: 'ready', items: [{ id: 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }, { kind: 'builtin', name: 'request_approval', description: 'Ask a person to approve an action.' }] } };
         }
         if (name === 'designer-remote' && command === 'cluster_contexts') return [context];
@@ -627,7 +628,21 @@ try {
     } else if (name.startsWith('designer') || name.startsWith('local-cancel-')) await clickAction('Read its instructions');
     if (name.startsWith('designer') && name !== 'designer-loading' && name !== 'designer-open-error') {
       await until(() => evaluate(`!!document.querySelector('.instructions-editor')`), 'Designer editor');
+      if (name === 'designer-catalog-busy') {
+        await until(() => evaluate(`document.body.innerText.includes('Loading available tools and models') && window.__bridgeCatalogCalls.length >= 2`), 'busy first catalog stays loading');
+        if (await evaluate(`document.body.innerText.includes('Tools could not be read') || [...document.querySelectorAll('button')].some(button => button.textContent === 'Refresh tools and models')`)) throw Error('Busy catalog was shown as a failed load');
+        const loading = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-catalog-first-loading.png`), Buffer.from(loading.data, 'base64'));
+        await evaluate(`window.__bridgeCatalogReleased = true`);
+      }
       if (name !== 'designer') await until(() => evaluate(`!document.querySelector('.model-select').disabled`), 'connected Designer catalog');
+      if (name === 'designer-catalog-busy') {
+        await evaluate(`document.querySelector('button[aria-controls$="-picker"]').click()`);
+        await until(() => evaluate(`!!document.querySelector('.tool-picker')?.getClientRects().length`), 'first tool list without Refresh');
+        const firstList = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-catalog-first-open.png`), Buffer.from(firstList.data, 'base64'));
+        await evaluate(`document.querySelector('button[aria-label="Close picker"]').click()`);
+      }
       if (name === 'designer-file') await clickAction('File');
       if (name === 'designer-failed') await until(() => evaluate(`!!document.querySelector('.test-next-step')`), 'failure next action');
       const state = await evaluate(`({ historyHidden: !document.querySelector('.designer-checks .send-history')?.getClientRects().length, catalog: window.__bridgeCatalogCalls, runPrimary: [...document.querySelectorAll('.example-run button')].some(button => button.textContent === 'Run tests' && button.classList.contains('button-primary')) })`);
@@ -820,7 +835,7 @@ try {
       console.log(`Captured native WebView2 AI reset fixture: ${theme}/${size}`);
       return;
     }
-    const expected = { welcome: 'About 5 minutes, mostly a download', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    const expected = { welcome: 'About 5 minutes, mostly a download', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -926,7 +941,12 @@ try {
       const blocked = await evaluate(`(() => {
         const picker = document.querySelector('.tool-picker');
         const approval = [...picker.querySelectorAll('button')].find(button => button.textContent.includes('request_approval'));
-        return approval?.disabled && approval.textContent.includes('Bridge does not support for local tests or Chat');
+        const reason = approval?.parentElement.querySelector('.tool-unavailable-reason');
+        const r = reason?.getBoundingClientRect(), p = picker.getBoundingClientRect();
+        return approval?.disabled && reason?.textContent === 'Approval tools need autonomous coordination, which Bridge does not support for local tests or Chat.'
+          && !approval.contains(reason) && approval.parentElement.tabIndex === 0
+          && approval.parentElement.getAttribute('aria-describedby') === reason.id
+          && r.top >= p.top && r.bottom <= p.bottom && r.left >= p.left && r.right <= p.right;
       })()`);
       if (!blocked) throw Error('Unsupported approval tool is offered without its reason');
       const pickerImage = await call('Page.captureScreenshot', { format: 'png' });

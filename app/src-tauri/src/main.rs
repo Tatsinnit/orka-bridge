@@ -261,7 +261,7 @@ async fn agent_reveal(
 async fn workspace_catalog(
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
-) -> Result<bridge_engine::catalog::CatalogReply, &'static str> {
+) -> Result<bridge_engine::catalog::CatalogReply, bridge_engine::catalog::CatalogError> {
     vm.workspace_catalog(Arc::clone(state.inner())).await
 }
 #[tauri::command]

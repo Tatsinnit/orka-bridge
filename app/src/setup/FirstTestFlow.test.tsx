@@ -25,6 +25,7 @@ function native(holdSave = false, lostReplies = false) {
     if (command === 'setup_example') return { agent: pair.agent, tests: pair.tests };
     if (command === 'setup_connect_model') return { ready: true };
     if (command === 'setup_remove_model') return { ready: false };
+    if (command === 'workspace_catalog') return { defaultModel: 'file-model', models: { state: 'ready', items: [{ id: 'file-model' }] }, tools: { state: 'ready', items: [] } };
     if (command === 'agent_select') return null;
     if (command === 'agent_open') { if (unreadableFiles) throw Error('Lost file read'); return args?.documentId === other ? { ...pair, documentId: other, name: 'other', agent: '---\nname: other\n---\nOther instructions.' } : { ...saved, documentId: sample, name: 'web-reader' }; }
     if (command === 'agent_save') { if (holdSave) return new Promise(() => {}); saved = { ...pair, agent: String(args?.content), source: { ...pair.source, agent: 'c'.repeat(64) } }; return { ...saved, documentId: sample, name: 'web-reader' }; }
@@ -70,6 +71,21 @@ test('first setup stays for its first-pass story, opens only on request and neve
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([['agent_run', { documentId: sample, bundledExample: true, attemptId: expect.any(String) }]]);
 });
 
+test('opening Designer during the automatic first test defers catalog discovery until it finishes', async () => {
+  const { ipc, finish } = native(); const user = await completeSetup();
+  await screen.findByText('Setting up, step 4 of 4');
+  await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  expect(ipc.mock.calls.filter(([command]) => command === 'workspace_catalog')).toHaveLength(0);
+  expect(screen.getByText('Loading available tools and models…')).toBeTruthy();
+  expect(screen.queryByText(/Tools could not be read/)).toBeNull();
+  finish();
+  await waitFor(() => expect(ipc.mock.calls.some(([command]) => command === 'workspace_catalog')).toBe(true));
+  expect(screen.queryByRole('button', { name: 'Refresh tools and models' })).toBeNull();
+  expect(ipc.mock.calls.filter(([command]) => command === 'agent_run')).toHaveLength(1);
+  expect(localStorage.getItem('bridge.firstTest.v1')).toBe('attempted');
+});
+
 test('Stop after the first-pass story retains the workspace without replaying the story or automatic run on restart', async () => {
   const { ipc, finish } = native(); const user = await completeSetup();
   await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1)); finish();
@@ -95,8 +111,9 @@ test('reading instructions before completion does not dismiss the later payoff',
 });
 
 test('a shown payoff cannot replay after its evidence becomes unavailable and recovers', async () => {
-  const { finish, loseRunStatus, restoreRunStatus } = native(); await completeSetup();
-  await screen.findByText('Setting up, step 4 of 4'); finish();
+  const { ipc, finish, loseRunStatus, restoreRunStatus } = native(); await completeSetup();
+  await waitFor(() => expect(ipc.mock.calls.filter(([command]) => command === 'agent_run')).toHaveLength(1));
+  finish();
   await screen.findByRole('heading', { name: 'Your first agent passed its test' });
   loseRunStatus(); await screen.findByRole('button', { name: 'Check again' });
   restoreRunStatus(); await screen.findByRole('button', { name: 'See what it answered' });
