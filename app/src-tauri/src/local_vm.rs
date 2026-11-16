@@ -14,7 +14,7 @@ use std::{
 };
 use tokio::sync::{watch, Mutex as AsyncMutex};
 #[path = "local_vm_native.rs"]
-mod native;
+pub(crate) mod native;
 pub use native::configured;
 #[derive(Serialize)]
 pub struct ExamplePair {
@@ -140,6 +140,10 @@ pub trait LocalFactory: Send + Sync {
         closed: watch::Receiver<bool>,
         progress: Arc<dyn Fn(LocalProgress) + Send + Sync>,
     ) -> StartFuture<'_>;
+    /// Drop retained factory handles only after native stop and all queued work joined.
+    fn release_stopped(&self) -> Result<(), RuntimeError> {
+        Ok(())
+    }
 }
 pub trait LocalSession: Send {
     /// From the installed guest build metadata, never a probing guest request.
@@ -450,6 +454,20 @@ pub struct LocalVm {
     factory: Option<Arc<dyn LocalFactory>>,
     choice: AsyncMutex<()>,
     authoring: Mutex<Arc<AsyncMutex<()>>>,
+    upgrading: std::sync::atomic::AtomicBool,
+}
+/// Keep native launch admission and setup choice serialized through the switch.
+#[allow(dead_code)]
+pub(crate) struct UpgradeQuiescence<'a> {
+    vm: &'a LocalVm,
+    _choice: tokio::sync::MutexGuard<'a, ()>,
+}
+impl Drop for UpgradeQuiescence<'_> {
+    fn drop(&mut self) {
+        self.vm
+            .upgrading
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 impl LocalVm {
     fn make(factory: Option<Arc<dyn LocalFactory>>) -> Arc<Self> {
@@ -483,6 +501,7 @@ impl LocalVm {
             factory,
             choice: AsyncMutex::new(()),
             authoring: Mutex::new(Arc::new(AsyncMutex::new(()))),
+            upgrading: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn new(factory: Arc<dyn LocalFactory>) -> Arc<Self> {
@@ -490,6 +509,36 @@ impl LocalVm {
     }
     pub fn unavailable() -> Arc<Self> {
         Self::make(None)
+    }
+    pub fn recovery_blocked() -> Arc<Self> {
+        let vm = Self::make(None);
+        vm.inner.fail(
+            "Workspace recovery is required before starting the local cluster.".into(),
+            &RuntimeError::RetainedState,
+            WorkspaceOperation::Verify,
+            false,
+        );
+        vm
+    }
+    /// A timeout keeps the gate and journal custody quarantined until process exit.
+    #[allow(dead_code)] // Unexposed native upgrade owner; renderer activation is a later change.
+    pub(crate) async fn quiesce_for_upgrade(&self) -> Result<UpgradeQuiescence<'_>, RuntimeError> {
+        let choice = self.choice.lock().await;
+        self.upgrading
+            .store(true, std::sync::atomic::Ordering::Release);
+        tokio::time::timeout(std::time::Duration::from_secs(30), self.stop(false))
+            .await
+            .map_err(|_| {
+                RuntimeError::StopUnconfirmed("Workspace stop did not complete.".into())
+            })??;
+        self.factory
+            .as_ref()
+            .ok_or(RuntimeError::Unavailable)?
+            .release_stopped()?;
+        Ok(UpgradeQuiescence {
+            vm: self,
+            _choice: choice,
+        })
     }
     /// Atomic Run/Chat admission, separate from each bounded VM request.
     pub fn try_authoring(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
@@ -546,6 +595,7 @@ impl LocalVm {
     pub fn start(self: &Arc<Self>) {
         let mut state = self.inner.state.lock().unwrap();
         if state.terminal
+            || self.upgrading.load(std::sync::atomic::Ordering::Acquire)
             || state.closing
             || !matches!(
                 state.phase,
@@ -587,10 +637,13 @@ impl LocalVm {
                     Err(RuntimeError::Closed
                         | RuntimeError::Image(crate::runtime::image_types::ImageError::Cancelled))
                 );
-            // Preflight refused before image/session work, so there is nothing to stop.
+            // Native preflight/version policy refuses before creating a session.
+            // Its retained journal still needs explicit release for replacement.
             let successful = result.is_ok()
                 || cancelled_error
-                || matches!(&result, Err(RuntimeError::Preflight(_)));
+                || matches!(&result, Err(RuntimeError::Preflight(_)
+                    | RuntimeError::Image(crate::runtime::image_types::ImageError::WorkspaceUpdateRequired
+                        | crate::runtime::image_types::ImageError::WorkspaceVersionUnsupported)));
             let mut session = inner.session.lock().await;
             match result {
                 Ok(live) => {

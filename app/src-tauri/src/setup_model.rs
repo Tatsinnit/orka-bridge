@@ -157,6 +157,59 @@ fn write_file(root: &Path, name: &str, bytes: &[u8]) -> Result<(), SetupError> {
     }
     result
 }
+/// Exact nonsecret source bytes, held under the existing mutation owner.
+#[allow(dead_code)] // Native upgrade backend remains unexposed until credential guards land.
+pub(crate) struct UpgradeMetadata {
+    pub model: Option<Vec<u8>>,
+    pub account: Option<Vec<u8>>,
+    _owner: fs::File,
+}
+impl SetupStore {
+    #[allow(dead_code)]
+    pub(crate) fn snapshot_for_upgrade(
+        &self,
+        installation: Uuid,
+    ) -> Result<UpgradeMetadata, SetupError> {
+        let _access = self.access.lock().map_err(|_| unavailable())?;
+        let root = self.root.as_ref().ok_or_else(unavailable)?;
+        fs::create_dir_all(root).map_err(|_| unavailable())?;
+        let owner = model_owner(root)?;
+        let binding = read_binding(root)?;
+        if binding
+            .as_ref()
+            .is_some_and(|b| b.installation != installation || !valid_saved_connection(b))
+        {
+            return Err(unavailable());
+        }
+        let model = binding
+            .as_ref()
+            .map(|_| fs::read(root.join("model-v1")).map_err(|_| unavailable()))
+            .transpose()?;
+        let account = match fs::symlink_metadata(root.join(ACCOUNT_FILE)) {
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Ok(m) if m.is_file() && m.len() <= MAX_ACCOUNT_FILE => {
+                let bytes = fs::read(root.join(ACCOUNT_FILE)).map_err(|_| unavailable())?;
+                let record: AccountRecord =
+                    serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+                if bytes.len() as u64 > MAX_ACCOUNT_FILE
+                    || !crate::runtime::credentials::valid_login(&record.login)
+                    || binding
+                        .as_ref()
+                        .is_none_or(|b| b.slot != record.slot || b.kind != CredentialKind::Copilot)
+                {
+                    return Err(unavailable());
+                }
+                Some(bytes)
+            }
+            _ => return Err(unavailable()),
+        };
+        Ok(UpgradeMetadata {
+            model,
+            account,
+            _owner: owner,
+        })
+    }
+}
 // Independent descriptors coordinate native mutations across instances and processes.
 fn model_owner(root: &Path) -> Result<fs::File, SetupError> {
     let file = OpenOptions::new()

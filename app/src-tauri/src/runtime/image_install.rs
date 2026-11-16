@@ -724,6 +724,14 @@ impl PreparedImage {
     pub fn target(&self) -> ImageTarget {
         self.target
     }
+    #[allow(dead_code)] // Portable image-only harnesses omit the native upgrade owner.
+    pub(crate) fn required_install_bytes(&self) -> Result<u64, ImageError> {
+        self.disk_bytes
+            .checked_add(self.boot.kernel.bytes)
+            .and_then(|n| n.checked_add(self.boot.initrd.bytes))
+            .and_then(|n| n.checked_add(bridge_runtime_protocol::STATE_BYTES))
+            .ok_or(ImageError::Integrity)
+    }
     pub async fn materialize(
         self,
         target: &InstallationImageTarget<'_>,
@@ -816,7 +824,7 @@ fn write_json<T: Serialize>(root: &Dir, name: &str, value: &T) -> Result<(), Ima
     file.sync_all().map_err(storage)
 }
 #[cfg(unix)]
-fn allocation(file: &File) -> Result<u64, ImageError> {
+pub(crate) fn allocation(file: &File) -> Result<u64, ImageError> {
     use std::os::unix::fs::MetadataExt;
     file.metadata()
         .map_err(storage)?
@@ -825,7 +833,7 @@ fn allocation(file: &File) -> Result<u64, ImageError> {
         .ok_or(ImageError::NoSpace)
 }
 #[cfg(windows)]
-fn allocation(file: &File) -> Result<u64, ImageError> {
+pub(crate) fn allocation(file: &File) -> Result<u64, ImageError> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,

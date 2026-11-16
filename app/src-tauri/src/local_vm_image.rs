@@ -3,7 +3,7 @@
 use crate::runtime::image_types::*;
 
 #[derive(Clone)]
-pub(super) struct ReleaseImage {
+pub(crate) struct ReleaseImage {
     pub pin: ImagePin,
     // Keep the reviewed manifest in the app profile so cache-free reopen can
     // recheck authenticated host/app policy without network or new disk state.
@@ -13,7 +13,7 @@ pub(super) struct ReleaseImage {
     pub predecessors: Vec<Predecessor>,
 }
 #[derive(Clone)]
-pub(super) struct Predecessor {
+pub(crate) struct Predecessor {
     pub source: Box<ReleaseImage>,
     pub app_releases: Vec<String>,
     pub target_manifests: Vec<String>,
@@ -163,7 +163,7 @@ fn release_image(
 }
 
 #[derive(Clone)]
-pub(super) enum ImageSource {
+pub(crate) enum ImageSource {
     #[cfg(debug_assertions)]
     Development,
     Pinned {
@@ -172,6 +172,39 @@ pub(super) enum ImageSource {
     },
 }
 impl ImageSource {
+    /// Reuse the authenticated predecessor policy, not its public refusal category alone.
+    pub(crate) fn upgrade_eligibility(
+        &self,
+        journal: &crate::runtime::journal::Journal,
+    ) -> Result<
+        (ImageIdentity, Vec<String>, ImageIdentity, String),
+        crate::runtime::types::RuntimeError,
+    > {
+        let (profile, host) = match self {
+            Self::Pinned { profile, host } => (profile, host),
+            #[cfg(debug_assertions)]
+            Self::Development => return Err(ImageError::WorkspaceVersionUnsupported.into()),
+        };
+        let installed = crate::runtime::image_install::inspect_installed_image(
+            &journal.image_target(self.compatibility())?,
+        )?;
+        match profile.validate_installed(&installed, host) {
+            Err(ImageError::WorkspaceUpdateRequired) => {}
+            Err(e) => return Err(e.into()),
+            Ok(()) => return Err(ImageError::WorkspaceVersionUnsupported.into()),
+        }
+        let predecessor = profile
+            .predecessors
+            .iter()
+            .find(|p| p.source.pin.manifest_sha256 == installed.identity().manifest_sha256)
+            .ok_or(ImageError::WorkspaceVersionUnsupported)?;
+        Ok((
+            installed.identity().clone(),
+            predecessor.app_releases.clone(),
+            profile.validate_host(host)?.identity().clone(),
+            host.app_version.clone(),
+        ))
+    }
     pub fn compatibility(&self) -> &str {
         match self {
             #[cfg(debug_assertions)]

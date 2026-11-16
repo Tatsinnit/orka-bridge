@@ -58,7 +58,8 @@ pub enum LaunchMode {
     Uefi,
     LinuxDirect,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageIdentity {
     pub manifest_sha256: String,
     pub image_id: String,

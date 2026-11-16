@@ -232,6 +232,11 @@ impl Journal {
     pub fn record(&self) -> &InstallationRecord {
         &self.record
     }
+    #[allow(dead_code)] // Portable journal-only harnesses omit the upgrade owner.
+    pub(crate) fn owner_allocated_bytes(&self) -> Result<u64, RuntimeError> {
+        // Windows deliberately denies reopening this file while custody is held.
+        Ok(super::image_install::allocation(&self._lock.0)?)
+    }
     fn verify_root(&self) -> Result<(), RuntimeError> {
         // State hardlinks do not prove that our pathname still names this directory.
         let current = Dir::open_ambient_dir(&self.root, cap_std::ambient_authority())?;
@@ -271,7 +276,7 @@ impl Journal {
             mac: self.record.mac,
         }
     }
-    pub(super) fn require_fresh_creation(&self) -> Result<(), RuntimeError> {
+    pub(crate) fn require_fresh_creation(&self) -> Result<(), RuntimeError> {
         if !self.creation_live {
             return Err(RuntimeError::RetainedState);
         }

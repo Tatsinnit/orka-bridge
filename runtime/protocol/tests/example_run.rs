@@ -26,3 +26,5 @@ pub mod runtime;
 pub mod setup;
 #[path = "../../../app/src-tauri/tests/example_run.rs"]
 mod tests;
+#[path = "../../../app/src-tauri/src/workspace_upgrade.rs"]
+pub mod workspace_upgrade;

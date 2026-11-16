@@ -18,7 +18,10 @@ mod infrastructure_tests {
         stops: AtomicUsize,
         starts: AtomicUsize,
         drops: AtomicUsize,
+        releases: AtomicUsize,
         fail_stop: bool,
+        version_refusal: bool,
+        reentry: std::sync::Mutex<Option<std::sync::Weak<LocalVm>>>,
     }
     struct Channel {
         probe: Arc<Probe>,
@@ -101,6 +104,11 @@ mod infrastructure_tests {
             let probe = self.0.clone();
             Box::pin(blocking_start(move |runtime| {
                 probe.starts.fetch_add(1, Ordering::SeqCst);
+                if probe.version_refusal {
+                    return Err(
+                        crate::runtime::image_types::ImageError::WorkspaceUpdateRequired.into(),
+                    );
+                }
                 progress(LocalProgress::Status(LocalVmStatus::Starting));
                 let client = VmClient::established(
                     Box::new(Channel {
@@ -111,6 +119,26 @@ mod infrastructure_tests {
                 )?;
                 wait_for_infrastructure(Box::new(TestSession(probe, client)), closed, runtime)
             }))
+        }
+        fn release_stopped(&self) -> Result<(), RuntimeError> {
+            self.0.releases.fetch_add(1, Ordering::SeqCst);
+            // A reentrant start attempted from inside release must be gated:
+            // `choice` and the closing state must both still be held here.
+            if let Some(vm) = self
+                .0
+                .reentry
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|w| w.upgrade())
+            {
+                assert!(
+                    vm.choice.try_lock().is_err(),
+                    "quiesce_for_upgrade must retain `choice` through release"
+                );
+                vm.start();
+            }
+            Ok(())
         }
     }
     async fn phase(vm: &LocalVm, expected: LocalVmStatus) {
@@ -239,6 +267,81 @@ mod infrastructure_tests {
             .unwrap();
         assert_eq!(vm.status(), LocalVmStatus::Closed);
         assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn validated_predecessor_refusal_has_no_live_session_to_stop() {
+        let probe = Arc::new(Probe {
+            version_refusal: true,
+            ..Probe::default()
+        });
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        vm.start();
+        phase(&vm, LocalVmStatus::Failed).await;
+        let _quiesced = vm.quiesce_for_upgrade().await.unwrap();
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.stops.load(Ordering::SeqCst), 0);
+    }
+    async fn ready(probe: &Arc<Probe>, vm: &Arc<LocalVm>) {
+        vm.start();
+        phase(vm, LocalVmStatus::Starting).await;
+        polled(probe).await;
+        probe.state.store(1, Ordering::SeqCst);
+        phase(vm, LocalVmStatus::Ready).await;
+    }
+    #[tokio::test]
+    async fn quiesce_for_upgrade_confirms_stop_then_releases_native_custody_once() {
+        let probe = Arc::new(Probe::default());
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        ready(&probe, &vm).await;
+        vm.quiesce_for_upgrade().await.unwrap();
+        assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
+        // A confirmed quiesce must not surface as an activated/renderer-ready workspace.
+        assert_eq!(vm.status(), LocalVmStatus::Cancelled);
+        assert!(!vm.model_connected());
+    }
+    #[tokio::test]
+    async fn quiesce_for_upgrade_failed_stop_never_releases_custody_and_blocks_retry() {
+        let probe = Arc::new(Probe {
+            fail_stop: true,
+            ..Probe::default()
+        });
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        ready(&probe, &vm).await;
+        assert!(matches!(
+            vm.quiesce_for_upgrade().await,
+            Err(RuntimeError::Unavailable)
+        ));
+        assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            probe.releases.load(Ordering::SeqCst),
+            0,
+            "an unconfirmed stop must never release custody or force-kill"
+        );
+        vm.start();
+        tokio::task::yield_now().await;
+        assert_eq!(vm.status(), LocalVmStatus::Failed);
+        assert_eq!(probe.starts.load(Ordering::SeqCst), 1, "retry stays gated");
+    }
+    #[tokio::test]
+    async fn quiesce_for_upgrade_closes_the_gate_through_release_then_lifts_it() {
+        let probe = Arc::new(Probe::default());
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        ready(&probe, &vm).await;
+        *probe.reentry.lock().unwrap() = Some(Arc::downgrade(&vm));
+        vm.quiesce_for_upgrade().await.unwrap();
+        // The reentrant start attempted from inside release_stopped must have
+        // been gated: still exactly one launch from the original start.
+        assert_eq!(probe.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
+        // Hold readiness behind the fixture's explicit observation barrier so
+        // Starting is not a transient state raced by the second ready reply.
+        probe.state.store(0, Ordering::SeqCst);
+        vm.start();
+        phase(&vm, LocalVmStatus::Starting).await;
+        polled(&probe).await;
+        assert_eq!(probe.starts.load(Ordering::SeqCst), 2);
+        vm.shutdown().await.unwrap();
     }
 }
 
@@ -1642,6 +1745,54 @@ fn release_factory_does_not_activate_from_existing_state() {
         b"not an approved image"
     );
     assert!(!data.path().join("image-cache-v1").exists());
+}
+
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+#[tokio::test]
+async fn native_factory_releases_retained_handles_before_identity_preserving_rename() {
+    use crate::runtime::{identity::file_identity, image_cache};
+    use cap_std::fs::Dir;
+    let (temp, profile, _) = release_image_tests::profile();
+    let root = temp.path().join("local-vm-v1");
+    let journal = Journal::create(&root, BackendKind::Qemu, vec![1]).unwrap();
+    let id = journal.record().installation_id;
+    let dir = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+    let identity = file_identity(&dir.into_std_file()).unwrap();
+    fs::write(root.join("efi.vars"), b"stand-in firmware bytes").unwrap();
+    let state = file_identity(&fs::File::open(root.join("state.disk")).unwrap()).unwrap();
+    let factory = Arc::new(NativeFactory {
+        resources: temp.path().into(),
+        root: root.clone(),
+        cache: temp.path().join("cache"),
+        source: image::ImageSource::Pinned {
+            host: crate::runtime::image_types::HostTarget {
+                target: profile.pin.target,
+                host_version: "99.0".into(),
+                app_version: "1.0.0".into(),
+            },
+            profile: Box::new(profile),
+        },
+        pending: Arc::new(Mutex::new(JournalCustody(Some(journal)))),
+    });
+    let vm = LocalVm::new(factory);
+    assert!(matches!(Journal::open(&root), Err(RuntimeError::Busy)));
+    let _quiesced = vm.quiesce_for_upgrade().await.unwrap();
+    let parent = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+    image_cache::fs::publish_named(&parent, "local-vm-v1", "retained-stand-in").unwrap();
+    image_cache::fs::sync(&parent).unwrap();
+    let retained = temp.path().join("retained-stand-in");
+    let dir = Dir::open_ambient_dir(&retained, cap_std::ambient_authority()).unwrap();
+    assert_eq!(file_identity(&dir.into_std_file()).unwrap(), identity);
+    let reopened = Journal::open(&retained).unwrap();
+    assert_eq!(reopened.record().installation_id, id);
+    assert_eq!(reopened.record().state_identity, state);
+    assert_eq!(
+        fs::read(retained.join("efi.vars")).unwrap(),
+        b"stand-in firmware bytes"
+    );
 }
 
 #[test]

@@ -20,3 +20,4 @@ pub mod send;
 pub mod send_summary;
 pub mod setup;
 pub mod shutdown;
+pub mod workspace_upgrade;

@@ -16,7 +16,7 @@ fn run_cancel_guest(build: &str) -> bool {
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 #[path = "local_vm_image.rs"]
-mod image;
+pub(crate) mod image;
 #[cfg(test)]
 use crate::runtime::types::BackendKind;
 #[cfg(any(test, all(windows, target_arch = "x86_64")))]
@@ -344,6 +344,14 @@ impl JournalCustody {
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl LocalFactory for NativeFactory {
+    fn release_stopped(&self) -> Result<(), RuntimeError> {
+        self.pending
+            .lock()
+            .map_err(|_| RuntimeError::Unavailable)?
+            .0
+            .take();
+        Ok(())
+    }
     fn launch(
         &self,
         closed: watch::Receiver<bool>,
@@ -376,6 +384,7 @@ impl LocalFactory for NativeFactory {
                             path,
                         )?)
                     };
+                    crate::workspace_upgrade::admit(&root)?;
                     // The factory retains the original owner through preparation retries.
                     let mut custody = pending.lock().map_err(|_| RuntimeError::Unavailable)?;
                     let installed = image::prepare_installation(

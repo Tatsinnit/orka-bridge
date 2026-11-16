@@ -647,10 +647,20 @@ fn main() {
             #[cfg(debug_assertions)]
             eprintln!("bridge-startup: setup");
             let store = Arc::new(SetupStore::new(app.path().app_data_dir().ok()));
-            let vm = local_vm::configured(
-                app.path().resource_dir().ok(),
-                app.path().app_local_data_dir().ok(),
-            );
+            let recovery = match (app.path().app_data_dir(), app.path().app_local_data_dir()) {
+                (Ok(data), Ok(local)) => {
+                    bridge_engine::workspace_upgrade::recover_startup(&data, &local)
+                }
+                _ => Err(bridge_engine::runtime::types::RuntimeError::Unavailable),
+            };
+            let vm = if recovery.is_ok() {
+                local_vm::configured(
+                    app.path().resource_dir().ok(),
+                    app.path().app_local_data_dir().ok(),
+                )
+            } else {
+                LocalVm::recovery_blocked()
+            };
             #[cfg(debug_assertions)]
             eprintln!("bridge-startup: local VM configured");
             app.manage(if vm.status() == LocalVmStatus::NotIntegrated {

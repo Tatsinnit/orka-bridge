@@ -32,3 +32,5 @@ pub mod setup;
 mod shared;
 #[path = "../../../app/src-tauri/tests/native_chat.rs"]
 mod tests;
+#[path = "../../../app/src-tauri/src/workspace_upgrade.rs"]
+pub mod workspace_upgrade;
