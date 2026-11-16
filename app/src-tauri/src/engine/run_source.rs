@@ -347,8 +347,8 @@ impl ParsedAgent {
             soul: agent.kmx.soul,
         })
     }
-    /// Local authoring does not emit the autonomous coordination required by
-    /// Orka's request_approval compatibility check (image pin 3cb1f0df).
+    /// Local authoring has neither autonomous approval coordination nor an
+    /// authenticated gateway conversation for replies (Orka image pin 3cb1f0df).
     pub fn has_unsupported_local_tool(&self) -> bool {
         use std::sync::LazyLock;
         static NAMES: LazyLock<Vec<String>> = LazyLock::new(|| {

@@ -58,11 +58,14 @@ async fn first_test_rejects_files_edited_after_renderer_open_but_manual_run_acce
 }
 
 #[tokio::test]
-async fn approval_tool_is_rejected_before_posts_and_explicit_removal_restores_run() {
+async fn unsupported_local_tool_is_rejected_before_posts_and_explicit_removal_restores_run() {
     for (kind, name) in [
         ("builtin", "request_approval"),
         ("tool", "request_approval"),
         ("builtin", " request_approval "),
+        ("builtin", "reply_in_conversation"),
+        ("tool", "reply_in_conversation"),
+        ("builtin", " reply_in_conversation "),
     ] {
         let (vm, posts, _) = fixture(false, false).await;
         let home = tempfile::tempdir().unwrap();

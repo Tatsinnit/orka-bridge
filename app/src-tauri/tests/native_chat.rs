@@ -68,11 +68,14 @@ async fn two_turns_reuse_frozen_agent_and_session_and_drain_cursor_events() {
 }
 
 #[tokio::test]
-async fn approval_tool_preflight_preserves_context_and_removal_restores_chat() {
+async fn unsupported_local_tool_preflight_preserves_context_and_removal_restores_chat() {
     for (kind, name) in [
         ("builtin", "request_approval"),
         ("tool", "request_approval"),
         ("builtin", " request_approval "),
+        ("builtin", "reply_in_conversation"),
+        ("tool", "reply_in_conversation"),
+        ("builtin", " reply_in_conversation "),
     ] {
         let f = Fixture::new().await;
         let chat = owner();

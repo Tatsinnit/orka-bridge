@@ -4,7 +4,7 @@ import type { CatalogTool, WorkspaceCatalogReply } from '../catalog';
 import { Button, CloseIcon } from '../components/Button';
 import { SAMPLE_DOCUMENT_ID } from './agent-api';
 import { addTool, changeDescription, changeInstructions, changeModel, changeSoulInline, changeSoulReference, readForm, removeTool } from './agent-form';
-import { builtInToolDescriptions, builtInTools, unsupportedLocalTool, unsupportedToolMessage, unsupportedToolReason } from './built-in-tools';
+import { builtInToolDescriptions, builtInTools, unsupportedLocalTool, unsupportedLocalToolReason, unsupportedToolWarning } from './built-in-tools';
 import FileLocation from './FileLocation';
 
 function Unavailable({ label, reason, children, focusRef }: { label: string; reason: string; children: ReactNode; focusRef?: Ref<HTMLSpanElement> }) {
@@ -115,7 +115,7 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
         {toolReason ? <Unavailable label="Add a tool" reason={toolReason} focusRef={addPlaceholder}><Button kind="secondary" type="button" disabled title={toolReason}>Add a tool</Button></Unavailable>
           : <Button kind="secondary" type="button" ref={add} aria-expanded={picker} aria-controls={`${id}-picker`} onClick={() => { if (picker) close(); else setPicker(true); }}><span aria-hidden="true">+ </span>Add a tool</Button>}
       </div>
-      {!remote && form.tools.some(tool => tool.name && unsupportedLocalTool(tool.name)) && <p role="alert">{unsupportedToolMessage}</p>}
+      {!remote && form.tools.some(tool => tool.name && unsupportedLocalTool(tool.name)) && <p role="alert">{unsupportedToolWarning}</p>}
       {toolReason && !catalogLoading && <p className="muted">{toolReason}</p>}
       {picker && !toolReason && <div role="dialog" aria-label="Choose a tool" ref={popover} popover="auto" id={`${id}-picker`} className="tool-picker" onToggle={event => { if (event.newState === 'closed') { setPicker(false); setQuery(''); } }} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); close(); } }}>
         <Button kind="icon" className="picker-close" aria-label="Close picker" title="Close picker" onClick={close}><CloseIcon /></Button>
@@ -133,7 +133,7 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
               <span className="tool-description">{toolDescription(tool)}</span>
               {tool.available === false && <span className="muted">Observed unavailable</span>}
             </button>
-            {blocked && <p className="tool-unavailable-reason" id={reasonId}>{unsupportedToolReason}</p>}
+            {blocked && <p className="tool-unavailable-reason" id={reasonId}>{unsupportedLocalToolReason(tool.name)}</p>}
           </div></li>;
         })}</ul>
         {!choices?.length && <p className="muted">{tools?.length ? 'No matching tools to add.' : 'No tools listed by this cluster.'}</p>}

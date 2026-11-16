@@ -329,7 +329,8 @@ fn main() {
                     "tools":{"state":"ready", "items":[
                         {"kind":"builtin", "name":"web_fetch", "description":"Read a web page"},
                         {"kind":"builtin", "name":"file_read", "description":"Read a file"},
-                        {"kind":"builtin", "name":"request_approval", "description":"Ask a person to approve an action."}
+                        {"kind":"builtin", "name":"request_approval", "description":"Ask a person to approve an action."},
+                        {"kind":"builtin", "name":"reply_in_conversation", "description":"Send a reply in the current conversation."}
                     ]}
                 })
                 },

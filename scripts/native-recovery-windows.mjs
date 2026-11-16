@@ -24,6 +24,8 @@ for (const root of [process.env.APPDATA, process.env.LOCALAPPDATA]) {
 const source = process.env.BRIDGE_DEV_IMAGE_DIR;
 if (!source || !(await stat(source)).isDirectory() || (await readdir(source)).length) throw Error('Expected empty development image source');
 await mkdir(output, { recursive: true });
+const replyReason = 'Conversation replies need an authenticated gateway conversation, which local tests and Chat do not have.';
+const replySavedAgent = '---\nname: web-reader\nmodel: fixture-model\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools:\n    - kind: builtin\n      name: reply_in_conversation\n---\nFetch before answering.';
 let socket;
 const child = spawn(executable, [], { stdio: 'ignore', env: { ...process.env,
   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222' } });
@@ -317,7 +319,7 @@ try {
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
   // first-test-passed, -unknown and -lost-reply each own one fresh automatic attempt after a page reload.
-  const actionFixtures = runCore ? ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-memory', 'local-preflight-mixed', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'local-stop-failed', 'local-stop-lost-reply', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-catalog-busy', 'designer-file', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'] : [];
+  const actionFixtures = runCore ? ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-memory', 'local-preflight-mixed', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'local-stop-failed', 'local-stop-lost-reply', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-catalog-busy', 'designer-file', 'designer-reply-saved', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'] : [];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
@@ -470,6 +472,7 @@ try {
       const designer = name.startsWith('designer') || name.startsWith('chat-') || name.startsWith('new-agent-');
       let documentName = 'web-reader';
       if (designer) pair.agent = ${JSON.stringify('---\nname: web-reader\nmodel: ' + (name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model') + '\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools: []\n---\nFetch before answering.')};
+      if (name === 'designer-reply-saved') pair.agent = ${JSON.stringify(replySavedAgent)};
       let connected = designer && name !== 'designer';
       let submitted = false;
       let attemptId = null;
@@ -595,7 +598,7 @@ try {
         if (designer && (command === 'workspace_catalog' || command === 'cluster_catalog')) {
           window.__bridgeCatalogCalls.push({ command, args });
           if (name === 'designer-catalog-busy' && !window.__bridgeCatalogReleased) throw 'catalogBusy';
-          return { defaultModel: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model', models: { state: 'ready', items: [{ id: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }, { kind: 'builtin', name: 'request_approval', description: 'Ask a person to approve an action.' }] } };
+          return { defaultModel: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model', models: { state: 'ready', items: [{ id: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }, { kind: 'builtin', name: 'request_approval', description: 'Ask a person to approve an action.' }, { kind: 'builtin', name: 'reply_in_conversation', description: 'Send a reply in the current conversation.' }] } };
         }
         if (name === 'designer-remote' && command === 'cluster_contexts') return [context];
         if (name === 'designer-remote' && command === 'cluster_discover') return [target];
@@ -625,6 +628,8 @@ try {
           throw { check: 'clusterApi', result: 'connectionFailed' };
         }
         if (name === 'designer-remote' && command === 'send_preflight') return { documentId, targetId: target.id, providerId: provider.id, source, model: 'fixture-model', canSend: true, action: 'create', canSeparate: false, rows: [{ label: 'Cluster', status: 'allowed', message: 'Ready.' }] };
+        // In-memory only: lets this fixture's existing editor path save a removal and its restore.
+        if (name === 'designer-reply-saved' && command === 'agent_save') { pair.agent = args.content; return { ...pair, documentId, name: 'web-reader' }; }
         if (command === 'agent_open') return { ...pair, documentId, name: documentName, ...(name.startsWith('first-test-') && name !== 'first-test-result' && name !== 'first-test-running' || ['designer-connected', 'designer-remote', 'designer-stale'].includes(name) || localCancel ? { source } : {}) };
         if (localCancel && (command === 'agent_run_cancel' || command === 'agent_run_check_cancellation')) {
           if (args?.documentId !== documentId) throw Error('Wrong cancellation document');
@@ -922,7 +927,7 @@ try {
       console.log(`Captured native WebView2 AI reset fixture: ${theme}/${size}`);
       return;
     }
-    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -1056,7 +1061,47 @@ try {
       if (!blocked) throw Error('Unsupported approval tool is offered without its reason');
       const pickerImage = await call('Page.captureScreenshot', { format: 'png' });
       await writeFile(join(output, `${theme}-${size}-approval-tool.png`), Buffer.from(pickerImage.data, 'base64'));
+      // Filter after the approval frame so the reply row and any reason must fit even at minimum size.
+      await evaluate(`(() => { const input = document.querySelector('.tool-picker input[type="search"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'reply'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      await until(() => evaluate(`document.querySelectorAll('.tool-picker li button').length === 1`), 'reply filter');
+      const reply = await evaluate(`(() => {
+        const picker = document.querySelector('.tool-picker'), button = picker.querySelector('li button');
+        const reason = button.parentElement.querySelector('.tool-unavailable-reason');
+        const inside = n => { const r = n.getBoundingClientRect(), p = picker.getBoundingClientRect(); return r.top >= p.top && r.bottom <= p.bottom && r.left >= p.left && r.right <= p.right && r.bottom <= innerHeight && r.right <= innerWidth; };
+        return { named: button.textContent.includes('reply_in_conversation'), disabled: button.disabled, reason: reason?.textContent ?? null, rowInside: inside(button.parentElement), reasonInside: reason ? inside(reason) : null,
+          described: button.parentElement.getAttribute('aria-describedby') === reason?.id };
+      })()`);
+      const replyOk = reply.named && reply.rowInside && reply.disabled && reply.reason === replyReason && reply.reasonInside && reply.described;
+      if (!replyOk) throw Error(`Reply tool is offered without its visible reason: ${JSON.stringify(reply)}`);
+      const replyImage = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(output, `${theme}-${size}-reply-tool.png`), Buffer.from(replyImage.data, 'base64'));
       await evaluate(`document.querySelector('button[aria-label="Close picker"]').click()`);
+    }
+    if (name === 'designer-reply-saved') {
+      // Saved declaration states; the alert names the tool, whatever shared wording the app uses.
+      const chip = () => evaluate(`[...document.querySelectorAll('.tool-pill')].some(pill => pill.querySelector('code')?.textContent === 'reply_in_conversation' && pill.getClientRects().length)`);
+      const warned = () => evaluate(`[...document.querySelectorAll('[role="alert"]')].some(alert => alert.textContent.includes('reply_in_conversation') && alert.getClientRects().length)`);
+      const settleShot = async suffix => {
+        await evaluate('document.querySelector(".agent-tool-row").scrollIntoView({ block: "center" }); document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+        const image = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-${suffix}.png`), Buffer.from(image.data, 'base64'));
+      };
+      const expectSaved = async (present, label) => {
+        await until(async () => await chip() === present, `${label} chip`);
+        if (await warned() !== present) throw Error(`${label}: saved reply warning must be ${present}`);
+      };
+      await expectSaved(true, 'preserved');
+      await settleShot('saved-reply-tool');
+      await evaluate(`document.querySelector('button[aria-label="Remove Reply in a conversation"]').click()`);
+      await expectSaved(false, 'removed');
+      await settleShot('saved-reply-tool-removed');
+      // Restore through File view, the existing path that works with the tool disabled in the picker.
+      await clickAction('File');
+      await until(() => evaluate(`!!document.querySelector('#agent-file')`), 'File editor');
+      await evaluate(`(() => { const file = document.querySelector('#agent-file'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(file, ${JSON.stringify(replySavedAgent)}); file.dispatchEvent(new Event('input', { bubbles: true })); file.blur(); })()`);
+      await clickAction('Agent');
+      await expectSaved(true, 'restored');
+      await settleShot('saved-reply-tool-restored');
     }
     if (['ai-connected', 'local-completed'].includes(name)) {
       const complete = await evaluate(`({ heading: document.querySelector('h1').textContent, card: document.querySelector('.setup-progress .steps-head h2')?.textContent, pill: document.querySelector('.setup-progress .pill')?.textContent, rows: document.querySelectorAll('[aria-label="Setup steps"] > li').length, text: document.body.innerText, model: document.querySelector('.setup-model').innerText })`);

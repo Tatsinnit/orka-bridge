@@ -107,7 +107,7 @@ test('a saved approval declaration stays visible and unchanged until explicitly 
   const saved = source.replace('tools: []', 'tools: [{kind: builtin, name: request_approval}]');
   render(<AgentParts source={saved} readOnly={false} onChange={changed} />);
   expect(screen.getByText('Ask for approval')).toBeTruthy();
-  expect(screen.getByText(/Remove request_approval before running local tests or Chat/)).toBeTruthy();
+  expect(screen.getByText(/Remove all request_approval and reply_in_conversation tools before running local tests or Chat/)).toBeTruthy();
   expect(changed).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: 'Remove Ask for approval' }));
   expect(readForm(changed.mock.calls[0][0]).tools).toEqual([]);
