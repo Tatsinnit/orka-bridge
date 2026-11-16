@@ -352,7 +352,7 @@ fn control(
     let provider = serving
         .3
         .ready_connection()
-        .map(|c| c.selection.provider.clone());
+        .map(|c| (c.selection.provider.clone(), c.selection.vendor));
     serving.0.runner_mut().catalog_provider = if peer == "channel" && catalog {
         provider.clone()
     } else {

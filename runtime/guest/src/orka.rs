@@ -1048,7 +1048,7 @@ esac
             r#"{"data":[{"id":"m"}],"token":"synthetic-private"}"#,
         )
         .unwrap();
-        let c = orka.catalog("copilot");
+        let c = orka.catalog("copilot", None);
         assert!(c.valid());
         assert!(matches!(c.models, CatalogSection::Ready { .. }));
         assert!(matches!(c.tools, CatalogSection::Ready { .. }));
@@ -1061,6 +1061,23 @@ esac
         assert!(!bytes.contains("private") && !bytes.contains("url"));
     }
     #[test]
+    fn catalog_applies_first_page_limit_only_to_the_owned_anthropic_vendor() {
+        for (vendor, provider, suffix) in [
+            (None, "copilot", ""),
+            (Some(ModelVendor::Openai), "openai", ""),
+            (Some(ModelVendor::Anthropic), "my-model", "?limit=1000"),
+        ] {
+            let s = server(vec![http("200 OK", r#"{"items":[],"metadata":{}}"#)]);
+            let (dir, mut orka) = kube(s.port);
+            fs::write(dir.path().join("models.json"), r#"{"data":[]}"#).unwrap();
+            let catalog = orka.catalog(provider, vendor);
+            assert_eq!(catalog.models, CatalogSection::Ready { items: Vec::new() });
+            assert!(log(dir.path()).iter().any(|line| line == &format!(
+                "{CTX} --namespace=orka-system get --raw /api/v1/namespaces/orka-system/services/http:{provider}-vekil:1337/proxy/v1/models{suffix}"
+            )));
+        }
+    }
+    #[test]
     fn catalog_failures_are_independent_and_share_one_budget() {
         let s = server(vec![http(
             "403 Forbidden",
@@ -1068,11 +1085,11 @@ esac
         )]);
         let (dir, mut orka) = kube(s.port);
         fs::write(dir.path().join("models.json"), r#"{"data":[]}"#).unwrap();
-        let c = orka.catalog("copilot");
+        let c = orka.catalog("copilot", None);
         assert_eq!(c.models, CatalogSection::Ready { items: Vec::new() });
         assert_eq!(c.tools, CatalogSection::Unavailable {});
         let before = log(dir.path());
-        let c = orka.catalog_until("copilot", Instant::now());
+        let c = orka.catalog_until("copilot", None, Instant::now());
         assert_eq!(c.models, CatalogSection::Unavailable {});
         assert_eq!(c.tools, CatalogSection::Unavailable {});
         assert_eq!(log(dir.path()), before);
@@ -1090,7 +1107,7 @@ esac
             kmx: crate::engine::Kmx,
             orka,
             chat: Orka::new_chat(installation()),
-            catalog_provider: Some("copilot".into()),
+            catalog_provider: Some(("copilot".into(), None)),
         };
         let mut ops = crate::engine::Operations::new(root.path().join("ops"), runner).unwrap();
         let staging = crate::staging::Staging::new(root.path().join("staging")).unwrap();

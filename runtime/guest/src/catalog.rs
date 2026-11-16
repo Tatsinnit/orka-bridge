@@ -39,6 +39,7 @@ fn models(value: &Value) -> io::Result<Vec<CatalogModel>> {
                                 | "/v1/chat/completions"
                                 | "/responses"
                                 | "/v1/responses"
+                                | "/v1/messages"
                         );
                     }
                     Some(supported)
@@ -137,10 +138,15 @@ fn fit(c: &mut WorkspaceCatalog) {
 }
 impl Orka {
     /// A fixed read of this lease's retained model route; no caller-selected HTTP paths.
-    pub fn catalog(&mut self, provider: &str) -> WorkspaceCatalog {
-        self.catalog_until(provider, Instant::now() + REQUEST_BUDGET)
+    pub fn catalog(&mut self, provider: &str, vendor: Option<ModelVendor>) -> WorkspaceCatalog {
+        self.catalog_until(provider, vendor, Instant::now() + REQUEST_BUDGET)
     }
-    pub(super) fn catalog_until(&mut self, provider: &str, deadline: Instant) -> WorkspaceCatalog {
+    pub(super) fn catalog_until(
+        &mut self,
+        provider: &str,
+        vendor: Option<ModelVendor>,
+        deadline: Instant,
+    ) -> WorkspaceCatalog {
         let models = (|| {
             if !(ModelSelection {
                 vendor: None,
@@ -151,7 +157,13 @@ impl Orka {
             {
                 return Err(failed());
             }
-            let path=format!("/api/v1/namespaces/{ORKA_NAMESPACE}/services/http:{provider}-vekil:1337/proxy/v1/models");
+            // Vekil drops Anthropic's cursor metadata: this is a bounded first page.
+            let query = if vendor == Some(ModelVendor::Anthropic) {
+                "?limit=1000"
+            } else {
+                ""
+            };
+            let path=format!("/api/v1/namespaces/{ORKA_NAMESPACE}/services/http:{provider}-vekil:1337/proxy/v1/models{query}");
             let raw = self.run(&["get", "--raw", &path], None, deadline)?;
             if Instant::now() >= deadline {
                 return Err(failed());
@@ -212,6 +224,16 @@ mod tests {
             serde_json::to_value(got).unwrap(),
             json!([{"id":"responses-only","chatSupported":true},{"id":"responses-v1","chatSupported":true}])
         );
+    }
+    #[test]
+    fn messages_models_are_chat_but_explicit_non_chat_endpoints_are_not() {
+        let got = models(&json!({"data":[
+            {"id":"claude-sonnet-5-5","supported_endpoints":["/v1/messages"]},
+            {"id":"not-chat","supported_endpoints":["/embeddings"]}
+        ]}))
+        .unwrap();
+        assert_eq!(got[0].chat_supported, Some(true));
+        assert_eq!(got[1].chat_supported, Some(false));
     }
     #[test]
     fn tools_follow_pages_without_forwarding_specs_or_urls() {

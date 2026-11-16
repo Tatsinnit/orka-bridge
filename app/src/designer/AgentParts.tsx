@@ -144,11 +144,12 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
       <div className="agent-tool-row">
         <select id={`${id}-model`} className="field model-select" disabled={!!modelReason} title={modelReason} value={form.model ?? ''} onChange={event => change(changeModel(source, event.target.value))}>
           {!listed && <option value={form.model ?? ''}>{form.model ? `${modelLabel(form.model)}${unlistedLabel}` : 'No model in this file'}</option>}
-          {models?.map(model => <option key={model.id} value={model.id}>{modelLabel(model.id)}</option>)}
+          {models?.map(model => <option key={model.id} value={model.id}>{!remote && model.id === catalog?.defaultModel ? `Workspace default: ${modelLabel(model.id)}` : modelLabel(model.id)}</option>)}
         </select>
         {modelHelp && <span className="muted">{modelHelp}</span>}
       </div>
-      {!remote && !listed && models && form.model && <p className="muted">{knownModel ? 'This model is not offered for chat by the connected AI. Choose another model to use it here.' : 'This model is saved in your file but is not listed by the connected AI. It may not run here. Choose a listed model or check your AI connection.'}</p>}
+      {!remote && catalog?.models.state === 'ready' && catalog.models.items.length === 1000 && <p className="muted">Showing up to 1,000 models; more may be available.</p>}
+      {!remote && !listed && models && form.model && <p className="muted">{knownModel ? 'This model is not offered for chat in Bridge. Choose another model to use it here.' : 'This model is saved in your file but is not listed by the connected AI. It may not run here. Choose a listed model or check your AI connection.'}</p>}
     </div>
     <Disclosure className="agent-settings" label="More settings">
       <div className="agent-part">

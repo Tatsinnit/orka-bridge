@@ -128,7 +128,7 @@ test('creation uses an already loaded catalog default without inheriting the sam
     if (command === 'agent_create') { expect(args).toEqual({ name: 'helper', model: 'workspace-model' }); return id; }
   });
   const user = userEvent.setup(); render(<Example catalogKey={1} />);
-  await screen.findByRole('option', { name: 'workspace-model' });
+  await screen.findByRole('option', { name: 'Workspace default: workspace-model' });
   await user.click(screen.getByRole('button', { name: 'New agent' }));
   await user.type(screen.getByRole('textbox', { name: 'Name' }), 'helper');
   await user.click(screen.getByRole('button', { name: 'Create' }));

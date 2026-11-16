@@ -340,7 +340,7 @@ pub struct GuestRunner {
     pub kmx: Kmx,
     pub orka: crate::orka::Orka,
     pub chat: crate::orka::Orka,
-    pub catalog_provider: Option<String>,
+    pub catalog_provider: Option<(String, Option<ModelVendor>)>,
 }
 impl GuestRunner {
     pub fn new(installation: Uuid) -> Self {
@@ -360,10 +360,10 @@ impl Runner for GuestRunner {
             EngineActionWire::RunWorker { name, uid } => self.orka.run_worker(name, uid),
             EngineActionWire::CleanupRunAgent { uid } => self.orka.cleanup_run_agent(uid),
             EngineActionWire::WorkspaceCatalog {} => {
-                let provider = self.catalog_provider.take().ok_or_else(invalid)?;
+                let (provider, vendor) = self.catalog_provider.take().ok_or_else(invalid)?;
                 Ok(EngineResult {
                     exit: 0,
-                    stdout: serde_json::to_vec(&self.orka.catalog(&provider))?,
+                    stdout: serde_json::to_vec(&self.orka.catalog(&provider, vendor))?,
                     has_diagnostics: false,
                 })
             }

@@ -564,7 +564,8 @@ impl SetupStore {
         {
             return Err(failure);
         }
-        let catalog = client.workspace_catalog().map_err(|_| failure)?;
+        let mut catalog = client.workspace_catalog().map_err(|_| failure)?;
+        crate::catalog::normalize_models(&mut catalog, connection.selection.vendor);
         Ok(crate::catalog::CatalogReply {
             default_model: connection.selection.model,
             catalog,

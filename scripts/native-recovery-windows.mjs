@@ -993,7 +993,7 @@ try {
       if (!type.agent.mono || !type.label || type.label.mono || type.label.size !== '13px' || type.label.weight !== '500') throw Error(`${name}: wrong agent-name/form-label type: ${JSON.stringify(type)}`);
       if (name === 'designer-connected') {
         if (!type.testTitle || type.testTitle.mono || type.testTitle.weight !== '500' || !type.testId?.mono) throw Error(`${name}: test title must be UI font/500 with a mono ID: ${JSON.stringify(type)}`);
-        if (type.model?.value !== 'gpt-5.6-terra' || type.model.shown !== 'GPT-5.6 Terra' || type.defaultRepeated) throw Error(`${name}: known model needs a friendly label, unchanged value and no repeated default: ${JSON.stringify(type)}`);
+        if (type.model?.value !== 'gpt-5.6-terra' || type.model.shown !== 'Workspace default: GPT-5.6 Terra' || type.defaultRepeated) throw Error(`${name}: workspace default needs a friendly label, unchanged value and no repeated default: ${JSON.stringify(type)}`);
       }
       // Header geometry must not move across Agent, Chat and File.
       const header = async () => { await evaluate(`document.querySelector('main').scrollTop = 0`); return evaluate(`(() => { const r = s => { const b = document.querySelector(s)?.getBoundingClientRect(); return b && { x: b.x, y: b.y, w: b.width, h: b.height }; }; return { switch: r('.view-switch'), picker: r('.agent-selector'), send: r('.send-entry'), name: r('.agent-name') }; })()`); };

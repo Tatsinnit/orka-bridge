@@ -28,9 +28,42 @@ test('catalog model choices retain unlisted file model and never substitute the 
   fireEvent.change(model, { target: { value: 'listed' } });
   expect(readForm(changed.mock.calls[0][0]).model).toBe('listed');
 });
+test('workspace default follows the connection without replacing a saved model until chosen', () => {
+  const changed = vi.fn();
+  const withDefault = { ...catalog, defaultModel: 'listed' };
+  const view = render(<AgentParts source={source} readOnly={false} catalog={withDefault} onChange={changed} />);
+  expect(screen.getByRole('option', { name: 'Workspace default: listed' }).getAttribute('value')).toBe('listed');
+  const next = { ...catalog, defaultModel: 'another', models: { state: 'ready' as const, items: [{ id: 'listed' }, { id: 'another' }] } };
+  view.rerender(<AgentParts source={source} readOnly={false} catalog={next} onChange={changed} />);
+  expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('unlisted');
+  expect(screen.getByRole('option', { name: 'Workspace default: another' })).toBeTruthy();
+  expect(changed).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'another' } });
+  expect(changed).toHaveBeenCalledExactlyOnceWith(source.replace('model: unlisted', 'model: "another"'));
+});
+test('bounded first-page notice counts returned rows, including excluded models', () => {
+  const rows = Array.from({ length: 1000 }, (_, i) => ({ id: `m-${i}`, pickerEnabled: false }));
+  const changed = vi.fn();
+  const view = render(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, models: { state: 'ready', items: rows } }} onChange={changed} />);
+  expect(screen.getByText('Showing up to 1,000 models; more may be available.')).toBeTruthy();
+  expect(screen.getAllByRole('option')).toHaveLength(1);
+  view.rerender(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, models: { state: 'ready', items: rows.slice(0, 999) } }} onChange={changed} />);
+  expect(screen.queryByText(/more may be available/)).toBeNull();
+  expect(changed).not.toHaveBeenCalled();
+});
+test('remote configured defaults keep their model label and do not claim first-page discovery', () => {
+  const changed = vi.fn();
+  const rows = Array.from({ length: 1000 }, (_, i) => ({ id: i === 0 ? 'listed' : `m-${i}` }));
+  render(<AgentParts source={source} readOnly={false} remote catalog={{ ...catalog, defaultModel: 'listed', models: { state: 'ready', items: rows } }} onChange={changed} />);
+  expect(screen.getByRole('option', { name: 'listed' })).toBeTruthy();
+  expect(screen.queryByRole('option', { name: /Workspace default/ })).toBeNull();
+  expect(screen.queryByText(/more may be available/)).toBeNull();
+  expect(changed).not.toHaveBeenCalled();
+});
 test('an existing incompatible model stays visible without calling it unlisted', () => {
   const changed = vi.fn(); render(<AgentParts source={source.replace('model: unlisted', 'model: hidden')} readOnly={false} catalog={catalog} onChange={changed} />);
   expect(screen.getByRole('option', { name: 'hidden (not offered for chat)' })).toBeTruthy();
+  expect(screen.getByText('This model is not offered for chat in Bridge. Choose another model to use it here.')).toBeTruthy();
   expect(changed).not.toHaveBeenCalled();
 });
 test('tool choices show descriptions as text, distinguish kinds and suppress effective-name collisions', async () => {
@@ -237,7 +270,7 @@ test('known model IDs get display names while option values, saved source and em
   const changed = vi.fn(); render(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={named} onChange={changed} />);
   const model = screen.getByRole('combobox', { name: 'It thinks with' }) as HTMLSelectElement;
   expect(model.value).toBe('gpt-5.6-terra');
-  const known = screen.getByRole('option', { name: 'GPT-5.6 Terra' }) as HTMLOptionElement; expect(known.value).toBe('gpt-5.6-terra');
+  const known = screen.getByRole('option', { name: 'Workspace default: GPT-5.6 Terra' }) as HTMLOptionElement; expect(known.value).toBe('gpt-5.6-terra');
   expect(screen.queryByRole('option', { name: 'gpt-5.6-terra' })).toBeNull();
   expect((screen.getByRole('option', { name: 'custom-model-7' }) as HTMLOptionElement).value).toBe('custom-model-7');
   expect(document.body.textContent).not.toMatch(/GitHub|Copilot|OpenAI/i);
@@ -254,7 +287,7 @@ test('unlisted and unavailable known models keep their friendly name and explana
   const view = render(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={{ ...named, models: { state: 'ready', items: [{ id: 'listed' }] } }} onChange={() => {}} />);
   expect(screen.getByRole('option', { name: 'GPT-5.6 Terra (unlisted)' })).toBeTruthy(); expect(screen.getByText(/It may not run here/)).toBeTruthy();
   view.rerender(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={{ ...named, models: { state: 'ready', items: [{ id: 'gpt-5.6-terra', chatSupported: false }, { id: 'listed' }] } }} onChange={() => {}} />);
-  expect(screen.getByRole('option', { name: 'GPT-5.6 Terra (not offered for chat)' })).toBeTruthy(); expect(screen.getByText(/not offered for chat by the connected AI/)).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'GPT-5.6 Terra (not offered for chat)' })).toBeTruthy(); expect(screen.getByText(/not offered for chat in Bridge/)).toBeTruthy();
 });
 test('a listed local model default is not repeated in helper text', () => {
   render(<AgentParts source={source.replace('model: unlisted', 'model: gpt-5.6-terra')} readOnly={false} catalog={named} onChange={() => {}} />);
