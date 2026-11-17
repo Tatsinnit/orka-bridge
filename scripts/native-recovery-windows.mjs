@@ -142,7 +142,8 @@ try {
           await evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Use this cluster').click()`);
           if (name.startsWith('cluster-reload')) {
             await until(() => evaluate(`document.body.textContent.includes('Access confirmed')`), 'confirmed fixture access');
-            await evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Reload kubeconfig').click()`);
+            await evaluate(`document.querySelector('.cluster-card summary').click()`);
+            await clickAction('Reload kubeconfig');
             if (name === 'cluster-reloaded') {
               await until(() => evaluate(`!!document.querySelector('button#cluster-context:not(:disabled)')`), 'reloaded context picker');
               await evaluate(`document.querySelector('button#cluster-context').click()`);
@@ -386,7 +387,7 @@ try {
     })()`);
     await writeFile(join(output, `${theme}-${size}-${name}-comparison.png`), Buffer.from(comparison, 'base64'));
   }
-  if (runUi) actionFixtures.push('chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'chat-two-versions', 'send-failed', 'send-unsupported', 'send-earlier-target', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination');
+  if (runUi) actionFixtures.push('chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'chat-two-versions', 'send-failed', 'send-unsupported', 'send-earlier-target', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-connected', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination');
   async function captureWorkspace(theme, size, name) {
     const card = '.returning-workspace';
     const capture = async (state, word, action, disabled = false) => {
@@ -532,6 +533,7 @@ try {
       const name = ${JSON.stringify(name)};
       let documentId = '9b2b93c4-375c-4815-9717-39852a96e411';
       let selected = ${JSON.stringify(!first && !places)};
+      let clusterSelected = false;
       const sendScene = name.startsWith('send-');
       const designer = sendScene || name.startsWith('designer') || name.startsWith('chat-') || name.startsWith('new-agent-');
       let documentName = 'web-reader';
@@ -543,6 +545,13 @@ try {
       const context = { id: '00000000-0000-4000-8000-000000000001', name: sendScene ? 'fixture-selected' : 'team-dev', current: true };
       const target = { id: '00000000-0000-4000-8000-000000000002', context_id: context.id, context_name: context.name, service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'fixture-image' };
       const provider = { id: '00000000-0000-4000-8000-000000000003', name: 'team-ai', ready: true };
+      const checkedAt = Date.now() - 600000;
+      const rememberedPlaces = [
+        { key: 'fixture-a', context: 'fixture-cluster', service: 'control / orka', namespace: 'agents', stale: false, observedAt: checkedAt, checkedAt, agents: [] },
+        { key: 'fixture-b', context: 'fixture-secondary-with-a-long-cluster-name-to-wrap-without-clipping', service: 'control / orka', namespace: 'agents', stale: true, observedAt: null, checkedAt: null, agents: [] },
+      ];
+      const currentCluster = { key: 'fixture-current', context: context.name, service: 'control / orka', namespace: 'agents', stale: false, observedAt: checkedAt, checkedAt,
+        agents: [{ name: 'runtime-reader', namespace: 'agents', uid: 'fixture-reader', agentType: 'runtime', model: 'fixture-model', tools: [], record: null }] };
       window.__bridgeCatalogCalls = [];
       window.__bridgeOverviewLiveReads = 0;
       const localCancel = name.startsWith('local-cancel-');
@@ -639,10 +648,9 @@ try {
         // Known and missing size facts: fixture IPC, not the native catalog.
         if (command === 'setup_requirements') return name.startsWith('local-preflight') && name !== 'local-preflight-missing' ? ${JSON.stringify({ memoryBytes: 4 * GiB, imageBytes: Math.round(2.8 * GiB), stateDiskBytes: 20 * GiB, downloadBytes: 2800000000 })} : null;
         if (command === 'setup_preflight') return { platform: 'windows', virtualization: ['local-preflight-unknown', 'local-preflight-mixed'].includes(name) ? 'unknown' : ['local-preflight-blocked', 'local-preflight-cluster'].includes(name) ? 'disabled' : 'ready', memory: name === 'local-preflight-unknown' ? 'unknown' : ['local-preflight-memory', 'local-preflight-mixed'].includes(name) ? 'insufficient' : 'ready', installedMemoryBytes: name === 'local-preflight-unknown' ? null : ['local-preflight-memory', 'local-preflight-mixed'].includes(name) ? ${2 * GiB} : ${16 * GiB}, requiredMemoryBytes: ${4 * GiB} };
-        if (command === 'cluster_places') return name === 'places-populated' ? { selectedKey: null, persistenceState: 'complete', places: [
-          { key: 'fixture-a', context: 'fixture-cluster', service: 'control / orka', namespace: 'agents', stale: false, observedAt: Date.now() - 600000, agents: [] },
-          { key: 'fixture-b', context: 'fixture-secondary-with-a-long-cluster-name-to-wrap-without-clipping', service: 'control / orka', namespace: 'agents', stale: true, observedAt: null, agents: [] }] }
-          : { places: [], selectedKey: null, persistenceState: 'complete' };
+        if (command === 'cluster_places') return { selectedKey: clusterSelected ? currentCluster.key : null, persistenceState: 'complete',
+          places: name === 'places-populated' ? rememberedPlaces : clusterSelected ? [currentCluster, ...rememberedPlaces] : [] };
+        if (name === 'cluster-connected' && command === 'overview_places') return { places: clusterSelected ? [currentCluster] : [], historyState: 'complete', unobserved: [] };
         if (command === 'setup_example') return pair;
         if (command === 'setup_connect_model' && window.__bridgeMismatch) throw { kind: 'modelInstallationMismatch', recovery, message: 'fixture-private-diagnostic' };
         if (name === 'ai-reset' && command === 'setup_reset_model') {
@@ -682,7 +690,11 @@ try {
             if (args.targetId !== target.id || args.saName !== null) throw Error('Only initial explicit Use is expected');
             return { status: 'needServiceAccount', providers: [], failure: null };
           }
-          if (name === 'designer-remote' || sendScene) return { status: 'connected', providers: [provider], failure: null };
+          if (name === 'designer-remote' || name === 'cluster-connected') {
+            if (args.targetId !== target.id || args.saName !== null) throw Error('Wrong connected cluster target');
+            clusterSelected = name === 'cluster-connected'; return { status: 'connected', providers: [provider], failure: null };
+          }
+          if (sendScene) return { status: 'connected', providers: [provider], failure: null };
         }
         if (command === 'cluster_service_accounts' || command === 'cluster_service_account_preview') {
           window.__bridgeAccountCalls.push({ command, args });
@@ -731,7 +743,7 @@ try {
         }
         if (name.startsWith('cluster-') && command === 'cluster_contexts') return [context, { ...context, id: '00000000-0000-4000-8000-000000000004', name: 'team-west', current: false }];
         if (name.startsWith('cluster-') && command === 'cluster_discover') {
-          if (name.startsWith('cluster-account-')) return [target];
+          if (name.startsWith('cluster-account-') || name === 'cluster-connected') return [target];
           window.__bridgeClusterUses++;
           if (name === 'cluster-picker-open') throw Error('Opening picker must not discover');
           if (name === 'cluster-checking') return new Promise(() => {});
@@ -858,7 +870,50 @@ try {
         if (await evaluate('window.__bridgeClusterUses') !== 0) throw Error('Picker opened a background discovery');
       } else {
         await chooseContext('team-dev');
-        if (accountScene) {
+        if (name === 'cluster-connected') {
+          await clickAction('Use this cluster');
+          await until(() => evaluate(`document.querySelector('.cluster-card')?.innerText.includes('runtime-reader') && document.querySelector('.host-chip .chip')?.textContent === 'In use'`), 'connected cluster summary and header');
+          const shoot = async (scene, anchor) => {
+            await evaluate(`document.querySelector(${JSON.stringify(anchor)}).scrollIntoView({ block: 'start' })`);
+            await checkLayout(theme, size, scene);
+            const labels = scene === 'cluster-success-end' ? ['Done', 'Open your agent'] : scene === 'cluster-details-end' ? ['Check access again', 'Change context', 'Reload kubeconfig', 'Remove'] : [];
+            const reachable = await evaluate(`(() => {
+              const main = document.querySelector('main').getBoundingClientRect();
+              return ${JSON.stringify(labels)}.every(label => [...document.querySelectorAll('.cluster-card button')].some(button => {
+                const r = button.getBoundingClientRect();
+                return button.textContent.trim() === label && !button.disabled && r.width > 0 && r.top >= main.top && r.bottom <= main.bottom;
+              }));
+            })()`);
+            if (!reachable) throw Error(scene + ': cluster actions overlap fixed chrome');
+            await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+            const image = await call('Page.captureScreenshot', { format: 'png' });
+            await writeFile(join(output, `${theme}-${size}-${scene}.png`), Buffer.from(image.data, 'base64'));
+            await compareReference(image.data, theme, size, scene, 'clusters');
+          };
+          const probe = await evaluate(`({ heading: document.querySelector('h1').textContent, text: document.querySelector('.cluster-card').innerText,
+            actions: [...document.querySelectorAll('.cluster-card button, .cluster-card summary[role="button"]')].map(button => button.textContent.trim()) })`);
+          if (probe.heading !== 'team-dev' || !probe.text.includes('Orka in control/orka') || !probe.text.includes('Checked 10 minutes ago') ||
+            !['Done', 'Open your agent', 'Show details'].every(label => probe.actions.includes(label)) ||
+            ['Check access again', 'Change context', 'Reload kubeconfig', 'Remove'].some(label => probe.actions.includes(label))) throw Error('Connected cluster actions/wording: ' + JSON.stringify(probe));
+          await evaluate(`document.querySelector('main').scrollTop = 0`);
+          await shoot('cluster-success', 'h1');
+          await shoot('cluster-success-end', '.cluster-actions');
+          await evaluate(`document.querySelector('.cluster-card summary').click()`);
+          await until(() => evaluate(`!!document.querySelector('#cluster-details') && [...document.querySelectorAll('#cluster-details button')].some(button => button.textContent === 'Remove')`), 'cluster maintenance in details');
+          await shoot('cluster-details', '#cluster-details');
+          await shoot('cluster-details-end', '#cluster-details .workspace-step-actions');
+          await evaluate(`document.querySelector('.cluster-card summary').click()`);
+          await clickAction('Done');
+          await until(() => evaluate(`document.querySelector('[aria-label="team-dev"]')?.innerText.includes('In use')`), 'selected cluster list');
+          const list = await evaluate(`(() => {
+            const labels = [...document.querySelectorAll('.places-list button')].map(button => button.textContent.trim());
+            return { labels, row: document.querySelector('[aria-label="team-dev"]').innerText, header: document.querySelector('.host-chip').innerText };
+          })()`);
+          if (!['Manage', 'Use', 'Check'].every(label => list.labels.includes(label)) || !list.header.includes('In use') || !list.row.includes('In use') || await evaluate('window.__bridgeClusterUses') !== 1) throw Error('Selected cluster list/header: ' + JSON.stringify(list));
+          await shoot('cluster-selected-list', 'h1');
+          await shoot('cluster-selected-list-end', '[aria-label="team-dev"]');
+          return;
+        } else if (accountScene) {
           await clickAction('Use this cluster');
           const reason = 'Your current cluster sign-in cannot list ServiceAccounts in agents. Enter an existing account name from your cluster administrator.';
           if (name === 'cluster-account-forbidden') {
@@ -1107,7 +1162,7 @@ try {
       console.log(`Captured native WebView2 AI reset fixture: ${theme}/${size}`);
       return;
     }
-    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'chat-two-versions': 'Conversation 2', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'cluster-account-picker-open': 'Find an account', 'cluster-account-allowed': 'Required Orka permissions: Allowed', 'cluster-account-forbidden': 'cannot list ServiceAccounts in agents', 'designer-no-destination': 'Open Clusters to load tools and models on This computer.', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check virtualization or memory yet.", 'local-preflight-blocked': 'Virtualization:', 'local-preflight-memory': 'This computer has 2.1 GB of memory; Bridge needs 4.3 GB.', 'local-preflight-mixed': "Bridge couldn't check virtualization yet.", 'local-preflight-cluster': 'Virtualization:', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Workspace ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'chat-two-versions': 'Conversation 2', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Can't reach team-dev. Check your network or VPN.", 'cluster-account-picker-open': 'Find an account', 'cluster-account-allowed': 'Required Orka permissions: Allowed', 'cluster-account-forbidden': 'cannot list ServiceAccounts in agents', 'designer-no-destination': 'Open Clusters to load tools and models on This computer.', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check virtualization or memory yet.", 'local-preflight-blocked': 'Virtualization:', 'local-preflight-memory': 'This computer has 2.1 GB of memory; Bridge needs 4.3 GB.', 'local-preflight-mixed': "Bridge couldn't check virtualization yet.", 'local-preflight-cluster': 'Virtualization:', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Workspace ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -1150,12 +1205,12 @@ try {
       // Count visible controls: hidden local panels stay mounted under Places.
       const probe = await evaluate(`(() => {
         const count = label => [...document.querySelectorAll('button')].filter(button => button.textContent.trim() === label && button.getClientRects().length).length;
-        return { setUp: count('Set up'), connect: count('Connect'), add: count('Add a cluster'), back: count('Back to clusters'), continue: count('Continue'), radios: [...document.querySelectorAll('input[type=radio]')].filter(radio => radio.getClientRects().length).length, text: document.body.innerText };
+        return { setUp: count('Set up'), use: count('Use'), check: count('Check'), add: count('Add a cluster'), back: count('Back to clusters'), continue: count('Continue'), radios: [...document.querySelectorAll('input[type=radio]')].filter(radio => radio.getClientRects().length).length, text: document.body.innerText };
       })()`);
       const fail = reason => { throw Error(`${name}: ${reason}: ${JSON.stringify(probe)}`); };
       if (probe.radios || /Where should your agents run|Engine diagnostics|Unavailable in this build|Reading…/.test(probe.text)) fail('removed chooser, diagnostics, caveat or unsettled size is visible');
-      if (name === 'places-empty' && (probe.setUp !== 1 || probe.add !== 1 || probe.connect)) fail('empty Places needs only Set up and Add a cluster');
-      if (name === 'places-populated' && (probe.setUp !== 1 || probe.connect !== 2 || !probe.text.includes('Last checked') || probe.text.includes('Selected for Designer'))) fail('remembered places need Last checked, Not checked yet and one Connect each');
+      if (name === 'places-empty' && (probe.setUp !== 1 || probe.add !== 1 || probe.use || probe.check)) fail('empty Places needs only Set up and Add a cluster');
+      if (name === 'places-populated' && (probe.setUp !== 1 || probe.use !== 1 || probe.check !== 1 || !probe.text.includes('Checked 10 minutes ago') || !probe.text.includes('Orka in control/orka') || probe.text.includes('In use'))) fail('remembered places need relative Checked metadata and separate Use/Check actions');
     }
     await checkLayout(theme, size, name);
     if (name === 'first-test-result' || name.startsWith('designer') && name !== 'designer-loading' && name !== 'designer-open-error') {
@@ -1568,7 +1623,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     if (runCore) for (const name of ['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale']) await captureActions(theme, 'minimum', name);
   }
   await writeFile(join(output, 'compact-window.txt'), `Capture scope: ${captureScope}\n` + notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core and chat-agent-clusters artifacts separately; both are required for the complete matrix.\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority, loading/open-error fallback spacing, fixed wide tabs/host gap, compact subtitles/label, quiet padding and themed thin scrollbars. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Send failed/unsupported/earlier-target states retain captured test titles and code IDs; header/result/resources-Details frames prove the bounded action set, unsupported retry absence and captured-result versus selected-destination distinction. These are renderer-only fixtures, not native Send IPC. Chat empty/pending/running/answer, two conversation versions and waitingForSession Succeeded/null or known-answer, New agent form/blank-created, Clusters list, context picker/checking/failure, account picker/Allowed/forbidden-list typed fallback and Designer no-destination guidance are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core and chat-agent-clusters artifacts separately; both are required for the complete matrix.\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority, loading/open-error fallback spacing, fixed wide tabs/host gap, compact subtitles/label, quiet padding and themed thin scrollbars. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Send failed/unsupported/earlier-target states retain captured test titles and code IDs; header/result/resources-Details frames prove the bounded action set, unsupported retry absence and captured-result versus selected-destination distinction. These are renderer-only fixtures, not native Send IPC. Chat empty/pending/running/answer, two conversation versions and waitingForSession Succeeded/null or known-answer, New agent form/blank-created, Clusters list, connected success/details/selected list and header, context picker/checking/failure, account picker/Allowed/forbidden-list typed fallback and Designer no-destination guidance are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

@@ -17,6 +17,6 @@ export async function chooseContext(user: ReturnType<typeof userEvent.setup>, na
 }
 
 export async function reloadConfig(user: ReturnType<typeof userEvent.setup>) {
-  if (!screen.queryByRole('button', { name: 'Reload kubeconfig' })) await user.click(screen.getByRole('button', { name: 'Details' }));
+  if (!screen.queryByRole('button', { name: 'Reload kubeconfig' })) await user.click(screen.getByRole('button', { name: /^(Show details|Details)$/ }));
   await user.click(screen.getByRole('button', { name: 'Reload kubeconfig' }));
 }

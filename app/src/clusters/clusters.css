@@ -1,7 +1,7 @@
 .cluster-card { display: grid; gap: 12px; min-width: 0; width: 100%; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-card); }
 .places-workspace { width: 100%; }
 .places-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.places-heading > h1 { flex-basis: 100%; }
+.places-heading > h1 { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
 .places-heading > p { margin: 0; }
 .places-back { margin-bottom: 16px; }
 .places-list { display: grid; gap: 16px; }
@@ -22,6 +22,7 @@
 .context-markers { display: flex; flex-wrap: wrap; gap: 12px; font-size: var(--size-small); }
 .cluster-checking { display: flex; align-items: center; gap: 8px; }
 .cluster-failure .workspace-failure-explanation { background: var(--color-tint-failed); }
+.cluster-failure .failure-summary { overflow-wrap: anywhere; }
 .cluster-error-details { display: grid; gap: 8px; }
 .place-row > button { justify-self: end; }
 .place-row .pill { justify-self: start; white-space: normal; grid-column: 3; grid-row: 1; }

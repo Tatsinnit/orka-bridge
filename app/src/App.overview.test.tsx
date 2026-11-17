@@ -174,7 +174,7 @@ test('opening another cluster resets an old management subview before returning 
   await screen.findByRole('heading', { name: 'reader', level: 1 });
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(await within(await screen.findByRole('region', { name: 'team-one' })).findByRole('button', { name: 'Manage' }));
-  await screen.findByRole('heading', { name: 'Manage your cluster', level: 1 });
+  await screen.findByRole('heading', { name: 'team-one', level: 1 });
   await user.click(screen.getByRole('button', { name: 'Overview' }));
   await user.click(await screen.findByRole('button', { name: 'Run tests reader on team-two' }));
   await screen.findByRole('heading', { name: 'reader', level: 1 });

@@ -1,6 +1,7 @@
 import type { Ref } from 'react';
 import { Button } from '../components/Button';
 import { StatusPill } from '../components/DesignSystem';
+import { RelativeTime } from '../components/RelativeTime';
 import type { Place } from '../overview/api';
 import type { SetupView } from '../setup/progress';
 import type { SetupStatus } from '../setup/state';
@@ -26,12 +27,12 @@ export default function Places({ snapshot, unavailable, status, view, place, onL
       const selected = place.kind === 'cluster' && !!place.target && snapshot.selectedKey === item.key;
       const observed = item.observedAt !== null;
       const checkedAt = item.checkedAt ?? item.observedAt;
-      const checked = checkedAt !== null ? `Last checked ${new Date(checkedAt).toLocaleString()}` : 'Not checked yet';
+      const checked = checkedAt != null ? <>Checked <RelativeTime value={checkedAt} /></> : 'Not checked yet';
       return <section className="card place-row" aria-label={item.context} key={item.key}>
         <span className="icon-tile" aria-hidden="true"><svg className="icon" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5ZM3 13l9 5 9-5M3 18l9 5 9-5" /></svg></span>
-        <div className="place-summary"><h2><code>{item.context}</code></h2><p className="place-meta"><span>{item.namespace} · {item.service}</span><span className="muted">{checked}</span>{selected && <span>Selected for Designer</span>}{observed && !item.stale && <span className="muted">{item.agents.length} {item.agents.length === 1 ? 'agent' : 'agents'}</span>}</p></div>
+        <div className="place-summary"><h2><code>{item.context}</code></h2><p className="place-meta"><span>Orka in {item.service.replace(/\s*\/\s*/g, '/')}</span><span className="muted">{checked}</span>{selected && <span className="chip">In use</span>}{observed && !item.stale && <span className="muted">{item.agents.length} {item.agents.length === 1 ? 'agent' : 'agents'}</span>}</p></div>
         <StatusPill state={checkedAt !== null ? item.stale ? 'stale' : 'passed' : 'not-started'}>{checkedAt !== null ? item.stale ? 'Stale' : 'Ready' : 'Not checked'}</StatusPill>
-        <Button type="button" kind="secondary" size="small" onClick={() => onCluster(item, selected)}>{selected ? 'Manage' : 'Connect'}</Button>
+        <Button type="button" kind="secondary" size="small" onClick={() => onCluster(item, selected)}>{selected ? 'Manage' : checkedAt != null ? 'Use' : 'Check'}</Button>
       </section>;
     })}
     {snapshot?.persistenceState === 'unavailable' && <p role="status">Remembered cluster information is unavailable. New connections may not be remembered after Bridge closes.</p>}

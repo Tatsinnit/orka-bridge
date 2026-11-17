@@ -103,6 +103,7 @@ test('retrying a context-list read preserves a remembered working connection', a
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await screen.findByText('Access confirmed');
   const confirmedPlace = onPlace.mock.lastCall;
+  await user.click(screen.getByRole('button', { name: 'Show details' }));
   await user.click(screen.getByRole('button', { name: 'Change context' }));
   await screen.findByRole('alert');
   await user.click(screen.getByRole('button', { name: 'Check again' }));

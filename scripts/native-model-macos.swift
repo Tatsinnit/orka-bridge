@@ -720,8 +720,8 @@ localSize(1280, 800)
 click("Clusters", [])
 scroll(4000)
 click("Clusters", [])
-_ = try seek("Connect", -150)
-click("Connect", [])
+_ = try seek("Use", -150)
+click("Use", [])
 _ = try seek("Use this cluster", -150)
 click("Use this cluster", [])
 _ = try seek("Open your agent", -150)
@@ -1370,10 +1370,10 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     _ = try capture("cluster-checking-\(size)", ["Checking"])
 }
 try "cluster-failure".write(to: setupProgress, atomically: true, encoding: .utf8)
-waitForChatText("Couldn't reach this cluster. The connection could not be opened.")
+waitForChatText("Can't reach team-west. Check your network or VPN.")
 for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     localSize(CGFloat(width), CGFloat(height)); scroll(4000)
-    _ = try capture("cluster-failure-\(size)", ["Couldn't reach this cluster."])
+    _ = try capture("cluster-failure-\(size)", ["Can't reach team-west.", "Check your network or VPN."])
     if size == "minimum" {
         _ = try seek("Check again", -100)
         guard let bounds = enabledButton("Check again").flatMap(nativeBounds) else { fatalError("Missing recovery action") }

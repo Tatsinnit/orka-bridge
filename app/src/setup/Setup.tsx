@@ -86,6 +86,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
     if (eligiblePayoff) shownPayoff.current = true;
   }, [firstPass, active, view, eligiblePayoff]);
   const [entry, setEntry] = useState<{ revision: number; current?: SelectedPlace; remembered?: Place }>();
+  const [clusterName, setClusterName] = useState<string>();
   const [snapshot, setSnapshot] = useState<ClusterPlaceSnapshot>();
   const [snapshotUnavailable, setSnapshotUnavailable] = useState(false);
   const snapshotEpoch = useRef(0);
@@ -159,7 +160,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   function publishPlace(value: SelectedPlace) { setOwnPlace(value); onPlace?.(value); }
   function chooseCluster(item?: Place, selected = false) {
     retireFirstTest();
-    start(); setPanel('cluster');
+    start(); setPanel('cluster'); setClusterName(item?.context ?? (selected && currentPlace.kind === 'cluster' ? currentPlace.target?.context_name : undefined));
     setEntry(previous => ({ revision: (previous?.revision ?? 0) + 1, current: selected ? currentPlace : undefined, remembered: item }));
   }
   function chooseComputer() { publishPlace({ kind: 'thisComputer' }); }
@@ -224,10 +225,10 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   return <div className="places-workspace">
     {view === 'cluster' && <Button type="button" kind="quiet" className="places-back" onClick={back}>Back to clusters</Button>}
     <div className="workspace-heading places-heading" hidden={!!showPayoff}>
-      <h1 ref={heading} tabIndex={-1} id={showPayoff ? undefined : titleId}>{view === 'places' ? 'Clusters' : view === 'cluster' ? entry?.current ? 'Manage your cluster' : entry?.remembered ? 'Connect a cluster' : 'Add a cluster' : workspace || selected ? 'This computer' : 'Where should your agents run?'}</h1>
+      <h1 ref={heading} tabIndex={-1} id={showPayoff ? undefined : titleId}>{view === 'places' ? 'Clusters' : view === 'cluster' ? clusterName ? <code>{clusterName}</code> : entry?.remembered ? 'Use a cluster' : 'Add a cluster' : workspace || selected ? 'This computer' : 'Where should your agents run?'}</h1>
       {view === 'local' && !workspace && selected && !presentation.done && <p className="muted">{localStage}</p>}
       {view === 'places' && <p className="muted">Choose where agents run</p>}
-      {view === 'places' && <Button type="button" kind={!snapshotUnavailable && snapshot?.persistenceState === 'complete' && snapshot.places.length === 0 ? 'secondary' : 'primary'} onClick={() => chooseCluster()}>Add a cluster</Button>}
+      {view === 'places' && <Button type="button" kind="secondary" onClick={() => chooseCluster()}>Add a cluster</Button>}
     </div>
     {view === 'places' && <Places modelRecovery={modelRecovery} recoveryRef={setPlaceRecovery} snapshot={snapshot} unavailable={snapshotUnavailable} status={error ? undefined : status} view={presentation} place={currentPlace} onLocal={openLocal} onCluster={chooseCluster} />}
     {showPayoff && firstPass && <FirstPass snapshot={firstPass} titleId={titleId} onOpen={openExample} />}
@@ -277,7 +278,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
         </div>
       </div>
     </div>
-    {entry && <ClusterCard active={active && view === 'cluster'} entry={entry} selection={currentPlace} onPlace={publishPlace} onOpenAgent={onOpenAgent ?? onOpenExample} onDone={back} onRemoved={removed} />}
+    {entry && <ClusterCard active={active && view === 'cluster'} entry={entry} selection={currentPlace} onPlace={publishPlace} onContextName={setClusterName} onOpenAgent={onOpenAgent ?? onOpenExample} onDone={back} onRemoved={removed} />}
     {error && <div role="alert"><p>{error}</p>
       <Button type="button" kind="secondary" className="action-spaced" disabled={busy}
         onClick={() => { setBusy(true); setError(undefined); setCheck(value => value + 1); }}>Check again</Button>

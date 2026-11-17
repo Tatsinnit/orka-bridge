@@ -31,14 +31,14 @@ function actions(chosen) {
   return names;
 }
 const all = actions(selection()), core = actions(selection('core')), ui = actions(selection('chat-agent-clusters'));
-assert.equal(all.length, 65);
+assert.equal(all.length, 66);
 assert.equal(core.length, 46);
-assert.equal(ui.length, 19);
+assert.equal(ui.length, 20);
 assert.ok(core.includes('designer-reply-saved'), 'saved reply captures belong to the core scope');
 assert.ok(!ui.includes('designer-reply-saved'), 'UI scope must not repeat saved reply captures');
 assert.equal(new Set([...core, ...ui]).size, all.length, 'scopes must partition, not repeat or omit cases');
 assert.deepEqual([...core, ...ui], all);
-assert.deepEqual(ui, ['chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'chat-two-versions', 'send-failed', 'send-unsupported', 'send-earlier-target', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination']);
+assert.deepEqual(ui, ['chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'chat-two-versions', 'send-failed', 'send-unsupported', 'send-earlier-target', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-connected', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination']);
 const chatStatus = source.match(/if \(command === 'agent_chat_status'\) \{([\s\S]*?return \{ documentId,[^\n]+;)\n        \}/)?.[1];
 assert.ok(chatStatus, 'bounded Chat snapshot producer is missing');
 for (const name of ['chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer']) {
@@ -214,8 +214,53 @@ for (const name of ['cluster-account-picker-open', 'cluster-account-allowed', 'c
     await assert.rejects(invoke('cluster_service_account_preview', { ...args, saName: 'task-reader' }), /Only the selected account/);
   }
 }
+const reloadRecovery = source.slice(source.indexOf("if (name.startsWith('cluster-reload'))"), source.indexOf("if (name === 'model-copy') {"));
+assert.ok(reloadRecovery.includes("document.querySelector('.cluster-card summary').click()"), 'connected recovery fixtures must reveal maintenance before reloading kubeconfig');
+
+const clusterProbe = source.slice(source.indexOf("const probe = await evaluate(`({ heading: document.querySelector('h1')"), source.indexOf("throw Error('Connected cluster actions/wording:"));
+assert.ok(clusterProbe.includes('summary[role="button"]'), 'connected actions include semantic summary disclosures, not only button elements');
+assert.ok(!source.includes("await clickAction('Show details')") && !source.includes("await clickAction('Hide details')"), 'cluster disclosure uses its real summary, not the button-only helper');
+
+// The connected scene must use the same real injection as discovery, then retain
+// that selection for its success/details/list captures without another mount.
+{
+  let injection;
+  const stop = new Error('injection captured');
+  const capture = vm.runInNewContext(`(${captureActions})`, {
+    pair: { agent: '', tests: '' }, replySavedAgent: '', GiB: 1024 ** 3, fixtureAccount: 'synthetic-user',
+    call: async () => ({ frameTree: { frame: { id: 'fixture' } }, executionContextId: 1 }),
+    evaluate: async script => { injection = script; throw stop; },
+  });
+  await assert.rejects(capture('light', 'wide', 'cluster-connected'), error => error === stop);
+  const window = {};
+  vm.runInNewContext(injection, { window, localStorage: { setItem() {}, removeItem() {} }, document: { getElementById: () => ({ replaceWith() {} }), createElement: () => ({}) } });
+  const invoke = window.__TAURI_INTERNALS__.invoke;
+  assert.equal((await invoke('cluster_places')).selectedKey, null);
+  const [context] = await invoke('cluster_contexts');
+  const [target] = await invoke('cluster_discover', { contextId: context.id });
+  assert.equal((await invoke('cluster_use', { targetId: target.id, saName: null })).status, 'connected');
+  const selected = await invoke('cluster_places');
+  assert.equal(selected.places.find(place => place.key === selected.selectedKey).context, 'team-dev');
+  assert.equal(selected.places.length, 3, 'selected, previously checked and unchecked rows stay distinct');
+  assert.equal(selected.places.filter(place => place.checkedAt == null && place.observedAt === null).length, 1);
+  const inventory = await invoke('overview_places', { key: selected.selectedKey });
+  assert.equal(inventory.places[0].agents[0].name, 'runtime-reader');
+  assert.equal(window.__bridgeClusterUses, 1, 'capture fixture must not replay Use');
+}
+for (const scene of ['cluster-success', 'cluster-details', 'cluster-selected-list']) {
+  assert.ok(source.includes(`'${scene}'`), `Windows connected mount must capture ${scene}`);
+}
+const smoke = (await readFile(new URL('./native-smoke.swift', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
+const matrix = smoke.slice(smoke.indexOf('    // Connected cluster capture matrix.'), smoke.indexOf('    // Done leaves the confirmed destination'));
+assert.ok(matrix.includes('CGFloat(540), CGFloat(640)'), 'Mac connected scenes need true minimum content size');
+assert.ok(matrix.includes('CGFloat(1280), CGFloat(800)'), 'Mac connected scenes need matching wide content size');
+for (const scene of ['cluster-success-', 'cluster-details-', 'cluster-selected-list-']) assert.ok(matrix.includes(scene), `Mac matrix must capture ${scene}`);
+assert.ok(matrix.includes('"Show details"') && matrix.includes('"Hide details"'), 'capture both closed and open disclosure, then restore it');
+assert.ok(smoke.includes('if name.hasPrefix("cluster-success")'), 'scrolled matrix frames need their own visible-content gate, not the off-screen page heading');
+assert.ok(smoke.includes('nativeElements(element).dropFirst()'), 'named page h1 must also read its inline code accessibility child, not depend on a cluster-result h2');
+assert.ok(smoke.includes('clickButton("Show details")\n    clickButton("Change context")'), 'context maintenance must explicitly open details');
+assert.ok(smoke.includes('clickButton("Show details")\n    clickButton("Remove")'), 'restart removal must explicitly open details');
 // Source contracts supplement, but never substitute for, the hosted native walk.
-const smoke = await readFile(new URL('./native-smoke.swift', import.meta.url), 'utf8');
 const model = await readFile(new URL('./native-model-macos.swift', import.meta.url), 'utf8');
 assert.ok(model.includes('nativeHeadingExists("Conversation 1") && nativeHeadingExists("Conversation 2")'), 'numbered Chat versions must be verified as native headings, not body static text');
 assert.ok(model.includes('anchorChatHeading("Conversation 2")'), 'Chat capture must align its native heading clear of fixed navigation');
@@ -257,4 +302,4 @@ assert.ok(model.includes('localSize(540, 640)') && model.includes('chat-new-vers
 assert.ok(source.includes("resizeTo({ width: 1280, height: 800 }, 'Wide')"));
 assert.ok(source.includes("resizeTo({ width: 540, height: 640 }, 'Compact')"));
 assert.ok(!source.includes('Emulation.setDeviceMetricsOverride'), 'a fake viewport cannot qualify native size evidence');
-console.log('PASS real scope parsing; 46+19 unique action cases; Chat/Send snapshot matrix and presentation gates; Swift source contracts; layout acceptance/rejection; IPC registration/injection; disjoint CI scopes with unchanged three-minute ceilings');
+console.log('PASS real scope parsing; 46+20 unique action cases; connected cluster IPC/matrix; Chat/Send snapshot matrix and presentation gates; Swift source contracts; layout acceptance/rejection; IPC registration/injection; disjoint CI scopes with unchanged three-minute ceilings');

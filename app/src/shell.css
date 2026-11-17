@@ -23,6 +23,7 @@
 .chrome-tools { display: flex; align-items: center; margin-left: auto; padding-left: var(--space-4); min-width: 0; }
 .host-chip { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-control); background: var(--color-card); box-shadow: 0 0 0 1px var(--color-border-strong); font-size: var(--size-body); white-space: nowrap; max-width: 220px; overflow: hidden; }
 .host-label { overflow: hidden; text-overflow: ellipsis; }
+.host-chip .chip { flex: none; padding: 0 var(--space-1); font: var(--type-small); }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-text-tertiary); flex: none; }
 .live-dot.ready { background: var(--color-status-succeeded); }
 .live-dot.busy { background: var(--color-status-running); }
