@@ -884,6 +884,9 @@ func nativeHeadings(_ expected: String) -> [AXUIElement] {
 }
 func nativeHeadingExists(_ expected: String) -> Bool { !nativeHeadings(expected).isEmpty }
 func anchorChatHeading(_ expected: String) {
+    // Resizing can leave Chat following the composer until its next status poll.
+    // A real scroll away from the end disables follow before measuring the heading.
+    scroll(4000)
     let headings = nativeHeadings(expected)
     guard headings.count == 1, let bounds = nativeBounds(headings[0]),
         let header = enabledButton("Designer").flatMap(nativeBounds) else {
@@ -892,6 +895,11 @@ func anchorChatHeading(_ expected: String) {
     // Clear fixed navigation and the 48px composer-follow threshold before freezing the frame.
     let delta = header.maxY + 64 - bounds.minY
     if abs(delta) > 2 { scroll(Int32(delta.rounded())) }
+    guard let aligned = nativeHeadings(expected).first.flatMap(nativeBounds) else {
+        require(false, "Lost native Chat heading after scrolling: \(expected)"); return
+    }
+    require(window()!.1.contains(aligned) && aligned.minY >= header.maxY + 8,
+        "Native Chat heading is clipped after scrolling: \(expected), bounds=\(aligned), header=\(header)")
 }
 func nativeTextExists(_ expected: String) -> Bool {
     nativeElements().contains { element in
