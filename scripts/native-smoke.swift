@@ -898,8 +898,8 @@ require(!retained.contains { $0.topCandidates(1).first?.string == "Get started" 
         "Restart must retain welcome dismissal without starting a workspace")
 clickTab("Overview", retained)
 let overview = try capture("overview", "Overview")
-require(nativeTextIsVisible("This workspace can't list its agents yet."),
-        "Overview must explain the source-inferred old Mac image limit")
+require(!nativeTextIsVisible("This workspace can't list its agents yet."),
+        "Saved files must not be contradicted by a local inventory caveat")
 require(!visibleButtons("Open web-reader").isEmpty && nativeTextIsVisible("web-reader"),
         "Overview must show the saved file opened through the native Designer")
 clickTab("Designer", overview)
@@ -1554,7 +1554,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     // Either retained identity can therefore correctly lead the unknown cards;
     // their distinct UIDs and exact create count were verified at separate Send.
     require(separateAgents.contains { $0["uid"] as? String == unknownUID }, "Unknown Overview card did not retain an acknowledged Agent UID")
-    try overviewShot("overview-fixture-external-by-place", ["runtime-reader", "No agent file on this computer.", "external-model", "web_fetch"])
+    try overviewShot("overview-fixture-external-by-place", ["runtime-reader", "Running on fixture-cluster, not saved here", "external-model", "web_fetch"])
     // Explicit retries reuse this attempt's exact Task UID. Neither an HTTP
     // acknowledgement nor a lost response may manufacture a terminal result.
     clickTab("Designer", [])

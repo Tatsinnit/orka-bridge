@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import { type LiveAgents, type Observation, type Places, type RunAgent, readAgents, readFiles, readPlaces, type SavedFiles, unavailableAgents } from './api';
 import { agentGroups, balance, buildCards, clusterGroups, type CompleteAgents, type Inputs, isEmpty, summaryLabel } from './model';
@@ -7,7 +7,7 @@ import { type AgentFocus, sendAgentCheck } from '../clusters/send-api';
 import './overview.css';
 
 export type OverviewProps = {
-  onNewAgent?: () => void; active: boolean; runBusy: boolean; activeDocumentId?: string; workspaceKey: string;
+  onNewAgent?: () => void; active: boolean; runBusy: boolean; localAiConnected: boolean; activeDocumentId?: string; workspaceKey: string;
   onOpenDocument: (id: string, clusterKey?: string) => void; onChatDocument?: (id: string) => void; onRunDocument?: (id: string, clusterKey?: string) => void;
   onOpenExample: () => void; onChooseWorkspace: () => void; onCounts?: (label: string) => void;
   /** Newest request wins. target is absent when native has no recorded agent for that Send. */
@@ -18,7 +18,8 @@ export type OverviewProps = {
 };
 const focusNotes = { present: 'Not shown in Overview yet.', gone: 'The original agent is no longer available. Your saved result is unchanged.', cannotCheck: 'Cannot check this agent. Your saved result is unchanged.' };
 const complete = (v?: LiveAgents): v is CompleteAgents => v?.state === 'complete' && v.installation !== null && v.observedAt !== null;
-export default function Overview({ onNewAgent, active, runBusy, activeDocumentId, workspaceKey, onOpenDocument, onChatDocument, onRunDocument, onOpenExample, onChooseWorkspace, onCounts, workspaceNote, filesRevision = 0, focus: navigationFocus, focusPending = false, onRetryFocus }: OverviewProps) {
+export default function Overview({ onNewAgent, active, runBusy, localAiConnected, activeDocumentId, workspaceKey, onOpenDocument, onChatDocument, onRunDocument, onOpenExample, onChooseWorkspace, onCounts, workspaceNote, filesRevision = 0, focus: navigationFocus, focusPending = false, onRetryFocus }: OverviewProps) {
+  const aiReasonId = useId();
   const [dismissedFocus, setDismissedFocus] = useState<number>();
   const focus = navigationFocus?.id === dismissedFocus ? undefined : navigationFocus;
   const [focusRetry, setFocusRetry] = useState(0);
@@ -156,13 +157,15 @@ export default function Overview({ onNewAgent, active, runBusy, activeDocumentId
   useEffect(() => { onCounts?.(counts); }, [counts, onCounts]);
   const clusters = clusterGroups(inputs, built);
   const groups = byAgent ? agentGroups(built.cards, built.saved) : clusters;
-  const actions = { onOpen: onOpenDocument, onChat: onChatDocument, onRun: onRunDocument, onCheck: () => { setDismissedFocus(navigationFocus?.id); setRefresh(v => v + 1); }, onClusters: onChooseWorkspace };
+  const needsAi = !localAiConnected && built.local.some(c => c.actions.some(a => a.id !== 'open'));
+  const actions = { localAiReason: needsAi ? aiReasonId : undefined, onOpen: onOpenDocument, onChat: onChatDocument, onRun: onRunDocument, onCheck: () => { setDismissedFocus(navigationFocus?.id); setRefresh(v => v + 1); }, onClusters: onChooseWorkspace };
   const trouble = { ...clusters[0], cards: [], count: undefined, notes: clusters[0].notes.filter(n => !n.text.startsWith('No agents')) };
   return <section className="overview" aria-label="Agents by cluster" hidden={!active}>
     <div className="page-heading"><h1 id={active ? 'page-title' : undefined}>Your agents</h1><div className="overview-actions">
       {onNewAgent && !empty && <Button kind="primary" onClick={onNewAgent}>New agent</Button>}
       {!empty && <div className="view-switch" role="group" aria-label="Group agents"><button type="button" aria-pressed={!byAgent} onClick={() => setByAgent(false)}>By cluster</button><button type="button" aria-pressed={byAgent} onClick={() => setByAgent(true)}>By agent</button></div>}
       <Button onClick={actions.onCheck}>Refresh</Button></div></div>
+    {needsAi && <p id={aiReasonId} className="overview-note" tabIndex={0}>Connect the AI in Clusters to chat or run tests on this computer.</p>}
     {focusNote && <div className="overview-note" role="status"><p>{focusNote}</p><Button kind="quiet" onClick={() => { if (focus && !focus.target && onRetryFocus) onRetryFocus(focus.sendId); else setFocusRetry(v => v + 1); }}>Refresh</Button></div>}
     {placeError && <div className="overview-note" role="status"><p>Couldn't read clusters just now.{places && ' Showing what Bridge last saw.'}</p><Button kind="quiet" onClick={actions.onCheck}>Check again</Button></div>}
     {places?.historyState === 'unavailable' && <p role="alert" className="overview-note">Saved Send results are unavailable, so cluster agents show no test result.</p>}

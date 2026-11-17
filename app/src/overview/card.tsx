@@ -5,7 +5,7 @@ import { Disclosure } from '../components/Disclosure';
 import { RelativeTime } from '../components/RelativeTime';
 import type { Card } from './model';
 
-export type CardActions = { onOpen: (id: string, clusterKey?: string) => void; onChat?: (id: string) => void; onRun?: (id: string, clusterKey?: string) => void };
+export type CardActions = { localAiReason?: string; onOpen: (id: string, clusterKey?: string) => void; onChat?: (id: string) => void; onRun?: (id: string, clusterKey?: string) => void };
 const mono = (text: string) => <code>{text}</code>;
 const names = (list: string[]) => list.map((n, i) => <span key={n}>{i ? i === list.length - 1 ? ' and ' : ', ' : ''}{mono(n)}</span>);
 function Meta({ card }: { card: Card }) {
@@ -30,13 +30,13 @@ export function AgentCard({ card, byAgent, actions }: { card: Card; byAgent: boo
     <header className="overview-card-head">
       <h3>{title}</h3>
       {card.status && <StatusPill state={card.status}>{card.pill}</StatusPill>}
-      {card.testedAt !== undefined && <span className="overview-card-time">tested <RelativeTime value={card.testedAt} /></span>}
+      {card.testedAt !== undefined && <span className="overview-card-time"><RelativeTime value={card.testedAt} /></span>}
     </header>
     {/* In By agent the group head already shows a linked file's description. */}
     {!(byAgent && !card.agentKey.startsWith('agent/')) && <p className="overview-card-description">{card.description}</p>}
     <Meta card={card} />
     <div className="overview-card-actions">
-      {card.actions.map(a => <Button key={a.id} kind={a.primary ? 'primary' : 'secondary'} aria-label={label({ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id])} onClick={() => run(a.id)}>{{ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id]}</Button>)}
+      {card.actions.map(a => <Button key={a.id} kind={a.primary ? 'primary' : 'secondary'} disabled={!card.remote && a.id !== 'open' && !!actions.localAiReason} aria-describedby={!card.remote && a.id !== 'open' ? actions.localAiReason : undefined} aria-label={label({ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id])} onClick={() => run(a.id)}>{{ open: 'Open', chat: 'Chat', run: 'Run tests' }[a.id]}</Button>)}
       <Disclosure className="overview-details-toggle" label="Details" open={open} onOpenChange={setOpen} controls={id}>{null}</Disclosure>
     </div>
     {open && <div id={id} className="overview-details">{card.details.map(d => d.copy ? <GeneratedValue key={d.label} label={d.label} value={d.value} />

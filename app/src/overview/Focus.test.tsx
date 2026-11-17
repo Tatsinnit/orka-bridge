@@ -14,7 +14,7 @@ const place = (agents: unknown[]) => ({ key, context: 'team', service: 'control/
 const places = (list: unknown[]) => ({ places: [place(list)], historyState: 'complete', unobserved: [] });
 const files = { state: 'complete', files: [], runActive: false, historyState: 'complete', runAgents: [] };
 const live = { state: 'complete', installation: id, agents: [], observedAt: 123, observation: null, runActive: false, reason: null };
-const props = { active: true, runBusy: false, workspaceKey: 'ready', onOpenDocument: vi.fn(), onOpenExample: vi.fn(), onChooseWorkspace: vi.fn() };
+const props = { active: true, runBusy: false, localAiConnected: true, workspaceKey: 'ready', onOpenDocument: vi.fn(), onOpenExample: vi.fn(), onChooseWorkspace: vi.fn() };
 const target = (uid: string) => ({ key, name: 'same-name', namespace: 'agents', uid });
 beforeEach(() => { vi.stubGlobal('isTauri', true); });
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); vi.clearAllMocks(); });

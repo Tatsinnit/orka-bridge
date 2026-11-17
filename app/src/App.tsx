@@ -105,6 +105,7 @@ export default function App() {
   const [exampleState, setExampleState] = useState<'loading' | 'loaded' | 'failed'>('loading');
   const [run, setRun] = useState<RunSnapshot>();
   const [runUnavailable, setRunUnavailable] = useState(false);
+  const [overviewAiConnected, setOverviewAiConnected] = useState(false);
   // Setup keeps the sample's latest evidence even while Designer shows another document.
   const [sampleResult, setSampleResult] = useState<{ snapshot?: RunSnapshot }>();
   const [firstPass, setFirstPass] = useState<RunSnapshot>();
@@ -200,6 +201,21 @@ export default function App() {
     ? workspaceView(setup, { stopping: workspaceStopping, starting: workspaceBusy && !workspaceStopping }) : undefined;
   const hostTone = hostWorkspace?.tone ?? view.tone;
   const workspaceReady = setup?.localVm === 'ready';
+  useEffect(() => {
+    setOverviewAiConnected(false);
+    if (page !== 'Overview' || !workspaceReady || workspaceBusy || setup?.model !== 'available') return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    // Native connection state is workspace-wide; no Designer or saved-file selection is needed.
+    const observe = async () => {
+      const result = await runCall('agent_run_status');
+      if (cancelled) return;
+      setOverviewAiConnected(result.ok && (result.snapshot.modelConnected ?? model === 'connected'));
+      timer = setTimeout(() => { void observe(); }, 500);
+    };
+    void observe();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [page, workspaceReady, workspaceBusy, setup?.model, model]);
   const workspaceTransition = !!setup && ['preparing', 'installing', 'starting', 'closing', 'failed'].includes(setup.localVm);
   const overviewWorkspaceNote = workspaceStopping ? 'Stopping the workspace'
     : workspaceBusy && (!workspaceTransition || setup?.localVm === 'failed') ? 'Getting your workspace ready…'
@@ -318,7 +334,7 @@ export default function App() {
         </div>
         {page === 'Designer' && overviewNotice && <p className="muted" role="status">{overviewNotice}</p>}
         {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogPaused={!remote && automaticTestPending} catalogKey={catalogReady ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} onSeeInOverview={seeInOverview} /></div>}
-        <Overview onNewAgent={() => openDesigner(undefined, true)} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} activeDocumentId={firstTest === 'running' ? SAMPLE_DOCUMENT_ID : run?.busy?.documentId} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} workspaceNote={overviewWorkspaceNote} filesRevision={agentsRevision} onCounts={setOverviewCounts}
+        <Overview onNewAgent={() => openDesigner(undefined, true)} localAiConnected={overviewAiConnected} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} activeDocumentId={firstTest === 'running' ? SAMPLE_DOCUMENT_ID : run?.busy?.documentId} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} workspaceNote={overviewWorkspaceNote} filesRevision={agentsRevision} onCounts={setOverviewCounts}
           onOpenDocument={(id, key) => { void openOverviewDocument(id, 'open', key); }}
           onChatDocument={id => openOverviewDocument(id, 'chat')}
           onRunDocument={(id, key) => { void openOverviewDocument(id, 'run', key); }}

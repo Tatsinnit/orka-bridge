@@ -1387,7 +1387,7 @@ try {
       if (variant === 'clusters') {
         files.files[1].source = files.files[1].localResult.source = src('7'); // Tested locally since Send; old bytes now belong to another file.
         files.files[2] = { ...files.files[2], draft: true, summary: null, reason: 'Add instructions and a test to get started.' };
-        files.files.push(file('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'web-reader-copy', '3', 'Identical to the earlier files, but a different document', null));
+        files.files.push(file('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'web-reader-copy', '3', 'A copy of web-reader', null));
       }
       const chatAgent = { name: 'bridge-chat-agent-' + hex('0', 32), namespace: 'default', uid: 'chat-uid-0' };
       const live = { state: 'complete', installation, agents: [failedRun, passedRun, chatAgent], observedAt: now, observation: null, runActive: false, reason: null };
@@ -1434,16 +1434,25 @@ try {
       }
       for (const label of ['Failed', 'Passed', 'Not tested']) if (!body.includes(label)) fail(`missing ${label} verdict`);
       if (/bridge-chat-agent/.test(body)) fail('generated Chat Agent is visible');
+      const readiness = await evaluate(`(() => {
+        const root = document.querySelector('section.overview');
+        const reason = [...root.querySelectorAll('.overview-note')].filter(n => n.textContent === 'Connect the AI in Clusters to chat or run tests on this computer.');
+        const actions = [...root.querySelectorAll('.overview-card button')].filter(b => /^(Chat|Run tests) /.test(b.getAttribute('aria-label') ?? ''));
+        const local = actions.filter(b => b.closest('[data-card-key]').dataset.cardKey.startsWith('local/'));
+        const remote = actions.filter(b => !b.closest('[data-card-key]').dataset.cardKey.startsWith('local/'));
+        return { reason: reason.length === 1 && reason[0].tabIndex === 0, local: local.length > 0 && local.every(b => b.disabled && b.getAttribute('aria-describedby') === reason[0]?.id), remote: remote.every(b => !b.disabled) };
+      })()`);
+      if (!readiness.reason || !readiness.local || !readiness.remote) fail('local AI must gate local controls only, with one shared accessible reason');
       if (variant === 'clusters') {
         const proof = await evaluate(`(() => {
           const find = key => document.querySelector('[data-card-key="' + key + '"]');
           const describe = card => ({ text: card?.innerText, buttons: [...(card?.querySelectorAll('button, [role="button"]') ?? [])].map(b => b.textContent), group: card?.closest('.overview-group')?.querySelector('h2')?.textContent });
           return { passed: describe(find('fixture-remote/remote-uid-1')), failed: describe(find('fixture-remote/remote-uid-2')), draft: describe(find('local/cccccccc-cccc-4ccc-8ccc-cccccccccccc')), external: describe(find('fixture-remote/external-uid')) };
         })()`);
-        if (!proof.passed.text?.includes('Earlier files') || !proof.passed.text.includes('2 of 2 tests on earlier files') || !proof.failed.text?.includes('1 of 3 tests on earlier files') || !proof.failed.text.includes('Failed')) fail('final counts or earlier-file verdicts missing');
+        if (!proof.passed.text?.includes('Not run since your edit') || !proof.passed.text.includes('2 of 2 passed, before your edit') || !proof.failed.text?.includes('1 of 3 passed, before your edit') || !proof.failed.text.includes('Failed')) fail('final counts or earlier-file verdicts missing');
         if (mode === 'by-agent' && (proof.passed.group !== 'web-reader' || proof.failed.group !== 'checksum-checker')) fail('document identity lost to another file hash');
         if (proof.draft.buttons.join('|') !== 'Open|Details' || !proof.draft.text?.includes('Draft') || !body.includes('Add instructions and a test to get started.')) fail('blank draft must be Open-only');
-        if (proof.external.buttons.join('|') !== 'Details' || !proof.external.text?.includes('No agent file on this computer.')) fail('external Agent must be Details-only');
+        if (proof.external.buttons.join('|') !== 'Details' || !proof.external.text?.includes('Running on team-dev, not saved here')) fail('external Agent must be Details-only');
         if (![proof.passed, proof.failed].every(c => c.buttons.join('|') === 'Open|Run tests|Details')) fail('linked cluster actions missing');
       }
       if (variant === 'local-only' && body.includes('team-dev')) fail('remote cluster should be absent');

@@ -19,7 +19,7 @@ const live = (agents: unknown[] = [], over: object = {}) => ({ state: 'complete'
 const unavailable = { state: 'unavailable', installation: null, agents: [], observedAt: null, observation: null, runActive: false, reason: 'stopped' };
 const none = { places: [], historyState: 'complete', unobserved: [] };
 const noop = () => {};
-const props = { active: true, runBusy: false, workspaceKey: 'ready', onOpenDocument: noop, onChatDocument: noop, onRunDocument: noop, onOpenExample: noop, onChooseWorkspace: noop };
+const props = { active: true, runBusy: false, localAiConnected: true, workspaceKey: 'ready', onOpenDocument: noop, onChatDocument: noop, onRunDocument: noop, onOpenExample: noop, onChooseWorkspace: noop };
 beforeEach(() => { vi.stubGlobal('isTauri', true); });
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
 function ipc(saved: unknown = files(), agents: unknown = live(), places: unknown = none) {
@@ -170,9 +170,10 @@ test('a card is compact: name, one pill, time, description, one meta line, actio
   const c = await card(/^reader/);
   expect(within(c).getByRole('heading', { name: 'reader' })).toBeTruthy();
   expect(within(c).getByText('Passed')).toBeTruthy();
-  expect(within(c).getByText(/^tested/)).toBeTruthy();
+  expect(c.querySelector('time')?.dateTime).toBe('2009-02-13T23:31:30.000Z');
+  expect(within(c).queryByText(/^tested/)).toBeNull();
   expect(within(c).getByText('Reads a page')).toBeTruthy();
-  expect(within(c).getByText(/3 of 3 tests/).closest('p')!.textContent).toBe('3 of 3 tests · gpt-test · web_search');
+  expect(within(c).getByText(/3 of 3 passed/).closest('p')!.textContent).toBe('3 of 3 passed · gpt-test · web_search');
   expect(buttons(c)).toEqual(['Open', 'Chat', 'Run tests', 'Details']);
   expect(c.textContent).not.toMatch(/bridge-run|aaaa|run-uid/);
   expect(within(c).getByRole('button', { name: 'Details' }).getAttribute('aria-expanded')).toBe('false');
@@ -180,6 +181,35 @@ test('a card is compact: name, one pill, time, description, one meta line, actio
   expect(within(c).getByText('Test run Agent')).toBeTruthy();
   expect(within(c).getByText('bridge-run-1')).toBeTruthy();
   expect(within(c).getByRole('button', { name: 'Copy Agent file hash' })).toBeTruthy();
+});
+
+test.each([false, true])('local AI readiness disables actions with one shared reason in either grouping (%s)', async byAgent => {
+  ipc();
+  const user = userEvent.setup();
+  const [open, chat, run] = [vi.fn(), vi.fn(), vi.fn()];
+  const own = { ...props, onOpenDocument: open, onChatDocument: chat, onRunDocument: run };
+  const view = render(<Overview {...own} localAiConnected={false} />);
+  await card(/^reader/);
+  if (byAgent) await user.click(screen.getByRole('button', { name: 'By agent' }));
+  const reason = screen.getByText('Connect the AI in Clusters to chat or run tests on this computer.');
+  expect(reason.tabIndex).toBe(0);
+  for (const verb of ['Chat', 'Run tests']) {
+    const button = screen.getByRole('button', { name: `${verb} reader` });
+    expect(button.matches(':disabled')).toBe(true);
+    expect(button.getAttribute('aria-describedby')).toBe(reason.id);
+    await user.click(button);
+  }
+  expect(chat).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Open reader' }));
+  expect(open).toHaveBeenCalledWith(id);
+  view.rerender(<Overview {...own} localAiConnected />);
+  expect(screen.queryByText(reason.textContent!)).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Chat reader' }));
+  await user.click(screen.getByRole('button', { name: 'Run tests reader' }));
+  expect(chat).toHaveBeenCalledWith(id); expect(run).toHaveBeenCalledWith(id);
+  view.rerender(<Overview {...own} localAiConnected={false} />);
+  expect(screen.getByRole('button', { name: 'Run tests reader' }).matches(':disabled')).toBe(true);
+  expect(screen.getAllByText(reason.textContent!)).toHaveLength(1);
 });
 
 test('actions keep Open, Chat, Run order with consistent button treatments and contextual primary emphasis', async () => {
@@ -215,7 +245,7 @@ test('each saved file has its own local result, and a failure on earlier files s
   const counts = vi.fn(); ipc(files([file, onEarlier, passedEarlier])); render(<Overview {...props} onCounts={counts} />);
   const failed = await card(/^moved/);
   expect(within(failed).getByText('Failed')).toBeTruthy();
-  expect(within(failed).getByText(/0 of 1 tests on earlier files/)).toBeTruthy();
+  expect(within(failed).getByText(/0 of 1 passed, before your edit/)).toBeTruthy();
   // A pass on earlier files says nothing about the saved file.
   const stale = await card(/^old-pass/);
   expect(within(stale).getByText('Not run since your edit')).toBeTruthy();
@@ -227,7 +257,8 @@ test('a pass recorded on earlier files is Not run since your edit, with Run test
   ipc(files([{ ...file, source: edited }])); render(<Overview {...props} />);
   const c = await card(/^reader/);
   expect(within(c).getByText('Not run since your edit')).toBeTruthy();
-  expect(within(c).queryByText(/of 3 tests/)).toBeNull();
+  expect(within(c).getByText(/3 of 3 passed, before your edit/)).toBeTruthy();
+  expect(c.querySelector('.status-passed')).toBeNull();
   expect(buttons(c)).toEqual(['Open', 'Chat', 'Run tests', 'Details']);
 });
 
@@ -237,7 +268,7 @@ test('Bridge test-run Agents are never cards; exact identity only, never the nam
   const stray = await card(/^bridge-run-1$/);
   expect(screen.getAllByRole('heading', { name: 'bridge-run-1' })).toHaveLength(1);
   expect(screen.getByRole('article', { name: /^reader$/ })).toBeTruthy();
-  expect(within(stray).getByText('No agent file on this computer.')).toBeTruthy();
+  expect(within(stray).getByText('Running on this computer, not saved here')).toBeTruthy();
   expect(within(stray).queryByText(/Passed|Failed|Not tested/)).toBeNull();
   expect(buttons(stray)).toEqual(['Details']);
   await userEvent.click(within(stray).getByRole('button', { name: 'Details' }));
@@ -273,7 +304,7 @@ test('a running local result keeps the previous final result, or is Result unkno
   ipc(files([{ ...file, localResult: result('failed', 1, 2) }])); const view = render(<Overview {...props} />);
   expect(within(await card(/^reader/)).getByText('Failed')).toBeTruthy();
   ipc(files([{ ...file, localResult: running }])); await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  await waitFor(() => expect(screen.getByRole('article', { name: /^reader/ }).textContent).toContain('1 of 2 tests'));
+  await waitFor(() => expect(screen.getByRole('article', { name: /^reader/ }).textContent).toContain('1 of 2 passed'));
   expect(within(screen.getByRole('article', { name: /^reader/ })).getByText('Failed')).toBeTruthy();
   view.unmount(); ipc(files([{ ...file, localResult: running }])); render(<Overview {...props} />);
   expect(within(await card(/^reader/)).getByText('Result unknown')).toBeTruthy();
@@ -288,15 +319,15 @@ test.each(['passed', 'failed'])('native active Unknown keeps the previous %s res
   ipc(files([unknown], { runActive: true })); await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await screen.findByText(/Updating when the test finishes/);
   expect(within(screen.getByRole('article', { name: /^reader/ })).getByText(label)).toBeTruthy();
-  expect(screen.getByText(/1 of 2 tests/)).toBeTruthy();
+  expect(screen.getByText(/1 of 2 passed/)).toBeTruthy();
   ipc(files([unknown])); await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await waitFor(() => expect(within(screen.getByRole('article', { name: /^reader/ })).getByText('Result unknown')).toBeTruthy());
-  expect(screen.queryByText(/1 of 2 tests/)).toBeNull();
+  expect(screen.queryByText(/1 of 2 passed/)).toBeNull();
   const other = named(id2, 'other', { localResult: result('unknown', 0, 0, { documentId: id2, state: 'unknown', report: null }) });
   ipc(files([unknown, other], { runActive: true })); await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   await screen.findByText(/Updating when the test finishes/);
   expect(within(screen.getByRole('article', { name: /^reader/ })).getByText('Result unknown')).toBeTruthy();
-  expect(within(screen.getByRole('article', { name: /^reader/ })).queryByText(/1 of 2 tests/)).toBeNull();
+  expect(within(screen.getByRole('article', { name: /^reader/ })).queryByText(/1 of 2 passed/)).toBeNull();
 });
 
 test('an unseen terminal Unknown for A is not replaced by a cached pass while B is active', async () => {
@@ -308,7 +339,7 @@ test('an unseen terminal Unknown for A is not replaced by a cached pass while B 
   ipc(files([unknown, other], { runActive: true }));
   view.rerender(<Overview {...props} activeDocumentId={id2} runBusy />);
   await waitFor(() => expect(within(screen.getByRole('article', { name: /^reader/ })).getByText('Result unknown')).toBeTruthy());
-  expect(within(screen.getByRole('article', { name: /^reader/ })).queryByText(/of 3 tests/)).toBeNull();
+  expect(within(screen.getByRole('article', { name: /^reader/ })).queryByText(/of 3 passed/)).toBeNull();
 });
 
 test('file metadata from outside is escaped text', async () => {
@@ -342,7 +373,8 @@ test('stopped workspace keeps file cards with Open only; empty stays empty with 
 
 test('image-limited listing keeps saved results and full actions', async () => {
   ipc(files(), { ...unavailable, reason: 'image' }); render(<Overview {...props} />);
-  expect(await screen.findByText("This workspace can't list its agents yet.")).toBeTruthy();
+  await card(/^reader/);
+  expect(screen.queryByText(/can't list its agents/)).toBeNull();
   const c = await card(/^reader/); expect(within(c).getByText('Passed')).toBeTruthy(); expect(buttons(c)).toEqual(['Open', 'Chat', 'Run tests', 'Details']);
 });
 
