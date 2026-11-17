@@ -169,6 +169,16 @@ fn unsupported_test_fences_cannot_hide_beside_a_valid_case() {
             );
         }
     }
+
+    let malformed = TESTS
+        .replace("```yaml agent-test", "```yaml agent-test `extra`")
+        .replace("id: checksum", "id: hidden");
+    let second = TESTS.replace("id: checksum", "id: second");
+    let source = format!("{TESTS}\n{malformed}\n{second}");
+    assert!(matches!(
+        ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()),
+        Err(ErrorKind::Source)
+    ));
 }
 
 #[test]

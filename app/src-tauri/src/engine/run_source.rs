@@ -273,13 +273,18 @@ fn supported_builtin(name: &str) -> bool {
     )
 }
 
-fn fence(line: &str) -> Option<(u8, usize, &str)> {
+fn fence_parts(line: &str) -> Option<(u8, usize, &str)> {
     let character = *line.as_bytes().first()?;
     if !matches!(character, b'`' | b'~') {
         return None;
     }
     let length = line.bytes().take_while(|byte| *byte == character).count();
     let info = (length >= 3).then_some(&line[length..])?;
+    Some((character, length, info))
+}
+
+fn fence(line: &str) -> Option<(u8, usize, &str)> {
+    let (character, length, info) = fence_parts(line)?;
     (character != b'`' || !info.contains('`')).then_some((character, length, info))
 }
 
@@ -329,7 +334,7 @@ fn test_blocks(body: &str) -> Result<Vec<RunCase>, ErrorKind> {
             block = Some(String::new());
             continue;
         }
-        if fence(marker.trim_start_matches(fence_indent))
+        if fence_parts(marker.trim_start_matches(fence_indent))
             .is_some_and(|(_, _, info)| info.contains("agent-test"))
         {
             return Err(ErrorKind::Source);

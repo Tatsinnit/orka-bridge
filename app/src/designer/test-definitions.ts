@@ -18,15 +18,21 @@ export function isTestDraft(source: string): boolean {
   return /^---\nschemaVersion: 1\n---\n\n# [a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])? tests\n\n```yaml agent-test\nid: first-test\ninput: ""\nassertions: \[\]\n```\n$/u.test(source.replaceAll('\r\n', '\n'));
 }
 type Fence = { character: '`' | '~'; length: number; info: string };
-function fence(line: string): Fence | undefined {
+function fenceParts(line: string): Fence | undefined {
   const character = line[0];
   if (character !== '`' && character !== '~') return undefined;
   let length = 0;
   while (line[length] === character) length += 1;
   if (length < 3) return undefined;
   const info = line.slice(length);
-  if (character === '`' && info.includes('`')) return undefined;
   return { character, length, info };
+}
+function fence(line: string): Fence | undefined {
+  const parsed = fenceParts(line);
+  if (!parsed) return undefined;
+  const { character, info } = parsed;
+  if (character === '`' && info.includes('`')) return undefined;
+  return parsed;
 }
 function fenceWhitespace(character: string): boolean {
   const code = character.codePointAt(0);
@@ -86,7 +92,7 @@ export function testDefinitions(source: string): TestDefinition[] | undefined {
         continue;
       }
       if (line === '```yaml agent-test') { block = []; continue; }
-      if (fence(withoutFenceIndent(line))?.info.includes('agent-test')) return undefined;
+      if (fenceParts(withoutFenceIndent(line))?.info.includes('agent-test')) return undefined;
       ordinary = fence(line);
     }
     return !block && !ordinary && cases.length ? cases : undefined;

@@ -65,6 +65,10 @@ test('inline spans and numbered-list examples cannot hide later tests', () => {
     expect(testDefinitions(file(block('', 'first') + between + block('', 'second')))?.map(t => t.id)).toEqual(['first', 'second']);
   }
 });
+test('malformed agent-test spans cannot hide a later canonical test', () => {
+  const malformed = block('', 'hidden').replace('```yaml agent-test', '```yaml agent-test `extra`');
+  expect(testDefinitions(file(block('', 'first') + malformed + block('', 'second')))).toBeUndefined();
+});
 test('Unicode-indented test fences are rejected like native Run', () => {
   for (const indent of [' ', '\t', '\u00a0', '\u2003', '\ufeff']) {
     const hidden = block('', 'hidden').replace('```yaml agent-test', indent + '```yaml agent-test');
