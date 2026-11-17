@@ -21,7 +21,7 @@ assert.equal(selection('chat-agent-clusters').output, resolve('captures'), 'scop
 function roster(name, chosen) {
   const expression = source.match(new RegExp(`const ${name} = ([\\s\\S]*?);\\n`))?.[1];
   assert.ok(expression, `missing ${name}`);
-  return Function('runCore', 'transfer', 'startup', `return (${expression});`)(chosen.runCore, {}, () => ({}));
+  return Function('runCore', 'runUi', 'transfer', 'startup', `return (${expression});`)(chosen.runCore, chosen.runUi, {}, () => ({}));
 }
 function actions(chosen) {
   const names = roster('actionFixtures', chosen);
@@ -56,10 +56,18 @@ const twoVersions = Function('name', 'documentId', chatStatus)('chat-two-version
 assert.equal(twoVersions.versions.length, 2);
 assert.equal(twoVersions.versions[0].turns[0].message, 'Keep this earlier conversation.');
 assert.equal(twoVersions.versions[1].turns[0].message, 'What did the page say?');
-for (const name of ['fixtures', 'setupFixtures', 'overviewVariants']) {
+for (const name of ['fixtures', 'setupFixtures']) {
   assert.equal(roster(name, selection('chat-agent-clusters')).length, 0, `UI scope must not repeat ${name}`);
   assert.ok(roster(name, selection('core')).length > 0);
 }
+const overviewAll = roster('overviewVariants', selection());
+const overviewCore = roster('overviewVariants', selection('core'));
+const overviewUi = roster('overviewVariants', selection('chat-agent-clusters'));
+assert.deepEqual(overviewAll, ['clusters', 'local-only', 'starting']);
+assert.deepEqual(overviewCore, [], 'Overview must leave the constrained Core scope');
+assert.deepEqual(overviewUi, overviewAll, 'UI must own the complete Overview matrix');
+assert.deepEqual([...overviewCore, ...overviewUi], overviewAll, 'split Overview coverage must match all');
+assert.equal(new Set([...overviewCore, ...overviewUi]).size, overviewAll.length, 'Overview must not repeat between scopes');
 assert.match(source, /if \(runCore\) for \(const name of \['designer-connected'/, 'UI scope must not repeat minimum Designer cases');
 // Execute the capture gate with accepted and violating observations. This tests
 // the gate, not native rendering; CI supplies the actual DOM and window measurements.
@@ -144,12 +152,8 @@ for (const [scope, directory] of [['core', 'native-recovery'], ['chat-agent-clus
   assert.match(step, /timeout-minutes: 3\n/, 'each scope keeps the existing three-minute ceiling');
 }
 assert.ok(workflow.includes('node ../scripts/test-native-recovery-scopes.mjs'));
-for (const path of ['build.rs', 'permissions/setup.toml']) {
-  const registration = await readFile(new URL(`../app/src-tauri/${path}`, import.meta.url), 'utf8');
-  for (const command of ['cluster_service_accounts', 'cluster_service_account_preview']) {
-    assert.ok(registration.includes(`"${command}"`), `${path} must permit the real desktop ${command} command`);
-  }
-}
+// Effective native grants are checked through Tauri's generated runtime
+// authority in tests/config.rs, not by where Rust happens to spell the names.
 // Saved-only header counts apply before Overview is visited, not after its deliberate visit.
 const hiddenHeader = source.split('\n').find(line => line.includes("'hidden saved-file count'"));
 assert.ok(hiddenHeader);

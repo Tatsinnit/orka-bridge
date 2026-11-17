@@ -180,6 +180,25 @@ function Save-BrowserDiagnostics([string]$Name) {
         } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $script:themeOutput "browser-$Name.json")
     } catch { Write-Warning "Browser diagnostics unavailable: $_" }
 }
+function Write-StartupEvent([string]$Event) {
+    # Sample before writing so producer and observer times can expose delayed delivery.
+    $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    try {
+        $entry = [pscustomobject]@{
+            event = $Event; epoch_ms = $epoch
+            hostPid = $(if ($script:app) { $script:app.Id } else { $null })
+            hwnd = $(if ($script:hwnd) { $script:hwnd.ToInt64() } else { 0 })
+        } | ConvertTo-Json -Compress
+        [IO.File]::AppendAllText((Join-Path $script:themeOutput 'startup-timeline.jsonl'), "$entry`n")
+    } catch { Write-Warning "Startup timeline unavailable: $_" }
+}
+function Test-NativeReady {
+    if (!(Test-Path $script:startupLog)) { return $false }
+    $stream = [IO.File]::Open($script:startupLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $reader = [IO.StreamReader]::new($stream)
+    try { $startup = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    return $startup.Contains('bridge-startup: ready')
+}
 function Start-Bridge {
     if ((Test-Path $selected) -or (Test-Path $vmData)) { throw 'Saved local selection or VM data appeared; refusing to resume a VM' }
     $script:window = $null
@@ -189,7 +208,9 @@ function Start-Bridge {
     $script:startupLog = $null
     Save-BrowserDiagnostics 'before-launch'
     $script:startupLog = Join-Path $script:themeOutput "app-$([Guid]::NewGuid().ToString('N')).err.log"
+    Write-StartupEvent 'launch-begin'
     $script:app = Start-Process $Executable -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $script:themeOutput "app-$([Guid]::NewGuid().ToString('N')).out.log") -RedirectStandardError $script:startupLog
+    Write-StartupEvent 'launch-returned'
     # Process.MainWindowHandle can select Tao's hidden event target. Identify
     # the real app frame by its configured title and this launch's process ID.
     $script:hwnd = Wait-For 'Main native window did not appear' {
@@ -201,19 +222,20 @@ function Start-Bridge {
             if ($owner -eq $script:app.Id -and [NativeWalk]::IsWindowVisible($h)) { return $h }
         }
     }
+    # This is first observation of the frame, not its producer-side creation time.
+    Write-StartupEvent 'frame-observed'
 }
 function Find-ReadyClusters {
     if (!$script:window) {
         # Keep the original frame and control waits separate. Native setup proves
         # controller construction finished; the Clusters control, not page-load
         # completion, proves the frontend is ready for this walk.
-        if (!(Test-Path $script:startupLog)) { return }
-        $stream = [IO.File]::Open($script:startupLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-        $reader = [IO.StreamReader]::new($stream)
-        try { $startup = $reader.ReadToEnd() } finally { $reader.Dispose() }
-        if (!$startup.Contains('bridge-startup: ready')) { return }
+        if (!(Test-NativeReady)) { return }
+        Write-StartupEvent 'native-ready-observed'
+        Write-StartupEvent 'uia-attach-begin'
         $script:desktop = [System.Windows.Automation.AutomationElement]::RootElement
         $script:window = [System.Windows.Automation.AutomationElement]::FromHandle($script:hwnd)
+        Write-StartupEvent 'uia-attached'
         [NativeWalk]::SetForegroundWindow($script:hwnd) | Out-Null
     }
     Find-Control $script:window 'Clusters' $button
@@ -306,7 +328,15 @@ try {
         Broadcast-Theme
         Start-Bridge
         $script:originalPid = $script:app.Id
-        Press (Wait-For 'Clusters button missing' { Find-ReadyClusters })
+        Write-StartupEvent 'clusters-wait-begin'
+        try {
+            $clusters = Wait-For 'Clusters button missing' { Find-ReadyClusters }
+            Write-StartupEvent 'clusters-found'
+        } catch {
+            Write-StartupEvent 'clusters-wait-failed'
+            throw
+        }
+        Press $clusters
         Save-BrowserDiagnostics 'loaded'
         # The dark walk reuses the light walk's profile, so the welcome may already be dismissed.
         Wait-For 'Welcome or Places did not appear' { (Find-Control $script:window 'Get started' $button) -or (Find-Action $script:window 'Set up') } | Out-Null

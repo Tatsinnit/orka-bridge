@@ -654,16 +654,38 @@ async fn send_stop(
     state.stop_document(document_id, &send_id).await
 }
 
+#[cfg(debug_assertions)]
+fn startup_marker(event: impl std::fmt::Display) {
+    use std::io::Write;
+    use std::sync::OnceLock;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    static START: OnceLock<Instant> = OnceLock::new();
+    let elapsed = START.get_or_init(Instant::now).elapsed().as_millis();
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    // Keep the existing readiness prefix. Sample at production, not when the
+    // harness reads redirected stderr; a failed diagnostic write must not panic.
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "bridge-startup: {event} epoch_ms={epoch} elapsed_ms={elapsed} pid={}",
+        std::process::id()
+    );
+}
+
 fn main() {
     // Distinguish a native WebView startup stall from a frontend/navigation failure in debug walks.
     #[cfg(debug_assertions)]
-    eprintln!("bridge-startup: main");
+    startup_marker("main");
     let shutdown = Arc::new(TerminalShutdown::default());
     tauri::Builder::default()
         .on_page_load(|_, load| {
-            if cfg!(debug_assertions) {
-                eprintln!("bridge-startup: page {:?}", load.event());
-            }
+            #[cfg(debug_assertions)]
+            startup_marker(format_args!("page {:?}", load.event()));
+            #[cfg(not(debug_assertions))]
+            let _ = load;
         })
         .manage(shutdown.clone())
         .manage(RepoPicker::default())
@@ -673,7 +695,7 @@ fn main() {
         }))
         .setup(move |app| {
             #[cfg(debug_assertions)]
-            eprintln!("bridge-startup: setup");
+            startup_marker("setup");
             let store = Arc::new(SetupStore::with_upgrade_root(
                 app.path().app_data_dir().ok(),
                 app.path().app_local_data_dir().ok(),
@@ -693,7 +715,7 @@ fn main() {
                 LocalVm::recovery_blocked()
             };
             #[cfg(debug_assertions)]
-            eprintln!("bridge-startup: local VM configured");
+            startup_marker("local VM configured");
             app.manage(if vm.status() == LocalVmStatus::NotIntegrated {
                 EngineState::configured()
             } else {
@@ -723,14 +745,14 @@ fn main() {
                 app.path().app_local_data_dir().ok(),
             ));
             #[cfg(debug_assertions)]
-            eprintln!("bridge-startup: installing lifecycle");
+            startup_marker("installing lifecycle");
             lifecycle::install(
                 app.handle(),
                 shutdown.clone(),
                 vm.status() != LocalVmStatus::NotIntegrated,
             )?;
             #[cfg(debug_assertions)]
-            eprintln!("bridge-startup: ready");
+            startup_marker("ready");
             tauri::async_runtime::spawn(async move {
                 if local_vm::resume_selected(store, &vm).await.is_err() {
                     eprintln!("The saved setup choice could not be read.");
