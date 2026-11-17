@@ -39,7 +39,7 @@ afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.c
 
 async function requestStop() {
   const user = userEvent.setup(); render(<App />); await openLocalSetup(user);
-  await user.click(await screen.findByRole('button', { name: 'Stop the local cluster' }));
+  await user.click(await screen.findByRole('button', { name: 'Stop the workspace' }));
   expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_cancel_local');
   await user.click(await screen.findByRole('button', { name: 'Stop workspace' }));
   return user;
@@ -157,7 +157,7 @@ test('restart reaching ready keeps the place heading and requires an explicit AI
 
 test('Keep running returns keyboard focus to the Stop trigger', async () => {
   const user = userEvent.setup(); render(<App />); await openLocalSetup(user);
-  const trigger = await screen.findByRole('button', { name: 'Stop the local cluster' });
+  const trigger = await screen.findByRole('button', { name: 'Stop the workspace' });
   await user.click(trigger);
   await user.click(screen.getByRole('button', { name: 'Keep running' }));
   expect(document.activeElement).toBe(trigger);

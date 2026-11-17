@@ -40,7 +40,7 @@ test('Check again replaces an in-flight sample observation without accepting its
   old({ ...unknown, state: 'running' });
   await new Promise(resolve => setTimeout(resolve, 50));
   expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
-  expect(screen.getByText('Run your first test', { selector: 'li b' }).closest('li')?.textContent).toContain('Result unknown');
+  expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')?.textContent).toContain('Result unknown');
   expect(ipc.mock.calls.some(([command]) => command === 'agent_run')).toBe(false);
 });
 
@@ -65,7 +65,7 @@ test('a completed sample retires held setup intent even when the next status pol
   await screen.findByText('Setting up, step 4 of 4');
   result.snapshot = { ...idle, state: 'complete', report: { verdict: 'passed', cases: [{ id: 'check', question: 'Read?', phase: 'Succeeded', answer: 'yes', completedTools: [], assertions: [{ id: 'answer', kind: 'contains', expected: 'yes', verdict: 'passed' }], verdict: 'passed' }] } };
   const navigation = within(screen.getByRole('navigation'));
-  await navigation.findByText('Local cluster ready');
+  await navigation.findByText('Workspace ready');
   expect(screen.queryByText('Step 5 of 5')).toBeNull();
   unreadable = true;
   await navigation.findByText('Test result unknown');
@@ -92,8 +92,8 @@ test.each(['unavailable', 'other', 'sample'] as const)('setup keeps %s Run evide
   await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
 
-  await waitFor(() => expect(screen.getByText('Run your first test', { selector: 'li b' }).closest('li')?.textContent)
+  await waitFor(() => expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')?.textContent)
     .toContain({ unavailable: 'Result unknown', other: 'Needs you', sample: 'Its test passed' }[kind]));
   const navigation = within(screen.getByRole('navigation'));
-  expect(navigation.getByText({ unavailable: 'Test result unknown', other: 'Local cluster ready', sample: 'Local cluster ready' }[kind])).toBeTruthy();
+  expect(navigation.getByText({ unavailable: 'Test result unknown', other: 'Workspace ready', sample: 'Workspace ready' }[kind])).toBeTruthy();
 });

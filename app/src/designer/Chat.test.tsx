@@ -28,7 +28,7 @@ test('empty Chat teaches the next action and discloses bounded, memory-only hist
   expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);
   fireEvent.click(screen.getByText('About this conversation'));
   expect(screen.getByText(/50 messages/)).toBeTruthy(); expect(screen.queryByText(/new worker/)).toBeNull();
-  expect(screen.getByText(/quit Bridge/)).toBeTruthy(); expect(screen.getByText(/remain in the local cluster/)).toBeTruthy();
+  expect(screen.getByText(/quit Bridge/)).toBeTruthy(); expect(screen.getByText(/remain in the workspace/)).toBeTruthy();
 });
 test('Enter sends exactly once and only an appended turn consumes its matching composer', async () => {
   send = () => (snapshot = { ...idle, state: 'preparing', busy: true, canSend: false });

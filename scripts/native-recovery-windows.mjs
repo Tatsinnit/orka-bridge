@@ -83,7 +83,7 @@ try {
     ['preflight', null, 'Virtualization is turned off or unavailable on this PC.'],
     ['prepare', { operation: 'prepare', cause: 'preparation', codes: [] }, 'existing cluster and agent files are kept'],
     ['download-reserved', { operation: 'download', cause: 'network', codes: [] }, 'Your agent files are kept'],
-    ['unknown', { operation: 'start', cause: 'unknown', codes: [] }, "couldn't determine"],
+    ['unknown', { operation: 'start', cause: 'unknown', codes: [] }, "Your workspace didn't start."],
     ['cli', 'modelCaptureUnavailable', 'gh auth login --hostname github.com --web'],
     ['sign-in', 'modelCaptureFailed', 'gh auth status --hostname github.com'],
     ['model-store', 'modelStore', 'could not save or load your sign-in'],
@@ -174,7 +174,7 @@ try {
       const rect = node => { if (!node) return null; const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom, width: r.width }; };
       const main = document.querySelector('main');
       return {
-        width: innerWidth, scrollWidth: main.scrollWidth, clientWidth: main.clientWidth,
+        width: innerWidth, scrollWidth: main.scrollWidth, clientWidth: main.clientWidth, scrollHeight: main.scrollHeight, clientHeight: main.clientHeight,
         tabs: shown('.page-tab').map(node => ({ ...rect(node), grow: getComputedStyle(node).flexGrow })),
         host: rect(document.querySelector('.host-chip')), hostLabel: rect(document.querySelector('.host-label')),
         subtitles: shown('.tab-copy small').filter(node => getComputedStyle(node).display !== 'none').length,
@@ -192,6 +192,7 @@ try {
     })()`);
     const fail = reason => { throw Error(`${name}/${size}: ${reason}: ${JSON.stringify(layout)}`); };
     if (layout.scrollWidth > layout.clientWidth + 2) fail('page overflows horizontally');
+    if (size === 'setup-fit' && layout.scrollHeight > layout.clientHeight + 2) fail('page overflows vertically');
     if (layout.width > 820 && (layout.tabs.length !== 3 || layout.tabs.some(tab => Math.abs(tab.width - 180) > 1 || tab.grow !== '0') || layout.host.x - layout.tabs.at(-1).right < 16)) fail('wide tabs must stay 180px/non-growing with a 16px host gap');
     if (layout.width <= 820 && (layout.subtitles || layout.hostLabel.width > 160)) fail('compact subtitles/host label exceed their bounds');
     if (layout.quiet.some(item => item.start !== '0px' || item.end !== '0px')) fail('quiet control has inline padding');
@@ -212,7 +213,7 @@ try {
       if (layout.width <= 820) {
         if (setup.model.y < setup.progress.bottom - 2) fail('compact setup list must stay above the AI controls');
       } else {
-        if (setup.meet && Math.abs(setup.meet.y - setup.model.bottom - 16) > 2) fail('side cards share the other column height');
+        if (setup.meet) fail('setup shows two sidebar cards');
       }
     }
     if (name === 'designer-loading' && (!layout.fallback.file || layout.fallback.history)) fail('loading must show only the editor skeleton');
@@ -232,15 +233,15 @@ try {
   const transfer = { phase: 'materializing', bytes: Math.round(1.1 * GiB), totalBytes: Math.round(2.8 * GiB), elapsedMs: 20000, remainingMs: 30000 };
   const startup = elapsedMs => ({ phase: 'starting', bytes: null, totalBytes: null, elapsedMs, remainingMs: null });
   const setupFixtures = runCore ? [
-    ['setup-failed', 'failed', null, false, "couldn't determine"],
+    ['setup-failed', 'failed', null, false, "Your workspace didn't start."],
     ['setup-image-update', 'failed', null, false, 'This version of Bridge needs a new workspace.', false, true, { operation: 'verify', cause: 'workspaceUpdateRequired', codes: [] }],
     ['setup-image-unsupported', 'failed', null, false, 'This workspace uses different cluster files.', false, true, { operation: 'verify', cause: 'workspaceVersionUnsupported', codes: [] }],
-    ['setup-transfer', 'installing', transfer, false, 'Installing, 1.1 GiB of 2.8 GiB'],
+    ['setup-transfer', 'installing', transfer, false, 'Downloading, 1.2 of 3.0 GB'],
     ['setup-transfer-queued', 'installing', transfer, true, 'Connects when the workspace is ready.'],
     // A valid first observation, then every later read fails: the card must say unavailable, not keep the old bar.
-    ['setup-unavailable', 'installing', transfer, false, 'Local cluster status is unavailable.', true],
+    ['setup-unavailable', 'installing', transfer, false, 'Workspace status is unavailable.', true],
     // A platform without native model support (reported by the snapshot) offers no early choice: a Waiting row, no action.
-    ['setup-transfer-unsupported', 'installing', transfer, false, 'Installing, 1.1 GiB of 2.8 GiB', false, false],
+    ['setup-transfer-unsupported', 'installing', transfer, false, 'Downloading, 1.2 of 3.0 GB', false, false],
     ['setup-startup', 'starting', startup(12000), false, '12 seconds elapsed'],
     ['setup-startup-slow', 'starting', startup(45000), false, '45 seconds elapsed'],
     ['setup-ready', 'ready', null, false, 'Your workspace is ready on this computer.'],
@@ -277,6 +278,8 @@ try {
       await clickAction('Connect the AI');
     }
     if (queue) {
+      await until(() => evaluate(`!![...document.querySelectorAll('button')].find(button => button.textContent === 'Change')`), 'inline AI choice collapsed');
+      await evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Change').click()`);
       await until(() => evaluate(`!![...document.querySelectorAll('button')].find(button => button.textContent === 'Connect the AI')`), 'queueable model action');
       await evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Connect the AI').click()`);
     }
@@ -289,7 +292,7 @@ try {
     const step = localVm === 'ready' ? 3 : 2;
     if (/step \d+ of 5/i.test(chrome) || observed && !chrome.includes(`step ${step} of 4`) || observed && size === 'wide' && !chrome.includes(`Setting up, step ${step} of 4`) || !observed && /step \d+ of 4/i.test(chrome)) throw Error(`${name}: incorrect shared step counter: ${chrome}`);
     const rows = await evaluate(`({ count: document.querySelectorAll('[aria-label="Setup steps"] > li').length, current: document.querySelector('[aria-current="step"] b')?.textContent, barRow: document.querySelector('[role="progressbar"]')?.closest('li')?.querySelector('b')?.textContent, value: document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow') })`);
-    if (rows.count !== 4 || observed && rows.current !== (step === 2 ? 'Get your workspace ready' : 'Choose the AI your agent uses')) throw Error(`${name}: list and shell disagree: ${JSON.stringify(rows)}`);
+    if (rows.count !== 4 || observed && rows.current !== (step === 2 ? 'Get your workspace ready' : 'Connect the AI')) throw Error(`${name}: list and shell disagree: ${JSON.stringify(rows)}`);
     if (observed && localVm !== 'ready' && rows.barRow !== 'Get your workspace ready') throw Error(`${name}: progress is outside the active workspace row`);
     if (localVm === 'starting' && rows.value !== null) throw Error(`${name}: startup must be indeterminate`);
     await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
@@ -311,8 +314,9 @@ try {
       if (meet.tools.join('|') !== 'web_fetch' || !meet.text.includes('Copies the checksum from the page')) throw Error(`${name}: Meet must list the file's tools and tests: ${JSON.stringify(meet)}`);
     }
     if (queue) {
-      const queued = await evaluate(`(() => { const status = [...document.querySelectorAll('.setup-model [role=status]')].find(item => item.textContent.includes('Queued')); const cancel = document.querySelector('button[aria-label="Cancel queued connection"]'); return { status: !!status, inChoice: !!status?.closest('fieldset'), cancel: cancel?.textContent, secondary: !!cancel?.classList.contains('button-secondary'), text: document.querySelector('.setup-model').innerText }; })()`);
-      if (!queued.status || queued.inChoice || queued.cancel !== 'Cancel' || !queued.secondary || /local cluster/.test(queued.text)) throw Error(`${name}: queued AI must be a status row with a secondary Cancel: ${JSON.stringify(queued)}`);
+      // The queued connection has no Cancel of its own; clearing it goes through the inline Change control.
+      const queued = await evaluate(`(() => { const status = [...document.querySelectorAll('.setup-model [role=status]')].find(item => item.textContent.includes('Queued')); const change = [...document.querySelectorAll('.setup-model button')].find(button => button.textContent === 'Change'); const cancel = document.querySelector('button[aria-label="Cancel queued connection"]'); return { status: !!status, inChoice: !!status?.closest('fieldset'), change: !!change, cancel: !!cancel, text: document.querySelector('.setup-model').innerText }; })()`);
+      if (!queued.status || queued.inChoice || queued.cancel || !queued.change || /local cluster/.test(queued.text)) throw Error(`${name}: queued AI must be a status row with no Cancel, only Change: ${JSON.stringify(queued)}`);
     }
     await checkLayout(theme, size, name);
     const image = await call('Page.captureScreenshot', { format: 'png' });
@@ -408,7 +412,7 @@ try {
       if (state === 'stopped') await writeFile(join(output, `${theme}-${size}-local-stopped.png`), Buffer.from(image.data, 'base64'));
       await compareDesigner(image.data, theme, size, 'local-workspace-' + state, true);
     };
-    await clickAction('Stop the local cluster');
+    await clickAction('Stop the workspace');
     await until(() => evaluate(`!!document.querySelector('[aria-label="Stop the workspace?"]')`), 'inline Stop confirmation');
     if (await evaluate('window.__bridgeStops') !== 0) throw Error('Opening Stop confirmation stopped the workspace');
     const confirmation = await call('Page.captureScreenshot', { format: 'png' });
@@ -416,7 +420,7 @@ try {
     await compareDesigner(confirmation.data, theme, size, 'local-workspace-confirmation', true);
     await clickAction('Keep running');
     if (await evaluate('window.__bridgeStops') !== 0) throw Error('Keep running stopped the workspace');
-    await clickAction('Stop the local cluster'); await clickAction('Stop workspace');
+    await clickAction('Stop the workspace'); await clickAction('Stop workspace');
     await capture('stopping', 'Stopping', 'Start', true);
     if (name === 'local-stop-failed') {
       await evaluate(`window.__bridgeSettleWorkspace('stop-failed')`);
@@ -705,11 +709,23 @@ try {
       return;
     }
     if (name.startsWith('ai-removal-')) {
-      await clickAction('Remove sign-in');
+      await clickAction('Change');
+      await until(() => evaluate(`(() => {
+        const panel = document.querySelector('.workspace-change'), main = document.querySelector('main');
+        if (!panel || !main) return false;
+        panel.scrollIntoView({ block: 'center' });
+        const rect = panel.getBoundingClientRect(), view = main.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && rect.top >= view.top && rect.bottom <= view.bottom && rect.left >= view.left && rect.right <= view.right;
+      })()`), 'visible AI Change panel');
+      if (name === 'ai-removal-confirmation') {
+        const panelImage = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-ai-change-panel.png`), Buffer.from(panelImage.data, 'base64'));
+      }
+      await clickAction('Remove saved sign-in');
       if (await evaluate('window.__bridgeRemovals') !== 0) throw Error('Opening confirmation removed sign-in');
       await clickAction('Cancel');
       if (await evaluate('window.__bridgeRemovals') !== 0) throw Error('Cancelling confirmation removed sign-in');
-      await clickAction('Remove sign-in');
+      await clickAction('Remove saved sign-in');
       if (name === 'ai-removal-retry') {
         await clickAction('Remove sign-in');
         await until(() => evaluate(`!!document.querySelector('button.button-primary') && [...document.querySelectorAll('button.button-primary')].some(button => button.textContent === 'Retry removal')`), 'primary removal retry');
@@ -851,7 +867,7 @@ try {
       if (state === 'running' && !probe.buttons.includes('Stop')) throw Error('Missing local Stop');
       if (state === 'cancelling' && probe.buttons.includes('Stop')) throw Error('Cancelling is a status, not a button');
       if (state === 'cancelled' && (probe.rows.join('|') !== 'finished-answer|unfinished-test' || !probe.text.includes('1 passed, 0 failed, 1 cancelled.'))) throw Error('Lost results/order/counts: ' + JSON.stringify(probe));
-      if (state === 'unconfirmed' && !['Retry cancellation', 'Check again', 'Stop the local cluster'].every(b => probe.buttons.includes(b))) throw Error('Missing cancellation recovery');
+      if (state === 'unconfirmed' && !['Retry cancellation', 'Check again', 'Stop the workspace'].every(b => probe.buttons.includes(b))) throw Error('Missing cancellation recovery');
       if (state === 'before-start' && (!probe.text.includes('Cancelled before any test started.') || probe.rows.length)) throw Error('Incorrect before-start result');
       // Open the kept answer and capture the card in the real native WebView.
       if (state === 'cancelled') await evaluate(`document.querySelector('.example-run .test-result').open = true`);
@@ -872,7 +888,7 @@ try {
           await until(() => evaluate(`document.querySelector('.example-run .pill')?.textContent === 'Not confirmed'`), 'recovery back to unconfirmed');
         }
         // Scope the click to Tests because Setup's hidden Stop stays mounted.
-        await evaluate(`[...document.querySelectorAll('.example-run button')].find(b => b.textContent === 'Stop the local cluster').click()`);
+        await evaluate(`[...document.querySelectorAll('.example-run button')].find(b => b.textContent === 'Stop the workspace').click()`);
         await until(() => evaluate(`window.__bridgeStops === 1 && document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current') === 'page' && [...document.querySelectorAll('button')].some(b => b.textContent === 'Start' && b.getClientRects().length)`), 'explicit local Stop');
       }
       console.log(`Captured native WebView2 local cancellation fixture: ${theme}/${size}/${name}`);
@@ -885,7 +901,7 @@ try {
       const probe = await evaluate(`(() => {
         const card = document.querySelector('.first-pass');
         const shown = [...document.querySelectorAll('button')].filter(button => button.getClientRects().length);
-        return { page: document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current'), primary: shown.filter(button => button.classList.contains('button-primary')).map(button => button.textContent), stop: shown.some(button => button.textContent === 'Stop the local cluster'), text: card?.innerText ?? '', runs: window.__bridgeRuns, width: innerWidth, scrollWidth: document.querySelector('main').scrollWidth };
+        return { page: document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current'), primary: shown.filter(button => button.classList.contains('button-primary')).map(button => button.textContent), stop: shown.some(button => button.textContent === 'Stop the workspace'), text: card?.innerText ?? '', runs: window.__bridgeRuns, width: innerWidth, scrollWidth: document.querySelector('main').scrollWidth };
       })()`);
       const fail = reason => { throw Error(`${name}: ${reason}: ${JSON.stringify(probe)}`); };
       if (probe.page !== 'page') fail('a passed automatic test stays in Clusters');
@@ -908,12 +924,12 @@ try {
     if (name === 'first-test-unknown' || name === 'first-test-lost-reply') {
       // Unknown is never green; a lost reply may pass but cannot prove this attempt owned the result.
       const label = name === 'first-test-unknown' ? 'Result unknown' : 'Its test passed';
-      await until(() => evaluate(`[...document.querySelectorAll('[aria-label="Setup steps"] > li')].find(row => row.querySelector('b')?.textContent === 'Run your first test')?.querySelector('.step-result')?.textContent === ${JSON.stringify(label)}`), `${name} settled`);
+      await until(() => evaluate(`[...document.querySelectorAll('[aria-label="Setup steps"] > li')].find(row => row.querySelector('b')?.textContent === 'Run your first agent')?.querySelector('.step-result')?.textContent === ${JSON.stringify(label)}`), `${name} settled`);
       await evaluate(`document.querySelector('button[aria-label="Clusters"]').click()`);
       await until(() => evaluate(`document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current') === 'page'`), 'Clusters after automatic test');
-      const probe = await evaluate(`({ payoff: !!document.querySelector('.first-pass'), green: !!document.querySelector('.setup-progress .steps-head .status-passed') && ${JSON.stringify(name === 'first-test-unknown')}, runs: window.__bridgeRuns, text: document.querySelector('[aria-label="Local cluster setup"]')?.innerText })`);
+      const probe = await evaluate(`({ payoff: !!document.querySelector('.first-pass'), green: !!document.querySelector('[aria-label="Setup steps"] > li:last-child .status-passed') && ${JSON.stringify(name === 'first-test-unknown')}, runs: window.__bridgeRuns, text: document.querySelector('[aria-label="Workspace setup"]')?.innerText })`);
       if (probe.payoff || probe.green || probe.runs !== 1) throw Error(`${name}: must not celebrate or replay: ${JSON.stringify(probe)}`);
-      await evaluate(`document.querySelector('[aria-label="Local cluster setup"]').scrollIntoView({ block: 'start' })`);
+      await evaluate(`document.querySelector('[aria-label="Workspace setup"]').scrollIntoView({ block: 'start' })`);
       await settle();
       const image = await call('Page.captureScreenshot', { format: 'png' });
       await writeFile(join(output, `${theme}-${size}-${name}.png`), Buffer.from(image.data, 'base64'));
@@ -925,7 +941,7 @@ try {
       await evaluate(`[...document.querySelectorAll('.setup-model label')].find(label => label.textContent.trim().startsWith('Your own API key')).querySelector('input').click()`);
       await until(() => evaluate(`!!document.querySelector('#model-key-help')`), 'key custody copy');
       const key = await evaluate(`({ help: document.querySelector('#model-key-help').textContent, model: [...document.querySelectorAll('.setup-model code')].map(code => code.textContent), text: document.querySelector('.setup-model').innerText, pickers: document.querySelectorAll('.setup-model select, .setup-model [role=combobox]').length })`);
-      if (!key.help.includes('credential store') || !key.model.includes('claude-sonnet-5-5') || key.pickers || /Keychain|Credential Manager|Azure|local cluster/.test(key.text)) throw Error(`${name}: key copy must be neutral, name the fixed model and offer no picker: ${JSON.stringify(key)}`);
+      if (key.help !== 'Stored on this computer, never in your agent files.' || !key.model.includes('claude-sonnet-5-5') || key.pickers || /Keychain|Credential Manager|Azure|local cluster/.test(key.text)) throw Error(`${name}: key copy must be neutral, name the fixed model and offer no picker: ${JSON.stringify(key)}`);
     }
     if (name === 'first-test-badges') {
       await until(() => evaluate(`!!document.querySelector('.designer-work')`), 'sample result before badge recovery');
@@ -934,9 +950,9 @@ try {
       // Result actions belong to the same fixed setup card as the four rows.
       for (const [state, label, primary] of [['passed', 'Its test passed', 'See what it answered'], ['failed', 'Its test failed', 'See what it answered'], ['stale', 'Needs running', 'Run it again'], ['unknown', 'Result unknown', 'Check again']]) {
         await evaluate(`window.__bridgeBadgeState = ${JSON.stringify(state)}`);
-        await until(() => evaluate(`[...document.querySelectorAll('[aria-label="Setup steps"] > li')].find(row => row.querySelector('b')?.textContent === 'Run your first test')?.querySelector('.step-result')?.textContent === ${JSON.stringify(label)}`), `sample badge ${state}`);
+        await until(() => evaluate(`[...document.querySelectorAll('[aria-label="Setup steps"] > li')].find(row => row.querySelector('b')?.textContent === 'Run your first agent')?.querySelector('.step-result')?.textContent === ${JSON.stringify(label)}`), `sample badge ${state}`);
         const card = await evaluate(`(() => {
-          const card = document.querySelector("[aria-label='Local cluster setup']");
+          const card = document.querySelector("[aria-label='Workspace setup']");
           const shown = [...card.querySelectorAll('button')].filter(button => button.getClientRects().length);
           return { text: card.innerText, primary: shown.filter(button => button.classList.contains('button-primary')).map(button => button.textContent), result: shown.some(button => button.textContent === 'See what it answered'), page: document.body.innerText };
         })()`);
@@ -945,7 +961,7 @@ try {
         if (/step \d+ of [45]/i.test(card.page)) fail('completed test evidence is shown as unfinished setup');
         if (state === 'stale' && !card.result) fail('the stale sample has a readable report, so its result stays inspectable');
         if (card.text.includes('Its test failed') !== (state === 'failed')) fail('failure message belongs only to the failed test');
-        for (const [suffix, target] of [['', '[aria-label="Setup steps"] > li:last-child'], ['-card', '[aria-label="Local cluster setup"]']]) {
+        for (const [suffix, target] of [['', '[aria-label="Setup steps"] > li:last-child'], ['-card', '[aria-label="Workspace setup"]']]) {
           await evaluate(`document.querySelector(${JSON.stringify(target)}).scrollIntoView({ block: 'center' })`);
           await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
           const image = await call('Page.captureScreenshot', { format: 'png' });
@@ -980,13 +996,13 @@ try {
         await compareReference(image.data, theme, size, `ai-reset-${state}`, frame);
       };
       const mismatch = s => s.text.includes("Bridge's saved AI connection is from an earlier setup.") && s.primary.join() === 'Reset AI connection';
-      await expect('mismatch', row, s => mismatch(s) && s.heading === 'This computer' && s.page.includes("The AI couldn't connect") && s.page.includes('Your workspace is running. Nothing is lost.')
+      await expect('mismatch', row, s => mismatch(s) && s.heading === 'This computer' && s.page.includes("The AI couldn't connect") && s.page.includes('Your agents are safe.')
         && ['Use another provider', 'Copy details for help'].every(b => s.buttons.includes(b)) && !['Remove sign-in', 'Check again', 'Connect the AI'].some(b => s.buttons.includes(b)));
       await shoot('mismatch', 'failed', row);
       await evaluate(`document.querySelector('button[aria-label="Clusters"]').click()`);
-      await expect('place', '[aria-label="This computer"] .model-recovery', s => mismatch(s) && s.page.includes('Workspace running'));
+      await expect('place', '[aria-label="This computer"] .model-recovery', s => mismatch(s) && s.page.includes('The AI needs to be set up again'));
       await shoot('place', 'failed', '[aria-label="This computer"]');
-      await clickAction('Connect the AI');
+      await clickAction('View workspace');
       await expect('return', row, mismatch);
       await clickAction('Reset AI connection');
       await expect('confirmation', row, s => s.text.includes('Reset the AI connection?') && s.text.includes('Use another provider starts with this same reset.') && ['Reset', 'Cancel'].every(b => s.buttons.includes(b)) && !s.resets.length);
@@ -1023,7 +1039,7 @@ try {
       console.log(`Captured native WebView2 AI reset fixture: ${theme}/${size}`);
       return;
     }
-    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'cluster-account-picker-open': 'Find an account', 'cluster-account-allowed': 'Required Orka permissions: Allowed', 'cluster-account-forbidden': 'cannot list ServiceAccounts in agents', 'designer-no-destination': 'Open Clusters to load tools and models on This computer.', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check virtualization or memory yet.", 'local-preflight-blocked': 'Virtualization:', 'local-preflight-memory': 'This computer has 2.1 GB of memory; Bridge needs 4.3 GB.', 'local-preflight-mixed': "Bridge couldn't check virtualization yet.", 'local-preflight-cluster': 'Virtualization:', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'cluster-account-picker-open': 'Find an account', 'cluster-account-allowed': 'Required Orka permissions: Allowed', 'cluster-account-forbidden': 'cannot list ServiceAccounts in agents', 'designer-no-destination': 'Open Clusters to load tools and models on This computer.', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check virtualization or memory yet.", 'local-preflight-blocked': 'Virtualization:', 'local-preflight-memory': 'This computer has 2.1 GB of memory; Bridge needs 4.3 GB.', 'local-preflight-mixed': "Bridge couldn't check virtualization yet.", 'local-preflight-cluster': 'Virtualization:', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Workspace ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -1033,7 +1049,7 @@ try {
         const start = [...root.querySelectorAll('button')].find(button => button.textContent === 'Get started');
         return { text: root.innerText, primary: start?.classList.contains('button-primary'), expert: [...root.querySelectorAll('button')].some(button => button.textContent.includes('I already run Orka on a cluster')) };
       })()`);
-      if (!welcome.primary || !welcome.expert || !/team clusters are early in this preview/i.test(welcome.text)) throw Error('Welcome lost its primary, expert route or preview caveat: ' + JSON.stringify(welcome));
+      if (!welcome.primary || !welcome.expert || !welcome.text.includes("Send it to your team's cluster (preview).")) throw Error('Welcome lost its primary, expert route or preview caveat: ' + JSON.stringify(welcome));
     }
     if (preflight) {
       if (name !== 'local-preflight-missing') await until(() => evaluate(`document.querySelector('[aria-label="Computer requirements"]')?.getAttribute('aria-busy') === 'false'`), 'settled computer checks');
@@ -1202,7 +1218,7 @@ try {
     }
     if (['ai-connected', 'local-completed'].includes(name)) {
       const complete = await evaluate(`({ heading: document.querySelector('h1').textContent, card: document.querySelector('.setup-progress .steps-head h2')?.textContent, pill: document.querySelector('.setup-progress .pill')?.textContent, rows: document.querySelectorAll('[aria-label="Setup steps"] > li').length, text: document.body.innerText, model: document.querySelector('.setup-model').innerText })`);
-      if (complete.heading !== readyCardTitle || complete.card !== readyCardTitle || complete.pill !== 'Ready' || /step \d+ of [45]/i.test(complete.text) || complete.rows !== 4 || !complete.text.includes('Stop the local cluster') || complete.model.includes('GitHub CLI must be installed')) throw Error(`Completed local page is not collapsed: ${JSON.stringify(complete)}`);
+      if (complete.heading !== readyCardTitle || complete.card !== 'Workspace' || complete.pill !== 'Ready' || /step \d+ of [45]/i.test(complete.text) || complete.rows !== 4 || !complete.text.includes('Stop the workspace') || complete.model.includes('GitHub CLI must be installed')) throw Error(`Completed local page is not collapsed: ${JSON.stringify(complete)}`);
       if (!complete.model.includes(fixtureAccount) || !complete.model.includes('gpt-5.6-terra')) throw Error(`Connected AI must show the verified account and fixed model: ${JSON.stringify(complete)}`);
     }
     if (name === 'ai-idle') {
@@ -1340,7 +1356,7 @@ try {
       const body = await text();
       const fail = reason => { throw Error(`overview-${variant}/${size}/${mode}: ${reason}: ${body}`); };
       if (variant === 'starting') {
-        if (!/Starting the local cluster/.test(body) || /stopped/i.test(body)) fail('startup must say starting, not stopped');
+        if (!/Starting the workspace/.test(body) || /stopped/i.test(body)) fail('startup must say starting, not stopped');
         return;
       }
       for (const label of ['Failed', 'Passed', 'Not tested']) if (!body.includes(label)) fail(`missing ${label} verdict`);
@@ -1362,7 +1378,7 @@ try {
       if (overflow > 2) fail('page overflows horizontally');
     };
     if (variant === 'starting') {
-      await until(async () => /Starting the local cluster/.test(await text()), 'Overview startup note');
+      await until(async () => /Starting the workspace/.test(await text()), 'Overview startup note');
       await check('');
       await shoot('');
       return;
@@ -1442,6 +1458,14 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     throw Error(`Native client resize to ${target.width}x${target.height} CSS px (${physical.width}x${physical.height} physical px) unverified (exit ${resized.status}): ${JSON.stringify(reported)} ${resized.stdout ?? ''} ${resized.stderr ?? ''}`);
   }
   notes.push(`${label} captures: ${mode}. Requested content area ${target.width}x${target.height} CSS px (${physical.width}x${physical.height} physical px); WebView reported ${reported.width}x${reported.height} CSS px at devicePixelRatio ${reported.dpr}. ${resized.stdout.trim()}`);
+  }
+  if (runCore) {
+    await resizeTo({ width: 1028, height: 729 }, 'Setup fit');
+    for (const theme of ['light', 'dark']) {
+      await call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
+      for (const fixture of setupFixtures.filter(([name]) => ['setup-transfer', 'setup-ready'].includes(name))) await captureSetup(theme, 'setup-fit', fixture);
+      await captureActions(theme, 'setup-fit', 'first-test-passed');
+    }
   }
   await resizeTo({ width: 540, height: 640 }, 'Compact');
   for (const theme of ['light', 'dark']) {

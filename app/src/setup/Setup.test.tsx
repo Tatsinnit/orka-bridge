@@ -7,7 +7,7 @@ import App from '../App';
 import Setup from './Setup';
 
 const status = (selected: 'localVm' | null = null) => ({ selected, localVm: 'notIntegrated', model: 'locked' });
-const unavailable = 'Local cluster setup is not included in this build. Nothing will be downloaded or started.';
+const unavailable = 'Workspace setup is not included in this build. Nothing will be downloaded or started.';
 function native() {
   vi.stubGlobal('isTauri', true);
   let selected: 'localVm' | null = null;
@@ -37,7 +37,7 @@ test('reopen observes a lost workspace immediately without replaying setup, Conn
   expect(await within(screen.getByRole('region', { name: 'Connect the AI' })).findByText('Connected')).toBeTruthy();
   lost = true;
   await act(async () => { window.dispatchEvent(new Event('focus')); });
-  expect(screen.getByText("The local cluster couldn't start")).toBeTruthy();
+  expect(screen.getByText("The workspace couldn't start")).toBeTruthy();
   expect(screen.queryByText('Your workspace is ready on this computer.')).toBeNull();
   expect(ipc.mock.calls.filter(([name]) => name === 'setup_connect_model')).toHaveLength(1);
   expect(ipc.mock.calls.some(([name]) => ['setup_select_local', 'agent_run'].includes(name))).toBe(false);
@@ -93,9 +93,9 @@ test('the chooser only reads setup and build information, without runtime or cre
 test('remount observes the native choice without inventing workspace or model readiness', async () => {
   const ipc = native(); const user = userEvent.setup(); const first = render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Continue' }));
-  expect(await screen.findByRole('region', { name: 'Local cluster setup' })).toBeTruthy();
+  expect(await screen.findByRole('region', { name: 'Workspace setup' })).toBeTruthy();
   first.unmount(); render(<App />); await openLocalSetup();
-  await screen.findByRole('region', { name: 'Local cluster setup' });
+  await screen.findByRole('region', { name: 'Workspace setup' });
   expect(screen.getByText(unavailable)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   expect(ipc.mock.calls.filter(call => call[0] === 'setup_select_local')).toEqual([['setup_select_local', {}]]);
@@ -132,7 +132,7 @@ test.each([null, 'attempted'])('a lost selection reply preserves durable intent 
 
 test('browser preview never pretends that native persistence or integration works', async () => {
   vi.stubGlobal('isTauri', false); const ipc = vi.fn(); mockIPC(ipc); render(<App />); await openLocalSetup();
-  expect(await screen.findByText('Local cluster setup is not available in this preview.')).toBeTruthy();
+  expect(await screen.findByText('Workspace setup is not available in this preview.')).toBeTruthy();
   expect(screen.getByRole<HTMLInputElement>('radio', { name: 'On this computer' }).checked).toBe(true);
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
   await userEvent.setup().click(screen.getByRole('radio', { name: 'On a cluster you already have' }));
@@ -154,7 +154,7 @@ test('save failures do not mark the choice saved and never render rejected paths
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Continue' }));
   expect(await screen.findByRole('alert')).toBeTruthy();
-  expect(screen.queryByRole('region', { name: 'Local cluster setup' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Workspace setup' })).toBeNull();
   expect(document.body.textContent).not.toContain('SECRET_MARKER');
 });
 
@@ -164,9 +164,9 @@ test('a failed initial read can be checked again without changing the saved choi
     ? ++reads === 1 ? Promise.reject('SECRET_MARKER') : status('localVm') : Promise.reject({ kind: 'unavailable' }));
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   expect(await screen.findByRole('alert')).toBeTruthy();
-  expect(screen.queryByRole('region', { name: 'Local cluster setup' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Workspace setup' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Check again' }));
-  expect(await screen.findByRole('region', { name: 'Local cluster setup' })).toBeTruthy();
+  expect(await screen.findByRole('region', { name: 'Workspace setup' })).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
 });
 
@@ -202,7 +202,7 @@ test.each([
   native(); mockIPC(command => command === 'setup_status'
     ? { ...status('localVm'), localVm: 'failed', localVmError } : Promise.reject({ kind: 'unavailable' }));
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
-  expect((await screen.findByRole('alert')).textContent).toContain('Your local cluster and agent files are kept.');
+  expect((await screen.findByRole('alert')).textContent).toContain('Your agents are safe.');
   expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   expect(screen.queryByText(localVmError)).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Show details' }));
@@ -224,10 +224,10 @@ test('a delayed Continue reply stays pending across repeat activation and naviga
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   const designer = screen.getByRole('button', { name: 'Designer' });
   await user.click(designer); selected = 'localVm'; complete(status(selected));
-  await waitFor(() => expect(document.querySelector('[aria-label="Local cluster setup"]')?.closest('[hidden]')).toBeTruthy());
+  await waitFor(() => expect(document.querySelector('[aria-label="Workspace setup"]')?.closest('[hidden]')).toBeTruthy());
   expect(screen.getByRole('main', { name: 'Designer' })).toBeTruthy();
   expect(document.activeElement).toBe(designer);
-  expect(screen.queryByRole('region', { name: 'Local cluster setup' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Workspace setup' })).toBeNull();
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toEqual([['setup_select_local', {}]]);
   expect(ipc.mock.calls.some(([command]) => command === 'setup_connect_model')).toBe(false);
 });

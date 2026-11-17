@@ -70,10 +70,10 @@ export default function Run({ tests, documentId = SAMPLE_DOCUMENT_ID, onSnapshot
   const cancellationLine = beforeStart ? 'Cancelled before any test started.' : unconfirmed ? 'Cancellation not confirmed. Work may still be running on this computer.'
     : confirmed ? `${counts?.some(c => c.verdict === 'cancelled') ? 'Tests cancelled.' : 'Tests finished before cancellation.'} The test worker on this computer has stopped. ${countLine}` : undefined;
   const stage = { capture: 'Reading your saved files', model: 'Checking the local model', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', cancel: 'Cancelling tests', done: 'Tests finished' };
-  return <section className="example-run" aria-label="Tests on the local cluster">
-    <LongCard title="Tests on the local cluster" status={<><StatusPill state={state}>{outdated ? undefined : cancelling ? 'Cancelling' : unconfirmed ? 'Not confirmed' : confirmed || beforeStart ? 'Cancelled' : undefined}</StatusPill><span className="status-description">{outdated ? 'Not run since your edit' : running || cancellationLine ? undefined : uncertain ? 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>On this computer{snapshot?.model && <> · <code>{snapshot.model}</code></>}.{snapshot?.modelConnected === false && ' Connect the AI in Clusters first.'}</>}
+  return <section className="example-run" aria-label="Tests on this computer">
+    <LongCard title="Tests on this computer" status={<><StatusPill state={state}>{outdated ? undefined : cancelling ? 'Cancelling' : unconfirmed ? 'Not confirmed' : confirmed || beforeStart ? 'Cancelled' : undefined}</StatusPill><span className="status-description">{outdated ? 'Not run since your edit' : running || cancellationLine ? undefined : uncertain ? 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>On this computer{snapshot?.model && <> · <code>{snapshot.model}</code></>}.{snapshot?.modelConnected === false && ' Connect the AI in Clusters first.'}</>}
       action={running ? !cancelling && snapshot?.canCancel && <Button type="button" kind="secondary" onClick={() => { void act('agent_run_cancel'); }}>Stop</Button>
-        : (!unconfirmed || !snapshot?.canCheckCancellation) && <div className="workspace-step-actions">{snapshot?.modelConnected === false && onChooseCluster && <Button type="button" kind="primary" onClick={onChooseCluster}>Connect the AI</Button>}<Button type="button" kind={canRun && !blocked ? 'primary' : 'secondary'} disabled={!!action || blocked || !canRun} title={blocked ? 'Save your changes before running the test' : !canRun ? 'Start the local cluster and connect the AI in Clusters first' : undefined} onClick={() => { void act('agent_run'); }}>Run tests</Button></div>}>
+        : (!unconfirmed || !snapshot?.canCheckCancellation) && <div className="workspace-step-actions">{snapshot?.modelConnected === false && onChooseCluster && <Button type="button" kind="primary" onClick={onChooseCluster}>Connect the AI</Button>}<Button type="button" kind={canRun && !blocked ? 'primary' : 'secondary'} disabled={!!action || blocked || !canRun} title={blocked ? 'Save your changes before running the test' : !canRun ? 'Start the workspace and connect the AI in Clusters first' : undefined} onClick={() => { void act('agent_run'); }}>Run tests</Button></div>}>
       <p className="sr-only test-announcement" role="status" aria-live="polite" aria-atomic="true">{!running ? cancellationLine ?? (!outdated ? uncertain ? 'Test result unknown.' : resultAnnouncement(snapshot?.report) : undefined) : undefined}</p>
       <CardSection title={snapshot?.report || running ? "What happened" : "Tests"}>
         {snapshot?.busy && snapshot.busy.documentId !== documentId && <p role="status">{snapshot.busy.name} is running a test.</p>}
@@ -81,11 +81,11 @@ export default function Run({ tests, documentId = SAMPLE_DOCUMENT_ID, onSnapshot
         {running && <TestProgress stage={cancelling ? 'Cancelling tests · waiting for the test worker to stop' : snapshot?.stage && snapshot.stage !== 'done' ? stage[snapshot.stage] : 'Starting your tests'} />}
         {running && !cancelling && snapshot?.canCancel && <p>Stop ends the tests on this computer and keeps answers that already finished.</p>}
         {!running && cancellationLine && <p>{cancellationLine}</p>}
-        {!running && unconfirmed && <><p>Stop the local cluster to stop all work on this computer. Actions already taken are not undone.</p>
+        {!running && unconfirmed && <><p>Stop the workspace to stop all work on this computer. Actions already taken are not undone.</p>
           <div className="workspace-step-actions">
             {snapshot?.canRetryCancellation && <Button type="button" kind="primary" onClick={() => { void act('agent_run_cancel'); }}>Retry cancellation</Button>}
             {snapshot?.canCheckCancellation && <Button type="button" kind="quiet" onClick={() => { void act('agent_run_check_cancellation'); }}>Check again</Button>}
-            <Button type="button" kind="quiet" onClick={onStopLocalCluster}>Stop the local cluster</Button>
+            <Button type="button" kind="quiet" onClick={onStopLocalCluster}>Stop the workspace</Button>
           </div>
         </>}
         {actionMessage && <p role="status">{actionMessage}</p>}

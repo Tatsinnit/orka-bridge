@@ -69,7 +69,7 @@ test('unconfirmed overrides error and unknown verdict even without recovery auth
   await screen.findByText('Not confirmed', { selector: '.long-card-head .pill' });
   expect(screen.queryByRole('button', { name: 'Retry cancellation' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Stop the local cluster' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Stop the workspace' })).toBeTruthy();
   expect(screen.getByRole('alert').textContent).toContain('not available');
 });
 test('Check alone follows its native permission, without inferring Retry from case phases', async () => {

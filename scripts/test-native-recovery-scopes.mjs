@@ -57,15 +57,28 @@ for (const name of ['fixtures', 'setupFixtures', 'overviewVariants']) {
   assert.ok(roster(name, selection('core')).length > 0);
 }
 assert.match(source, /if \(runCore\) for \(const name of \['designer-connected'/, 'UI scope must not repeat minimum Designer cases');
+// Exercise the queued-state predicate with the rendered summary, including its workspace wording.
+const queuedGuard = source.split('\n').find(line => line.includes('if (!queued.status'));
+assert.ok(queuedGuard);
+const checkQueued = Function('queued', 'name', queuedGuard);
+const queuedState = { status: true, inChoice: false, change: true, cancel: false, text: 'GitHub Copilot, connects when the workspace is ready' };
+assert.doesNotThrow(() => checkQueued(queuedState, 'setup-transfer-queued'));
+assert.throws(() => checkQueued({ ...queuedState, cancel: true }, 'setup-transfer-queued'));
+const welcomeGuard = source.split('\n').find(line => line.includes('if (!welcome.primary'));
+assert.ok(welcomeGuard);
+const checkWelcome = Function('welcome', welcomeGuard);
+const welcomeState = { primary: true, expert: true, text: "Send it to your team's cluster (preview)." };
+assert.doesNotThrow(() => checkWelcome(welcomeState));
+assert.throws(() => checkWelcome({ ...welcomeState, primary: false }));
 // Exercise the real layout gate with measurements, without pretending to render a native window.
 const layoutGate = source.slice(source.indexOf('  async function checkLayout('), source.indexOf('  // Setup-progress states:'));
 assert.ok(layoutGate.includes('wide tabs must stay 180px'));
-const wide = { width: 1280, scrollWidth: 1000, clientWidth: 1000, forms: [], rows: [], checks: [],
+const wide = { width: 1280, scrollWidth: 1000, clientWidth: 1000, scrollHeight: 700, clientHeight: 700, forms: [], rows: [], checks: [],
   tabs: [0, 1, 2].map(i => ({ width: 180, grow: '0', right: 180 * (i + 1) })),
   host: { x: 556 }, hostLabel: { width: 100 }, subtitles: 3, quiet: [{ start: '0px', end: '0px' }],
   scrollbar: { width: 'thin', color: 'rgb(90, 90, 90) rgb(240, 240, 240)' }, fallback: {} };
 async function gate(layout) {
-  return Function('evaluate', 'writeFile', 'join', 'output', `${layoutGate}; return checkLayout('light', 'wide', 'probe');`)(
+  return Function('evaluate', 'writeFile', 'join', 'output', `${layoutGate}; return checkLayout('light', 'setup-fit', 'probe');`)(
     async () => layout, async () => {}, () => '', '');
 }
 await gate(wide);
@@ -75,7 +88,28 @@ for (const mutation of [
   { tabs: wide.tabs.map(tab => ({ ...tab, grow: '1' })) }, { host: { x: 555 } },
   { width: 540 }, { width: 540, subtitles: 0, hostLabel: { width: 161 } },
   { quiet: [{ start: '4px', end: '0px' }] }, { scrollbar: { width: 'auto', color: 'auto' } },
+  { scrollHeight: 703 },
 ]) await assert.rejects(() => gate({ ...wide, ...mutation }));
+// The compact Change image must be framed before requesting its screenshot.
+const changeCapture = source.match(/if \(name\.startsWith\('ai-removal-'\)\) \{([\s\S]*?)\n      await clickAction\('Remove saved sign-in'\);/)?.[1];
+assert.ok(changeCapture);
+async function capturePanel(canReveal, fixture = 'ai-removal-confirmation') {
+  let rect = { top: 780, bottom: 860, left: 24, right: 516, width: 492, height: 80 };
+  const viewport = { top: 60, bottom: 640, left: 0, right: 540 };
+  let captured = false;
+  const document = { querySelector: selector => selector === 'main' ? { getBoundingClientRect: () => viewport } : {
+    scrollIntoView() { if (canReveal) rect = { ...rect, top: 300, bottom: 380 }; }, getBoundingClientRect: () => rect,
+  } };
+  await Function('clickAction', 'until', 'evaluate', 'call', 'writeFile', 'join', 'output', 'theme', 'size', 'name', `return (async () => { ${changeCapture} })()`)(
+    async () => {}, async work => assert.equal(await work(), true, 'Change panel must fit before capture'),
+    async script => vm.runInNewContext(script, { document }),
+    async () => { assert.ok(rect.top >= viewport.top && rect.bottom <= viewport.bottom, 'screenshot requested with Change panel offscreen'); captured = true; return { data: '' }; },
+    async () => {}, () => '', '', 'light', 'compact', fixture);
+  return captured;
+}
+assert.equal(await capturePanel(true), true);
+await assert.rejects(() => capturePanel(false), /Change panel must fit/);
+assert.equal(await capturePanel(true, 'ai-removal-retry'), false, 'retry fixture must not overwrite the identical pre-removal panel image');
 const workflow = (await readFile(new URL('../.github/workflows/checks.yml', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 for (const [scope, directory] of [['core', 'native-recovery'], ['chat-agent-clusters', 'native-chat-agent-clusters']]) {
   const command = `node ../scripts/native-recovery-windows.mjs src-tauri/target/debug/orka-bridge.exe windows-artifact/${directory} ${scope}`;

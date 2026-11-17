@@ -30,9 +30,9 @@ test('AI connection is the only next primary and its prerequisite is visible bef
   expect(screen.getByText(/GitHub CLI must be installed and signed in/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Open example' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Change where agents run' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('button button-quiet');
+  expect(screen.getByRole('button', { name: 'Stop the workspace' }).className).toBe('button button-secondary');
   await user.click(connect);
-  expect(await screen.findByText('Connected', { selector: '.model-state .pill' })).toBeTruthy();
+  expect(await screen.findByText('Connected', { selector: '.steps-head .pill' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Open your first agent' }).className).toBe('button button-primary');
   expect(document.body.textContent).not.toMatch(/guest|\bVM\b|inference/);
   expect(screen.getByText('gpt-5.6-terra', { selector: 'code' })).toBeTruthy();
@@ -57,8 +57,8 @@ test('the restored local page owns Stop and stays restartable even without an ol
   localStorage.removeItem('bridge.welcomeSeen.v1');
   const ipc = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  const stop = await screen.findByRole('button', { name: 'Stop the local cluster' });
-  expect(stop.className).toBe('button button-quiet');
+  const stop = await screen.findByRole('button', { name: 'Stop the workspace' });
+  expect(stop.className).toBe('button button-secondary');
   await user.click(stop);
   await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
   expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy();

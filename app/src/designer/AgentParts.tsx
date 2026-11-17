@@ -71,16 +71,16 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
     : catalogAvailability === 'unavailable' ? remote ? 'Connect a cluster in Clusters to load tools and models' : 'Open Clusters to load tools and models on This computer.'
     : catalogAvailability === 'paused' ? 'Tools and models are paused while another operation finishes.' : undefined;
   const toolReason = readOnly ? 'You can change tools after setup.' : !form.toolsEditable ? 'Edit this agent’s tools in File view.'
-    : setupPending ? 'Tools will be available when the local cluster is ready.' : catalogLoading ? 'Loading tools…' : catalogReason ?? (tools === undefined ? `Couldn't read tools from ${catalogDestination}. Check Clusters or edit File view.` : undefined);
+    : setupPending ? 'Tools will be available when the workspace is ready.' : catalogLoading ? 'Loading tools…' : catalogReason ?? (tools === undefined ? `Couldn't read tools from ${catalogDestination}. Check Clusters or edit File view.` : undefined);
   useEffect(() => {
     if (toolReason) { setPicker(false); setQuery(''); return; }
     if (picker) { popover.current?.showPopover?.(); popover.current?.querySelector('input')?.focus(); }
   }, [picker, toolReason]);
   const modelReason = readOnly ? 'You can change the model after setup.' : !form.modelEditable ? 'Edit the model in File view for this file’s format.'
-    : setupPending ? 'Models will be available when the local cluster is ready.' : catalogLoading ? 'Loading models…' : catalogReason ?? (models === undefined ? `Couldn't read models from ${catalogDestination}. Check Clusters or edit File view.` : undefined);
+    : setupPending ? 'Models will be available when the workspace is ready.' : catalogLoading ? 'Loading models…' : catalogReason ?? (models === undefined ? `Couldn't read models from ${catalogDestination}. Check Clusters or edit File view.` : undefined);
   const modelHelp = catalogLoading ? 'The model saved in your file is shown while choices load.' : modelReason
     ?? (remote ? models?.length ? 'The selected AI connection’s configured default. Other models can be entered in File view.' : 'No default model is configured for this AI connection. Enter a model in File view.'
-      : models?.length ? undefined : 'No models listed by the local cluster.');
+      : models?.length ? undefined : 'No models listed by the workspace.');
   const labelFor = (name: string) => Object.hasOwn(builtInTools, name) ? builtInTools[name] : name;
   const editSoul = async (value: string) => {
     if (readOnly || !form.soulEditable) return;

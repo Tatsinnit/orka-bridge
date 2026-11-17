@@ -31,11 +31,11 @@ async function chat() { const user = userEvent.setup(); await user.click(await s
 function compose() { fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'A question' } }); }
 test('Chat replaces tests and editor without changing their evidence or draft', async () => {
   native(); render(<Example />); const user = await chat(); compose();
-  expect(screen.queryByRole('region', { name: 'Tests on the local cluster' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Tests on this computer' })).toBeNull();
   expect(screen.queryByRole('textbox', { name: 'Instructions' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Send to a cluster' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Agent' }));
-  expect(screen.getByRole('region', { name: 'Tests on the local cluster' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Tests on this computer' })).toBeTruthy();
   expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value).toContain('Read a page.');
   await user.click(screen.getByRole('button', { name: 'Chat' }));
   expect((screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement).value).toBe('A question');

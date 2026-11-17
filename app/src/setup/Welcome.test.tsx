@@ -29,11 +29,12 @@ afterEach(() => { cleanup(); clearMocks(); vi.restoreAllMocks(); vi.unstubAllGlo
 test('Get started remembers the welcome without starting a workspace, including on remount', async () => {
   const ipc = native(); const user = userEvent.setup(); const first = render(<App />);
   expect(await screen.findByRole('heading', { name: 'Build an AI agent that does a real job' })).toBeTruthy();
+  await waitFor(() => expect(document.querySelector('#tab-status-Overview')?.textContent).toBe(''));
   expect(screen.getByText('Write it')).toBeTruthy();
   expect(screen.getByText('Test it')).toBeTruthy();
   expect(screen.getByText('Share it')).toBeTruthy();
   expect(screen.getByText('About 5 minutes, mostly a download').parentElement).toBe(screen.getByRole('button', { name: 'Get started' }).parentElement);
-  expect(screen.getByText(/Team clusters are early in this preview/).textContent).toContain('Send');
+  expect(screen.getByText("Send it to your team's cluster (preview).")).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Get started' }));
   const heading = await screen.findByRole('heading', { name: 'Clusters' });
   expect(document.activeElement).toBe(heading);
@@ -60,7 +61,7 @@ test('welcome chrome advances only after Get started, including with denied pref
 
 test('a saved native choice skips welcome even without a renderer preference', async () => {
   const ipc = native({ selected: 'localVm', localVm: 'starting', model: 'locked' }); render(<App />);
-  expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
+  expect(await screen.findByText('Starting the workspace…')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
 });
@@ -85,11 +86,11 @@ test('keyboard disclosure and opening local setup are inert; only Continue start
   expect(details?.hasAttribute('hidden')).toBe(true);
   disclosure.focus(); await user.keyboard('{Enter}');
   expect(disclosure.getAttribute('aria-expanded')).toBe('true');
-  expect(screen.getByText(/local cluster includes Orka/)).toBeTruthy();
+  expect(screen.getByText(/workspace includes Orka/)).toBeTruthy();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
   const next = screen.getByRole('button', { name: 'Continue' });
   next.focus(); await user.keyboard('{Enter}{Enter}');
-  expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
+  expect(await screen.findByText('Starting the workspace…')).toBeTruthy();
   expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'This computer' }));
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toEqual([['setup_select_local', {}]]);
 });
@@ -122,14 +123,14 @@ test('debug requirements without a download retain RAM checks and disk facts wit
 test('release welcome exposes unavailability before Get started without replacing the workflow copy', async () => {
   const ipc = native({ ...unselected, localVm: 'notIntegrated' }, null); render(<App />);
   expect(await screen.findByRole('button', { name: 'Get started' })).toBeTruthy();
-  expect(screen.getByText('Local cluster setup is not included in this build. Nothing will be downloaded or started.')).toBeTruthy();
+  expect(screen.getByText('Workspace setup is not included in this build. Nothing will be downloaded or started.')).toBeTruthy();
   expect(screen.getByText('Share it')).toBeTruthy();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
 });
 
 test('release-unavailable setup stays explicit and does not invent requirements', async () => {
   localStorage.setItem(preference, '1'); native({ ...unselected, localVm: 'notIntegrated' }, null); render(<App />);
-  expect(await screen.findByText('Local cluster setup is not included in this build. Nothing will be downloaded or started.')).toBeTruthy();
+  expect(await screen.findByText('Workspace setup is not included in this build. Nothing will be downloaded or started.')).toBeTruthy();
   expect(screen.queryByText(/GiB/)).toBeNull();
 });
 
@@ -167,7 +168,7 @@ test('an unseen welcome cannot hide a failed status read or overwrite its prefer
   expect(localStorage.getItem(preference)).toBeNull();
   failed = false;
   await user.click(screen.getByRole('button', { name: 'Check again' }));
-  expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
+  expect(await screen.findByText('Starting the workspace…')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
   expect(localStorage.getItem(preference)).toBeNull();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
@@ -180,6 +181,6 @@ test('a delayed initial status cannot flash welcome over an existing workspace',
   render(<App />);
   expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
   complete({ selected: 'localVm', localVm: 'starting', model: 'locked' });
-  await waitFor(() => expect(screen.getByText('Starting the local cluster…')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('Starting the workspace…')).toBeTruthy());
   expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
 });

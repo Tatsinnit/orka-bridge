@@ -32,7 +32,7 @@ test.each(['Starting the local cluster', 'Getting your workspace ready…', 'Sto
   ipc(files(), unavailable);
   render(<Overview {...props} workspaceNote={workspaceNote} />);
   expect(await screen.findByText(workspaceNote)).toBeTruthy();
-  expect(screen.queryByText(/The local cluster is stopped/)).toBeNull();
+  expect(screen.queryByText(/The workspace is stopped/)).toBeNull();
   expect(buttons(await card(/^reader/))).toEqual(['Open', 'Details']);
 });
 
@@ -329,20 +329,20 @@ test('a local test in progress keeps the last good Agents and says why, with Ope
   expect(screen.queryByText('No agents yet')).toBeNull();
 });
 
-test('stopped local cluster keeps file cards with Open only; empty stays empty with the trouble line', async () => {
+test('stopped workspace keeps file cards with Open only; empty stays empty with the trouble line', async () => {
   ipc(files(), unavailable); const view = render(<Overview {...props} />);
-  expect(await screen.findByText('The local cluster is stopped. Start it to test or chat.')).toBeTruthy();
+  expect(await screen.findByText('The workspace is stopped. Start it to test or chat.')).toBeTruthy();
   expect(buttons(await card(/^reader/))).toEqual(['Open', 'Details']);
   const choose = vi.fn(); view.rerender(<Overview {...props} onChooseWorkspace={choose} />);
   await userEvent.click(screen.getByRole('button', { name: 'Open Clusters' })); expect(choose).toHaveBeenCalled();
   ipc(files([]), unavailable); await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
   expect(await screen.findByRole('heading', { name: 'No agents yet' })).toBeTruthy();
-  expect(screen.getByText('The local cluster is stopped. Start it to test or chat.')).toBeTruthy();
+  expect(screen.getByText('The workspace is stopped. Start it to test or chat.')).toBeTruthy();
 });
 
 test('image-limited listing keeps saved results and full actions', async () => {
   ipc(files(), { ...unavailable, reason: 'image' }); render(<Overview {...props} />);
-  expect(await screen.findByText("This local cluster can't list its agents yet.")).toBeTruthy();
+  expect(await screen.findByText("This workspace can't list its agents yet.")).toBeTruthy();
   const c = await card(/^reader/); expect(within(c).getByText('Passed')).toBeTruthy(); expect(buttons(c)).toEqual(['Open', 'Chat', 'Run tests', 'Details']);
 });
 

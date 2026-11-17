@@ -140,7 +140,7 @@ test('independent catalog failures and empty lists do not fall back to static in
   expect(screen.getByText('No tools listed by this cluster.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: /Read a file/ })).toBeNull();
   view.rerender(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, models: { state: 'ready', items: [] }, tools: { state: 'unavailable' } }} onChange={() => {}} />);
-  expect(screen.getByText('No models listed by the local cluster.')).toBeTruthy();
+  expect(screen.getByText('No models listed by the workspace.')).toBeTruthy();
 });
 test('inline soul and digest publish together, and reference fields never switch source', async () => {
   const changed = vi.fn(); const user = userEvent.setup();
@@ -235,7 +235,7 @@ test('explicit Stop invalidates catalog before the stop reply, retaining the edi
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
   await screen.findByRole('option', { name: 'listed' });
   await user.click(screen.getByRole('button', { name: /Clusters/ }));
-  await user.click(screen.getByRole('button', { name: 'Stop the local cluster' }));
+  await user.click(screen.getByRole('button', { name: 'Stop the workspace' }));
   await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
   // Designer stays mounted under the inactive page. It must not retain old choices.
   expect(document.querySelector('option[value="listed"]')).toBeNull();

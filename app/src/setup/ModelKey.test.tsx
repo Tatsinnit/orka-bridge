@@ -17,9 +17,10 @@ test('key stays only in its password field and is cleared as soon as native take
   render(<Model enabled />); keyChoice();
   fireEvent.click(screen.getByRole('button', { name: 'Anthropic' }));
   expect(field().type).toBe('password'); expect(field().autocomplete).toBe('off'); expect(field().getAttribute('spellcheck')).toBe('false');
-  expect(screen.getByText(/Never written to your agent files/)).toBeTruthy();
+  expect(screen.getByText(/never in your agent files/i)).toBeTruthy();
   expect(screen.queryByText(/Never written to a file/)).toBeNull();
   fireEvent.change(field(), { target: { value: key } });
+  expect(document.body.textContent).not.toContain(key);
   fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(invoke).toHaveBeenCalledExactlyOnceWith('setup_connect_key', { vendor: 'anthropic', key });
   expect(field().value).toBe(''); expect(field().disabled).toBe(true);
@@ -29,10 +30,11 @@ test('key stays only in its password field and is cleared as soon as native take
   await act(async () => finish({ ready: true, connection: anthropic }));
   expect(screen.getByText(/Anthropic with your API key/)).toBeTruthy();
   const change = screen.getByRole('button', { name: 'Change' });
-  const remove = screen.getByRole('button', { name: 'Remove key' });
   const row = change.closest('.workspace-step-actions')!;
-  expect([...row.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Change', 'Remove key']);
-  expect(change.classList.contains('button-secondary')).toBe(true);
+  expect([...row.querySelectorAll('button')].map(button => button.textContent)).toEqual(['Change']);
+  expect(change.classList.contains('button-quiet')).toBe(true);
+  fireEvent.click(change);
+  const remove = screen.getByRole('button', { name: 'Remove saved key' });
   expect(remove.classList.contains('button-quiet')).toBe(true);
 });
 test('retry without a pasted key requests only a saved key, never implicit Copilot capture', async () => {
@@ -58,8 +60,12 @@ test('malformed replacement after Change keeps the field and Connect action avai
   invoke.mockResolvedValueOnce({ ready: true, connection: anthropic }).mockResolvedValue({ ready: false });
   render(<Model enabled />); fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   await screen.findByRole('button', { name: 'Change' }); fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Remove saved key' }));
   fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
-  await screen.findByLabelText('API key'); fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  await screen.findByLabelText('API key');
+  expect(screen.getByRole('button', { name: 'Connect the AI' }).matches(':disabled')).toBe(true);
+  fireEvent.change(field(), { target: { value: 'wrong-company-key' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(field()).toBeTruthy(); expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
 });
 test.each(['modelCredentialRejected', 'modelProviderUnreachable', 'modelModelUnavailable'])('a Copilot %s error describes its retained sign-in, not an API key', async kind => {
@@ -78,15 +84,20 @@ test.each(['modelCaptureUnavailable', 'modelCaptureFailed', 'modelCaptureInvalid
   await screen.findByRole('button', { name: 'Change' });
   expect(invoke.mock.calls[1]).toEqual(['setup_connect_key', { vendor: 'anthropic', key }]);
 });
-test('empty or wrong-company key never crosses IPC; company changes clear the field', () => {
+test('a blank or whitespace-only key cannot cross IPC; Connect is disabled until a key is present, then clears on company change', () => {
   render(<Model enabled />); keyChoice();
-  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
-  expect(screen.getByRole('alert').textContent).toContain('Paste the whole key'); expect(invoke).not.toHaveBeenCalled();
+  const connect = () => screen.getByRole('button', { name: 'Connect the AI' });
+  expect(connect().hasAttribute('disabled')).toBe(true);
+  fireEvent.click(connect());
+  expect(invoke).not.toHaveBeenCalled();
+  fireEvent.change(field(), { target: { value: '   ' } });
+  expect(connect().hasAttribute('disabled')).toBe(true);
   fireEvent.change(field(), { target: { value: key } });
   fireEvent.click(screen.getByRole('button', { name: 'OpenAI' }));
   expect(field().value).toBe('');
+  expect(connect().hasAttribute('disabled')).toBe(true);
   fireEvent.change(field(), { target: { value: key } });
-  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  fireEvent.click(connect());
   expect(invoke).not.toHaveBeenCalled();
 });
 test('key cannot be queued or retained when a mounted card is hidden or the cluster changes', async () => {
@@ -126,14 +137,15 @@ test('a failed reopened key connection uses the saved company rather than Copilo
   invoke.mockRejectedValue({ kind: 'modelCredentialRejected', vendor: 'anthropic', message: key });
   render(<Model enabled />); fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect((await screen.findByRole('alert')).textContent).toContain("Anthropic didn't accept this key");
-  expect(screen.getByRole('status').textContent).toContain('saved key');
+  expect(screen.getByRole('status').textContent).toBe('Key removed.');
   expect(document.body.textContent).not.toContain('GitHub CLI stays signed in');
 });
 test('reopened connection uses native company metadata, not the initial Copilot choice', async () => {
   invoke.mockResolvedValue({ ready: true, connection: anthropic });
   render(<Model enabled />); fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   await screen.findByText(/Anthropic with your API key/);
-  expect(screen.getByRole('button', { name: 'Remove key' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+  expect(screen.getByRole('button', { name: 'Remove saved key' })).toBeTruthy();
 });
 test('Change disconnects first, blocks replacement until acknowledgment and keeps retry on failure', async () => {
   invoke.mockResolvedValueOnce({ ready: true, connection: anthropic });
@@ -142,6 +154,8 @@ test('Change disconnects first, blocks replacement until acknowledgment and keep
   let reject!: (e: unknown) => void;
   invoke.mockImplementation(() => new Promise((_, no) => { reject = no; }));
   fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+  expect(invoke).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Remove saved key' }));
   expect(invoke).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole('button', { name: 'Remove key' }));
   expect(invoke.mock.calls[1]).toEqual(['setup_remove_model']);

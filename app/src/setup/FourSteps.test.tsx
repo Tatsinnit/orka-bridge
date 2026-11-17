@@ -6,7 +6,7 @@ import type { SetupStatus } from './state';
 
 const status = (localVm: SetupStatus['localVm'], extra: Partial<SetupStatus> = {}): SetupStatus => ({ selected: 'localVm', localVm, model: localVm === 'ready' ? 'available' : 'locked', ...extra });
 const actions = { busy: false, stopping: false, onCancel() {}, onRestart() {}, onChange() {}, onOpenExample() {} };
-const names = ['Where agents run', 'Get your workspace ready', 'Choose the AI your agent uses', 'Run your first test'];
+const names = ['Where agents run', 'Get your workspace ready', 'Connect the AI', 'Run your first agent'];
 afterEach(cleanup);
 
 test('all infrastructure phases and failures share step two, and shell counters follow it', () => {

@@ -22,7 +22,7 @@ function isLocalState(value: unknown): value is LocalVmState {
 type Result = { ok: true; status: SetupStatus } | { ok: false; message: string };
 
 async function call(command: 'setup_status' | 'setup_select_local' | 'setup_cancel_local' | 'setup_change_local'): Promise<Result> {
-  if (!isTauri()) return { ok: false, message: 'Local cluster setup is not available in this preview.' };
+  if (!isTauri()) return { ok: false, message: 'Workspace setup is not available in this preview.' };
   try {
     const value = await invoke<unknown>(command);
     if (typeof value !== 'object' || value === null || Array.isArray(value)
@@ -70,7 +70,7 @@ export async function loadExample(prepare = false): Promise<{ ok: true; pair: Ex
       return { ok: true, pair: { agent: value.agent, tests: value.tests } };
     }
   } catch (error) {
-    if (prepare && error === 'exampleBusy') return { ok: false, message: 'The local cluster is busy.', retryable: true };
+    if (prepare && error === 'exampleBusy') return { ok: false, message: 'The workspace is busy.', retryable: true };
   }
   return { ok: false, message: 'The example could not be opened.' };
 }

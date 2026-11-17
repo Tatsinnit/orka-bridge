@@ -159,7 +159,7 @@ test.each([null, { ...ready, extra: 'SECRET_MARKER' }, { ...ready, requiredMemor
   for (const name of ['Virtualization', 'Installed memory']) expect(screen.queryByRole('region', { name })).toBeNull();
   expect(screen.getByText("Bridge couldn't check virtualization or memory yet. It checks again when the workspace starts.").closest('.workspace-option')?.querySelector('#workspace-local')).toBeTruthy();
   await userEvent.setup().click(next);
-  expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
+  expect(await screen.findByText('Starting the workspace…')).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_select_local')).toHaveLength(1);
 });
 
@@ -204,7 +204,7 @@ test('Mac unsupported virtualization explains platform support without Windows h
 
 test('unavailable builds never query or claim host readiness', async () => {
   const { ipc } = await native(ready, false);
-  await screen.findByText(/Local cluster setup is not included/);
+  await screen.findByText(/Workspace setup is not included/);
   expect(screen.queryByRole('region', { name: 'Computer requirements' })).toBeNull();
   expect(ipc.mock.calls.some(([c]) => c === 'setup_preflight')).toBe(false);
 });

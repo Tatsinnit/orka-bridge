@@ -40,7 +40,7 @@ test('the board explicitly marks a single stack and removes that layout when a s
 test('By cluster: This computer first, then each cluster by context name, with a count at the right', async () => {
   ipc(); render(<Overview {...props} />);
   const first = await group('This computer');
-  expect(within(first).getByText('local cluster')).toBeTruthy();
+  expect(within(first).getByText('workspace')).toBeTruthy();
   const remote = await group('team-one');
   expect(within(remote).getByText('2 agents')).toBeTruthy();
   const order = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent);
@@ -184,7 +184,7 @@ test('By agent keeps cluster trouble explanations and recovery actions visible',
   ipc(places([{ ...two, stale: true }]), saved(), { ...local, state: 'unavailable', reason: 'stopped' });
   render(<Overview {...props} />); await group('team-two');
   await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
-  expect(screen.getByText('The local cluster is stopped. Start it to test or chat.')).toBeTruthy();
+  expect(screen.getByText('The workspace is stopped. Start it to test or chat.')).toBeTruthy();
   expect(screen.getByText(/Couldn't check just now/)).toBeTruthy();
   expect(screen.getAllByRole('button', { name: 'Open Clusters' })).toHaveLength(2);
 });

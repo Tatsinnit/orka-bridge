@@ -11,13 +11,13 @@ const starting = (elapsedMs: number): WorkspaceProgress => ({ phase: 'starting',
 
 test('one derivation maps native and model state to the four setup steps', () => {
   const step = (s: SetupStatus, model: Parameters<typeof setupView>[1] = {}) => setupView(s, model).line;
-  expect(step(status('preparing'))).toBe('Getting the local cluster ready');
-  expect(step(status('installing'))).toBe('Getting the local cluster ready');
-  expect(step(status('starting'))).toBe('Starting the local cluster');
+  expect(step(status('preparing'))).toBe('Getting the workspace ready');
+  expect(step(status('installing'))).toBe('Getting the workspace ready');
+  expect(step(status('starting'))).toBe('Starting the workspace');
   expect(step(status('ready'), { model: 'idle' })).toBe('Connect the AI');
   expect(step(status('ready'), { model: 'queued' })).toBe('AI queued');
   expect(step(status('ready'), { model: 'connecting' })).toBe('Connecting the AI…');
-  expect(step(status('ready'), { model: 'connected' })).toBe('Local cluster ready');
+  expect(step(status('ready'), { model: 'connected' })).toBe('Workspace ready');
   expect(step(status('ready'), { model: 'connected', check: 'running', initialAutomatic: true })).toBe('Run your first agent');
   expect(setupView(status('ready'), { model: 'connected' }).step).toBe(4);
 });
@@ -28,7 +28,7 @@ test('status icons follow active work and uncertain evidence without changing se
   for (const check of ['stale', 'unknown'] as const) {
     expect(setupView(status('ready'), { model: 'connected', check })).toMatchObject({ status: 'stale', tone: 'stale', done: true, step: 4, action: 'Manage' });
   }
-  expect(setupView(status('ready'), { model: 'connected' })).toMatchObject({ status: 'passed', line: 'Local cluster ready', done: true, action: 'Manage' });
+  expect(setupView(status('ready'), { model: 'connected' })).toMatchObject({ status: 'passed', line: 'Workspace ready', done: true, action: 'Manage' });
 });
 
 test('the place choice shows no step count', () => {
@@ -42,26 +42,26 @@ test('the place choice shows no step count', () => {
 test('host selection is native: local only when selected, never inferred while checking or unreadable', () => {
   expect(setupView(status('installing')).place).toBe('local');
   expect(setupView(status('idle', { selected: null })).place).toBe('none');
-  expect(setupView(undefined, { checking: true })).toMatchObject({ place: 'checking', line: 'Checking the local cluster…' });
-  expect(setupView(undefined, { checking: false })).toMatchObject({ place: 'unavailable', line: 'Local cluster unavailable' });
+  expect(setupView(undefined, { checking: true })).toMatchObject({ place: 'checking', line: 'Checking the workspace…' });
+  expect(setupView(undefined, { checking: false })).toMatchObject({ place: 'unavailable', line: 'Workspace unavailable' });
 });
 
 test('test uncertainty and manual runs do not reopen completed workspace setup', () => {
   const done = (check?: CheckStepState) => setupView(status('ready'), { model: 'connected', check });
   for (const check of ['passed', 'failed', 'stale', 'unknown', 'running'] as const) expect(done(check)).toMatchObject({ done: true });
-  expect(done()).toMatchObject({ done: true, line: 'Local cluster ready' });
+  expect(done()).toMatchObject({ done: true, line: 'Workspace ready' });
   expect(setupView(status('ready'), { model: 'connected', check: 'running', initialAutomatic: true })).toMatchObject({ done: false, step: 4 });
 });
 
 test('model and workspace trouble keep their own words and tone', () => {
-  expect(setupView(status('ready'), { model: 'failed' })).toMatchObject({ line: 'AI needs attention', tone: 'bad', step: 3 });
-  expect(setupView(status('ready', { model: 'locked' }), { model: 'connected' })).toMatchObject({ line: 'AI unavailable' });
+  expect(setupView(status('ready'), { model: 'failed' })).toMatchObject({ line: 'AI not connected', tone: 'needs-you', step: 3 });
+  expect(setupView(status('ready', { model: 'locked' }), { model: 'connected' })).toMatchObject({ line: 'AI not connected' });
   expect(setupView(status('failed'))).toMatchObject({ line: 'Setup failed', tone: 'bad' });
   expect(setupView(status('failed', { workspaceFailure: { operation: 'start', cause: 'unknown', codes: [] } })).step).toBe(2);
   expect(setupView(status('failed', { workspaceFailure: { operation: 'download', cause: 'network', codes: [] } })).step).toBe(2);
   expect(setupView(status('cancelled')).line).toBe('Setup paused');
-  expect(setupView(status('closed')).line).toBe('Local cluster stopped');
-  expect(setupView(status('notIntegrated', { selected: null })).line).toBe('Local cluster unavailable');
+  expect(setupView(status('closed')).line).toBe('Workspace stopped');
+  expect(setupView(status('notIntegrated', { selected: null })).line).toBe('Workspace unavailable');
 });
 
 test('only an unfinished local attempt can queue a model choice', () => {
@@ -80,7 +80,7 @@ test('transfer bytes drive the bar but measure this file step only', () => {
   expect(full.value).toBe(1);
   const half = infraProgress(status('installing', { workspaceProgress: transfer(GiB, 2 * GiB) }))!;
   expect(half.value).toBeGreaterThan(0); expect(half.value!).toBeLessThan(full.value!);
-  expect(half.text).toBe('Installing, 1 GiB of 2 GiB');
+  expect(half.text).toBe('Downloading, 1.1 of 2.1 GB');
   expect(infraProgress(status('installing', { workspaceProgress: transfer(null, null) }))).toEqual({ value: null });
   expect(infraProgress(status('installing', { workspaceProgress: null }))!.value).toBeNull();
 });
@@ -117,6 +117,6 @@ test('tone: running work is busy blue, waiting for the creator is needs-you, rea
   // Only a finished flow is green; model trouble is red.
   expect(tone({ model: 'connected', check: 'passed' })).toBe('ready');
   expect(tone({ model: 'connected', check: 'failed' })).toBe('bad');
-  expect(tone({ model: 'failed' })).toBe('bad');
+  expect(tone({ model: 'failed' })).toBe('needs-you');
   expect(setupView(status('failed')).tone).toBe('bad');
 });

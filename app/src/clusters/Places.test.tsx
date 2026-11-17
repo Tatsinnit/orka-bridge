@@ -79,8 +79,8 @@ test('a build without local VM integration explains unavailability rather than a
   const { sim } = native(); sim.status = { ...sim.status, selected: null, localVm: 'notIntegrated' };
   render(<Host />);
   const local = await screen.findByRole('region', { name: 'This computer' });
-  await within(local).findByText('Local cluster unavailable');
-  expect(within(local).queryByText('The local cluster runs here')).toBeNull();
+  await within(local).findByText('Workspace unavailable');
+  expect(within(local).queryByText('The workspace runs here')).toBeNull();
   expect(local.querySelector('.pill.status-needs-you')).toBeTruthy();
 });
 
@@ -92,7 +92,7 @@ test('an unreadable workspace status stays unknown while retained places remain 
   const local = within(row('This computer'));
   expect(local.queryByText('Not set up')).toBeNull();
   expect(local.queryByText('AI not connected')).toBeNull();
-  expect(local.getByText('Local cluster unavailable')).toBeTruthy();
+  expect(local.getByText('Workspace unavailable')).toBeTruthy();
   expect(local.getByRole('button', { name: 'View details' })).toBeTruthy();
   expect(await screen.findByRole('region', { name: 'team-other' })).toBeTruthy();
   expect(screen.queryByText('Reading your clusters…')).toBeNull();
@@ -218,7 +218,7 @@ test('local Manage is navigation; explicit Use this computer never starts a stop
   expect(screen.queryByText('Selected for Designer')).toBeNull();
 });
 
-test.each([['closed', 'Local cluster stopped'], ['cancelled', 'Setup paused'], ['idle', 'Not set up']] as const)('a selected %s local workspace never claims setup is still running', async (localVm, label) => {
+test.each([['closed', 'Workspace stopped'], ['cancelled', 'Setup paused'], ['idle', 'Not set up']] as const)('a selected %s local workspace never claims setup is still running', async (localVm, label) => {
   const { sim } = native(); sim.status = { ...sim.status, selected: 'localVm', localVm };
   const user = userEvent.setup(); render(<Host />);
   await user.click(await screen.findByRole('button', { name: 'Clusters' }));
@@ -261,15 +261,16 @@ test('Back preserves a queued local Model and its one eventual connection while 
   await user.click(await screen.findByRole('button', { name: 'Clusters' }));
   await user.click(within(row('This computer')).getByRole('button', { name: 'Continue setup' }));
   expect(observe).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Change' }));
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(observe).toHaveBeenLastCalledWith({ kind: 'thisComputer' });
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  expect(within(row('This computer')).getByText('Getting the local cluster ready', { selector: '.place-meta span' })).toBeTruthy();
+  expect(within(row('This computer')).getByText('Getting the workspace ready', { selector: '.place-meta span' })).toBeTruthy();
   expect(observe).toHaveBeenCalledTimes(1);
   sim.status = { ...sim.status, localVm: 'ready', model: 'available' };
   await act(async () => window.dispatchEvent(new Event('focus')));
-  await within(row('This computer')).findByText('Local cluster ready');
+  await within(row('This computer')).findByText('Workspace ready');
   await user.click(within(row('This computer')).getByRole('button', { name: 'Manage' }));
   expect(within(screen.getByRole('region', { name: 'Connect the AI' })).getByText('Connected')).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_connect_model')).toHaveLength(1);
@@ -529,7 +530,7 @@ test('loading local requirements stays explicit and keeps Continue gated', async
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false);
   expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_select_local');
   await user.click(screen.getByRole('button', { name: 'Continue' }));
-  expect(await screen.findByRole('region', { name: 'Local cluster setup' })).toBeTruthy();
+  expect(await screen.findByRole('region', { name: 'Workspace setup' })).toBeTruthy();
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
 });
 

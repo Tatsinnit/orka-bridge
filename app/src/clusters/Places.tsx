@@ -17,11 +17,10 @@ export default function Places({ snapshot, unavailable, status, view, place, onL
   return <div className="places-list">
     <section className="card place-row" aria-label="This computer">
       <span className="icon-tile" aria-hidden="true"><svg className="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8m-4-4v4" /></svg></span>
-      <div className="place-summary"><h2>This computer</h2><p className="place-meta"><span>{!status ? 'Local cluster status could not be read' : status.localVm === 'notIntegrated' ? view.line : started ? view.detail : 'The local cluster runs here'}</span>{(started && view.line !== view.detail || !status) && <span>{view.line}</span>}</p></div>
-      {modelRecovery && status?.localVm === 'ready' && <p className="place-workspace-running">Workspace running</p>}
+      <div className="place-summary"><h2>This computer</h2><p className="place-meta"><span>{modelRecovery && status?.localVm === 'ready' ? 'The AI needs to be set up again' : !status ? 'Workspace status could not be read' : status.localVm === 'notIntegrated' ? view.line : started ? view.detail : 'Your workspace'}</span>{!modelRecovery && (started && view.line !== view.detail || !status) && <span>{view.line}</span>}</p></div>
       <div className="place-model-recovery" ref={recoveryRef} />
-      <StatusPill state={view.status}>{view.status === 'passed' ? 'Ready' : undefined}</StatusPill>
-      <Button type="button" kind={!!status && !view.done && (started || knownEmpty) ? 'primary' : 'secondary'} size="small" onClick={onLocal}>{!status ? 'View details' : view.action}</Button>
+      <StatusPill state={modelRecovery && status?.localVm === 'ready' ? 'needs-you' : view.status}>{modelRecovery && status?.localVm === 'ready' ? 'Needs you' : view.status === 'passed' ? 'Ready' : undefined}</StatusPill>
+      <Button type="button" kind={!modelRecovery && !!status && !view.done && (started || knownEmpty) ? 'primary' : 'secondary'} size="small" onClick={onLocal}>{modelRecovery ? 'View workspace' : !status ? 'View details' : view.action}</Button>
     </section>
     {snapshot?.places.map(item => {
       const selected = place.kind === 'cluster' && !!place.target && snapshot.selectedKey === item.key;

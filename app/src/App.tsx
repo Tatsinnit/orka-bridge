@@ -201,7 +201,7 @@ export default function App() {
   const hostTone = hostWorkspace?.tone ?? view.tone;
   const workspaceReady = setup?.localVm === 'ready';
   const workspaceTransition = !!setup && ['preparing', 'installing', 'starting', 'closing', 'failed'].includes(setup.localVm);
-  const overviewWorkspaceNote = workspaceStopping ? 'Stopping the local cluster'
+  const overviewWorkspaceNote = workspaceStopping ? 'Stopping the workspace'
     : workspaceBusy && (!workspaceTransition || setup?.localVm === 'failed') ? 'Getting your workspace ready…'
       : workspaceTransition ? setupLine : undefined;
   const placeName = remote ? place.target?.context_name ?? 'Choose a cluster'
@@ -220,7 +220,7 @@ export default function App() {
     : cases ? 'tests passing' : 'ready to edit';
   const agentStateWord = agentStatus.match(/\b(passing|failing|running|cancelled|cancelling|unknown|unavailable|unconfirmed|not confirmed|ready)\b/);
   const tabStatus: Record<Page, string> = {
-    Overview: overviewCounts,
+    Overview: welcome ? '' : overviewCounts,
     Designer: agentName ? `${agentName}, ${agentStatus}` : !exampleOpen ? exampleReadOnly ? 'Ready after setup' : 'No agent open'
       : exampleState === 'failed' ? 'Example unavailable' : exampleState === 'loaded' ? 'Agent file' : 'Opening example…',
     Clusters: remote ? place.target ? 'Access confirmed' : 'Choose a cluster' : welcome ? 'Start here' : view.tabLine,
@@ -266,7 +266,7 @@ export default function App() {
       setDocumentAction({ id: ++actionSequence.current, documentId: id, action: action === 'run' ? 'send' : 'open' });
       return;
     }
-    // Local tests stay local; Chat needs the local cluster, while Open keeps the selected Send destination.
+    // Local tests stay local; Chat needs the workspace, while Open keeps the selected Send destination.
     if (remote && action === 'chat') choosePlace({ kind: 'thisComputer' });
     openDesigner(id);
     setDocumentAction({ id: ++actionSequence.current, documentId: id, action });
@@ -331,7 +331,7 @@ export default function App() {
         {footer.map((part, index) => <span key={index}>{index > 0 && <span aria-hidden="true"> · </span>}<span aria-live={index > 0 ? 'polite' : undefined}>{part}</span></span>)}
         {checks && <span className="checks-status">{checks}</span>}
         <span className="sr-only" role="status" aria-atomic="true">{[
-          page !== 'Clusters' || !localSetupView ? `Local cluster: ${setupDetail === setupLine ? setupLine : `${setupLine} · ${setupDetail}`}` : undefined,
+          page !== 'Clusters' || !localSetupView ? `Workspace: ${setupDetail === setupLine ? setupLine : `${setupLine} · ${setupDetail}`}` : undefined,
           page !== 'Designer' && checks ? `Checks: ${checks}` : undefined,
         ].filter(Boolean).join(' · ')}</span>
       </footer>

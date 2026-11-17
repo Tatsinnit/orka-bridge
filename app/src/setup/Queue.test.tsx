@@ -62,17 +62,19 @@ test('a choice during transfer connects exactly once at readiness, with no secon
   // Orka can be ready before the model unlocks: hold, neither fire nor forget.
   sim.localVm = 'ready';
   await observe(ipc);
-  expect(within(screen.getByRole('navigation')).getByText('AI unavailable')).toBeTruthy();
+  expect(within(screen.getByRole('navigation')).getByText('AI not connected')).toBeTruthy();
   expect(connects()).toBe(0);
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
   sim.model = 'available';
   await observe(ipc);
-  await screen.findByText('Connected', { selector: '.model-state .pill' });
+  await screen.findByText('Connected', { selector: '.steps-head .pill' });
   expect(connects()).toBe(1);
-  expect(screen.getByRole('heading', { name: 'Connect the AI' }).closest('section')).toBe(model);
+  // Once connected the model portal moves from the steps row to its own sidebar card; prove state
+  // and once-only IPC rather than requiring the same DOM element identity across that move.
+  expect(screen.getByRole('heading', { name: 'Connect the AI' })).toBeTruthy();
   await observe(ipc);
   expect(connects()).toBe(1);
-  expect(within(screen.getByRole('contentinfo')).getByText('Local cluster ready')).toBeTruthy();
+  expect(within(screen.getByRole('contentinfo')).getByText('Workspace ready')).toBeTruthy();
   expect(screen.getAllByRole('button').filter(button => button.hasAttribute('disabled') && /connect|queued|removing/i.test(button.textContent ?? ''))).toEqual([]);
 });
 
@@ -91,7 +93,7 @@ test('readiness with an unlocked model connects once immediately', async () => {
   const { sim, connects } = native('starting'); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   sim.localVm = 'ready'; sim.model = 'available';
-  await screen.findByText('Connected', { selector: '.model-state .pill' }, wait);
+  await screen.findByText('Connected', { selector: '.steps-head .pill' }, wait);
   await settle(); expect(connects()).toBe(1);
 });
 
@@ -99,13 +101,13 @@ test('an unreadable observation holds the intent without firing or clearing it',
   const { sim, connects } = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   sim.unreadable = true;
-  await within(screen.getByRole('navigation')).findByText('Local cluster unavailable', {}, wait);
+  await within(screen.getByRole('navigation')).findByText('Workspace unavailable', {}, wait);
   sim.localVm = 'ready'; sim.model = 'available';
   await settle(); expect(connects()).toBe(0);
   expect(screen.getByText('Queued', { selector: '.pill' })).toBeTruthy();
   expect(screen.queryByText('Connected', { selector: '.model-state .pill' })).toBeNull();
   sim.unreadable = false;
-  await screen.findByText('Connected', { selector: '.model-state .pill' }, wait);
+  await screen.findByText('Connected', { selector: '.steps-head .pill' }, wait);
   await settle(); expect(connects()).toBe(1);
 });
 
@@ -115,7 +117,7 @@ test('the hidden Setup keeps polling and finishes an already-submitted intent fr
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   sim.localVm = 'ready'; sim.model = 'available';
   await waitFor(() => expect(connects()).toBe(1), wait);
-  await within(screen.getByRole('contentinfo')).findByText('Local cluster ready', {}, wait);
+  await within(screen.getByRole('contentinfo')).findByText('Workspace ready', {}, wait);
   await settle(); expect(connects()).toBe(1);
 });
 
@@ -127,6 +129,7 @@ test('cancelling ends the attempt: a later readiness does not connect and a fres
   expect(screen.queryByText('Queued')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Start again' }));
+  await openLocalSetup(user);
   expect(await screen.findByRole('button', { name: 'Connect the AI' })).toBeTruthy();
   sim.localVm = 'ready'; sim.model = 'available';
   expect(await screen.findByRole('button', { name: 'Connect the AI' }, wait)).toBeTruthy();
@@ -152,7 +155,7 @@ test('a queued connection that fails is not retried without an explicit action',
   await settle(); expect(connects()).toBe(1);
   sim.connect = 'ok';
   await user.click(screen.getByRole('button', { name: 'Check again' }));
-  await screen.findByText('Connected', { selector: '.model-state .pill' });
+  await screen.findByText('Connected', { selector: '.steps-head .pill' });
   expect(connects()).toBe(2);
 });
 
@@ -168,7 +171,7 @@ test('using a cluster clears the held intent even though the view stays mounted'
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   sim.localVm = 'ready';
   await observe(ipc);
-  expect(within(screen.getByRole('navigation')).getByText('AI unavailable')).toBeTruthy();
+  expect(within(screen.getByRole('navigation')).getByText('AI not connected')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   await user.click(await screen.findByRole('button', { name: 'kubectl context' }));
@@ -186,7 +189,7 @@ test('using a cluster clears the held intent even though the view stays mounted'
 
 test.each(['notIntegrated', 'cancelled', 'closed', 'closing', 'idle'])('nothing can be queued while the workspace is %s', async localVm => {
   const { connects } = native(localVm); render(<App />); await openLocalSetup();
-  await screen.findByRole('region', { name: 'Local cluster setup' });
+  await screen.findByRole('region', { name: 'Workspace setup' });
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Connect the AI' })).toBeNull();
   expect(screen.queryByText('Queued')).toBeNull();
@@ -231,7 +234,7 @@ test('an edit marks the first test stale immediately without putting the ready w
   await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
   await within(screen.getByRole('contentinfo')).findByText('1 of 1 passed');
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  await waitFor(() => expect(within(screen.getByRole('navigation')).getByText('Local cluster ready')).toBeTruthy());
+  await waitFor(() => expect(within(screen.getByRole('navigation')).getByText('Workspace ready')).toBeTruthy());
   await user.click(screen.getByRole('button', { name: 'Designer' }));
   await user.click(screen.getByRole('button', { name: 'File' }));
   await user.type(screen.getByRole('textbox', { name: 'Agent file' }), ' edit');
@@ -241,7 +244,7 @@ test('an edit marks the first test stale immediately without putting the ready w
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   expect(within(screen.getByRole('navigation')).queryByText('Setting up, step 5 of 5')).toBeNull();
   expect(within(screen.getByRole('navigation')).getByText('Tests need running')).toBeTruthy();
-  expect(within(screen.getByRole('region', { name: 'Local cluster setup' })).getByText('Tests need running')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: 'Workspace setup' })).getByText('Tests need running')).toBeTruthy();
 });
 
 test('the host stays ready while AI attention and connecting states remain in the setup step', async () => {
@@ -249,11 +252,11 @@ test('the host stays ready while AI attention and connecting states remain in th
   const dots = () => [...document.querySelectorAll('.live-dot')].map(dot => dot.className.replace('live-dot', '').trim());
   await screen.findByRole('button', { name: 'Connect the AI' });
   expect(dots()).toEqual(['ready']);
-  expect(screen.getByText('Choose the AI your agent uses').closest('li')?.querySelector('.status-needs-you')).toBeTruthy();
+  expect(screen.getByText('Connect the AI', { selector: 'li b' }).closest('li')?.querySelector('.status-needs-you')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
   await screen.findByText('Connecting', { selector: '.step-result' });
   expect(dots()).toEqual(['ready']);
-  expect(screen.getByText('Choose the AI your agent uses').closest('li')?.querySelector('.status-running')).toBeTruthy();
+  expect(screen.getByText('Connect the AI', { selector: 'li b' }).closest('li')?.querySelector('.status-running')).toBeTruthy();
   expect(within(screen.getByRole('contentinfo')).getByText('Connecting the AI…, step 3 of 4')).toBeTruthy();
   expect(within(screen.getByRole('navigation')).getByText('Setting up, step 3 of 4')).toBeTruthy();
 });
@@ -262,10 +265,12 @@ test('removing the sign-in leaves the computer ready without claiming tests pass
   native('ready', { model: 'available', remove: 'hang' }); const user = userEvent.setup(); render(<App />); await openLocalSetup();
   const dots = () => [...document.querySelectorAll('.live-dot')].map(dot => dot.className.replace('live-dot', '').trim());
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  await screen.findByText('Connected', { selector: '.model-state .pill' });
+  await screen.findByText('Connected', { selector: '.steps-head .pill' });
   expect(dots()).toEqual(['ready']);
   expect(screen.queryByText('Passed', { selector: '.setup-progress .pill' })).toBeNull();
-  await user.click(screen.getByRole('button', { name: 'Remove sign-in' }));
+  await openLocalSetup(user);
+  await user.click(screen.getByRole('button', { name: 'Change' }));
+  await user.click(screen.getByRole('button', { name: 'Remove saved sign-in' }));
   await user.click(within(screen.getByRole('group', { name: 'Remove sign-in confirmation' })).getByRole('button', { name: 'Remove sign-in' }));
   await screen.findByText('Removing sign-in…');
   expect(dots()).toEqual(['ready']);

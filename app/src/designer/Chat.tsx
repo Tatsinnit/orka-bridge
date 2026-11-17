@@ -117,10 +117,10 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
   const snapshotError = snapshot?.state === 'contextUnavailable' && snapshot.error
     ? blocked ? `New conversation is unavailable: ${blocked}` : 'Use New conversation to continue without unconfirmed history.'
     : snapshot?.state === 'ready' && snapshot.error === 'connection'
-    ? 'The local cluster could not be reached. Check Clusters, then try sending again.'
+    ? 'The workspace could not be reached. Check Clusters, then try sending again.'
     : snapshot?.error ? chatErrors[snapshot.error] : undefined;
-  return <section className="chat-panel card" aria-label="Chat on local cluster">
-    <div className="chat-heading"><h2>Chat on local cluster</h2><Button type="button" kind="secondary" disabled={!canReset || !!command} title={blocked ?? (!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined)} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button></div>
+  return <section className="chat-panel card" aria-label="Chat on this computer">
+    <div className="chat-heading"><h2>Chat on this computer</h2><Button type="button" kind="secondary" disabled={!canReset || !!command} title={blocked ?? (!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined)} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button></div>
     <p className="muted">Talk to your saved agent. Chat does not run tests or change their results.</p>
     <section ref={transcript} className="chat-transcript" aria-label="Conversation">
       {!snapshot?.versions.some(version => version.turns.length) && <p className="muted">Ask your agent a question to start a conversation.</p>}
@@ -169,8 +169,8 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
     </form>
     <Disclosure className="card-details" label="About this conversation">
       <p>Your agent remembers up to 50 messages. Interrupted replies may not be remembered; tool activity is shown separately.</p>
-      <p>This view clears when you quit Bridge. Agents and transcripts remain in the local cluster; New conversation does not delete them.</p>
-      <p>Stop requests an end to the reply. A tool may still finish while you continue, and its effects are not undone. If the conversation cannot continue, start a new one. You may need to restart the local cluster if its history has changed elsewhere.</p>
+      <p>This view clears when you quit Bridge. Agents and transcripts remain in the workspace; New conversation does not delete them.</p>
+      <p>Stop requests an end to the reply. A tool may still finish while you continue, and its effects are not undone. If the conversation cannot continue, start a new one. You may need to restart the workspace if its history has changed elsewhere.</p>
     </Disclosure>
   </section>;
 }

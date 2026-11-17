@@ -4,7 +4,7 @@ import { isDocumentId } from './agent-api';
 export const chatStates = ['ready', 'preparing', 'working', 'waitingForInput', 'waitingForSession', 'observationLost', 'requestingStop', 'stopRequested', 'stopUnconfirmed', 'contextUnavailable'] as const;
 export const chatErrors = {
   invalidMessage: 'Write a shorter message before trying again.',
-  busy: 'The local cluster is busy. Wait for the current test or conversation, then try again.',
+  busy: 'The workspace is busy. Wait for the current test or conversation, then try again.',
   unsupportedTool: unsupportedToolMessage,
   source: 'Check your saved agent file before trying again.',
   model: 'Connect the AI in Clusters and check the model in your agent file.',
@@ -12,7 +12,7 @@ export const chatErrors = {
   identity: 'The conversation could not be verified. Start a new conversation when available.',
   response: 'The conversation could not be read. Reconnect to check what happened.',
   contextUnavailable: 'Earlier messages could not be confirmed. Start a new conversation when available.',
-  workspaceChanged: 'The local cluster changed. Your next message starts a new conversation.',
+  workspaceChanged: 'The workspace changed. Your next message starts a new conversation.',
   interrupted: 'The turn was interrupted. Execution may still be running.',
 } as const;
 export type ChatTurn = { message: string; answer: string | null; phase: string; tools: { name: string; callId: string; phase: string }[]; contextRetained: boolean; terminationUnconfirmed: boolean; stopUnconfirmed: boolean };

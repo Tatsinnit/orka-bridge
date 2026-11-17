@@ -2,7 +2,7 @@ import type { Status } from '../components/DesignSystem';
 import type { ModelState } from './Model';
 import { preflightRecovery } from './preflight-state';
 import { workspaceRecovery } from './recovery-info';
-import { formatSize } from './requirements';
+import { formatRequirementGB } from './requirements';
 import type { CheckStepState } from './Steps';
 import type { SetupStatus } from './state';
 
@@ -33,29 +33,29 @@ export function setupView(status: SetupStatus | undefined, { checking = false, s
     status: ({ busy: 'running', 'needs-you': 'needs-you', wait: 'not-started', ready: 'passed', bad: 'failed', stale: 'stale' } as const)[tone],
     action: done ? 'Manage' : step === 3 ? 'Connect the AI' : place === 'local' ? 'Continue setup' : 'Set up',
   });
-  if (!status) return checking ? view('checking', 0, 'Checking the local cluster…', 'Checking the local cluster…', 'busy') : view('unavailable', 0, 'Local cluster unavailable', 'Local cluster unavailable', 'needs-you');
+  if (!status) return checking ? view('checking', 0, 'Checking the workspace…', 'Checking the workspace…', 'busy') : view('unavailable', 0, 'Workspace unavailable', 'Workspace unavailable', 'needs-you');
   if (workspace) {
     const state = workspaceView(status, { stopping, starting });
     const result = view('local', 0, `Workspace ${state.word.toLowerCase()}`, state.detail, state.tone, status.localVm === 'ready');
     return { ...result, tabLine: `This computer, ${state.word.toLowerCase()}`, action: state.word === 'Stopped' && status.localVm === 'cancelled' ? 'Start' : 'Manage' };
   }
   const place = status.selected === 'localVm' ? 'local' : 'none';
-  if (status.localVm === 'notIntegrated') return view(place, 0, 'Local cluster unavailable', 'Local cluster unavailable', 'needs-you');
+  if (status.localVm === 'notIntegrated') return view(place, 0, 'Workspace unavailable', 'Workspace unavailable', 'needs-you');
   if (place === 'none') return view(place, 0, 'Choose where agents run', 'Choose where agents run', 'wait');
-  if (stopping) return view(place, status.localVm === 'ready' ? 4 : 0, 'Stopping the local cluster', 'Stopping the local cluster', 'busy', status.localVm === 'ready');
+  if (stopping) return view(place, status.localVm === 'ready' ? 4 : 0, 'Stopping the workspace', 'Stopping the workspace', 'busy', status.localVm === 'ready');
   switch (status.localVm) {
-    case 'starting': return view(place, 2, 'Starting the local cluster', 'Starting the local cluster', 'busy');
+    case 'starting': return view(place, 2, 'Starting the workspace', 'Starting the workspace', 'busy');
     case 'failed': {
       const line = status.preflightFailure ? preflightRecovery(status.preflightFailure).summary : 'Setup failed';
       return view(place, 2, line, status.preflightFailure ? line : workspaceRecovery(status.workspaceFailure).summary, 'bad');
     }
-    case 'closing': return view(place, 0, 'Stopping the local cluster', 'Stopping the local cluster', 'busy');
-    case 'closed': return view(place, 2, 'Local cluster stopped', 'Local cluster stopped', 'wait');
+    case 'closing': return view(place, 0, 'Stopping the workspace', 'Stopping the workspace', 'busy');
+    case 'closed': return view(place, 2, 'Workspace stopped', 'Workspace stopped', 'wait');
     case 'cancelled': return view(place, 2, 'Setup paused', 'Downloaded files are kept', 'wait');
     case 'idle': return view(place, 0, 'Not set up', 'Not set up', 'wait');
     case 'ready': {
-      if (status.model === 'locked') return view(place, 3, 'AI unavailable', 'AI connection unavailable', 'wait');
-      if (model === 'failed' || model === 'resetFailed' || model === 'removalFailed') return view(place, 3, 'AI needs attention', 'Check the AI connection in Clusters', 'bad');
+      if (status.model === 'locked') return view(place, 3, 'AI not connected', 'AI not connected', 'wait');
+      if (model === 'failed' || model === 'resetFailed' || model === 'removalFailed') return view(place, 3, 'AI not connected', 'The AI needs to be set up again', 'needs-you');
       if (model !== 'connected') {
         const detail = { resetting: 'Resetting the AI connection…', connecting: 'Connecting the AI…', removing: 'Removing the AI sign-in…', queued: 'AI queued', idle: 'Connect the AI' }[model];
         return view(place, 3, detail, detail, model === 'idle' ? 'needs-you' : model === 'queued' ? 'wait' : 'busy');
@@ -63,10 +63,10 @@ export function setupView(status: SetupStatus | undefined, { checking = false, s
       // Test evidence can need attention after setup; only the initial automatic run is a setup stage.
       const done = !initialAutomatic;
       const tone = check === 'failed' ? 'bad' : check === 'passed' ? 'ready' : check === 'running' ? 'busy' : check === 'stale' || check === 'unknown' ? 'stale' : initialAutomatic ? 'needs-you' : 'wait';
-      const line = !done ? 'Run your first agent' : check ? { passed: 'Local cluster ready', failed: 'Its test failed', running: 'Running test', stale: 'Tests need running', unknown: 'Test result unknown' }[check] : 'Local cluster ready';
+      const line = !done ? 'Run your first agent' : check ? { passed: 'Workspace ready', failed: 'Its test failed', running: 'Running test', stale: 'Tests need running', unknown: 'Test result unknown' }[check] : 'Workspace ready';
       return view(place, 4, line, 'AI connected', check || !done ? tone : 'ready', done);
     }
-    default: return view(place, 2, 'Getting the local cluster ready', 'Getting the local cluster ready', 'busy');
+    default: return view(place, 2, 'Getting the workspace ready', 'Getting the workspace ready', 'busy');
   }
 }
 
@@ -85,7 +85,7 @@ export function infraProgress(status: SetupStatus): Infra | null {
   const remaining = progress?.phase === 'materializing' ? progress.remainingMs : null;
   if (bytes === null || total === null) return { value: null };
   return {
-    value: bytes / total, text: `Installing, ${formatSize(bytes)} of ${formatSize(total)}`,
+    value: bytes / total, text: `Downloading, ${formatRequirementGB(bytes).replace(' GB', '')} of ${formatRequirementGB(total)}`,
     remaining: remaining !== null && remaining > 0 ? `${plural(Math.ceil(remaining / 1000), 'second')} left` : undefined,
   };
 }

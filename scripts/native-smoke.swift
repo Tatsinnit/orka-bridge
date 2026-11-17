@@ -572,7 +572,7 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
                     "Local setup choice lost its step counter or Continue")
         }
         if !welcome {
-            require(!nativeTextIsVisible("Local cluster setup is not included in this build. Nothing will be downloaded or started."),
+            require(!nativeTextIsVisible("Workspace setup is not included in this build. Nothing will be downloaded or started."),
                     "Supported release still reports setup unavailable")
         }
         if ["places-empty", "places-after-form", "places-local", "places-retained"].contains(name) {
@@ -712,7 +712,7 @@ for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum",
     try capture("welcome-\(size)-end", "Clusters")
     require(visibleButtons("Get started").count == 1 && nativeTextIsVisible("About 5 minutes, mostly a download"),
             "Welcome next action and time cue must remain reachable at \(size)")
-    require(nativeStrings().contains { $0.contains("Team clusters are early in this preview.") }, "Welcome lost the team-cluster preview caveat")
+    require(nativeStrings().contains { $0.contains("Send it to your team's cluster (preview).") }, "Welcome lost the team-cluster preview caveat")
     requireNoLocalWorkspace()
 }
 setContent(1280, 800)
@@ -845,7 +845,7 @@ require(!retained.contains { $0.topCandidates(1).first?.string == "Get started" 
         "Restart must retain welcome dismissal without starting a workspace")
 clickTab("Overview", retained)
 let overview = try capture("overview", "Overview")
-require(nativeTextIsVisible("This local cluster can't list its agents yet."),
+require(nativeTextIsVisible("This workspace can't list its agents yet."),
         "Overview must explain the source-inferred old Mac image limit")
 require(!visibleButtons("Open web-reader").isEmpty && nativeTextIsVisible("web-reader"),
         "Overview must show the saved file opened through the native Designer")

@@ -19,11 +19,12 @@ test('a provider change request on a saved sign-in opens the same removal confir
   fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   await screen.findByText(/^Connected$/);
   view.rerender(<Model enabled changeRequest={1} />);
-  expect(screen.getByRole('group', { name: 'Remove sign-in confirmation' })).toBeTruthy();
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByRole('group', { name: 'Change the AI' })).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove saved sign-in' }));
   expect(removals()).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Remove saved sign-in' }));
   fireEvent.click(screen.getByRole('button', { name: 'Remove sign-in' }));
-  await screen.findByText(/no longer has a saved sign-in/);
+  await screen.findByText('Saved sign-in removed.');
   expect(removals()).toHaveLength(1);
   expect(screen.getByRole('radio', { name: /Your own API key/ })).toBeTruthy();
 });
@@ -53,13 +54,17 @@ test('a hidden card never takes focus for a change request', () => {
   expect(document.activeElement).toBe(document.body);
 });
 
-test('Change confirms before removing the saved key', async () => {
+test('Change opens a panel before the saved key removal confirmation', async () => {
   invoke.mockResolvedValueOnce({ ready: true, connection: anthropic });
   render(<Model enabled />);
   fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
   const change = await screen.findByRole('button', { name: 'Change' });
   change.focus(); fireEvent.click(change);
   expect(removals()).toHaveLength(0);
+  expect(screen.queryByRole('group', { name: 'Remove key confirmation' })).toBeNull();
+  const remove = screen.getByRole('button', { name: 'Remove saved key' });
+  expect(remove.closest('[aria-label="Change the AI"]')).toBeTruthy();
+  remove.focus(); fireEvent.click(remove);
   expect(screen.getByRole('group', { name: 'Remove key confirmation' })).toBeTruthy();
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }));
   invoke.mockResolvedValue({ ready: false });

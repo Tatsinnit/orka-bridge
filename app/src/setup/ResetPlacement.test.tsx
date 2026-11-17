@@ -25,8 +25,8 @@ test('AI recovery stays usable after Stop and restart without claiming a stoppin
   mockIPC(ipc); const user = userEvent.setup(); render(<Setup onOpenExample={() => {}} />);
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  await screen.findByText('Your workspace is running. Nothing is lost.');
-  await user.click(screen.getByRole('button', { name: 'Stop the local cluster' }));
+  await screen.findByRole('region', { name: 'Saved AI connection' });
+  await user.click(screen.getByRole('button', { name: 'Stop the workspace' }));
   await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
   expect(screen.getByText('Stopping', { selector: '.pill' })).toBeTruthy();
   expect(screen.queryByText('Your workspace is running. Nothing is lost.')).toBeNull();
@@ -59,7 +59,7 @@ test.each(['stay', 'navigate'])('AI recovery keeps reset completion visible afte
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   expect(await screen.findByRole('heading', { level: 1, name: 'This computer' })).toBeTruthy();
   expect(screen.getByText("The AI couldn't connect", { selector: 'p' })).toBeTruthy();
-  const row = screen.getByText('Choose the AI your agent uses').closest('li')!;
+  const row = screen.getByText('Connect the AI', { selector: 'li b' }).closest('li')!;
   expect(within(row).getByRole('button', { name: 'Reset AI connection' })).toBeTruthy();
   expect(screen.getByText('Your workspace is ready on this computer.')).toBeTruthy();
   await user.click(within(row).getByRole('button', { name: 'Show details' }));
@@ -67,11 +67,13 @@ test.each(['stay', 'navigate'])('AI recovery keeps reset completion visible afte
   const place = screen.getByRole('region', { name: 'This computer' });
   expect(within(place).getByRole('button', { name: 'Reset AI connection' })).toBeTruthy();
   expect(within(place).getByRole('button', { name: 'Hide details' })).toBeTruthy();
-  expect(within(place).getByText('Workspace running')).toBeTruthy();
+  expect(within(place).getByText('The AI needs to be set up again')).toBeTruthy();
+  expect(within(place).getByText('Needs you', { selector: '.pill' })).toBeTruthy();
+  expect(place.querySelectorAll('.button-primary')).toHaveLength(1);
   await user.click(within(place).getByRole('button', { name: 'Reset AI connection' }));
   await user.click(within(place).getByRole('button', { name: 'Reset' }));
   if (destination === 'navigate') {
-    await user.click(within(place).getByRole('button', { name: 'Connect the AI' }));
+    await user.click(within(place).getByRole('button', { name: 'View workspace' }));
     screen.getByRole('heading', { level: 1 }).focus();
   }
   const focused = document.activeElement;
