@@ -727,6 +727,21 @@ impl<'a> NativeRunner<'a> {
             }
         }
         self.checked(agent, deadline, stop).await?;
+        if !finished_only {
+            // A missing receipt is not evidence that a Task was never created.
+            for case in handle.pair.cases().iter().skip(handle.tasks.len()) {
+                cases.push(CaseReport {
+                    id: case.id.clone(),
+                    title: case.title.clone(),
+                    question: case.input().into(),
+                    phase: "Unacknowledged".into(),
+                    answer: None,
+                    completed_tools: Vec::new(),
+                    assertions: case.unevaluated(),
+                    verdict: Verdict::Unknown,
+                });
+            }
+        }
         let verdict = if cases.iter().any(|c| c.verdict == Verdict::Cancelled) {
             Verdict::Cancelled
         } else if cases.len() == handle.pair.cases().len() {

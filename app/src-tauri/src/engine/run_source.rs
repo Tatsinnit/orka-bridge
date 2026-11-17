@@ -273,42 +273,72 @@ fn supported_builtin(name: &str) -> bool {
     )
 }
 
+fn fence(line: &str) -> Option<(u8, usize, &str)> {
+    let character = *line.as_bytes().first()?;
+    if !matches!(character, b'`' | b'~') {
+        return None;
+    }
+    let length = line.bytes().take_while(|byte| *byte == character).count();
+    let info = (length >= 3).then_some(&line[length..])?;
+    (character != b'`' || !info.contains('`')).then_some((character, length, info))
+}
+
+fn fence_indent(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'..='\u{000d}'
+            | '\u{0020}'
+            | '\u{0085}'
+            | '\u{00a0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    )
+}
+
 /// Fence recognition is separate from case YAML decoding. Noncanonical test
 /// fences are refused, never silently dropped beside a valid case.
 fn test_blocks(body: &str) -> Result<Vec<RunCase>, ErrorKind> {
     let mut cases = Vec::new();
-    let mut fence: Option<(u8, usize)> = None;
+    let mut ordinary: Option<(u8, usize)> = None;
     let mut block: Option<String> = None;
     for line in body.split_inclusive('\n') {
         let marker = line.trim_end_matches(['\r', '\n']);
-        let trimmed = marker.trim_start_matches([' ', '\t']);
-        let first = trimmed.as_bytes().first().copied();
-        let candidate = first.filter(|c| matches!(c, b'`' | b'~')).and_then(|c| {
-            let count = trimmed.bytes().take_while(|b| *b == c).count();
-            (count >= 3).then_some((c, count, &trimmed[count..]))
-        });
-        if let Some((character, length)) = fence {
-            if candidate
-                .is_some_and(|(c, n, rest)| c == character && n >= length && rest.trim().is_empty())
-            {
-                if let Some(text) = block.take() {
-                    cases.push(yaml(&text)?);
-                }
-                fence = None;
-            } else if let Some(text) = &mut block {
+        if let Some(text) = &mut block {
+            if marker == "```" {
+                cases.push(yaml(&block.take().ok_or(ErrorKind::Source)?)?);
+            } else {
                 text.push_str(line);
             }
-        } else if let Some((character, length, info)) = candidate {
-            if info.contains("agent-test") {
-                if marker != "```yaml agent-test" {
-                    return Err(ErrorKind::Source);
-                }
-                block = Some(String::new());
+            continue;
+        }
+        if let Some((character, length)) = ordinary {
+            if fence(marker).is_some_and(|(candidate, count, rest)| {
+                candidate == character && count >= length && rest.chars().all(fence_indent)
+            }) {
+                ordinary = None;
             }
-            fence = Some((character, length));
+            continue;
+        }
+        if marker == "```yaml agent-test" {
+            block = Some(String::new());
+            continue;
+        }
+        if fence(marker.trim_start_matches(fence_indent))
+            .is_some_and(|(_, _, info)| info.contains("agent-test"))
+        {
+            return Err(ErrorKind::Source);
+        }
+        if let Some((character, length, _)) = fence(marker) {
+            ordinary = Some((character, length));
         }
     }
-    if fence.is_some() || cases.is_empty() || cases.len() > 32 {
+    if block.is_some() || ordinary.is_some() || cases.is_empty() || cases.len() > 32 {
         return Err(ErrorKind::Source);
     }
     Ok(cases)
@@ -322,30 +352,7 @@ impl ParsedPair {
         if tests_header.schema_version != 1 {
             return Err(ErrorKind::Source);
         }
-        let mut cases: Vec<RunCase> = Vec::new();
-        let mut block = None;
-        let mut other_fence = false;
-        for line in body.split_inclusive('\n') {
-            let marker = line.trim_end_matches(['\r', '\n']);
-            if marker == "```yaml agent-test" && !other_fence {
-                if block.is_some() {
-                    return Err(ErrorKind::Source);
-                }
-                block = Some(String::new());
-            } else if marker == "```" && block.is_some() {
-                cases.push(yaml(&block.take().ok_or(ErrorKind::Source)?)?);
-            } else if let Some(text) = &mut block {
-                text.push_str(line);
-            } else if marker.starts_with("```") {
-                if marker.contains("agent-test") {
-                    return Err(ErrorKind::Source);
-                }
-                other_fence = !other_fence;
-            }
-        }
-        if block.is_some() || cases.is_empty() || cases.len() > 32 {
-            return Err(ErrorKind::Source);
-        }
+        let cases = test_blocks(body)?;
         let mut ids = HashSet::new();
         for case in &cases {
             if case
@@ -425,7 +432,10 @@ impl ParsedAgent {
         }
         let mut tools = Vec::new();
         for tool in &agent.kmx.tools {
-            if !present(&tool.name) || tools.contains(&tool.name) {
+            if !present(&tool.name)
+                || tools.contains(&tool.name)
+                || tool.kind == ToolKind::Builtin && !supported_builtin(&tool.name)
+            {
                 return Err(ErrorKind::Source);
             }
             tools.push(tool.name.clone());

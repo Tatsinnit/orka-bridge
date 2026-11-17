@@ -19,8 +19,9 @@ working flow rather than introduce another execution framework.
 
 Native Run accepts a top-level opening line exactly <code>```yaml agent-test</code>.
 Each block decodes as one case using the existing closed YAML schema. Closing
-fences use backticks of at least the opening length, with optional surrounding
-whitespace. A missing test closing fence refuses the source.
+fences are exactly three backticks at the top level. Indented backticks inside
+YAML block scalars remain test input. A missing test closing fence refuses the
+source.
 
 Indented, tilde, longer-opening and other noncanonical `agent-test` fences are
 rejected before any Agent or Task is submitted, including when a valid case
@@ -28,11 +29,13 @@ appears elsewhere in the file. This is intentionally a small supported source
 format, not a second general Markdown implementation. Authors can move the test
 to the canonical fence without changing its YAML.
 
-Ordinary Markdown code examples are tracked by delimiter character and opening
-length. An apparent test inside an example is inert; a shorter or different
-delimiter does not close that example. Fence recognition and case YAML decoding
-are separate helpers so Markdown delimiters cannot become execution policy.
-Unclosed example fences also refuse the source rather than hiding later tests.
+Top-level ordinary Markdown code examples are tracked by delimiter character
+and opening length. An apparent test inside an example is inert; a shorter or
+different delimiter does not close that example. Backtick spans on one line and
+list-indented examples are prose for this deliberately narrow scanner, so their
+closers cannot hide a later test. Fence recognition and case YAML decoding are
+separate helpers so Markdown delimiters cannot become execution policy. Unclosed
+top-level example fences also refuse the source rather than hiding later tests.
 
 ## Builtin names: classification before mutation
 
@@ -42,11 +45,12 @@ fall through to an otherwise authorized custom Tool when an Agent is created.
 
 The explicit native catalogue follows `KnownBuiltInToolNames` (default registry,
 chat and coordination names) at Orka source
-[`7916cd1c`](https://github.com/orka-agents/orka/blob/7916cd1c8c083ade6b10df6ba408f854d930190c/internal/tools/registry.go),
+[`3cb1f0df`](https://github.com/orka-agents/orka/blob/3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea/internal/tools/registry.go),
 with coordination names in
-[`internal/aitools/resolver.go`](https://github.com/orka-agents/orka/blob/7916cd1c8c083ade6b10df6ba408f854d930190c/internal/aitools/resolver.go).
+[`internal/aitools/resolver.go`](https://github.com/orka-agents/orka/blob/3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea/internal/aitools/resolver.go).
 Review this catalogue when changing supported Orka versions. New builtins remain
-unsupported until reviewed; custom and MCP tools need their own source mapping.
+unsupported until reviewed. A declaration using `kind: tool` remains a distinct
+custom Tool resource and is checked through the existing target catalogue path.
 
 This check classifies source intent, not target availability or authorization.
 Orka and the existing connection/permission checks still decide what the target
@@ -57,13 +61,17 @@ credential path is needed for this correction.
 
 Submission may acknowledge an Agent and only some of its Tasks. Observation
 reads those receipts only; an uncertain write is never retried or looked up by
-an unacknowledged name. The report includes each missing case as
+an unacknowledged name. When a caller explicitly observes the retained handle
+on a still-usable transport, the native report includes each missing case as
 `Unacknowledged`, with no answer/tool evidence and unknown assertions/verdict.
-That phase does not assert that the remote Task is absent or cancelled.
+That phase does not assert that the remote Task is absent or cancelled. An app
+owner whose transport was retired by the submission failure keeps its existing
+unknown submit error and no report rather than inventing observations.
 
 Use the existing aggregation rule for the complete case list:
 
-- Any known failed case makes the run verdict failed.
+- An observed cancellation retains the existing cancelled verdict.
+- Otherwise, any known failed case makes the run verdict failed.
 - Otherwise, any unknown case makes the run verdict unknown.
 - Passed requires every case to be passed.
 
@@ -74,33 +82,15 @@ not add automatic observation recovery or remote cancellation.
 ## Verification
 
 `app/src-tauri/tests/native_run.rs` covers noncanonical fences beside valid
-cases, nested Markdown examples, exact builtin names, and a real loopback HTTP
-submission that loses the second Task reply. The latter observes the retained
-first Task across failed, cancelled, assertion-failed, passed and missing-answer
-outcomes, and checks that observation performs only reads of acknowledged
-resources. These are native runner tests, not evidence of a live model/VM run.
+cases, nested Markdown examples, inline spans, list-indented examples, YAML
+literal backticks, exact builtin names, and a deterministic transport that loses
+the second Task reply. The latter observes the retained first Task across
+failed, cancelled, assertion-failed, passed and missing-answer outcomes, and
+checks that observation performs only reads of acknowledged resources. These
+are native runner tests, not evidence of a live model/VM run.
 `tests/example_run.rs` additionally exercises the saved-file app owner through
 the VM protocol fixture: an unknown builtin refuses before any remote write and
 leaves the client usable.
-
-### Local verification record
-
-Verified on Apple silicon with Node 26.5.0, npm 11.17.0 and Rust 1.98.1:
-
-- Frontend install, lint, all 179 tests and production build passed.
-- All release integration-test targets passed, including 26 native Run tests,
-  11 example Run tests, source capture and cluster transport tests.
-- Debug engine, native Run, example Run and image-profile tests passed.
-- Rust formatting, debug/release all-target clippy and release doc-tests passed.
-- The production frontend dependency audit found no vulnerabilities. The full
-  audit reported the existing moderate development-only minimatch dependency chain.
-
-The full release test command stopped in the library suite: 192 passed, three
-failed and one was ignored. The unchanged base `ce154b4` reproduced all three
-failures with the same errors: the Apple identifier helper's 100 ms timeout,
-credential capture returning `Failed`, and the nonzero credential fixture not
-executing. Their cause is not established by this work; the successful
-integration suites do not replace that failed library result.
 
 No live-model/VM or native UI walk was performed for these edge cases. Report
 presentation continues through the existing renderer; the new missing-case

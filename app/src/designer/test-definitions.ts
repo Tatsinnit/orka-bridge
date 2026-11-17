@@ -17,8 +17,33 @@ function yaml(source: string, strings = false): unknown {
 export function isTestDraft(source: string): boolean {
   return /^---\nschemaVersion: 1\n---\n\n# [a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])? tests\n\n```yaml agent-test\nid: first-test\ninput: ""\nassertions: \[\]\n```\n$/u.test(source.replaceAll('\r\n', '\n'));
 }
+type Fence = { character: '`' | '~'; length: number; info: string };
+function fence(line: string): Fence | undefined {
+  const character = line[0];
+  if (character !== '`' && character !== '~') return undefined;
+  let length = 0;
+  while (line[length] === character) length += 1;
+  if (length < 3) return undefined;
+  const info = line.slice(length);
+  if (character === '`' && info.includes('`')) return undefined;
+  return { character, length, info };
+}
+function fenceWhitespace(character: string): boolean {
+  const code = character.codePointAt(0);
+  return code !== undefined && (code >= 0x0009 && code <= 0x000d || code === 0x0020 || code === 0x0085
+    || code === 0x00a0 || code === 0x1680 || code >= 0x2000 && code <= 0x200a || code === 0x2028
+    || code === 0x2029 || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff);
+}
+function withoutFenceIndent(line: string): string {
+  let offset = 0;
+  for (const character of line) {
+    if (!fenceWhitespace(character)) break;
+    offset += character.length;
+  }
+  return line.slice(offset);
+}
 // Descriptive only: native Run still validates/captures the saved pair before execution.
-// Keep fence recognition identical to engine/run_source.rs, including other_fence.
+// Keep fence recognition identical to engine/run_source.rs.
 export function testDefinitions(source: string): TestDefinition[] | undefined {
   if (new TextEncoder().encode(source).length > 1048576) return undefined;
   try {
@@ -30,13 +55,11 @@ export function testDefinitions(source: string): TestDefinition[] | undefined {
     if (!object(header) || header.schemaVersion !== 1 || Object.keys(header).length !== 1) return undefined;
     const cases: TestDefinition[] = [];
     const ids = new Set<string>();
-    let block: string[] | undefined, otherFence = false;
+    let block: string[] | undefined, ordinary: Fence | undefined;
     for (const line of lines) {
-      if (line === '```yaml agent-test' && !otherFence) {
-        if (block) return undefined;
-        block = [];
-      } else if (line === '```' && block) {
-        const caseSource = block.join('\n'); block = undefined;
+      if (block) {
+        if (line !== '```') { block.push(line); continue; }
+        const caseSource = block.join('\n') + '\n'; block = undefined;
         // Case id/input retain scalar spelling; titles and buffered assertions stay typed.
         const value = yaml(caseSource);
         const strings = yaml(caseSource, true);
@@ -55,12 +78,17 @@ export function testDefinitions(source: string): TestDefinition[] | undefined {
         ids.add(strings.id);
         cases.push({ id: strings.id, question: strings.input, ...('title' in value ? { title: value.title as string } : {}) });
         if (cases.length > 32) return undefined;
-      } else if (block) block.push(line);
-      else if (line.startsWith('```')) {
-        if (line.includes('agent-test')) return undefined;
-        otherFence = !otherFence;
+        continue;
       }
+      if (ordinary) {
+        const close = fence(line);
+        if (close?.character === ordinary.character && close.length >= ordinary.length && [...close.info].every(fenceWhitespace)) ordinary = undefined;
+        continue;
+      }
+      if (line === '```yaml agent-test') { block = []; continue; }
+      if (fence(withoutFenceIndent(line))?.info.includes('agent-test')) return undefined;
+      ordinary = fence(line);
     }
-    return !block && cases.length ? cases : undefined;
+    return !block && !ordinary && cases.length ? cases : undefined;
   } catch { return undefined; }
 }
