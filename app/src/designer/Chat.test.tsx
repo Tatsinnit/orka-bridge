@@ -23,6 +23,18 @@ async function poll() { await act(async () => { await vi.advanceTimersByTimeAsyn
 function field() { return screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement; }
 function enter(value = 'Hello') { fireEvent.change(field(), { target: { value } }); field().focus(); fireEvent.keyDown(field(), { key: 'Enter' }); }
 const sends = () => calls.filter(c => c.command === 'agent_chat_send');
+test('Chat names this computer, explains test independence and numbers only multiple conversations', async () => {
+  snapshot = { ...idle, versions: [{ turns: [turn] }] };
+  await open();
+  expect(screen.getByRole('region', { name: 'Chat on this computer' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Chat on this computer' })).toBeTruthy();
+  expect(screen.getByText("Chat doesn't change test results.")).toBeTruthy();
+  expect(screen.queryByText('Conversation 1')).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Conversation 1' })).toBeNull();
+  snapshot = { ...idle, versions: [{ turns: [turn] }, { turns: [] }] }; await poll();
+  expect(screen.getByRole('heading', { name: 'Conversation 1' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Conversation 2' })).toBeTruthy();
+});
 test('empty Chat teaches the next action and discloses bounded, memory-only history', async () => {
   await open(); expect(screen.getByText(/Ask your agent a question/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Send message' }).hasAttribute('disabled')).toBe(true);

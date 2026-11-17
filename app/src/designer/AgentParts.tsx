@@ -6,15 +6,13 @@ import { SAMPLE_DOCUMENT_ID } from './agent-api';
 import { addTool, changeDescription, changeInstructions, changeModel, changeSoulInline, changeSoulReference, readForm, removeTool } from './agent-form';
 import { builtInToolDescriptions, builtInTools, unsupportedLocalTool, unsupportedLocalToolReason, unsupportedToolWarning } from './built-in-tools';
 import FileLocation from './FileLocation';
+import { modelLabel } from './model-label';
 
 function Unavailable({ label, reason, children, focusRef }: { label: string; reason: string; children: ReactNode; focusRef?: Ref<HTMLSpanElement> }) {
   return <span ref={focusRef} className="coming-control" tabIndex={0} role="group" aria-label={`${label}: ${reason}`} title={reason}>
     {children}<span className="control-tip" aria-hidden="true">{reason}</span>
   </span>;
 }
-// Display-only names. Values, saved source and emitted IDs always remain the catalog ID; the catalog supplies no provider, so none is claimed.
-const modelNames: Record<string, string> = { 'gpt-5.6-terra': 'GPT-5.6 Terra' };
-const modelLabel = (id: string) => Object.hasOwn(modelNames, id) ? modelNames[id] : id;
 function toolDescription(tool: CatalogTool): string {
   return tool.kind === 'builtin' && Object.hasOwn(builtInToolDescriptions, tool.name) ? builtInToolDescriptions[tool.name] : tool.description;
 }

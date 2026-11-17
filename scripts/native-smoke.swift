@@ -173,6 +173,15 @@ func nativeElements(_ root: AXUIElement? = nil) -> [AXUIElement] {
     }
     return nodes
 }
+func nativeRegion(_ name: String) -> AXUIElement {
+    let matches = nativeElements().filter { element in
+        attribute(element, "AXRole") as? String == "AXGroup"
+            && attribute(element, "AXSubrole") as? String == "AXLandmarkRegion"
+            && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == name }
+    }
+    require(matches.count == 1, "Expected one named native region \(name), found \(matches.count)")
+    return matches[0]
+}
 func nativeBounds(_ element: AXUIElement) -> CGRect? {
     guard let position = attribute(element, "AXPosition"), CFGetTypeID(position) == AXValueGetTypeID(),
         let size = attribute(element, "AXSize"), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
@@ -193,14 +202,15 @@ func clickDesignerView(_ name: String) {
     Thread.sleep(forTimeInterval: 0.3)
 }
 // Places actions are native buttons; a row action may carry the row name after its verb.
-func nativeButtons(_ label: String) -> [AXUIElement] {
-    nativeElements().filter { element in
+func nativeButtons(_ label: String, root: AXUIElement? = nil) -> [AXUIElement] {
+    nativeElements(root).filter { element in
         guard let role = attribute(element, "AXRole") as? String else { return false }
         // WebKit exposes the context's aria-haspopup trigger as a popup button.
         return (role == "AXButton" || label == "kubectl context" && role == "AXPopUpButton")
             && ["AXTitle", "AXDescription"].contains { key in
                 guard let value = attribute(element, key) as? String else { return false }
                 return value == label || value.hasPrefix(label + " ")
+                    || ["published-checksum", "has-a-date"].contains(label) && value.contains(label)
             }
     }
 }
@@ -238,13 +248,13 @@ func nativeStrings() -> [String] {
         ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
     }
 }
-func nativeTextBounds(_ expected: String, heading: Bool = false, visibleOnly: Bool = true, exact: Bool = false) -> [CGRect] {
+func nativeTextBounds(_ expected: String, heading: Bool = false, visibleOnly: Bool = true, exact: Bool = false, root: AXUIElement? = nil) -> [CGRect] {
     guard window() != nil else { return [] }
     // Use the same native viewport as controls: compact tabs are shorter than wide tabs.
     // Below-the-fold bounds can guide scrolling, but never prove visibility.
     let body = bodyBounds()
     var matches: [CGRect] = []
-    for element in nativeElements() {
+    for element in nativeElements(root) {
         guard let role = attribute(element, "AXRole") as? String else { continue }
         if ["AXStaticText", "AXHeading", "AXDisclosureTriangle"].contains(role) && (!heading || role == "AXHeading") {
             let values = ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
@@ -624,11 +634,37 @@ func setContent(_ width: CGFloat, _ height: CGFloat) {
     Thread.sleep(forTimeInterval: 0.5)
     require(abs(window()!.1.width - size.width) < 3 && abs(window()!.1.height - size.height) < 3, "Native \(width)x\(height) content area not verified")
 }
-func clickSendControl(_ label: String, scrolling pixels: Int32) throws {
-    if label == "Check again", nativeButtons(label).allSatisfy({ nativeBounds($0).map { $0.width <= 1 || $0.height <= 1 } ?? true }),
-        nativeStrings().contains(where: { $0.contains("Destination ready") }) {
-        // Ready checks are collapsed. Open the real disclosure before asking for its refresh control.
-        try clickSendControl("Destination ready", scrolling: pixels)
+func ocrBounds(_ observation: VNRecognizedTextObservation, in frame: CGRect) -> CGRect {
+    let box = observation.boundingBox
+    return CGRect(x: frame.minX + box.minX * frame.width, y: frame.minY + (1 - box.maxY) * frame.height,
+                  width: box.width * frame.width, height: box.height * frame.height)
+}
+func uniqueOCRTarget(_ boxes: [CGRect], within viewport: CGRect) -> CGRect? {
+    let matches = boxes.filter { viewport.contains($0) }
+    guard let first = matches.first else { return nil }
+    return matches.allSatisfy({ $0 == first }) ? first : nil
+}
+// Exercise the exact native selection gate, including the duplicate local/history identity.
+do {
+    let viewport = CGRect(x: 0, y: 0, width: 100, height: 100)
+    let one = CGRect(x: 10, y: 10, width: 20, height: 10)
+    let other = CGRect(x: 10, y: 50, width: 20, height: 10)
+    let outside = CGRect(x: 120, y: 10, width: 20, height: 10)
+    require(uniqueOCRTarget([one], within: viewport) == one, "OCR preserves one in-region target")
+    require(uniqueOCRTarget([outside, one], within: viewport) == one, "OCR excludes outside-region duplicates")
+    require(uniqueOCRTarget([one, other], within: viewport) == nil, "OCR rejects distinct in-region targets")
+    let overlap = CGRect(x: 15, y: 10, width: 20, height: 10)
+    require(uniqueOCRTarget([one, overlap], within: viewport) == nil, "OCR rejects partial-overlap targets")
+    require(uniqueOCRTarget([one, one], within: viewport) == one, "OCR coalesces one repeated hit region")
+    require(uniqueOCRTarget([outside], within: viewport) == nil, "OCR rejects outside-region targets")
+}
+func clickSendControl(_ label: String, scrolling pixels: Int32, region: String? = "Send and cluster tests") throws {
+    let root = region.map { nativeRegion($0) }
+    if ["Check again", "Send as a separate agent", "See in Overview", "Run cluster tests again", "Send and run tests", "Update agent and run tests"].contains(label),
+        nativeButtons(label, root: root).allSatisfy({ nativeBounds($0).map { $0.width <= 1 || $0.height <= 1 } ?? true }) {
+        // Extra actions now live in the existing resources disclosure. Open it
+        // explicitly rather than clicking a hidden control or emulating layout.
+        try clickSendControl("Details", scrolling: pixels, region: region)
     }
     // Disabling Start during IPC can reset WebKit's keyboard focus. Locate the
     // real control after each state transition instead of counting Tab stops.
@@ -637,7 +673,9 @@ func clickSendControl(_ label: String, scrolling pixels: Int32) throws {
     for _ in 0..<4 {
         // A state capture may leave the card header above the viewport. Locate
         // its actual button instead of searching only in the caller's direction.
-        let buttons = nativeButtons(label)
+        let buttons = label == "Details" ? nativeButtons(label, root: root).filter { element in
+            ["AXTitle", "AXDescription"].contains { (attribute(element, $0) as? String)?.contains("Resources and file hashes") == true }
+        } : nativeButtons(label, root: root)
         if buttons.count == 1, let bounds = nativeBounds(buttons[0]), !bodyBounds().contains(bounds) {
             scrollMain(Int32((bodyBounds().minY + 32 - bounds.minY).rounded()))
         }
@@ -652,17 +690,32 @@ func clickSendControl(_ label: String, scrolling pixels: Int32) throws {
         }
         let seen = try capture("send-probe", "Designer", searching: true)
         observed = seen.compactMap { $0.topCandidates(1).first?.string }
+        let frame = window()!.1
+        let viewport: CGRect?
+        if let root {
+            guard let bounds = nativeBounds(root) else { fail("Native OCR click region has no bounds: \(region ?? "")") }
+            viewport = bounds.intersection(bodyBounds())
+        } else { viewport = nil }
+        let scopedSeen = seen.filter { viewport?.contains(ocrBounds($0, in: frame)) ?? true }
         // Vision includes the native disclosure triangle as a bullet in this label.
-        if let control = observed.first(where: { $0 == label || (label == "published-checksum" && $0.range(of: #"^\W*published-checksum\b"#, options: [.regularExpression, .caseInsensitive]) != nil) || (label == "Details" && $0.lowercased().range(of: #"^\W*details\b"#, options: .regularExpression) != nil) || (label == "Destination ready" && $0.range(of: #"^\W*Destination ready\b"#, options: .regularExpression) != nil) }) {
+        let matches = scopedSeen.filter { observation in
+            guard let text = observation.topCandidates(1).first?.string else { return false }
+            return text == label || (label == "published-checksum" && text.range(of: #"published-checksum\b"#, options: [.regularExpression, .caseInsensitive]) != nil) || (label == "Details" && text.lowercased().range(of: #"^\W*details\b"#, options: .regularExpression) != nil) || (label == "Destination ready" && text.range(of: #"^\W*Destination ready\b"#, options: .regularExpression) != nil)
+        }
+        if let target = matches.first, let control = target.topCandidates(1).first?.string {
+            if let viewport {
+                require(uniqueOCRTarget(matches.map { ocrBounds($0, in: frame) }, within: viewport) != nil,
+                        "Ambiguous native OCR control in \(region ?? ""): \(label)")
+            }
             if ["Send and run tests", "Update agent and run tests", "Run cluster tests again", "Send as a separate agent", "Cancel tests", "Retry cancellation", "Check cluster status", "Check again", "Reload saved files", "Send to a cluster", "See in Overview"].contains(label) {
-                let enabled = nativeElements().contains { element in
+                let enabled = nativeElements(root).contains { element in
                     attribute(element, "AXRole") as? String == "AXButton"
                         && attribute(element, "AXEnabled") as? Bool == true
                         && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == label })
                 }
                 if !enabled { disabled = true; Thread.sleep(forTimeInterval: 0.3); continue }
             }
-            clickText(control, in: seen)
+            clickText(control, in: [target])
             return
         }
         scrollMain(pixels)
@@ -1093,11 +1146,27 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     }
     @discardableResult
     func capturePreflight(_ name: String, _ expected: String, anchor: String? = nil,
-                          requiring: (([VNRecognizedTextObservation]) -> Bool)? = nil) throws -> [VNRecognizedTextObservation] {
+                          region: String = "Send and cluster tests", requiring: (([VNRecognizedTextObservation]) -> Bool)? = nil) throws -> [VNRecognizedTextObservation] {
         for _ in 0..<8 {
             // Preserve a visible transient state before doing any search work.
             let seen = try capture("send-probe", "Designer", searching: true)
-            let text = seen.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
+            let root = nativeRegion(region)
+            guard let bounds = nativeBounds(root), let frame = window()?.1 else {
+                fail("Native result region has no capture bounds: \(region)")
+            }
+            let viewport = bounds.intersection(bodyBounds())
+            // Select evidence from this frozen frame, not matching local tests elsewhere in the window.
+            let scopedSeen = seen.filter { observation in
+                let box = observation.boundingBox
+                let textBounds = CGRect(x: frame.minX + box.minX * frame.width,
+                    y: frame.minY + (1 - box.maxY) * frame.height,
+                    width: box.width * frame.width, height: box.height * frame.height)
+                return viewport.contains(textBounds)
+            }
+            // Code tokens can wrap after a hyphen; do not insert an OCR-only space inside the ID.
+            let text = scopedSeen.compactMap { $0.topCandidates(1).first?.string }.reduce("") { text, line in
+                text + (text.isEmpty || text.hasSuffix("-") ? "" : " ") + line
+            }
             // Section labels are uppercased; Vision also varies casing in the fixed fixture ID.
             // Require Send context in this same captured frame, never later accessibility state.
             if text.localizedCaseInsensitiveContains(expected) && sendFrameVisible(seen) && (requiring?(seen) ?? true) {
@@ -1116,25 +1185,49 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
             // Anchor missing text in either direction, away from fixed chrome.
             // Prefer rendered text over a 1px screen-reader announcement.
             // An explicit anchor is an exact label: the editor's longer storage note is not saved-result provenance.
-            if let anchor = nativeTextBounds(anchor ?? expected, visibleOnly: false, exact: anchor != nil)
+            // Titles/IDs also occur in local Designer tests; anchor only the named result region.
+            let textAnchor = nativeTextBounds(anchor ?? expected, visibleOnly: false, exact: anchor != nil, root: root)
                 .filter({ $0.width > 1 && $0.height > 1 })
-                .max(by: { $0.width * $0.height < $1.width * $1.height }) {
+                .max(by: { $0.width * $0.height < $1.width * $1.height })
+            // Action labels are AXButtons, not static text. Closing Details can leave them above the viewport.
+            let buttonAnchor = nativeButtons(anchor ?? expected, root: root).compactMap { nativeBounds($0) }
+                .first { $0.width > 1 && $0.height > 1 }
+            if let anchor = textAnchor ?? buttonAnchor {
                 let delta = bodyBounds().minY + 64 - anchor.minY
                 if abs(delta) > 2 { scrollMain(Int32(delta.rounded())); continue }
             }
             Thread.sleep(forTimeInterval: 0.3)
         }
-        fail("Preflight state missing: \(expected)")
+        let candidates = nativeElements(nativeRegion(region)).compactMap { element -> String? in
+            let values = ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
+            guard values.contains(where: { $0.contains(expected) || $0.contains(anchor ?? expected) }) else { return nil }
+            let role = attribute(element, "AXRole") as? String ?? "unknown"
+            return role + ": " + values.joined(separator: " | ")
+        }.prefix(4).joined(separator: "; ")
+        fail("Preflight state missing: \(expected); native candidates: \(candidates)")
     }
-    func captureRecoveryActions(_ name: String) throws {
-        // The layout keeps recovery actions in the header, not beside the result
-        // message. Verify their real hit regions after bringing the header back.
-        let controls = nativeButtons("Send and run tests") + nativeButtons("Check cluster status") + nativeButtons("Retry cancellation")
-        if let bounds = controls.compactMap({ nativeBounds($0) }).min(by: { $0.minY < $1.minY }) {
-            scrollMain(Int32((bodyBounds().minY + 64 - bounds.minY).rounded()))
+    let sendActionLabels = ["Cancel tests", "Check cluster status", "Retry cancellation", "Reload saved files", "Choose a cluster", "Check again", "See in Overview", "Send and run tests", "Update agent and run tests", "Run cluster tests again", "Send as a separate agent"]
+    func closeSendDetails() throws {
+        if nativeButtons("Copy Planned agent", root: nativeRegion("Send and cluster tests")).contains(where: { nativeBounds($0).map { $0.width > 1 && $0.height > 1 } == true }) {
+            try clickSendControl("Details", scrolling: 350)
         }
-        require(visibleButtons("Check cluster status").count == 1 && visibleButtons("Retry cancellation").count == 1,
-                "Unresolved cancellation lost its explicit recovery actions")
+    }
+    func requireSendActions(_ expected: [String]) throws {
+        try closeSendDetails()
+        let root = nativeRegion("Send and cluster tests")
+        let actions = sendActionLabels.filter { label in
+            nativeButtons(label, root: root).contains { nativeBounds($0).map { $0.width > 1 && $0.height > 1 } == true }
+        }
+        require(actions.count <= 2 && actions.sorted() == expected.sorted(), "Unexpected Send header actions: \(actions); expected \(expected)")
+    }
+    func captureRecoveryActions(_ name: String, retry: Bool = true) throws {
+        try requireSendActions(retry ? ["Check cluster status", "Retry cancellation"] : ["Check cluster status"])
+        if let bounds = nativeButtons("Check cluster status").compactMap({ nativeBounds($0) }).first {
+            scrollMain(Int32((bodyBounds().minY + 32 - bounds.minY).rounded()))
+        }
+        require(visibleButtons("Check cluster status").count == 1
+            && (retry ? visibleButtons("Retry cancellation").count == 1 : nativeButtons("Retry cancellation").isEmpty),
+            "Unresolved cancellation lost its supported recovery actions")
         try capture(name, "Designer")
     }
     let normal = try chooseFixture(1)
@@ -1172,9 +1265,11 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         mouse(.leftMouseDown, CGPoint(x: bounds.midX, y: bounds.midY))
         mouse(.leftMouseUp, CGPoint(x: bounds.midX, y: bounds.midY))
         Thread.sleep(forTimeInterval: 0.5)
+        try closeSendDetails()
         // Observe a real Send control after reflow. Vision can omit the small uppercase section label.
-        let actions = ["See in Overview", "Cancel tests", "Send and run tests", "Update agent and run tests"]
-        guard let action = actions.first(where: { nativeButtons($0).count == 1 }) else { fail("Send panel has no recognized action after reflow") }
+        let actions = ["See in Overview", "Cancel tests", "Send and run tests", "Update agent and run tests", "Run cluster tests again", "Check cluster status", "Reload saved files", "Choose a cluster", "Check again"]
+        let root = nativeRegion("Send and cluster tests")
+        guard let action = actions.first(where: { nativeButtons($0, root: root).filter { nativeBounds($0).map { $0.width > 1 && $0.height > 1 } == true }.count == 1 }) else { fail("Send panel has no recognized action after reflow") }
         _ = try capturePreflight("send-probe", action)
     }
     func resultSize(_ width: CGFloat, _ height: CGFloat) throws {
@@ -1203,10 +1298,27 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         let text = answer.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         require(text.contains("What SHA-256 checksum does") && text.contains("Fixture answer:"), "Question and answer are not visible together")
     }
+    func captureSendPresentation(_ name: String, actions: [String], earlier: String? = nil, destination: String? = nil) throws {
+        for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+            try resultSize(width, height)
+            try requireSendActions(actions)
+            try capturePreflight("\(name)-header-\(size)", actions[0])
+            if let earlier = earlier, let destination = destination {
+                try capturePreflight("\(name)-summary-\(size)", "Earlier result on \(earlier)")
+                // Destination is a separate current-selection check, not an inference from the earlier result.
+                try capturePreflight("\(name)-destination-\(size)", destination)
+            }
+            try clickSendControl("Details", scrolling: -250)
+            try capturePreflight("\(name)-details-\(size)", name == "send-earlier-target" ? "Planned agent" : "Check again")
+            require(!nativeButtons("Copy Planned agent").isEmpty, "Resources Details did not open")
+            if name == "send-unsupported" { require(nativeButtons("Retry cancellation").isEmpty, "Unsupported retry leaked into Details") }
+            try closeSendDetails()
+        }
+    }
     try resultSize(1280, 800)
     try capturePreflight("send-ready-wide", "Ready to send")
-    try resultSize(540, 900)
-    try capturePreflight("send-first", "Send and run tests")
+    try resultSize(540, 640)
+    try capturePreflight("send-first-minimum", "Send and run tests")
     try clickSendControl("Send and run tests", scrolling: -350)
     Thread.sleep(forTimeInterval: 1)
     let result = try capturePreflight("send-result", "1 of 1 tests passed")
@@ -1215,8 +1327,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try capturePreflight("send-result-wide", "1 of 1 tests passed")
     try clickSendControl("published-checksum", scrolling: -250)
     try captureAnswer("send-answer-wide")
-    try resultSize(540, 900)
-    try captureAnswer("send-answer")
+    try resultSize(540, 640)
+    try captureAnswer("send-answer-minimum")
     try clickSendControl("published-checksum", scrolling: 250)
     try clickSendControl("Details", scrolling: -350)
     let details = try capturePreflight("send-result-details", "Planned agent")
@@ -1234,7 +1346,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     Thread.sleep(forTimeInterval: 1)
     let passedUID = try recordShot("overview-fixture-versions-passed-by-place", "Passed")
     clickTab("Designer", [])
-    try resultSize(540, 900)
+    try resultSize(540, 640)
     // Read side effects only from the loopback fixture after real native IPC/HTTP.
     func assertDeployment(_ uid: String, generation: Int, tasks: Int) throws {
         let state = try fixtureControl(["action": "snapshot", "place": "fixture-cluster"])
@@ -1245,6 +1357,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     }
     try assertDeployment(passedUID, generation: 1, tasks: 1)
     try capturePreflight("send-unchanged", "Run cluster tests again")
+    try requireSendActions(["See in Overview", "Run cluster tests again"])
     try clickSendControl("Run cluster tests again", scrolling: -350)
     try capturePreflight("send-unchanged-result", "1 of 1 tests passed")
     try assertDeployment(passedUID, generation: 1, tasks: 2)
@@ -1275,8 +1388,9 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try capturePreflight("send-older-orka", "This Orka can't safely update this agent")
     try resultSize(1280, 800)
     try capturePreflight("send-older-orka-wide", "This Orka can't safely update this agent")
-    try resultSize(540, 900)
+    try resultSize(540, 640)
     try focusSend()
+    try clickSendControl("Details", scrolling: -250)
     try capturePreflight("send-older-orka-action", "Send as a separate agent")
     try assertDeployment(passedUID, generation: 2, tasks: 3)
     try clickSendControl("Send as a separate agent", scrolling: -250)
@@ -1297,7 +1411,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         catch { fail("Cannot restore original test file: \(error)") }
     }
     var mixedTests = originalTests
-    mixedTests.append(Data("\n```yaml agent-test\nid: has-a-date\ninput: Which date is shown on the page?\nassertions:\n  - id: date\n    type: contains\n    value: '2099-12-31'\n```\n".utf8))
+    mixedTests.append(Data("\n```yaml agent-test\nid: has-a-date\ntitle: Finds the publication date\ninput: Which date is shown on the page?\nassertions:\n  - id: date\n    type: contains\n    value: '2099-12-31'\n```\n".utf8))
     try mixedTests.write(to: testsURL, options: .atomic)
     try clickSendControl("Check again", scrolling: -250)
     try focusSend()
@@ -1315,12 +1429,16 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     // native reason (including its expected value) fully above the footer.
     let failureReason = "The answer did not include “2099-12-31”."
     let visibleFailure: ([VNRecognizedTextObservation]) -> Bool = { seen in
-        seen.contains { ($0.topCandidates(1).first?.string ?? "").contains("Failed") }
-            && nativeTextBounds(failureReason, exact: true).contains { bodyBounds().contains($0) }
+        let root = nativeRegion("Send and cluster tests")
+        return seen.contains { ($0.topCandidates(1).first?.string ?? "").contains("Failed") }
+            && nativeButtons("has-a-date", root: root).compactMap { nativeBounds($0) }.contains { bodyBounds().contains($0) }
+            && nativeTextBounds(failureReason, exact: true, root: root).contains { bodyBounds().contains($0) }
     }
-    try capturePreflight("send-failed-wide", "has-a-date", anchor: failureReason, requiring: visibleFailure)
-    try resultSize(540, 900)
-    try capturePreflight("send-failed", "has-a-date", anchor: failureReason, requiring: visibleFailure)
+    try capturePreflight("send-failed-wide", "Finds the publication date", anchor: failureReason, requiring: visibleFailure)
+    require(nativeStrings().contains { $0.contains("has-a-date") }, "Captured test title must retain its code ID")
+    try resultSize(540, 640)
+    try capturePreflight("send-failed-minimum", "Finds the publication date", anchor: "has-a-date", requiring: visibleFailure)
+    try captureSendPresentation("send-failed", actions: ["Run cluster tests again", "See in Overview"])
     // Arm only the loopback fixture: first answer completes, second Task stays
     // live. Hold the cancel reply until its in-flight state has been captured.
     try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "cancelling"])
@@ -1346,14 +1464,14 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     Thread.sleep(forTimeInterval: 0.5)
     try capturePreflight("send-cancel-requested-wide", "Cancellation requested. Waiting for the cluster.")
     try captureRecoveryActions("send-cancel-requested-actions-wide")
-    try resultSize(540, 900)
-    let requested = try capturePreflight("send-cancel-requested", "Cancellation requested. Waiting for the cluster.")
+    try resultSize(540, 640)
+    let requested = try capturePreflight("send-cancel-requested-minimum", "Cancellation requested. Waiting for the cluster.")
     try captureRecoveryActions("send-cancel-requested-actions")
     clickTab("Clusters", requested); clickTab("Designer", requested)
     try focusSend()
     try capturePreflight("send-page-return", "Cancellation requested. Waiting for the cluster.")
     // Widen the CI-owned native window for the real Overview board. This does
-    // not change app state; the earlier compact captures remain 540x900.
+    // not change app state; the earlier minimum Send captures remain 540x640.
     let overviewFrame = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 1220, height: 900),
         styleMask: [.titled, .closable, .miniaturizable, .resizable])
     var overviewSize = overviewFrame.size
@@ -1442,7 +1560,6 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     clickTab("Designer", [])
     try resultSize(1280, 800)
     for (mode, expected) in [("denied", "Cannot cancel with this cluster identity"),
-                             ("unsupported", "This Orka cannot cancel tests."),
                              ("unconfirmed", "Cancellation not confirmed.")] {
         try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": mode])
         try clickSendControl("Retry cancellation", scrolling: -250)
@@ -1454,8 +1571,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try clickSendControl("Retry cancellation", scrolling: -250)
     Thread.sleep(forTimeInterval: 0.5)
     try capturePreflight("send-cancel-confirmed-wide", "Tests cancelled on the cluster. Completed answers kept.")
-    try resultSize(540, 900)
-    try capturePreflight("send-cancel-confirmed", "Tests cancelled on the cluster. Completed answers kept.")
+    try resultSize(540, 640)
+    try capturePreflight("send-cancel-confirmed-minimum", "Tests cancelled on the cluster. Completed answers kept.")
     try clickSendControl("published-checksum", scrolling: -250)
     try captureAnswer("send-cancel-answer")
     try resultSize(1280, 800)
@@ -1473,7 +1590,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try capturePreflight("send-cancel-completion-race", "Tests finished before cancellation.")
     try focusSend()
     try capturePreflight("send-cancel-race-result", "1 of 2 tests passed")
-    try capturePreflight("send-cancel-race-failure", "has-a-date", anchor: failureReason, requiring: visibleFailure)
+    try capturePreflight("send-cancel-race-failure", "Finds the publication date", anchor: failureReason, requiring: visibleFailure)
     // Restore and actually Send the common file version on the primary cluster
     // before comparing it with the secondary. Merely restoring local bytes does
     // not undo the live spec updates exercised above.
@@ -1540,6 +1657,8 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     // The primary's result remains visible as Earlier result; destination readiness is a collapsed disclosure.
     try focusSend()
     try capturePreflight("send-secondary-ready", "Send and run tests")
+    try captureSendPresentation("send-earlier-target", actions: ["Send and run tests", "See in Overview"],
+        earlier: "fixture-cluster", destination: "fixture-secondary")
     try clickSendControl("Send and run tests", scrolling: -350)
     Thread.sleep(forTimeInterval: 1)
     try capturePreflight("send-secondary-result", "1 of 1 tests passed")
@@ -1592,6 +1711,30 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         let checked = try capturePreflight(name, expected)
         clickTab("Clusters", checked)
     }
+    // Unsupported is deliberately the last Send: unfinished work must not block
+    // the shared-version update and cross-target evidence above. Reuse the known
+    // primary destination and CI-owned two-test file, then restore its exact bytes.
+    let cancellationTarget = try chooseFixture(1)
+    clickText("Use this cluster", in: cancellationTarget)
+    scrollMain(-400)
+    clickText("Open your agent", in: try capture("cluster-probe", "Clusters"))
+    try clickSendControl("Send to a cluster", scrolling: -350, region: nil)
+    restoreTemporaryTests = { try originalTests.write(to: testsURL, options: .atomic) }
+    try mixedTests.write(to: testsURL, options: .atomic)
+    try clickSendControl("Check again", scrolling: -250)
+    try clickSendControl("Reload saved files", scrolling: -250)
+    try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "cancelling"])
+    try clickSendControl("Run cluster tests again", scrolling: 350)
+    try capturePreflight("send-unsupported-running", "Waiting for answers and evaluating tests")
+    try clickSendControl("Cancel tests", scrolling: -350)
+    try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "unsupported"])
+    try capturePreflight("send-cancel-unsupported", "This Orka cannot cancel tests.")
+    try captureSendPresentation("send-unsupported", actions: ["Check cluster status"])
+    try captureRecoveryActions("send-cancel-unsupported-actions-minimum", retry: false)
+    try clickSendControl("Check cluster status", scrolling: -250)
+    try capturePreflight("send-unsupported-after-check", "This Orka cannot cancel tests.")
+    try captureRecoveryActions("send-unsupported-after-check-actions", retry: false)
+    try restoreTemporaryTests?(); restoreTemporaryTests = nil
     // Reopen without a Send. Cluster metadata and saved Send evidence survive;
     // live handles and cluster authority do not.
     app.terminate()
@@ -1659,7 +1802,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
             "Removed cluster returned after restart")
     clickTab("Designer", restarted)
     Thread.sleep(forTimeInterval: 1)
-    try clickSendControl("Send to a cluster", scrolling: -350)
+    try clickSendControl("Send to a cluster", scrolling: -350, region: nil)
     clickButton("Past Sends")
     guard let historyHeading = nativeButtons("Past Sends").compactMap({ nativeBounds($0) }).first else {
         fail("Saved Send history was not reachable after restart")
@@ -1698,8 +1841,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         scrollMain(-100)
     }
     require(savedOpened, "Saved passing Send details were not reachable")
-    try clickSendControl("published-checksum", scrolling: -100)
-    try capture("send-history-answer", "Designer")
+    try clickSendControl("published-checksum", scrolling: -100, region: "Past Sends")
     try resultSize(1280, 800)
     // Anchor the entire saved result before looking for answer pixels, not whichever tail survived reflow.
     guard let provenance = nativeTextBounds("Saved on this computer", visibleOnly: false, exact: true).first else {
@@ -1708,13 +1850,14 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     scrollMain(Int32((bodyBounds().minY + 64 - provenance.minY).rounded()))
     // The answer-only fallback can scroll the question/provenance out of view after reflow.
     // Keep anchoring the whole saved result until one frame proves all three.
-    let savedWide = try capturePreflight("send-history-answer-wide", "Fixture answer:", anchor: "Saved on this computer", requiring: { seen in
+    let savedWide = try capturePreflight("send-history-answer-wide", "Fixture answer:", anchor: "Saved on this computer", region: "Past Sends", requiring: { seen in
         seen.contains { ($0.topCandidates(1).first?.string ?? "").contains("What SHA-256 checksum does") }
             && nativeTextIsVisible("Saved on this computer", exact: true)
     })
     require(savedWide.contains { ($0.topCandidates(1).first?.string ?? "").contains("What SHA-256 checksum does") }
         && nativeTextIsVisible("Saved on this computer", exact: true),
             "Wide saved question, answer and local provenance must remain visible after reopening offline")
+    try capture("send-history-answer", "Designer")
 }
 do {
     // Run after the sample/Send checks: a second web-reader must not make their selectors ambiguous.

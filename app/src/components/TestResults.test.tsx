@@ -20,6 +20,34 @@ test('failed tests lead and open next to their frozen question, with a plain rea
   expect(rows[0].querySelector('details')?.open).toBe(false);
   expect(resultLabel(report)).toBe('1 of 2 passed');
 });
+test('captured titles label current and earlier cluster results, with the original id retained', () => {
+  const { container } = render(<TestResults report={{ verdict: 'failed', cases: [{ ...failed, title: 'Reads the published checksum' }] }} stale />);
+  expect(container.querySelector('.test-result > summary')?.textContent).toContain('Reads the published checksum');
+  expect(container.querySelector('.test-result > summary code')?.textContent).toBe('reads-page');
+});
+test.each([undefined, '', ' ', 'x'.repeat(161), 'hidden\u200btitle', 'ghp_abcdefghijklmnopqrstuvwxyz123456'])('invalid or absent captured title falls back to its id (%s)', title => {
+  const { container } = render(<TestResults report={{ verdict: 'failed', cases: [{ ...failed, title }] }} stale={false} />);
+  const summary = container.querySelector('.test-result > summary')!;
+  expect(summary.textContent).toBe('reads-pageFailed');
+});
+test.each([540, 1280])('captured title stays in the name column, separate from the verdict at %spx', width => {
+  const { container } = render(<TestResults report={{ verdict: 'failed', cases: [{ ...failed, title: 'Reads a page' }] }} stale={false} />);
+  const sheet = document.createElement('style');
+  sheet.textContent = readFileSync('src/components/test-results.css', 'utf8'); document.head.append(sheet);
+  const active = document.createElement('style');
+  const rules = (list: CSSRuleList): string[] => Array.from(list).flatMap(rule => {
+    if ('selectorText' in rule) return [rule.cssText];
+    if ('conditionText' in rule && 'cssRules' in rule && width >= 650) return rules((rule as CSSMediaRule).cssRules);
+    return [];
+  });
+  active.textContent = rules(sheet.sheet!.cssRules).join('\n'); sheet.remove(); document.head.append(active);
+  try {
+    const name = container.querySelector('.test-name')!;
+    const verdict = container.querySelector('.test-result > summary > .disclosure-label > span:last-child')!;
+    expect(getComputedStyle(name).gridColumn).toBe('2');
+    expect(getComputedStyle(verdict).gridColumn).toBe(width >= 650 ? '3' : '2');
+  } finally { active.remove(); }
+});
 test('test-row grid styles never apply to nested Details labels in either breakpoint', () => {
   const { container } = render(<TestResults report={report} stale={false} />);
   const style = document.createElement('style');
@@ -33,7 +61,7 @@ test('test-row grid styles never apply to nested Details labels in either breakp
     const heading = container.querySelector('.test-result > summary > .disclosure-label')!;
     const nested = container.querySelector('.test-answer .card-details > summary > .disclosure-label')!;
     for (const rule of grids) {
-      expect(heading.matches(rule.selectorText)).toBe(true);
+      expect(heading.matches(rule.selectorText) || Array.from(heading.querySelectorAll('*')).some(node => node.matches(rule.selectorText))).toBe(true);
       expect(nested.matches(rule.selectorText)).toBe(false);
     }
   } finally { style.remove(); }

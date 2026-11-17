@@ -121,11 +121,11 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
     : snapshot?.error ? chatErrors[snapshot.error] : undefined;
   return <section className="chat-panel card" aria-label="Chat on this computer">
     <div className="chat-heading"><h2>Chat on this computer</h2><Button type="button" kind="secondary" disabled={!canReset || !!command} title={blocked ?? (!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined)} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button></div>
-    <p className="muted">Talk to your saved agent. Chat does not run tests or change their results.</p>
+    <p className="muted">Chat doesn't change test results.</p>
     <section ref={transcript} className="chat-transcript" aria-label="Conversation">
       {!snapshot?.versions.some(version => version.turns.length) && <p className="muted">Ask your agent a question to start a conversation.</p>}
-      {snapshot?.versions.map((version, index) => <section key={index} className="chat-version" aria-label={`Conversation ${index + 1}`}>
-        <h3>Conversation {index + 1}</h3>
+      {snapshot?.versions.map((version, index) => <section key={index} className="chat-version" aria-label={snapshot.versions.length > 1 ? `Conversation ${index + 1}` : undefined}>
+        {snapshot.versions.length > 1 && <h3>Conversation {index + 1}</h3>}
         {index > 0 && <p className="muted">New conversation. Earlier turns are shown for reference, not sent as history.</p>}
         {version.turns.map((turn, i) => {
           // A terminal Task can be published before the worker finishes reading its result/Session.

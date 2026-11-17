@@ -31,14 +31,14 @@ function actions(chosen) {
   return names;
 }
 const all = actions(selection()), core = actions(selection('core')), ui = actions(selection('chat-agent-clusters'));
-assert.equal(all.length, 61);
+assert.equal(all.length, 65);
 assert.equal(core.length, 46);
-assert.equal(ui.length, 15);
+assert.equal(ui.length, 19);
 assert.ok(core.includes('designer-reply-saved'), 'saved reply captures belong to the core scope');
 assert.ok(!ui.includes('designer-reply-saved'), 'UI scope must not repeat saved reply captures');
 assert.equal(new Set([...core, ...ui]).size, all.length, 'scopes must partition, not repeat or omit cases');
 assert.deepEqual([...core, ...ui], all);
-assert.deepEqual(ui, ['chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination']);
+assert.deepEqual(ui, ['chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'chat-two-versions', 'send-failed', 'send-unsupported', 'send-earlier-target', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination']);
 const chatStatus = source.match(/if \(command === 'agent_chat_status'\) \{([\s\S]*?return \{ documentId,[^\n]+;)\n        \}/)?.[1];
 assert.ok(chatStatus, 'bounded Chat snapshot producer is missing');
 for (const name of ['chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer']) {
@@ -52,11 +52,36 @@ for (const name of ['chat-pending', 'chat-running', 'chat-answer', 'chat-session
   assert.equal(snapshot.busy, name !== 'chat-answer', name);
   assert.equal(snapshot.canSend, name === 'chat-answer', name);
 }
+const twoVersions = Function('name', 'documentId', chatStatus)('chat-two-versions', 'fixture-document');
+assert.equal(twoVersions.versions.length, 2);
+assert.equal(twoVersions.versions[0].turns[0].message, 'Keep this earlier conversation.');
+assert.equal(twoVersions.versions[1].turns[0].message, 'What did the page say?');
 for (const name of ['fixtures', 'setupFixtures', 'overviewVariants']) {
   assert.equal(roster(name, selection('chat-agent-clusters')).length, 0, `UI scope must not repeat ${name}`);
   assert.ok(roster(name, selection('core')).length > 0);
 }
 assert.match(source, /if \(runCore\) for \(const name of \['designer-connected'/, 'UI scope must not repeat minimum Designer cases');
+// Execute the capture gate with accepted and violating observations. This tests
+// the gate, not native rendering; CI supplies the actual DOM and window measurements.
+const sendGate = source.slice(source.indexOf('  function assertSendPresentation('), source.indexOf('  async function captureSendScene('));
+assert.ok(sendGate.includes('Unsupported cancellation'), 'Send capture acceptance gate is missing');
+const checkSend = Function(`${sendGate}; return assertSendPresentation;`)();
+const sendProbe = { header: [{ label: 'Run cluster tests again', primary: true }, { label: 'See in Overview', primary: false }],
+  buttons: ['Run cluster tests again', 'See in Overview'], title: 'Captured checksum from the page', id: 'page-checksum',
+  text: 'fixture-captured', detailsOpen: false, extras: [], width: 540, scrollWidth: 540 };
+checkSend('send-failed', sendProbe, false);
+const unsupported = { ...sendProbe, header: [{ label: 'Check cluster status', primary: true }], buttons: ['Check cluster status'] };
+checkSend('send-unsupported', unsupported, false);
+checkSend('send-earlier-target', { ...sendProbe, header: [{ label: 'Send and run tests', primary: true }, sendProbe.header[1]], text: 'Earlier result on fixture-captured Destination fixture-selected' }, false);
+checkSend('send-failed', { ...sendProbe, detailsOpen: true, extras: ['Check again', 'Send as a separate agent'] }, true);
+for (const mutation of [
+  { header: [...sendProbe.header, { label: 'Send as a separate agent', primary: false }] },
+  { header: sendProbe.header.map(button => ({ ...button, primary: !button.primary })) },
+  { title: '' }, { id: '' }, { scrollWidth: 550 },
+]) assert.throws(() => checkSend('send-failed', { ...sendProbe, ...mutation }, false));
+assert.throws(() => checkSend('send-unsupported', { ...unsupported, buttons: ['Check cluster status', 'Retry cancellation'] }, false));
+assert.throws(() => checkSend('send-earlier-target', { ...sendProbe, text: 'fixture-captured fixture-selected' }, false));
+assert.throws(() => checkSend('send-failed', { ...sendProbe, detailsOpen: true, extras: ['Check again'] }, true));
 // Exercise the queued-state predicate with the rendered summary, including its workspace wording.
 const queuedGuard = source.split('\n').find(line => line.includes('if (!queued.status'));
 assert.ok(queuedGuard);
@@ -136,7 +161,7 @@ await checkHeader(false, async () => { headerReads++; }, () => true);
 assert.equal(headerReads, 1, 'other Designer cases retain the hidden saved-only count gate');
 // Execute the driver's actual isolated-world IPC setup, not a second copy of its payloads.
 const captureActions = source.slice(source.indexOf('  async function captureActions('), source.indexOf('  // Overview renderer fixtures:'));
-for (const name of ['cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination']) {
+for (const name of ['cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination', 'send-failed', 'send-unsupported', 'send-earlier-target']) {
   let injection;
   const stop = new Error('injection captured');
   const capture = vm.runInNewContext(`(${captureActions})`, {
@@ -154,6 +179,29 @@ for (const name of ['cluster-account-picker-open', 'cluster-account-allowed', 'c
     continue;
   }
   const [target] = await invoke('cluster_discover');
+  if (name.startsWith('send-')) {
+    const { documentId, view, busy } = await invoke('send_status');
+    const preflight = await invoke('send_preflight');
+    const opened = await invoke('agent_open');
+    assert.equal(busy, null);
+    assert.equal(view.documentId, documentId);
+    assert.equal(view.report.cases[0].title, 'Captured checksum from the page');
+    assert.equal(view.report.cases[0].id, 'page-checksum');
+    assert.notEqual(view.report.cases[0].title, 'Copies the checksum from the page', 'captured title must not be current editor copy');
+    assert.equal(preflight.targetId, target.id);
+    assert.equal(preflight.source.agent, opened.source.agent);
+    assert.equal(preflight.source.tests, opened.source.tests);
+    assert.equal(preflight.canSeparate, true);
+    assert.equal(view.cancellation, name === 'send-unsupported' ? 'unsupported' : null);
+    if (name === 'send-unsupported') assert.equal(view.report.cases[0].answer, 'The page says fixture-checksum.');
+    if (name === 'send-earlier-target') {
+      assert.notEqual(view.targetId, target.id);
+      assert.equal(view.targetName, 'fixture-captured');
+      assert.equal(target.context_name, 'fixture-selected');
+      assert.notEqual(view.source.tests, preflight.source.tests);
+    }
+    continue;
+  }
   const args = { targetId: target.id, saName: null };
   assert.equal((await invoke('cluster_use', args)).status, 'needServiceAccount');
   if (name === 'cluster-account-forbidden') {
@@ -166,4 +214,47 @@ for (const name of ['cluster-account-picker-open', 'cluster-account-allowed', 'c
     await assert.rejects(invoke('cluster_service_account_preview', { ...args, saName: 'task-reader' }), /Only the selected account/);
   }
 }
-console.log('PASS real scope parsing; 46+15 unique action cases; Chat snapshot matrix; layout acceptance/rejection; IPC registration/injection; disjoint CI scopes with unchanged three-minute ceilings');
+// Source contracts supplement, but never substitute for, the hosted native walk.
+const smoke = await readFile(new URL('./native-smoke.swift', import.meta.url), 'utf8');
+const model = await readFile(new URL('./native-model-macos.swift', import.meta.url), 'utf8');
+assert.ok(model.includes('nativeHeadingExists("Conversation 1") && nativeHeadingExists("Conversation 2")'), 'numbered Chat versions must be verified as native headings, not body static text');
+assert.ok(model.includes('anchorChatHeading("Conversation 2")'), 'Chat capture must align its native heading clear of fixed navigation');
+assert.ok(model.includes('let delta = header.maxY + 64 - bounds.minY'), 'Chat heading navigation must use actual header/heading geometry');
+assert.ok(smoke.indexOf('try capture("send-history-answer", "Designer")') > smoke.indexOf('let savedWide = try capturePreflight'), 'offline answer proof must follow its wide resize and provenance anchor');
+assert.ok(model.includes('attribute(element, "AXRole") as? String == "AXHeading"'), 'Chat heading discovery must use its actual native role');
+assert.ok(smoke.includes('("minimum", CGFloat(540), CGFloat(640))'));
+for (const name of ['send-failed', 'send-unsupported', 'send-earlier-target']) assert.ok(smoke.includes(`captureSendPresentation("${name}"`));
+assert.ok(smoke.includes('Native') && smoke.includes('Result window size was not applied'));
+const unsupportedWalk = smoke.slice(smoke.indexOf('    // Unsupported is deliberately the last Send:'), smoke.indexOf('    // Reopen without a Send.'));
+assert.ok(unsupportedWalk.includes('"Check cluster status"'));
+assert.ok(!unsupportedWalk.includes('clickSendControl("Retry cancellation"'), 'unsupported must be last, never followed by retry');
+assert.ok(smoke.indexOf('send-cancel-completion-race') < smoke.indexOf('// Unsupported is deliberately the last Send:'));
+assert.ok(smoke.includes('Resources and file hashes'), 'native discovery must distinguish resources from nested Details');
+assert.ok(smoke.includes('let buttonAnchor = nativeButtons(anchor ?? expected, root: root)'), 'action captions need scoped AXButton bounds after Details closes');
+assert.ok(smoke.includes('nativeTextBounds(anchor ?? expected, visibleOnly: false, exact: anchor != nil, root: root)'), 'duplicate local test names cannot steer Send anchors');
+assert.ok(smoke.includes('nativeTextBounds(failureReason, exact: true, root: root)'), 'the visible failure reason must belong to Send');
+assert.ok(smoke.includes('nativeButtons("has-a-date", root: root).compactMap'), 'case identity/visibility must use its native summary control, not a title static-text proxy');
+assert.ok(smoke.includes('let text = scopedSeen.compactMap'), 'frozen OCR acceptance must use region-bound evidence, not the matching local test');
+assert.ok(smoke.includes('attribute(element, "AXSubrole") as? String == "AXLandmarkRegion"'), 'named regions must not collide with their disclosure groups');
+assert.ok(smoke.includes('return viewport.contains(textBounds)'), 'frozen OCR evidence must be contained in the visible native region');
+assert.ok(smoke.includes('text.hasSuffix("-")'), 'hyphenated fixture IDs must survive native OCR line wraps');
+assert.ok(smoke.includes('region: "Past Sends", requiring:'), 'saved history anchors keep their separate region');
+assert.ok(smoke.includes('scrolling: -350, region: nil'), 'the Designer Send entry is outside the result region');
+assert.ok(smoke.includes('if let anchor = textAnchor ?? buttonAnchor'), 'native action anchors retain frozen-frame verification');
+assert.ok(smoke.includes('func uniqueOCRTarget('), 'scoped OCR click selection must reject distinct targets');
+assert.ok(smoke.includes('let scopedSeen = seen.filter'), 'OCR click candidates must belong to the selected native region');
+assert.ok(smoke.includes('clickText(control, in: [target])'), 'clicking must not search the full frame again');
+assert.ok(smoke.includes('matches.allSatisfy({ $0 == first })'), 'partly overlapping OCR boxes must not be coalesced as one target');
+for (const name of ['OCR excludes outside-region duplicates', 'OCR rejects distinct in-region targets', 'OCR rejects partial-overlap targets', 'OCR preserves one in-region target']) {
+  assert.ok(smoke.includes(name), `native geometry regression missing: ${name}`);
+}
+const checksumPattern = smoke.match(/label == "published-checksum" && text\.range\(of: #"([^\"]+)"#/)[1];
+const checksumLabel = new RegExp(checksumPattern, 'i');
+assert.ok(checksumLabel.test('› published-checksum'));
+assert.ok(checksumLabel.test('Copies the checksum from the pagepublished-checksum'), 'OCR can join captured title and stable test ID');
+assert.ok(!checksumLabel.test('Copies a different checksum'));
+assert.ok(model.includes('localSize(540, 640)') && model.includes('chat-new-version-minimum'));
+assert.ok(source.includes("resizeTo({ width: 1280, height: 800 }, 'Wide')"));
+assert.ok(source.includes("resizeTo({ width: 540, height: 640 }, 'Compact')"));
+assert.ok(!source.includes('Emulation.setDeviceMetricsOverride'), 'a fake viewport cannot qualify native size evidence');
+console.log('PASS real scope parsing; 46+19 unique action cases; Chat/Send snapshot matrix and presentation gates; Swift source contracts; layout acceptance/rejection; IPC registration/injection; disjoint CI scopes with unchanged three-minute ceilings');

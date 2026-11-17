@@ -81,14 +81,14 @@ test('running keeps the destination fixed with Cancel tests, partial answers and
   expect(screen.queryByRole('button', { name: /Send and run tests|Update agent and run tests|Run cluster tests again/ })).toBeNull();
   expect(screen.getByText('The title')).toBeTruthy();
 });
-test('an acknowledged agent makes See in Overview the one primary, and the rerun secondary', async () => {
+test('a failed acknowledged agent makes rerun the primary, and Overview secondary', async () => {
   const seen = vi.fn(); const user = userEvent.setup();
   native(finished('failed'), { ...allowed, action: 'unchanged' });
   render(<Send place={place} source={source} stale={false} onSeeInOverview={seen} />);
   const open = await screen.findByRole('button', { name: 'See in Overview' });
-  expect(open.className).toContain('primary');
+  expect(open.className).toContain('secondary');
   const rerun = screen.getByRole('button', { name: 'Run cluster tests again' });
-  expect(rerun.className).toContain('secondary');
+  expect(rerun.className).toContain('primary');
   expect(card().querySelectorAll('.button-primary').length).toBe(1);
   await user.click(open);
   expect(seen).toHaveBeenCalledWith(sendId);

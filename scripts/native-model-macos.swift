@@ -849,6 +849,23 @@ func anyButton(_ label: String) -> Bool {
             && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == label })
     }
 }
+func nativeHeadings(_ expected: String) -> [AXUIElement] {
+    nativeElements().filter { element in
+        attribute(element, "AXRole") as? String == "AXHeading"
+            && ["AXValue", "AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == expected }
+    }
+}
+func nativeHeadingExists(_ expected: String) -> Bool { !nativeHeadings(expected).isEmpty }
+func anchorChatHeading(_ expected: String) {
+    let headings = nativeHeadings(expected)
+    guard headings.count == 1, let bounds = nativeBounds(headings[0]),
+        let header = enabledButton("Designer").flatMap(nativeBounds) else {
+        require(false, "Cannot anchor native Chat heading: \(expected)"); return
+    }
+    // Clear fixed navigation and the 48px composer-follow threshold before freezing the frame.
+    let delta = header.maxY + 64 - bounds.minY
+    if abs(delta) > 2 { scroll(Int32(delta.rounded())) }
+}
 func nativeTextExists(_ expected: String) -> Bool {
     nativeElements().contains { element in
         attribute(element, "AXRole") as? String == "AXStaticText" && (attribute(element, "AXValue") as? String)?.contains(expected) == true
@@ -1140,17 +1157,17 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     click("Agent", [])
     require(nativeElements().contains { attribute($0, "AXRole") as? String == "AXPopUpButton" }, "Header agent picker missing")
     require(anyButton("Send to a cluster") && anyButton("Past Sends"), "Header Send entry and Past Sends must always exist")
-    if size == "wide" { require(!anyButton("Send and run tests"), "An unused Send must start hidden") }
-    else { require(anyButton("Send and run tests"), "Send opened earlier must stay retained and visible") }
+    if size == "wide" { require(!anyButton("Choose a cluster"), "An unused Send must start hidden") }
+    else { require(anyButton("Choose a cluster"), "Send opened earlier must stay retained and visible") }
     _ = try capture("local-shell-agent-\(size)", ["Instructions and settings"])
     click("File", [])
     _ = try capture("local-shell-file-\(size)", ["web-reader.agent.md"])
     click("Agent", [])
     click("Send to a cluster", [])
     // The header action already reveals and scrolls the card into view.
-    require(exactTextIsVisible("Send your agent") && nativeChatTextIsVisible("Team clusters are early in this preview."), "Send headline and early-preview text must be visible together")
-    require(anyButton("Send and run tests") && enabledButton("Send and run tests") == nil, "Without a cluster, the opened Send must be visible but disabled")
-    _ = try capture("local-shell-send-\(size)", ["Send your agent", "Team clusters are early in this preview."])
+    require(exactTextIsVisible("Send your agent") && !nativeChatTextIsVisible("Team clusters are early in this preview."), "Send must retain its headline without repeating Welcome's preview sentence")
+    require(enabledButton("Choose a cluster") != nil && !anyButton("Send and run tests"), "Without a cluster, Choose a cluster must replace Send outside Details")
+    _ = try capture("local-shell-send-\(size)", ["Send your agent", "Choose a cluster"])
     press("Past Sends")
     _ = try seek("Saved results and limits", -150)
     scroll(-100)
@@ -1163,9 +1180,17 @@ localSize(1280, 800)
 localSize(1280, 800)
 scroll(4000)
 click("Chat", [])
+func requireSingleChatCopy() {
+    let strings = nativeElements().flatMap { element in
+        ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
+    }
+    require(strings.contains("Chat on this computer") && strings.contains("Chat doesn't change test results."), "Chat heading, label or help copy missing")
+    require(!strings.contains(where: { $0.contains("Conversation 1") }), "A single Chat version must not be numbered, including its accessible label")
+}
 for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     localSize(CGFloat(width), CGFloat(height)); scroll(4000)
     _ = try seek("Ask your agent a question", -100)
+    requireSingleChatCopy()
     _ = try capture("chat-empty-\(size)", ["Ask your agent a question"])
 }
 fillMessage("Remember the checksum ALPHA.")
@@ -1193,6 +1218,7 @@ try FileManager.default.removeItem(at: chatPhase)
 for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     localSize(CGFloat(width), CGFloat(height)); scroll(4000)
     _ = try seek("The checksum is ALPHA.", -100)
+    requireSingleChatCopy()
     _ = try capture("chat-answer-\(size)", ["The checksum is ALPHA.", "<script>fixture</script>"])
 }
 localSize(1280, 800)
@@ -1209,8 +1235,12 @@ waitForButton("Send message")
 rows = try seek("Send message", -150)
 click("Send message", rows)
 waitForChatText("Read another page.")
-_ = try capture("chat-new-version-compact", ["Conversation 2", "Read another page."])
+require(nativeHeadingExists("Conversation 1") && nativeHeadingExists("Conversation 2"), "Two Chat versions must retain both numbered headings")
+localSize(540, 640)
+anchorChatHeading("Conversation 2")
+_ = try capture("chat-new-version-minimum", ["Conversation 2", "Read another page."])
 localSize(1280, 800)
+anchorChatHeading("Conversation 2")
 _ = try capture("chat-new-version-wide", ["Conversation 2", "Read another page."])
 require(enabledButton("Stop") != nil, "Working Chat must offer Stop")
 _ = try capture("chat-working-wide", ["Stop", "Read another page."])
