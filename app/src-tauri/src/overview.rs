@@ -71,6 +71,7 @@ pub struct SavedFile {
     pub document_id: DocumentId,
     pub name: String,
     pub state: &'static str,
+    pub draft: bool,
     pub source: Option<SnapshotId>,
     pub summary: Option<DeclaredSummary>,
     pub reason: Option<&'static str>,
@@ -83,6 +84,31 @@ pub struct DeclaredSummary {
     pub model: String,
     pub tools: Vec<String>,
 }
+fn untouched_blank(name: &str, agent: &str, tests: &str) -> bool {
+    let agent = agent.replace("\r\n", "\n");
+    let tests = tests.replace("\r\n", "\n");
+    // Inspect only the seed's JSON-quoted model line, then compare the entire
+    // regenerated pair. This is presentation metadata, not Run/Send admission.
+    let Some(model) = agent
+        .lines()
+        .nth(2)
+        .and_then(|line| line.strip_prefix("model: "))
+        .and_then(|quoted| serde_json::from_str::<String>(quoted).ok())
+    else {
+        return false;
+    };
+    // Match creation's catalog-model boundary; an impossible seed is not a draft.
+    if model.is_empty()
+        || model.len() > 256
+        || model.eq_ignore_ascii_case("auto")
+        || !model.bytes().all(|b| (b'!'..=b'~').contains(&b))
+    {
+        return false;
+    }
+    crate::agent_folder::created_seed(name, Some(&model))
+        .is_ok_and(|(seed_agent, seed_tests)| agent == seed_agent && tests == seed_tests)
+}
+
 fn summarize(inspection: InspectedFile) -> Option<SavedFile> {
     let pair = inspection.pair;
     if inspection.document.document_id == DocumentId::SAMPLE && matches!(pair, Ok(None)) {
@@ -92,6 +118,7 @@ fn summarize(inspection: InspectedFile) -> Option<SavedFile> {
         document_id: inspection.document.document_id,
         name: inspection.document.name,
         state: "unreadable",
+        draft: false,
         source: None,
         summary: None,
         reason: Some("The saved file is unreadable."),
@@ -100,6 +127,12 @@ fn summarize(inspection: InspectedFile) -> Option<SavedFile> {
     if let Ok(Some(pair)) = pair {
         file.state = "readable";
         file.source = Some(pair.source);
+        file.draft = file.document_id != DocumentId::SAMPLE
+            && untouched_blank(&file.name, &pair.agent, &pair.tests);
+        if file.draft {
+            file.reason = Some("Add instructions and a test to get started.");
+            return Some(file);
+        }
         file.summary = ParsedPair::parse(pair.agent.as_bytes(), pair.tests.as_bytes())
             .ok()
             .map(|pair| DeclaredSummary {

@@ -97,11 +97,21 @@ fn every_version_joins_independently_and_history_error_never_means_not_tested() 
     second.verdict = AttemptVerdict::Unknown;
     let result = project(vec![place()], Some(vec![second, first]));
     assert_eq!(
-        result.places[0].agents[0].record.as_ref().unwrap().verdict,
+        result.places[0].agents[0]
+            .record
+            .as_ref()
+            .unwrap()
+            .summary
+            .verdict,
         AttemptVerdict::Passed
     );
     assert_eq!(
-        result.places[0].agents[1].record.as_ref().unwrap().verdict,
+        result.places[0].agents[1]
+            .record
+            .as_ref()
+            .unwrap()
+            .summary
+            .verdict,
         AttemptVerdict::Unknown
     );
     assert_eq!(project(vec![place()], None).history_state, "unavailable");
@@ -132,6 +142,247 @@ fn place_key_ignores_ephemeral_handles_and_image_but_not_installation_or_namespa
     assert_eq!(Place::new(a.clone()).key, Place::new(b.clone()).key);
     b.watched_namespace = "different".into();
     assert_ne!(Place::new(a).key, Place::new(b).key);
+}
+
+fn evidence() -> crate::send_summary::AttemptDetails {
+    serde_json::from_value(serde_json::json!({
+        "documentId":"01234567-89ab-4cde-8fab-0123456789ab", "model":"model", "capturedAt":1,
+        "cases":[
+            {"id":"one","input":"private question","assertions":[{"id":"answer","type":"contains","value":"private"}]},
+            {"id":"two","input":"private question","assertions":[{"id":"answer","type":"contains","value":"private"}]}
+        ], "resources":[], "detailState":"saved", "availability":null,
+        "report":{"verdict":"passed","cases":[
+            {"id":"one","question":"private question","phase":"Succeeded","answer":"private answer","completedTools":[],"assertions":[],"verdict":"passed"},
+            {"id":"two","question":"private question","phase":"Succeeded","answer":"private answer","completedTools":[],"assertions":[],"verdict":"passed"}
+        ]}
+    })).unwrap()
+}
+fn projected(store: &crate::send_summary::SummaryStore) -> Value {
+    serde_json::to_value(store.overview(vec![place()], None)).unwrap()
+}
+#[test]
+fn overview_batch_exposes_only_matched_document_and_bounded_final_counts_without_changing_v1() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::send_summary::SummaryStore::new(Some(root.path().into()));
+    let summary = record();
+    store.checkpoint(summary.clone(), evidence()).unwrap();
+    let ledger = root.path().join("send-history-v1/history.json");
+    let before = std::fs::read(&ledger).unwrap();
+    let view = projected(&store);
+    let record = &view["places"][0]["agents"][0]["record"];
+    assert_eq!(record["id"], summary.id);
+    assert_eq!(record["documentId"], "01234567-89ab-4cde-8fab-0123456789ab");
+    assert_eq!(record["detailState"], "saved");
+    assert_eq!(
+        record["report"],
+        serde_json::json!({"verdict":"passed","passed":2,"total":2})
+    );
+    for private in ["private question", "private answer", "resources", "cases"] {
+        assert!(!view.to_string().contains(private));
+    }
+    assert!(view["places"][0]["agents"][1]["record"].is_null());
+    assert_eq!(std::fs::read(ledger).unwrap(), before);
+}
+#[test]
+fn overview_matching_failed_report_keeps_counts_and_unavailable_store_keeps_places() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::send_summary::SummaryStore::new(Some(root.path().into()));
+    let mut summary = record();
+    summary.verdict = AttemptVerdict::Failed;
+    let mut details = evidence();
+    let report = details.report.as_mut().unwrap();
+    report.verdict = crate::engine::run::Verdict::Failed;
+    report.cases[1].verdict = crate::engine::run::Verdict::Failed;
+    store.checkpoint(summary, details).unwrap();
+    assert_eq!(
+        projected(&store)["places"][0]["agents"][0]["record"]["report"],
+        serde_json::json!({"verdict":"failed","passed":1,"total":2})
+    );
+    let unavailable = projected(&crate::send_summary::SummaryStore::new(None));
+    assert_eq!(unavailable["historyState"], "unavailable");
+    assert_eq!(
+        unavailable["places"][0]["agents"].as_array().unwrap().len(),
+        2
+    );
+    assert!(unavailable["places"][0]["agents"][0]["record"].is_null());
+}
+#[test]
+fn overview_saved_final_counts_survive_unavailable_reachability() {
+    for failed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let store = crate::send_summary::SummaryStore::new(Some(root.path().into()));
+        let mut summary = record();
+        let mut details = evidence();
+        details.availability = Some("unavailable".into());
+        if failed {
+            summary.verdict = AttemptVerdict::Failed;
+            let report = details.report.as_mut().unwrap();
+            report.verdict = crate::engine::run::Verdict::Failed;
+            report.cases[1].verdict = crate::engine::run::Verdict::Failed;
+        }
+        store.checkpoint(summary, details).unwrap();
+        assert_eq!(
+            projected(&store)["places"][0]["agents"][0]["record"]["report"],
+            if failed {
+                serde_json::json!({"verdict":"failed","passed":1,"total":2})
+            } else {
+                serde_json::json!({"verdict":"passed","passed":2,"total":2})
+            }
+        );
+    }
+}
+#[test]
+fn overview_partial_recovered_failure_does_not_shrink_the_test_total() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::send_summary::SummaryStore::new(Some(root.path().into()));
+    let mut summary = record();
+    summary.verdict = AttemptVerdict::Failed;
+    let mut details = evidence();
+    details.availability = Some("unavailable".into());
+    let report = details.report.as_mut().unwrap();
+    report.verdict = crate::engine::run::Verdict::Failed;
+    report.cases.truncate(1);
+    report.cases[0].verdict = crate::engine::run::Verdict::Failed;
+    store.checkpoint(summary, details).unwrap();
+    let view = projected(&store);
+    let record = &view["places"][0]["agents"][0]["record"];
+    assert_eq!(record["verdict"], "failed");
+    assert_eq!(record["documentId"], "01234567-89ab-4cde-8fab-0123456789ab");
+    assert!(record["report"].is_null());
+}
+#[test]
+fn overview_never_borrows_older_counts_or_exports_untrusted_sidecars() {
+    use crate::send_summary::SummaryStore;
+    for state in [
+        "legacy",
+        "corrupt",
+        "removed",
+        "omitted",
+        "mismatch",
+        "running",
+        "unknown",
+        "cancelled",
+        "oversized",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let store = SummaryStore::new(Some(root.path().into()));
+        store.checkpoint(record(), evidence()).unwrap();
+        let mut latest = record();
+        latest.time = 2;
+        let mut details = evidence();
+        match state {
+            "legacy" => {
+                store.begin(latest.clone()).unwrap();
+            }
+            "removed" | "omitted" => {
+                details.detail_state = state.into();
+                if state == "removed" {
+                    details.document_id = None;
+                }
+                store.checkpoint(latest.clone(), details).unwrap();
+            }
+            _ => {
+                match state {
+                    "mismatch" => {
+                        details.report.as_mut().unwrap().verdict =
+                            crate::engine::run::Verdict::Failed
+                    }
+                    "running" => latest.verdict = AttemptVerdict::Running,
+                    "unknown" => latest.verdict = AttemptVerdict::Unknown,
+                    "cancelled" => latest.verdict = AttemptVerdict::Cancelled,
+                    "oversized" => {
+                        let case = details.report.as_ref().unwrap().cases[0].clone();
+                        details.report.as_mut().unwrap().cases = vec![case; 33];
+                    }
+                    _ => (),
+                }
+                store.checkpoint(latest.clone(), details).unwrap();
+                if state == "corrupt" {
+                    std::fs::write(
+                        root.path()
+                            .join(format!("send-history-v1/{}.json", latest.id)),
+                        b"corrupt",
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        let view = projected(&store);
+        let result = &view["places"][0]["agents"][0]["record"];
+        assert_eq!(result["id"], latest.id, "{state}");
+        assert!(result["report"].is_null(), "{state}: {result}");
+        let expected = match state {
+            "corrupt" => "unavailable",
+            "removed" | "omitted" | "legacy" => state,
+            _ => "saved",
+        };
+        assert_eq!(result["detailState"], expected, "{state}");
+        if matches!(state, "corrupt" | "removed" | "legacy") {
+            assert!(result["documentId"].is_null(), "{state}");
+        } else {
+            assert_eq!(
+                result["documentId"], "01234567-89ab-4cde-8fab-0123456789ab",
+                "{state}"
+            );
+        }
+        if state == "running" {
+            assert_eq!(result["verdict"], "unknown");
+        }
+    }
+}
+#[test]
+fn overview_pending_publication_suppresses_report_and_active_attempt_alone_stays_running() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::send_summary::SummaryStore::new(Some(root.path().into()));
+    let mut summary = record();
+    store.checkpoint(summary.clone(), evidence()).unwrap();
+    std::fs::write(
+        root.path().join("send-history-v1/saving"),
+        summary.id.as_bytes(),
+    )
+    .unwrap();
+    let view = projected(&store);
+    let result = &view["places"][0]["agents"][0]["record"];
+    assert_eq!(result["verdict"], "unknown");
+    assert!(result["report"].is_null());
+    assert_eq!(result["documentId"], "01234567-89ab-4cde-8fab-0123456789ab");
+    std::fs::remove_file(root.path().join("send-history-v1/saving")).unwrap();
+    summary.verdict = AttemptVerdict::Running;
+    store.checkpoint(summary.clone(), evidence()).unwrap();
+    let live = serde_json::to_value(store.overview(vec![place()], Some(&summary.id))).unwrap();
+    assert_eq!(
+        live["places"][0]["agents"][0]["record"]["verdict"],
+        "running"
+    );
+    assert!(live["places"][0]["agents"][0]["record"]["report"].is_null());
+    assert_eq!(
+        projected(&store)["places"][0]["agents"][0]["record"]["verdict"],
+        "unknown"
+    );
+}
+#[test]
+fn overview_unmatched_corrupt_sidecar_does_not_poison_projection_or_history() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::send_summary::SummaryStore::new(Some(root.path().into()));
+    let summary = record();
+    store.checkpoint(summary.clone(), evidence()).unwrap();
+    let mut other = record();
+    other.agent_uid = Some("unobserved".into());
+    store.checkpoint(other.clone(), evidence()).unwrap();
+    std::fs::write(
+        root.path()
+            .join(format!("send-history-v1/{}.json", other.id)),
+        b"corrupt",
+    )
+    .unwrap();
+    let view = projected(&store);
+    assert_eq!(view["historyState"], "complete");
+    assert_eq!(view["unobserved"][0]["id"], other.id);
+    assert!(view["unobserved"][0].get("documentId").is_none());
+    assert_eq!(
+        view["places"][0]["agents"][0]["record"]["report"]["total"],
+        2
+    );
 }
 
 fn stored() -> metadata::Remembered {

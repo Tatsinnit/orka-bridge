@@ -120,15 +120,17 @@ async fn overview_places(
     send: tauri::State<'_, Arc<SendOwner>>,
     key: Option<String>,
 ) -> Result<bridge_engine::overview_places::Places, &'static str> {
+    let places = match key {
+        Some(key) => {
+            session.overview_one(&key).await;
+            session.places().places
+        }
+        None => session.overview().await,
+    };
     let send = send.inner().clone();
-    let history = tauri::async_runtime::spawn_blocking(move || send.history())
+    tauri::async_runtime::spawn_blocking(move || send.overview(places))
         .await
-        .ok()
-        .and_then(Result::ok);
-    Ok(match key {
-        Some(key) => bridge_engine::overview_places::list_one(session.inner(), history, &key).await,
-        None => bridge_engine::overview_places::list(session.inner(), history).await,
-    })
+        .map_err(|_| "Overview history unavailable")
 }
 #[tauri::command]
 async fn agents_list(
@@ -496,6 +498,16 @@ async fn cluster_reconnect(
     state.reconnect(&key).await
 }
 #[tauri::command]
+async fn cluster_select(
+    key: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<
+    bridge_engine::clusters::commands::SelectedCluster,
+    bridge_engine::clusters::ClusterFailure,
+> {
+    state.select(&key).await
+}
+#[tauri::command]
 async fn cluster_forget(
     key: String,
     state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
@@ -746,6 +758,7 @@ fn main() {
             cluster_catalog,
             cluster_places,
             cluster_reconnect,
+            cluster_select,
             cluster_forget,
             cluster_contexts,
             cluster_reload,

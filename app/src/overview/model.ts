@@ -54,6 +54,7 @@ function resultFor(file: SavedFile, observed: CompleteAgents | undefined, finals
 }
 type Verdict = { status: Status; pill: string; earlier?: boolean };
 function localStatus(file: SavedFile, result: Observation | undefined, running: boolean, historyOk: boolean): Verdict {
+  if (file.draft) return { status: 'not-started', pill: 'Draft' };
   if (!result) return running || !historyOk ? { status: 'stale', pill: 'Result unknown' } : { status: 'not-started', pill: 'Not tested' };
   const current = !!file.source && sameSource(file.source, result.source) === true;
   const verdict = result.state === 'complete' ? result.report?.verdict : undefined;
@@ -68,6 +69,7 @@ function localStatus(file: SavedFile, result: Observation | undefined, running: 
 // Keep the same action order as the frame, even when the next step changes.
 function localActions(file: SavedFile, status: Status, chat: boolean, run: boolean): CardAction[] {
   if (file.state !== 'readable') return [];
+  if (file.draft) return [{ id: 'open' }];
   return [
     { id: 'open', primary: status === 'failed' },
     ...(chat && status !== 'failed' ? [{ id: 'chat' as const }] : []),
@@ -84,12 +86,13 @@ export function buildCards(i: Inputs) {
   const state = i.workspaceNote ? 'workspace' : localState(i.live, i.pending);
   const acts = state === 'ok' || state === 'image';
   const labels = placeLabels(i.places?.places ?? []);
-  // A remote card links to a file only on exactly one saved hash match (document association is PR 3). The link is
-  // then a document, so "also on" never compares hashes directly.
+  // New Sends identify the document even after an edit or when another file has identical bytes.
+  // Only legacy records without document evidence may use the exactly-one-hash fallback.
   const linked = new Map<string, string[]>();
   const remote = (i.places?.places ?? []).flatMap(place => place.agents.map(agent => {
     const record = i.places?.historyState === 'complete' ? agent.record : null;
-    const file = record ? ownedFile(record.source, saved) : undefined;
+    const file = record ? record.documentId ? saved.find(f => f.documentId === record.documentId)
+      : record.detailState === undefined || record.detailState === 'legacy' ? ownedFile(record.source, saved) : undefined : undefined;
     if (file) linked.set(file.documentId, [...(linked.get(file.documentId) ?? []), place.key]);
     return { place, agent, record, file };
   }));
@@ -123,9 +126,10 @@ export function buildCards(i: Inputs) {
   }));
   const unavailable = i.places?.historyState === 'unavailable';
   const remoteCards: Card[] = remote.map(({ place, agent, record, file }) => {
+    const earlier = !!record && !!file?.source && sameSource(record.source, file.source) === false;
     const s: { status?: Status; pill?: string } = unavailable ? { status: 'needs-you', pill: "Couldn't check" } : !record ? {}
       : place.stale || record.verdict === 'unknown' ? { status: 'stale', pill: 'Result unknown' }
-        : record.verdict === 'running' ? { status: 'running', pill: 'Running' } : record.verdict === 'cancelled' ? { status: 'not-started', pill: 'Not tested' } : { status: record.verdict, pill: record.verdict === 'passed' ? 'Passed' : 'Failed' };
+        : record.verdict === 'running' ? { status: 'running', pill: 'Running' } : record.verdict === 'cancelled' ? { status: 'not-started', pill: 'Not tested' } : { status: record.verdict === 'passed' && earlier ? 'stale' : record.verdict, pill: record.verdict === 'passed' ? earlier ? 'Earlier files' : 'Passed' : 'Failed' };
     const name = labels.get(place.key)!;
     const details: Detail[] = [{ label: 'Name on the cluster', value: agent.name }, { label: 'Namespace', value: place.namespace }, { label: 'Agent ID', value: agent.uid, copy: true }, { label: 'Cluster', value: `${place.context} · ${place.service}` }];
     if (record) details.push({ label: 'Agent file hash', value: record.source.agent, copy: true }, { label: 'Test file hash', value: record.source.tests, copy: true });
@@ -133,9 +137,11 @@ export function buildCards(i: Inputs) {
     return {
       key: `${place.key}/${agent.uid}`, groupKey: place.key, agentKey: file?.documentId ?? `agent/${place.key}/${agent.uid}`, title: file ? fileTitle(file) : agent.name, place: name, subject: file?.name ?? agent.name,
       ...s, testedAt: record ? record.time * 1000 : undefined, description: file ? file.summary?.description || 'No description in the agent file.' : 'No agent file on this computer.',
-      meta: { tests: record && place.stale ? `Last Send ${record.verdict}` : undefined, model: agent.model ?? file?.summary?.model, tools: toolText(agent.tools ?? file?.summary?.tools),
+      meta: { tests: record && place.stale ? `Last Send ${record.verdict}` : record?.report ? `${record.report.passed} of ${record.report.total} tests${earlier ? ' on earlier files' : ''}` : undefined, model: agent.model ?? file?.summary?.model, tools: toolText(agent.tools ?? file?.summary?.tools),
         also: file ? ['this computer', ...where(file.documentId, place.key)] : [], on: file ? undefined : name },
-      documentId: file?.state === 'readable' ? file.documentId : undefined, remote: true, actions: file ? [{ id: 'open', primary: s.status === 'failed' }] : [], details,
+      documentId: file?.state === 'readable' ? file.documentId : undefined, remote: true,
+      actions: file?.state === 'readable' ? [{ id: 'open', primary: s.status === 'failed' },
+        ...(!place.stale && !i.filesStale && !file.draft && i.run ? [{ id: 'run' as const, primary: s.status !== 'passed' && s.status !== 'failed' }] : [])] : [], details,
     };
   });
   return { cards: [...local, ...strays, ...remoteCards], local, strays, remoteCards, saved, history, state, labels };

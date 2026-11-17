@@ -19,7 +19,7 @@ import type { RunSnapshot } from './run-api';
 import type { SelectedPlace } from '../clusters/api';
 import Send, { SendEntry, SendHistory } from '../clusters/Send';
 
-export type DocumentAction = { id: number; documentId: string; action: 'open' | 'chat' | 'run' };
+export type DocumentAction = { id: number; documentId: string; action: 'open' | 'chat' | 'run' | 'send' };
 
 export default function Example({ sampleRevision = 0, actionRequest, onActionHandled, agentsRevision = 0, onRegistered, documentId = SAMPLE_DOCUMENT_ID, persistInitialSelection = false, openDocumentRequest = 0, newAgentRequest = 0, onNewAgentHandled, onDocument, active = true, setupPending = false, remote = false, catalogPaused = false, catalogKey, place = { kind: 'thisComputer' }, onChooseCluster, onStopLocalCluster, actions, onPair, onRun, onSaveState, onStale, onSeeInOverview }: {
   actionRequest?: DocumentAction; onActionHandled?: (id: number) => void;
@@ -182,6 +182,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     if (!active || actionRequest.action === 'run' && setupPending || actionRequest.documentId !== documentId || creating || wantsCreate || selectionError || saveState === 'error' || error && !pair) { finishAction(); return; }
     if (!actionReady) return;
     setView(actionRequest.action === 'chat' ? 'Chat' : 'Agent');
+    if (actionRequest.action === 'send') openSend();
     if (actionRequest.action !== 'run' || pair && isTestDraft(pair.tests)) finishAction();
   });
   const edit = (value: string, rawFile = false) => {

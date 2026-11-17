@@ -54,11 +54,69 @@ test('remote cards keep a verdict only from a Bridge record, link a file only on
   expect(within(linked).getByText('Passed')).toBeTruthy();
   expect(buttons(linked)).toEqual(['Open', 'Details']);
   await userEvent.click(within(linked).getByRole('button', { name: 'Open reader on team-one' }));
-  expect(props.onOpenDocument).toHaveBeenCalledWith(id);
+  expect(props.onOpenDocument).toHaveBeenCalledWith(id, 'one');
   const external = within(remote).getByRole('article', { name: /^external-agent/ });
   expect(within(external).queryByText(/Passed|Failed|Not tested|Result unknown/)).toBeNull();
   expect(buttons(external)).toEqual(['Details']);
   expect(within(external).getByText('No agent file on this computer.')).toBeTruthy();
+});
+
+test('document evidence survives edits and identical copies, with cluster counts and safe action targets', async () => {
+  const enriched = { ...record, documentId: id, detailState: 'saved', report: { verdict: 'passed', passed: 2, total: 3 } };
+  ipc(places([place('one', 'team-one', [{ ...agent, record: enriched }])]), saved([{ ...file, source: { ...source, tests: 'c'.repeat(64) } }, { ...file, documentId: id2, name: 'copy', summary: { ...file.summary, name: 'copy' } }]));
+  const onRunDocument = vi.fn(); render(<Overview {...props} onRunDocument={onRunDocument} />);
+  const remote = await group('team-one');
+  const linked = await within(remote).findByRole('article', { name: 'reader, Earlier files' });
+  expect(within(linked).getByText(/2 of 3 tests on earlier files/)).toBeTruthy();
+  expect(buttons(linked)).toEqual(['Open', 'Run tests', 'Details']);
+  expect(within(linked).getByRole('button', { name: 'Run tests reader on team-one' }).className).toContain('button-primary');
+  await userEvent.click(within(linked).getByRole('button', { name: /^Run tests/ }));
+  expect(onRunDocument).toHaveBeenCalledWith(id, 'one');
+  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
+  expect(within(screen.getByRole('region', { name: 'reader' })).getAllByRole('article')).toHaveLength(2);
+  expect(within(screen.getByRole('region', { name: 'copy' })).getAllByRole('article')).toHaveLength(1);
+});
+
+test('a failed Send on earlier files remains failed and counted in the tab summary', async () => {
+  const counts = vi.fn();
+  ipc(places([place('one', 'team-one', [{ ...agent, record: { ...record, verdict: 'failed', documentId: id, detailState: 'saved', report: { verdict: 'failed', passed: 0, total: 1 } } }])]), saved([{ ...file, source: { ...source, agent: 'c'.repeat(64) } }]));
+  render(<Overview {...props} onCounts={counts} onRunDocument={vi.fn()} />);
+  const remote = await group('team-one');
+  expect(await within(remote).findByText('Failed')).toBeTruthy();
+  expect(within(remote).getByText(/0 of 1 tests on earlier files/)).toBeTruthy();
+  expect(within(remote).getByRole('button', { name: /^Open/ }).className).toContain('button-primary');
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('2 agents, 1 failed'));
+});
+
+test.each([
+  { documentId: id2, detailState: 'saved' },
+  { documentId: null, detailState: 'removed' },
+  { documentId: null, detailState: 'unavailable' },
+])('new document evidence never silently rebinds by hash: %j', async evidence => {
+  ipc(places([place('one', 'team-one', [{ ...agent, record: { ...record, ...evidence, report: null } }])]));
+  render(<Overview {...props} onRunDocument={vi.fn()} />);
+  const remote = await group('team-one');
+  expect(await within(remote).findByText('No agent file on this computer.')).toBeTruthy();
+  expect(within(remote).queryByRole('button', { name: /^Open|^Run tests/ })).toBeNull();
+});
+
+test.each(['omitted', 'unavailable', 'legacy', 'removed'])('untrusted %s detail counts are not accepted as passing evidence', async detailState => {
+  ipc(places([place('one', 'team-one', [{ ...agent, record: { ...record, documentId: detailState === 'legacy' ? null : id, detailState, report: { verdict: 'passed', passed: 1, total: 1 } } }])]));
+  render(<Overview {...props} />);
+  expect(await screen.findByText(/Couldn't read clusters just now/)).toBeTruthy();
+  expect(screen.queryByText(/1 of 1 tests/)).toBeNull();
+});
+
+test('an untouched blank draft is editable but never advertised as runnable or broken in either grouping', async () => {
+  ipc(places([]), saved([{ ...file, draft: true, summary: null, reason: 'Add instructions and a test to get started.', localResult: null }]));
+  render(<Overview {...props} onRunDocument={vi.fn()} onChatDocument={vi.fn()} />);
+  const here = await group('This computer');
+  expect(await within(here).findByText('Draft')).toBeTruthy();
+  expect(buttons(within(here).getByRole('article'))).toEqual(['Open', 'Details']);
+  expect(within(here).getByText('Add instructions and a test to get started.')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
+  expect(within(screen.getByRole('region', { name: 'reader' })).getByText('Draft')).toBeTruthy();
+  expect(screen.queryByText(/unsupported|invalid/i)).toBeNull();
 });
 
 test('a cancelled cluster result remains neutral rather than failed or passed', async () => {

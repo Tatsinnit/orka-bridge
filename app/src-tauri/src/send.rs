@@ -275,6 +275,19 @@ impl SendOwner {
             history_gate: tokio::sync::Mutex::new(()),
         })
     }
+    pub fn overview(
+        &self,
+        places: Vec<crate::overview_places::Place>,
+    ) -> crate::overview_places::Places {
+        let active = self
+            .inner
+            .lock()
+            .unwrap()
+            .active
+            .as_ref()
+            .map(|active| active.id.0.to_string());
+        self.summary.overview(places, active.as_deref())
+    }
     pub fn history(&self) -> Result<Vec<AttemptSummary>, SummaryError> {
         let mut attempts = self.summary.list()?;
         let active = self

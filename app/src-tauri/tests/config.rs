@@ -82,6 +82,7 @@ fn agent_commands_are_granted_only_to_local_main_window() {
         "overview_places",
         "cluster_places",
         "cluster_reconnect",
+        "cluster_select",
         "cluster_forget",
         "cluster_contexts",
         "cluster_discover",

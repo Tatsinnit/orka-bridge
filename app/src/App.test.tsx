@@ -542,6 +542,7 @@ test.each(['saved file', 'cluster Agent'])('%s Open keeps the selected cluster a
     if (command === 'cluster_contexts') return [context];
     if (command === 'cluster_discover') return [target];
     if (command === 'cluster_use') return ++uses === 1 ? connected : connected;
+    if (command === 'cluster_select') return { target, providers: [provider] };
     if (command === 'overview_places') return { historyState: 'complete', unobserved: [], places: origin === 'saved file' ? [] : [{ key: 'team-place', context: 'team-dev', service: 'control/orka', namespace: 'agents', stale: false, observedAt: 123, agents: [{ name: 'bridge-reader', namespace: 'agents', uid: 'remote-uid', agentType: null, model: null, tools: null, record: { id, source, targetDisplay: 'team-dev · agents', targetUids: { serviceNamespace: 'control', serviceUid: 'svc', deploymentNamespace: 'control', deploymentUid: 'dep', watchedNamespace: 'agents' }, provider: 'team-model', plannedAgentName: 'bridge-reader', agentUid: 'remote-uid', verdict: 'passed', time: 123 } }] }] };
     if (command === 'overview_files') return { state: 'complete', runActive: false, files: [{ documentId: id, name: 'reader', source, state: 'readable', summary: null, reason: null }] };
     if (command === 'overview_agents') return { state: 'unavailable', installation: null, agents: [], observation: null, observedAt: null, runActive: false, reason: 'stopped' };

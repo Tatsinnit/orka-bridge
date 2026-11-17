@@ -5,7 +5,7 @@ import { Disclosure } from '../components/Disclosure';
 import { RelativeTime } from '../components/RelativeTime';
 import type { Card } from './model';
 
-export type CardActions = { onOpen: (id: string) => void; onChat?: (id: string) => void; onRun?: (id: string) => void };
+export type CardActions = { onOpen: (id: string, clusterKey?: string) => void; onChat?: (id: string) => void; onRun?: (id: string, clusterKey?: string) => void };
 const mono = (text: string) => <code>{text}</code>;
 const names = (list: string[]) => list.map((n, i) => <span key={n}>{i ? i === list.length - 1 ? ' and ' : ', ' : ''}{mono(n)}</span>);
 function Meta({ card }: { card: Card }) {
@@ -20,7 +20,11 @@ export function AgentCard({ card, byAgent, actions }: { card: Card; byAgent: boo
   const [open, setOpen] = useState(false);
   const id = useId();
   const label = (verb: string) => `${verb} ${card.subject}${card.remote ? ` on ${card.place}` : ''}`;
-  const run = (kind: 'open' | 'chat' | 'run') => { if (card.documentId) ({ open: actions.onOpen, chat: actions.onChat, run: actions.onRun })[kind]?.(card.documentId); };
+  const run = (kind: 'open' | 'chat' | 'run') => {
+    if (!card.documentId) return;
+    const action = ({ open: actions.onOpen, chat: actions.onChat, run: actions.onRun })[kind];
+    if (card.remote) action?.(card.documentId, card.groupKey); else action?.(card.documentId);
+  };
   const title = byAgent ? card.place : card.title;
   return <article className="card overview-card" data-card-key={card.key} tabIndex={-1} aria-label={`${title}${card.pill ? `, ${card.pill}` : ''}`}>
     <header className="overview-card-head">

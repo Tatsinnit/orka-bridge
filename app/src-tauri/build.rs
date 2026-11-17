@@ -44,6 +44,7 @@ fn main() {
             "agent_reveal",
             "cluster_places",
             "cluster_reconnect",
+            "cluster_select",
             "cluster_forget",
             "cluster_contexts",
             "cluster_reload",

@@ -95,6 +95,23 @@ impl ClusterClient {
     pub(crate) fn target_binding(&self, id: TargetId) -> Option<&TargetBinding> {
         self.targets.get(&id)
     }
+    /// Resolve an already-discovered binding without minting IDs or refreshing access.
+    pub(crate) fn existing_target(&self, binding: &TargetBinding) -> Option<TargetView> {
+        let mut matches = self.targets.iter().filter(|(_, b)| *b == binding);
+        let (id, binding) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(TargetView {
+            id: *id,
+            context_id: binding.context_id,
+            context_name: binding.context_name.clone(),
+            service_name: binding.service_name.clone(),
+            service_namespace: binding.service_namespace.clone(),
+            watched_namespace: binding.watched_namespace.clone(),
+            image: binding.image.clone(),
+        })
+    }
     pub(crate) fn forget_targets(&mut self, key: &str) {
         self.targets
             .retain(|_, binding| crate::overview_places::Place::new(binding.clone()).key != key);

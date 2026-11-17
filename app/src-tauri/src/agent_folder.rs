@@ -29,6 +29,20 @@ pub fn example_for_model(model: &str) -> Option<(String, &'static str)> {
     ))
 }
 
+/// Canonical initial pair, shared with Overview's exact blank-draft recognition.
+pub(crate) fn created_seed(name: &str, model: Option<&str>) -> io::Result<(String, String)> {
+    // JSON string quoting is also YAML scalar quoting, including YAML keywords.
+    let quoted_name = serde_json::to_string(name).map_err(|_| invalid())?;
+    let model = serde_json::to_string(model.unwrap_or("gpt-5.6-terra")).map_err(|_| invalid())?;
+    let agent = format!(
+        "---\nname: {quoted_name}\nmodel: {model}\nkmx:\n  schemaVersion: 1\n  runtime: orka\n---\n\n"
+    );
+    let tests = format!(
+        "---\nschemaVersion: 1\n---\n\n# {name} tests\n\n```yaml agent-test\nid: first-test\ninput: \"\"\nassertions: []\n```\n"
+    );
+    Ok((agent, tests))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct DocumentId(pub(crate) Uuid);
@@ -258,17 +272,7 @@ impl AgentFolder {
         git::commit(root, pair, &self.agent, &self.tests)
     }
     pub(crate) fn seed_created(&self, root: &Dir, model: Option<&str>) -> io::Result<()> {
-        // JSON string quoting is also YAML scalar quoting, including YAML keywords.
-        let name = serde_json::to_string(&self.name).map_err(|_| invalid())?;
-        let model =
-            serde_json::to_string(model.unwrap_or("gpt-5.6-terra")).map_err(|_| invalid())?;
-        let agent = format!(
-            "---\nname: {name}\nmodel: {model}\nkmx:\n  schemaVersion: 1\n  runtime: orka\n---\n\n"
-        );
-        let tests = format!(
-            "---\nschemaVersion: 1\n---\n\n# {} tests\n\n```yaml agent-test\nid: first-test\ninput: \"\"\nassertions: []\n```\n",
-            self.name
-        );
+        let (agent, tests) = created_seed(&self.name, model)?;
         if self.repo.is_none() {
             replace(root, MARKER, &self.owner)?;
         }

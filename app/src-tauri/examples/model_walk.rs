@@ -255,6 +255,9 @@ fn main() {
     let agent = std::sync::Mutex::new(original.to_owned());
     let tests = "---\nschemaVersion: 1\n---\n```yaml agent-test\nid: reads-page\ntitle: Copies the checksum from the page\ninput: What did the page say?\nassertions:\n - id: text\n   type: contains\n   value: checksum\n```\n```yaml agent-test\nid: has-a-date\ntitle: Says which date is on the page\ninput: Which date is shown on the page?\nassertions:\n - id: date\n   type: contains\n   value: '2099-12-31'\n```\n";
     let source = bridge_runtime_protocol::SnapshotId::of(original.as_bytes(), tests.as_bytes());
+    // Stable Overview revisions, independent of web-reader's editable walk state.
+    let edited_source =
+        bridge_runtime_protocol::SnapshotId::of(b"edited fixture instructions", tests.as_bytes());
     let run_source = std::sync::Mutex::new(source.clone());
     let run_attempt = std::sync::Mutex::new(None::<String>);
     tauri::Builder::default()
@@ -289,8 +292,12 @@ fn main() {
                         "reason":null,"localResult":observation("22345678-1234-4234-8234-123456789abc", "release-notes", "passed", 2)
                     }, {
                         "documentId":"32345678-1234-4234-8234-123456789abc", "name":"pr-summary", "state":"readable",
-                        "source":source,"summary":{"name":"pr-summary","description":"Explains a pull request before review.","model":"gpt-5.6-terra","tools":[]},
+                        "source":edited_source,"summary":{"name":"pr-summary","description":"Explains a pull request before review.","model":"gpt-5.6-terra","tools":[]},
                         "reason":null,"localResult":null
+                    }, {
+                        "documentId":"72345678-1234-4234-8234-123456789abc", "name":"draft-helper", "state":"readable",
+                        "source":source, "draft":true, "summary":null,
+                        "reason":"Add instructions and a test to get started.", "localResult":null
                     }]})
                 }
                 // Match the native Mac image's unavailable-list contract, not a live VM.
@@ -308,16 +315,29 @@ fn main() {
                     json!({"documentId":"9b2b93c4-375c-4815-9717-39852a96e411", "name":"web-reader", "agent":*content, "tests":tests,
                         "source":bridge_runtime_protocol::SnapshotId::of(content.as_bytes(), tests.as_bytes())})
                 }
-                "overview_places" => json!({"historyState":"complete","unobserved":[],"places":[{
+                "overview_places" => {
+                    let recorded = |id: &str, document: &str, name: &str, uid: &str, revision: &bridge_runtime_protocol::SnapshotId, verdict: &str, passed: usize| json!({
+                        "name":name, "namespace":"agents", "uid":uid, "agentType":"Declarative", "model":"team-model", "tools":["file_read"],
+                        "record":{"id":id, "documentId":document, "detailState":"saved", "source":revision,
+                            "targetDisplay":"team-dev", "targetUids":{"serviceNamespace":"control", "serviceUid":"fixture-service",
+                                "deploymentNamespace":"control", "deploymentUid":"fixture-deployment", "watchedNamespace":"agents"},
+                            "provider":"team-model", "plannedAgentName":name, "agentUid":uid,
+                            "verdict":verdict, "time":1730000000_u64, "report":{"verdict":verdict,"passed":passed,"total":2}}
+                    });
+                    json!({"historyState":"complete","unobserved":[],"places":[{
                     "key":"team-observed","context":"team-dev","service":"control/orka","namespace":"agents",
-                    "stale":false,"observedAt":1234567890000_u64,"agents":[{
+                    "stale":false,"observedAt":1234567890000_u64,"agents":[
+                        // Each recorded revision equals the OTHER file: only document identity can link correctly.
+                        recorded("82345678-1234-4234-8234-123456789abc", "22345678-1234-4234-8234-123456789abc", "release-notes", "release-uid", &edited_source, "passed", 2),
+                        recorded("92345678-1234-4234-8234-123456789abc", "32345678-1234-4234-8234-123456789abc", "pr-summary", "pr-uid", &source, "failed", 1), {
                         "name":"review-helper","namespace":"agents","uid":"external-agent",
                         "agentType":"runtime","model":"team-model","tools":["web_fetch"],"record":null
                     }]
                 },{
                     "key":"team-remembered","context":"team-west","service":"control/orka","namespace":"agents",
                     "stale":true,"observedAt":null,"agents":[]
-                }]}),
+                }]})
+                },
                 "agents_list" => json!([{"id":bridge_engine::agent_folder::DocumentId::SAMPLE,
                     "name":"web-reader", "path":null, "available":true}]),
                 "agent_creation_root" => json!("/Users/you/Orka/agents"),

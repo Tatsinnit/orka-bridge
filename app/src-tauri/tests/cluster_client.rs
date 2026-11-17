@@ -17,6 +17,137 @@ use std::{
 mod forward;
 
 #[tokio::test]
+async fn select_connected_place_preserves_existing_target_and_provider_without_reads_or_tokens() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let api_a = Arc::new(ApiFixture::default());
+    let api_b = Arc::new(ApiFixture::default());
+    let orka = Arc::new(OrkaFixture::default());
+    let mut cfg = config(&api_a.start(), json!({"token":"static-fixture"}));
+    let mut second = config(&api_b.start(), json!({"token":"static-fixture"}));
+    second.clusters[0].name = "second".into();
+    second.contexts.truncate(1);
+    second.contexts[0].name = "second".into();
+    second.contexts[0].context.as_mut().unwrap().cluster = "second".into();
+    cfg.contexts.truncate(1);
+    cfg.clusters.extend(second.clusters);
+    cfg.contexts.extend(second.contexts);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let fresh = Arc::new(Mutex::new(cfg.clone()));
+    let session = commands::ClusterSession::with_reader(ClusterClient::new(cfg, orka.clone()), {
+        let reads = reads.clone();
+        let fresh = fresh.clone();
+        Arc::new(move || {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(fresh.lock().unwrap().clone())
+        })
+    });
+    let contexts = session.contexts().await.unwrap();
+    let target_a = session
+        .discover(&id_of(&contexts[0]))
+        .await
+        .unwrap()
+        .remove(0);
+    let access_a = reply(session.use_target(&id_of(&target_a), None).await);
+    assert_eq!(access_a["status"], "connected");
+    let key_a = session.places().selected_key.unwrap();
+    // A confirmed but not yet observed place cannot be selected as fresh.
+    assert!(session.select(&key_a).await.is_err());
+    assert!(session.places().selected_key.is_none());
+    assert!(!session.overview_one(&key_a).await[0].stale);
+    let target_b = session
+        .discover(&id_of(&contexts[1]))
+        .await
+        .unwrap()
+        .remove(0);
+    let access_b = reply(session.use_target(&id_of(&target_b), None).await);
+    assert_eq!(access_b["status"], "connected");
+    let key_b = session.places().selected_key.unwrap();
+    assert!(!session.overview_one(&key_b).await[0].stale);
+    api_a.calls.lock().unwrap().clear();
+    api_b.calls.lock().unwrap().clear();
+    orka.calls.lock().unwrap().clear();
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    let selected = reply(session.select(&key_a).await.unwrap());
+    assert_eq!(selected["target"], reply(&target_a));
+    assert_eq!(selected["providers"], access_a["providers"]);
+    assert_eq!(
+        session.places().selected_key.as_deref(),
+        Some(key_a.as_str())
+    );
+    let selected = reply(session.select(&key_b).await.unwrap());
+    assert_eq!(selected["target"], reply(&target_b));
+    assert_eq!(selected["providers"], access_b["providers"]);
+    assert_ne!(
+        access_a["providers"][0]["id"],
+        access_b["providers"][0]["id"]
+    );
+    assert!(api_a.calls.lock().unwrap().is_empty());
+    assert!(api_b.calls.lock().unwrap().is_empty());
+    assert!(orka.calls.lock().unwrap().is_empty());
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    // Reconnect replaces the client/TargetId map, even though A's inventory is still fresh.
+    session.reconnect(&key_b).await.unwrap();
+    assert!(
+        !session
+            .places()
+            .places
+            .iter()
+            .find(|p| p.key == key_a)
+            .unwrap()
+            .stale
+    );
+    assert!(session.select(&key_a).await.is_err());
+    assert!(session.places().selected_key.is_none());
+}
+
+#[tokio::test]
+async fn select_place_fails_closed_for_invalid_stale_reloaded_and_forgotten_keys() {
+    for revoke in ["invalid", "stale", "reload", "forget"] {
+        let api = Arc::new(ApiFixture::default());
+        let orka = Arc::new(OrkaFixture::default());
+        let (session, _) = reading_session(
+            config(&api.start(), json!({"token":"static-fixture"})),
+            &orka,
+        );
+        let context = id_of(&session.contexts().await.unwrap()[0]);
+        let target = id_of(&session.discover(&context).await.unwrap()[0]);
+        assert_eq!(
+            reply(session.use_target(&target, None).await)["status"],
+            "connected"
+        );
+        let key = session.places().selected_key.unwrap();
+        assert!(!session.overview_one(&key).await[0].stale);
+        let selected = reply(session.select(&key).await.unwrap());
+        assert_eq!(selected["target"]["id"], target);
+        match revoke {
+            "stale" => {
+                *api.deployment_replacement.lock().unwrap() = true;
+                assert!(session.overview_one(&key).await[0].stale);
+            }
+            "reload" => {
+                session.reload().await.unwrap();
+            }
+            "forget" => {
+                session.forget(&key).await.unwrap();
+            }
+            _ => (),
+        }
+        api.calls.lock().unwrap().clear();
+        orka.calls.lock().unwrap().clear();
+        assert!(
+            session
+                .select(if revoke == "invalid" { "unknown" } else { &key })
+                .await
+                .is_err(),
+            "{revoke}"
+        );
+        assert!(session.places().selected_key.is_none(), "{revoke}");
+        assert!(api.calls.lock().unwrap().is_empty(), "{revoke}");
+        assert!(orka.calls.lock().unwrap().is_empty(), "{revoke}");
+    }
+}
+
+#[tokio::test]
 async fn places_snapshot_is_passive_and_selection_is_exact_and_revocable() {
     let api = Arc::new(ApiFixture::default());
     let orka = Arc::new(OrkaFixture::default());
@@ -185,7 +316,7 @@ async fn overview_pagination_failure_keeps_the_last_complete_inventory() {
 }
 
 #[tokio::test]
-async fn overview_coalesces_refresh_and_fences_results_after_reload() {
+async fn overview_coalesces_refresh_preserves_selectable_access_and_fences_reload() {
     let api = Arc::new(ApiFixture::default());
     let orka = Arc::new(OrkaFixture::default());
     let (session, _) = reading_session(
@@ -212,6 +343,12 @@ async fn overview_coalesces_refresh_and_fences_results_after_reload() {
         async move { session.overview().await }
     });
     tokio::task::yield_now().await;
+    let key = session.places().places[0].key.clone();
+    assert!(
+        session.select(&key).await.is_ok(),
+        "a pending refresh must preserve previously observed selectable access"
+    );
+    assert!(!session.places().places[0].stale);
     session.reload().await.unwrap();
     gate.notify_waiters();
     let first = reply(first.await.unwrap());
@@ -219,6 +356,7 @@ async fn overview_coalesces_refresh_and_fences_results_after_reload() {
     assert_eq!(first[0]["stale"], true);
     assert_eq!(first[0]["observedAt"], initial[0]["observedAt"]);
     assert_eq!(first, second);
+    assert!(session.select(&key).await.is_err());
     assert_eq!(
         orka.calls.lock().unwrap().len(),
         1,

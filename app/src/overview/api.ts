@@ -1,10 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { type AttemptSummary, isSummary } from '../clusters/send-api';
 import { isDocumentId, isSourceId, type SourceId } from '../designer/agent-api';
-export type RemoteAgent = Agent & { agentType: string | null; model: string | null; tools: string[] | null; record: AttemptSummary | null };
+export type RecordedAttempt = AttemptSummary & { documentId?: string | null; detailState?: 'saved' | 'legacy' | 'omitted' | 'removed' | 'unavailable'; report?: { verdict: 'passed' | 'failed'; passed: number; total: number } | null };
+export type RemoteAgent = Agent & { agentType: string | null; model: string | null; tools: string[] | null; record: RecordedAttempt | null };
 export type Place = { key: string; context: string; service: string; namespace: string; stale: boolean; observedAt: number | null; checkedAt?: number | null; agents: RemoteAgent[] };
 export type Places = { places: Place[]; historyState: 'complete' | 'unavailable'; unobserved: AttemptSummary[] };
-export type SavedFile = { documentId: string; name: string; state: 'readable' | 'unreadable'; source: SourceId | null; summary: { name: string | null; description: string | null; model: string; tools: string[] } | null; reason: string | null; localResult: Observation | null };
+export type SavedFile = { documentId: string; name: string; draft?: boolean; state: 'readable' | 'unreadable'; source: SourceId | null; summary: { name: string | null; description: string | null; model: string; tools: string[] } | null; reason: string | null; localResult: Observation | null };
 // Identity of an Agent Bridge itself created for a local test: installation + namespace + UID, never a name.
 export type RunAgent = { installation: string; namespace: string; agentUid: string };
 export type SavedFiles = { state: 'complete' | 'unavailable'; files: SavedFile[]; runActive: boolean; historyState: 'complete' | 'unavailable'; runAgents: RunAgent[] };
@@ -32,12 +33,23 @@ export function isSavedFiles(v: unknown): v is RawSavedFiles {
   if (v.historyState !== undefined && v.historyState !== 'complete' && v.historyState !== 'unavailable') return false;
   if (v.runAgents !== undefined && !(Array.isArray(v.runAgents) && v.runAgents.every(runAgent) && (v.historyState === 'complete' || v.runAgents.length === 0))) return false;
   return v.files.every(f => object(f) && isDocumentId(f.documentId) && text(f.name) && ['readable', 'unreadable'].includes(String(f.state)) && (f.source === null || isSourceId(f.source)) && summary(f.summary) && nullableText(f.reason)
+    && (f.draft === undefined || typeof f.draft === 'boolean')
     && (f.localResult === undefined || f.localResult === null || observation(f.localResult) && (f.localResult as Observation).documentId === f.documentId));
 }
 export function isLiveAgents(v: unknown): v is LiveAgents {
   return object(v) && ['complete', 'busy', 'unavailable'].includes(String(v.state)) && typeof v.runActive === 'boolean' && (v.installation === null || isDocumentId(v.installation)) && (v.observedAt === null || time(v.observedAt)) && (v.reason === null || v.reason === 'image' || v.reason === 'stopped' || v.reason === 'read') && observation(v.observation)
     && Array.isArray(v.agents) && v.agents.every(a => object(a) && text(a.name) && text(a.namespace) && text(a.uid))
     && (v.state !== 'complete' || v.installation !== null && v.observedAt !== null);
+}
+function isRecord(v: unknown): v is RecordedAttempt {
+  if (!object(v)) return false;
+  const { documentId, detailState, report, ...base } = v;
+  if (!isSummary(base)) return false;
+  if (documentId === undefined && detailState === undefined && report === undefined) return true;
+  if (!(documentId === null || isDocumentId(documentId)) || !['saved', 'legacy', 'omitted', 'removed', 'unavailable'].includes(String(detailState))) return false;
+  if ((detailState === 'legacy' || detailState === 'removed' || detailState === 'unavailable') && documentId !== null) return false;
+  return report === null || detailState === 'saved' && object(report) && ['passed', 'failed'].includes(String(report.verdict))
+    && report.verdict === base.verdict && count(report.passed) && count(report.total) && report.total > 0 && report.total <= 32 && report.passed <= report.total;
 }
 export function isPlaces(v: unknown): v is Places {
   if (!object(v) || !['complete', 'unavailable'].includes(String(v.historyState)) || !Array.isArray(v.places) || !Array.isArray(v.unobserved) || !v.unobserved.every(isSummary)) return false;
@@ -49,7 +61,7 @@ export function isPlaces(v: unknown): v is Places {
     const uids = new Set<string>();
     return p.agents.every(a => {
       if (!object(a) || !text(a.name) || a.namespace !== p.namespace || !text(a.uid) || uids.has(a.uid) || !nullableText(a.agentType) || !nullableText(a.model)
-        || !(a.tools === null || Array.isArray(a.tools) && a.tools.every(text)) || !(a.record === null || isSummary(a.record) && a.record.agentUid === a.uid && a.record.targetUids.watchedNamespace === p.namespace)) return false;
+        || !(a.tools === null || Array.isArray(a.tools) && a.tools.every(text)) || !(a.record === null || isRecord(a.record) && a.record.agentUid === a.uid && a.record.targetUids.watchedNamespace === p.namespace)) return false;
       uids.add(a.uid); return true;
     });
   });

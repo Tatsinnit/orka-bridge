@@ -46,6 +46,8 @@ export async function clusterPlaces(): Promise<ClusterPlaceSnapshot | undefined>
     }
   } catch { /* Passive observation never exports native diagnostics or renews access. */ }
 }
+export const selectCluster = (key: string): Promise<{ target: TargetView; providers: ProviderView[] }> => call('cluster_select', { key },
+  (v): v is { target: TargetView; providers: ProviderView[] } => object(v) && keys(v, ['target', 'providers']) && target(v.target) && list(v.providers, provider), 'configuration');
 export const reconnectCluster = (key: string): Promise<TargetView> => call('cluster_reconnect', { key }, target, 'configuration');
 export async function forgetCluster(key: string): Promise<void> {
   await call('cluster_forget', { key }, (v): v is null => v === null, 'configuration');

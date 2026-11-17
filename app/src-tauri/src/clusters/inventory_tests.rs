@@ -33,6 +33,28 @@ fn confirmed() -> Arc<RemoteAccess> {
     })
 }
 #[tokio::test]
+async fn existing_target_lookup_requires_one_exact_current_binding() {
+    let access = confirmed();
+    let binding = access.binding().clone();
+    let mut client = ClusterClient::new(kube::config::Kubeconfig::default(), Arc::new(PodOrkaRead));
+    assert!(client.existing_target(&binding).is_none());
+    let id = TargetId(Uuid::new_v4());
+    client.targets.insert(id, binding.clone());
+    let target = client.existing_target(&binding).unwrap();
+    assert_eq!(target.id, id);
+    assert_eq!(target.context_id, binding.context_id);
+    let mut replaced = binding.clone();
+    replaced.context_id = ContextId(Uuid::new_v4());
+    assert!(client.existing_target(&replaced).is_none());
+    replaced = binding.clone();
+    replaced.image = "replaced-image".into();
+    assert!(client.existing_target(&replaced).is_none());
+    client
+        .targets
+        .insert(TargetId(Uuid::new_v4()), binding.clone());
+    assert!(client.existing_target(&binding).is_none());
+}
+#[tokio::test]
 async fn confirmation_persists_check_time_and_duplicate_identity_replaces_without_restoring_access()
 {
     let root = tempfile::tempdir().unwrap();

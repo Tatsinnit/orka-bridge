@@ -8,7 +8,7 @@ import './overview.css';
 
 export type OverviewProps = {
   onNewAgent?: () => void; active: boolean; runBusy: boolean; activeDocumentId?: string; workspaceKey: string;
-  onOpenDocument: (id: string) => void; onChatDocument?: (id: string) => void; onRunDocument?: (id: string) => void;
+  onOpenDocument: (id: string, clusterKey?: string) => void; onChatDocument?: (id: string) => void; onRunDocument?: (id: string, clusterKey?: string) => void;
   onOpenExample: () => void; onChooseWorkspace: () => void; onCounts?: (label: string) => void;
   /** Newest request wins. target is absent when native has no recorded agent for that Send. */
   focus?: { id: number; sendId: string; target?: AgentFocus };

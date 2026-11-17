@@ -34,6 +34,11 @@ pub struct AccessView {
     pub failure: Option<ClusterFailure>,
 }
 #[derive(Serialize)]
+pub struct SelectedCluster {
+    pub target: TargetView,
+    pub providers: Vec<ProviderView>,
+}
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClusterPlaceSnapshot {
     pub places: Vec<crate::overview_places::Place>,
@@ -290,6 +295,21 @@ impl ClusterSession {
             .find(|c| c.id.0.to_string() == context_id)
             .ok_or(UNKNOWN_CONFIGURATION)?;
         client.discover(context.id).await
+    }
+    /// Select only current retained access and its exact, existing discovery handle.
+    /// A failed selection leaves no previous destination admitted to the renderer.
+    pub async fn select(&self, key: &str) -> Result<SelectedCluster, ClusterFailure> {
+        let session = self.0.lock().await;
+        *self.4.lock().unwrap() = None;
+        let access = self.6.connected_access(key).ok_or(UNKNOWN_CONFIGURATION)?;
+        let target = session
+            .client
+            .as_ref()
+            .and_then(|client| client.existing_target(access.binding()))
+            .ok_or(UNKNOWN_CONFIGURATION)?;
+        let providers = access.providers().to_vec();
+        *self.4.lock().unwrap() = Some((target.id, access));
+        Ok(SelectedCluster { target, providers })
     }
     /// Resolve saved identity against freshly read configuration and fresh discovery only.
     pub async fn reconnect(&self, key: &str) -> Result<TargetView, ClusterFailure> {

@@ -1221,11 +1221,20 @@ try {
           file(ids[1], 'web-reader', '3', 'Answers from the web page named in the request', result(ids[1], '3', 'passed', 2, 2, passedRun)),
           file(ids[2], 'draft-helper', '5', 'A new agent with no tests run yet', null)],
         runAgents: [failedRun, passedRun].map(a => ({ installation, namespace: a.namespace, agentUid: a.uid })) };
+      if (variant === 'clusters') {
+        files.files[1].source = files.files[1].localResult.source = src('7'); // Tested locally since Send; old bytes now belong to another file.
+        files.files[2] = { ...files.files[2], draft: true, summary: null, reason: 'Add instructions and a test to get started.' };
+        files.files.push(file('dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'web-reader-copy', '3', 'Identical to the earlier files, but a different document', null));
+      }
       const chatAgent = { name: 'bridge-chat-agent-' + hex('0', 32), namespace: 'default', uid: 'chat-uid-0' };
       const live = { state: 'complete', installation, agents: [failedRun, passedRun, chatAgent], observedAt: now, observation: null, runActive: false, reason: null };
       const remote = { name: 'web-reader', namespace: 'agents', uid: 'remote-uid-1', agentType: 'Declarative', model: 'fixture-model', tools: ['web_fetch'],
-        record: { id: '22222222-2222-4222-8222-222222222222', source: src('3'), targetDisplay: 'team-dev', targetUids: { serviceNamespace: 'control', serviceUid: 'svc-uid', deploymentNamespace: 'control', deploymentUid: 'dep-uid', watchedNamespace: 'agents' }, provider: 'team-ai', plannedAgentName: 'web-reader', agentUid: 'remote-uid-1', verdict: 'passed', time: Math.floor(now / 1000) - 7200 } };
-      const places = { historyState: 'complete', unobserved: [], places: variant === 'clusters' ? [{ key: 'fixture-remote', context: 'team-dev', service: 'control / orka', namespace: 'agents', stale: false, observedAt: now - 60000, agents: [remote] }] : [] };
+        record: { id: '22222222-2222-4222-8222-222222222222', source: src('3'), targetDisplay: 'team-dev', targetUids: { serviceNamespace: 'control', serviceUid: 'svc-uid', deploymentNamespace: 'control', deploymentUid: 'dep-uid', watchedNamespace: 'agents' }, provider: 'team-ai', plannedAgentName: 'web-reader', agentUid: 'remote-uid-1', verdict: 'passed', time: Math.floor(now / 1000) - 7200,
+          documentId: ids[1], detailState: 'saved', report: { verdict: 'passed', passed: 2, total: 2 } } };
+      const failedRemote = { ...remote, name: 'checksum-checker', uid: 'remote-uid-2', record: { ...remote.record,
+        id: '33333333-3333-4333-8333-333333333333', documentId: ids[0], plannedAgentName: 'checksum-checker', agentUid: 'remote-uid-2', verdict: 'failed', report: { verdict: 'failed', passed: 1, total: 3 } } };
+      const external = { ...remote, name: 'review-helper', uid: 'external-uid', record: null };
+      const places = { historyState: 'complete', unobserved: [], places: variant === 'clusters' ? [{ key: 'fixture-remote', context: 'team-dev', service: 'control / orka', namespace: 'agents', stale: false, observedAt: now - 60000, agents: [remote, failedRemote, external] }] : [] };
       const progress = { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 12000, remainingMs: null };
       const starting = variant === 'starting';
       localStorage.setItem('bridge.welcomeSeen.v1', '1');
@@ -1262,7 +1271,18 @@ try {
       }
       for (const label of ['Failed', 'Passed', 'Not tested']) if (!body.includes(label)) fail(`missing ${label} verdict`);
       if (/bridge-chat-agent/.test(body)) fail('generated Chat Agent is visible');
-      if (variant === 'clusters' && !body.includes('team-dev')) fail('remote cluster is missing');
+      if (variant === 'clusters') {
+        const proof = await evaluate(`(() => {
+          const find = key => document.querySelector('[data-card-key="' + key + '"]');
+          const describe = card => ({ text: card?.innerText, buttons: [...(card?.querySelectorAll('button, [role="button"]') ?? [])].map(b => b.textContent), group: card?.closest('.overview-group')?.querySelector('h2')?.textContent });
+          return { passed: describe(find('fixture-remote/remote-uid-1')), failed: describe(find('fixture-remote/remote-uid-2')), draft: describe(find('local/cccccccc-cccc-4ccc-8ccc-cccccccccccc')), external: describe(find('fixture-remote/external-uid')) };
+        })()`);
+        if (!proof.passed.text?.includes('Earlier files') || !proof.passed.text.includes('2 of 2 tests on earlier files') || !proof.failed.text?.includes('1 of 3 tests on earlier files') || !proof.failed.text.includes('Failed')) fail('final counts or earlier-file verdicts missing');
+        if (mode === 'by-agent' && (proof.passed.group !== 'web-reader' || proof.failed.group !== 'checksum-checker')) fail('document identity lost to another file hash');
+        if (proof.draft.buttons.join('|') !== 'Open|Details' || !proof.draft.text?.includes('Draft') || !body.includes('Add instructions and a test to get started.')) fail('blank draft must be Open-only');
+        if (proof.external.buttons.join('|') !== 'Details' || !proof.external.text?.includes('No agent file on this computer.')) fail('external Agent must be Details-only');
+        if (![proof.passed, proof.failed].every(c => c.buttons.join('|') === 'Open|Run tests|Details')) fail('linked cluster actions missing');
+      }
       if (variant === 'local-only' && body.includes('team-dev')) fail('remote cluster should be absent');
       const overflow = await evaluate(`(() => { const main = document.querySelector('main'); return main.scrollWidth - main.clientWidth; })()`);
       if (overflow > 2) fail('page overflows horizontally');
@@ -1274,12 +1294,27 @@ try {
       return;
     }
     await until(async () => (await text()).includes('Not tested'), 'Overview cards');
-    await check('by-cluster');
-    await shoot('-by-cluster');
+    const captureCards = async mode => {
+      await check(mode);
+      await evaluate(`document.querySelector('main').scrollTo(0, 0)`);
+      await shoot('-' + mode);
+      if (variant !== 'clusters') return;
+      // These are fixed expressions, not data interpolated into executable JavaScript.
+      for (const [scene, card] of [
+        ['earlier-pass', `document.querySelector('[data-card-key="fixture-remote/remote-uid-1"]')`],
+        ['earlier-failed', `document.querySelector('[data-card-key="fixture-remote/remote-uid-2"]')`],
+        ['draft', `document.querySelector('[data-card-key="local/cccccccc-cccc-4ccc-8ccc-cccccccccccc"]')`],
+      ]) {
+        await evaluate(`${card}.scrollIntoView({ block: 'center' })`);
+        const visible = await evaluate(`(() => { const r = ${card}.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()`);
+        if (!visible) throw Error('Overview evidence card is outside the viewport: ' + scene);
+        await shoot('-' + mode + '-' + scene);
+      }
+    };
+    await captureCards('by-cluster');
     await clickAction('By agent');
     await until(() => evaluate(`document.querySelector('.view-switch button:nth-child(2)')?.getAttribute('aria-pressed') === 'true'`), 'By agent view');
-    await check('by-agent');
-    await shoot('-by-agent');
+    await captureCards('by-agent');
   }
   const notes = [];
   for (const theme of ['light', 'dark']) {

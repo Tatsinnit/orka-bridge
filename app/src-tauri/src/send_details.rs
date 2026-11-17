@@ -171,6 +171,70 @@ fn load(root: &Dir, id: &str) -> io::Result<Option<AttemptDetails>> {
     }
 }
 impl SummaryStore {
+    /// One ledger snapshot and only the sidecars attached to observed Agents, under one lock.
+    pub fn overview(
+        &self,
+        places: Vec<crate::overview_places::Place>,
+        active_id: Option<&str>,
+    ) -> crate::overview_places::Places {
+        use crate::{engine::run::Verdict, overview_places::project};
+        let Ok(_lock) = self.lock.lock() else {
+            return project(places, None);
+        };
+        let Ok(root) = self.root(false) else {
+            return project(places, None);
+        };
+        let Ok(mut ledger) = Self::read_ledger(root.as_ref()) else {
+            return project(places, None);
+        };
+        for attempt in &mut ledger.attempts {
+            if attempt.verdict == AttemptVerdict::Running && Some(attempt.id.as_str()) != active_id
+            {
+                attempt.verdict = AttemptVerdict::Unknown;
+            }
+        }
+        ledger.attempts.reverse();
+        let mut view = project(places, Some(ledger.attempts));
+        for agent in view.places.iter_mut().flat_map(|p| &mut p.agents) {
+            let Some(record) = &mut agent.record else {
+                continue;
+            };
+            let Some(root) = &root else { continue };
+            let details = match load(root, &record.summary.id) {
+                Ok(Some(details)) => details,
+                Ok(None) => continue,
+                Err(_) => {
+                    record.detail_state = "unavailable";
+                    continue;
+                }
+            };
+            record.detail_state = match details.detail_state.as_str() {
+                "saved" => "saved",
+                "omitted" => "omitted",
+                "removed" => "removed",
+                _ => unreachable!("sidecar state was validated"),
+            };
+            if record.detail_state != "removed" {
+                record.document_id = details.document_id;
+            }
+            // Pending publication is already Unknown in read_ledger. Never combine that
+            // summary (or a live/interrupted attempt) with an older final report.
+            if record.detail_state == "saved" {
+                if let Some(report) = details.report.filter(|r| {
+                    (1..=32).contains(&r.cases.len())
+                        && r.cases.len() == details.cases.len()
+                        && matches!(
+                            (record.summary.verdict, r.verdict),
+                            (AttemptVerdict::Passed, Verdict::Passed)
+                                | (AttemptVerdict::Failed, Verdict::Failed)
+                        )
+                }) {
+                    record.report = Some(crate::overview::ReportSummary::from(&report));
+                }
+            }
+        }
+        view
+    }
     pub fn details(&self, id: &str) -> Result<DetailView, &'static str> {
         let (summary, details) = self.record(id)?;
         Ok(details.map(|d| d.view(&summary.id)).unwrap_or(DetailView {
