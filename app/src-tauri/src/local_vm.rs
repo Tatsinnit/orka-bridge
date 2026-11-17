@@ -452,6 +452,8 @@ impl Inner {
 pub struct LocalVm {
     inner: Arc<Inner>,
     factory: Option<Arc<dyn LocalFactory>>,
+    /// Only a fresh recovery-blocked owner proves factory custody was never acquired.
+    recovery_without_factory: bool,
     choice: AsyncMutex<()>,
     authoring: Mutex<Arc<AsyncMutex<()>>>,
     upgrading: std::sync::atomic::AtomicBool,
@@ -470,7 +472,7 @@ impl Drop for UpgradeQuiescence<'_> {
     }
 }
 impl LocalVm {
-    fn make(factory: Option<Arc<dyn LocalFactory>>) -> Arc<Self> {
+    fn make(factory: Option<Arc<dyn LocalFactory>>, recovery_without_factory: bool) -> Arc<Self> {
         let (cancelled, _) = watch::channel(false);
         let (completion, _) = watch::channel(None);
         Arc::new(Self {
@@ -499,19 +501,20 @@ impl LocalVm {
                 session: Arc::new(AsyncMutex::new(None)),
             }),
             factory,
+            recovery_without_factory,
             choice: AsyncMutex::new(()),
             authoring: Mutex::new(Arc::new(AsyncMutex::new(()))),
             upgrading: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn new(factory: Arc<dyn LocalFactory>) -> Arc<Self> {
-        Self::make(Some(factory))
+        Self::make(Some(factory), false)
     }
     pub fn unavailable() -> Arc<Self> {
-        Self::make(None)
+        Self::make(None, false)
     }
     pub fn recovery_blocked() -> Arc<Self> {
-        let vm = Self::make(None);
+        let vm = Self::make(None, true);
         vm.inner.fail(
             "Workspace recovery is required before starting the local cluster.".into(),
             &RuntimeError::RetainedState,
@@ -531,10 +534,13 @@ impl LocalVm {
             .map_err(|_| {
                 RuntimeError::StopUnconfirmed("Workspace stop did not complete.".into())
             })??;
-        self.factory
-            .as_ref()
-            .ok_or(RuntimeError::Unavailable)?
-            .release_stopped()?;
+        match self.factory.as_ref() {
+            Some(factory) => factory.release_stopped()?,
+            // stop still joins all work above; only this constructor proves no
+            // native factory ever held handles in this process.
+            None if self.recovery_without_factory => {}
+            None => return Err(RuntimeError::Unavailable),
+        }
         Ok(UpgradeQuiescence {
             vm: self,
             _choice: choice,

@@ -27,6 +27,8 @@ use std::{
 };
 use tokio::sync::watch;
 
+#[path = "workspace_upgrade_retry.rs"]
+mod retry;
 const STORE: &str = "workspace-upgrades-v1";
 type MetadataFiles<'a> = [(&'static str, &'a Option<Vec<u8>>); 2];
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -76,6 +78,8 @@ struct Intent {
     additional_bytes: u64,
     #[serde(default)]
     restore: Option<Restore>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    incomplete: Vec<retry::RetainedDestination>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,14 +171,20 @@ fn installation(root: &Path) -> Result<Option<Installation>, RuntimeError> {
         state: record.state_identity,
     }))
 }
-fn allocated(root: &Path, journal: Option<&Journal>) -> Result<u64, RuntimeError> {
+// Incomplete installations may already have native endpoints but no reopenable
+// journal. Only the installation root admits their validated native namespace.
+fn allocated(
+    root: &Path,
+    journal: Option<&Journal>,
+    _native_root: bool,
+) -> Result<u64, RuntimeError> {
     directory_identity(root)?;
     let mut bytes = 0u64;
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let kind = entry.file_type()?;
         #[cfg(windows)]
-        if journal.is_some()
+        if _native_root
             && kind.is_dir()
             && entry
                 .file_name()
@@ -191,7 +201,7 @@ fn allocated(root: &Path, journal: Option<&Journal>) -> Result<u64, RuntimeError
             continue;
         }
         let n = if kind.is_dir() {
-            allocated(&entry.path(), None)?
+            allocated(&entry.path(), None, false)?
         } else if kind.is_file() {
             if let Some(journal) = journal.filter(|_| entry.file_name() == "owner.lock") {
                 journal.owner_allocated_bytes()?
@@ -302,6 +312,17 @@ impl WorkspaceUpgrade {
     }
     fn persist(&self, intent: &Intent) -> Result<(), RuntimeError> {
         let bytes = serde_json::to_vec(intent).map_err(|_| RuntimeError::RetainedState)?;
+        // Leave room for schema-1 rollback snapshots: model <=16 KiB, account
+        // <=256 B, up to four JSON bytes per archived byte, plus structure/phase
+        // overhead. Filling retry history must never consume restore's capacity.
+        let limit = if intent.restore.is_some() {
+            128 * 1024
+        } else {
+            128 * 1024 - (4 * (16384 + 256) + 1024)
+        };
+        if bytes.len() > limit {
+            return Err(RuntimeError::RetainedState);
+        }
         let path = self.local.join(STORE);
         let pending = path.join(format!("intent-{}.next", Uuid::new_v4()));
         let mut file = OpenOptions::new()
@@ -358,7 +379,10 @@ impl WorkspaceUpgrade {
             for model in [
                 intent.model.as_deref(),
                 intent.restore.as_ref().and_then(|r| r.model.as_deref()),
-            ] {
+            ]
+            .into_iter()
+            .chain(intent.incomplete.iter().map(|b| b.model.as_deref()))
+            {
                 if let Some(slot) =
                     SetupStore::upgrade_slot(model).map_err(|_| RuntimeError::RetainedState)?
                 {
@@ -407,19 +431,14 @@ impl WorkspaceUpgrade {
             let outcome = source.map(|s| self.slot_outcome(s)).transpose()?.flatten();
             let removed = outcome == Some(true)
                 || matches!(intent.credential, CredentialDisposition::Removed);
-            let archived_b = intent
-                .restore
-                .as_ref()
-                .map(|r| SetupStore::upgrade_slot(r.model.as_deref()))
-                .transpose()
-                .map_err(|_| RuntimeError::RetainedState)?
-                .flatten();
-            let archived_outcome = archived_b
-                .map(|slot| self.slot_outcome(slot))
-                .transpose()?
-                .flatten();
-            if outcome == Some(false) || archived_outcome == Some(false) {
+            let archived = self.archived_slots(intent)?;
+            if outcome == Some(false) {
                 return Err(RuntimeError::RetainedState);
+            }
+            for slot in &archived {
+                if self.slot_outcome(*slot)? == Some(false) {
+                    return Err(RuntimeError::RetainedState);
+                }
             }
             if index == 0 && !matches!(intent.phase, Phase::ImagePrepared | Phase::Restored) {
                 return Err(RuntimeError::RetainedState);
@@ -438,7 +457,7 @@ impl WorkspaceUpgrade {
                 return Err(RuntimeError::RetainedState);
             }
             if let Some(slot) = slot {
-                if (source == Some(slot) || archived_b == Some(slot))
+                if (source == Some(slot) || archived.contains(&slot))
                     && (removal
                         || self.slot_outcome(slot)?.is_some()
                         || (source == Some(slot) && removed))
@@ -539,14 +558,8 @@ impl WorkspaceUpgrade {
             .iter()
             .find(|i| i.transaction == transaction)
             .ok_or(RuntimeError::RetainedState)?;
-        let archived_b = intent
-            .restore
-            .as_ref()
-            .map(|r| SetupStore::upgrade_slot(r.model.as_deref()))
-            .transpose()
-            .map_err(|_| RuntimeError::RetainedState)?
-            .flatten();
-        if slot.is_nil() || (self.slot(intent)? != Some(slot) && archived_b != Some(slot)) {
+        let archived = self.archived_slots(intent)?;
+        if slot.is_nil() || (self.slot(intent)? != Some(slot) && !archived.contains(&slot)) {
             return Err(RuntimeError::RetainedState);
         }
         // A must already be stopped and retained, or coherently restored under the lifecycle owner.
@@ -585,6 +598,7 @@ impl WorkspaceUpgrade {
             return self.restore_status(&intent);
         }
         let canonical = installation(&self.local.join("local-vm-v1"))?;
+        self.validate_incomplete(&intent, canonical.as_ref())?;
         let retained = installation(&self.local.join(&intent.retained))?;
         if let Some(b) = canonical
             .as_ref()
@@ -597,7 +611,17 @@ impl WorkspaceUpgrade {
                 .map(|slot| self.slot_removed(slot))
                 .transpose()?
                 .unwrap_or(false);
-            if matches!(intent.credential, CredentialDisposition::Transferring) && !removed {
+            if let Some(pending) = self.pending_retention(&intent) {
+                for (name, snapshot) in [
+                    ("model-v1", &pending.model),
+                    ("model-account-v1", &pending.account),
+                ] {
+                    let current = read_bytes(&self.data.join("setup-v1").join(name), 16384)?;
+                    if current.is_some() && current != *snapshot {
+                        return Err(RuntimeError::RetainedState);
+                    }
+                }
+            } else if matches!(intent.credential, CredentialDisposition::Transferring) && !removed {
                 let expected =
                     SetupStore::transferred_model(intent.model.as_deref(), b.installation)
                         .map_err(|_| RuntimeError::RetainedState)?;
@@ -775,9 +799,10 @@ impl WorkspaceUpgrade {
             },
             model: metadata.model.clone(),
             account: metadata.account.clone(),
-            retained_allocated_bytes: allocated(&root, Some(&journal))?,
+            retained_allocated_bytes: allocated(&root, Some(&journal), true)?,
             additional_bytes,
             restore: None,
+            incomplete: vec![],
         };
         let backend = journal.record().backend;
         if let Some(previous) = previous {
@@ -885,6 +910,7 @@ impl WorkspaceUpgrade {
             .local
             .join(format!("retained-new-{}", intent.transaction));
         let canonical = installation(&root)?;
+        self.validate_incomplete(intent, canonical.as_ref())?;
         let a = installation(&retained_a)?;
         let b = installation(&retained_b)?;
         let source_selected = canonical.as_ref() == Some(&intent.source);
@@ -962,6 +988,14 @@ impl WorkspaceUpgrade {
         // An unhanded destination has never reached a VM worker. Discard its
         // creation capability; any handed-out/live custody must refuse below.
         self.live_destination = None;
+        if self.pending_retention(&intent).is_some() {
+            self.recover()?;
+            let setup = SetupStore::new(Some(self.data.clone()));
+            let _metadata = setup
+                .lock_upgrade_metadata()
+                .map_err(|_| RuntimeError::RetainedState)?;
+            self.complete_retention(&mut intent, &point)?;
+        }
         // A live/uncertain VM retains this custody and refuses storage switching.
         // Incomplete B is lockable for retention, never for boot or formatting.
         let canonical = installation(&root)?;

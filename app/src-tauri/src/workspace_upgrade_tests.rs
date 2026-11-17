@@ -13,6 +13,8 @@ mod credentials;
 mod process;
 #[path = "workspace_upgrade_restore_tests.rs"]
 mod restore;
+#[path = "workspace_upgrade_retry_tests.rs"]
+mod retry;
 struct Scene {
     _temp: tempfile::TempDir,
     data: PathBuf,
@@ -140,6 +142,91 @@ impl Scene {
         )
     }
 }
+// Recovery remains native-only until the complete renderer flow is enabled.
+#[test]
+fn ui_activation_restart_can_restore_the_identified_transaction() {
+    let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+    assert!(matches!(
+        scene.replace(Some("intent")),
+        Err(RuntimeError::Closed)
+    ));
+    let transaction = {
+        let owner = WorkspaceUpgrade::open(&scene.data, &scene.local).unwrap();
+        assert_eq!(owner.recover().unwrap(), UpgradeStatus::SourceSelected);
+        owner.read_intent().unwrap().unwrap().transaction
+    };
+    // main.rs selects this object when recover_startup returns an error.
+    assert!(recover_startup(&scene.data, &scene.local).is_err());
+    let vm = crate::local_vm::LocalVm::recovery_blocked();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let result = runtime.block_on(vm.restore_workspace(
+        scene.data.clone(),
+        scene.local.clone(),
+        transaction,
+    ));
+    assert_eq!(result.unwrap(), UpgradeStatus::Restored);
+    assert_eq!(
+        WorkspaceUpgrade::open(&scene.data, &scene.local)
+            .unwrap()
+            .recover()
+            .unwrap(),
+        UpgradeStatus::Restored
+    );
+}
+
+#[test]
+fn ui_activation_interrupted_forward_setup_can_retry_without_restoring_first() {
+    let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+    assert!(matches!(
+        scene.replace(Some("intent")),
+        Err(RuntimeError::Closed)
+    ));
+    let mut owner = WorkspaceUpgrade::open(&scene.data, &scene.local).unwrap();
+    let transaction = owner.read_intent().unwrap().unwrap().transaction;
+    assert_eq!(owner.recover().unwrap(), UpgradeStatus::SourceSelected);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (_send, closed) = watch::channel(false);
+    let retry_cache = scene._temp.path().join("retry-cache");
+    fs::create_dir(&retry_cache).unwrap();
+    let prepared = PreparedImage::from_verified(fixture::verified_with_identity(
+        &retry_cache,
+        ImageTarget::WindowsAmd64,
+        Some("new-state"),
+        Some("new-image"),
+    ))
+    .unwrap();
+    let result = owner.retry_with(
+        transaction,
+        &scene.source,
+        vec![2],
+        &closed,
+        runtime.handle(),
+        || Ok(prepared),
+        |_| Ok(()),
+        available_space,
+    );
+    // Retry must finish fresh setup for the known intent without a separate
+    // restore or formatting old state. The original source must stay retained.
+    assert_eq!(
+        owner.read_intent().unwrap().unwrap().transaction,
+        transaction
+    );
+    assert_eq!(result.unwrap(), UpgradeStatus::Fresh);
+    let intent = owner.read_intent().unwrap().unwrap();
+    assert_eq!(
+        read_record(&scene.local.join(intent.retained))
+            .unwrap()
+            .installation_id,
+        scene.source_id
+    );
+}
+
 #[test]
 fn every_switch_boundary_retains_exact_source_and_never_grants_reopen_authority() {
     for target in [ImageTarget::MacosArm64, ImageTarget::WindowsAmd64] {
@@ -280,6 +367,11 @@ fn cancellation_and_no_space_leave_source_and_both_metadata_records_unchanged() 
 #[cfg(windows)]
 #[test]
 fn replacement_retains_a_real_stale_windows_control_socket_without_reading_it() {
+    retain_stale_windows_control_socket(false);
+    retain_stale_windows_control_socket(true);
+}
+#[cfg(windows)]
+fn retain_stale_windows_control_socket(retrying: bool) {
     use std::{
         mem::{size_of, zeroed},
         os::windows::{
@@ -292,7 +384,11 @@ fn replacement_retains_a_real_stale_windows_control_socket_without_reading_it() 
         Storage::FileSystem::{FILE_READ_ATTRIBUTES, READ_CONTROL},
     };
     let mut s = Scene::new(ImageTarget::WindowsAmd64);
+    if retrying {
+        s.replace(None).unwrap();
+    }
     let root = s.local.join("local-vm-v1");
+    let previous = installation(&root).unwrap().unwrap();
     let endpoint = crate::runtime::windows::control::ControlEndpoint::create(&root).unwrap();
     let path = endpoint.path().to_owned();
     let relative = path.strip_prefix(&root).unwrap().to_owned();
@@ -343,10 +439,22 @@ fn replacement_retains_a_real_stale_windows_control_socket_without_reading_it() 
             .unwrap()
     };
     let before = file_identity(&metadata(&path)).unwrap();
-    assert_eq!(s.replace(None).unwrap(), UpgradeStatus::Fresh);
+    let result = if retrying {
+        retry::retry(&s, retry::id(&s), None)
+    } else {
+        s.replace(None)
+    };
+    assert_eq!(result.unwrap(), UpgradeStatus::Fresh);
     let owner = WorkspaceUpgrade::open(&s.data, &s.local).unwrap();
     let intent = owner.read_intent().unwrap().unwrap();
-    let retained = s.local.join(intent.retained).join(relative);
+    let retained = s
+        .local
+        .join(if retrying {
+            format!("retained-incomplete-{}", previous.installation)
+        } else {
+            intent.retained
+        })
+        .join(relative);
     assert_eq!(file_identity(&metadata(&retained)).unwrap(), before);
 }
 #[cfg(windows)]

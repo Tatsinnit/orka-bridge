@@ -289,6 +289,72 @@ mod infrastructure_tests {
         phase(vm, LocalVmStatus::Ready).await;
     }
     #[tokio::test]
+    async fn recovery_blocked_fresh_vm_can_quiesce_without_enabling_launch() {
+        let vm = LocalVm::recovery_blocked();
+        let quiesced = vm.quiesce_for_upgrade().await.unwrap();
+        assert!(vm.choice.try_lock().is_err());
+        assert!(vm.upgrading.load(Ordering::Acquire));
+        assert!(vm.inner.session.lock().await.is_none());
+        assert!(vm.inner.state.lock().unwrap().startup.is_none());
+        vm.start();
+        assert_eq!(vm.status(), LocalVmStatus::Cancelled);
+        assert!(vm.with_client(|_, _| ()).await.is_err());
+        drop(quiesced);
+        assert!(vm.choice.try_lock().is_ok());
+        vm.start();
+        assert_eq!(vm.status(), LocalVmStatus::Cancelled);
+        assert!(!vm.model_connected());
+    }
+    #[tokio::test]
+    async fn absent_factory_without_recovery_provenance_cannot_quiesce() {
+        let vm = LocalVm::unavailable();
+        // A failure phase alone does not establish a safely absent recovery factory.
+        vm.inner.fail(
+            "recovery required".into(),
+            &RuntimeError::RetainedState,
+            WorkspaceOperation::Verify,
+            false,
+        );
+        assert!(matches!(
+            vm.quiesce_for_upgrade().await,
+            Err(RuntimeError::Unavailable)
+        ));
+        assert!(vm.upgrading.load(Ordering::Acquire));
+    }
+    #[tokio::test]
+    async fn quiesce_for_upgrade_after_confirmed_stop_still_releases_factory_custody() {
+        let probe = Arc::new(Probe::default());
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        ready(&probe, &vm).await;
+        vm.cancel().await.unwrap();
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 0);
+        let _quiesced = vm.quiesce_for_upgrade().await.unwrap();
+        assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.drops.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn quiesce_for_upgrade_unconfirmed_startup_never_releases_factory_custody() {
+        let probe = Arc::new(Probe {
+            state: AtomicU8::new(2),
+            fail_stop: true,
+            ..Probe::default()
+        });
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        vm.start();
+        phase(&vm, LocalVmStatus::Failed).await;
+        assert!(vm.inner.session.lock().await.is_none());
+        assert!(matches!(
+            vm.quiesce_for_upgrade().await,
+            Err(RuntimeError::Unavailable)
+        ));
+        assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.drops.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 0);
+        vm.start();
+        assert_eq!(probe.starts.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
     async fn quiesce_for_upgrade_confirms_stop_then_releases_native_custody_once() {
         let probe = Arc::new(Probe::default());
         let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
@@ -1820,6 +1886,8 @@ async fn native_factory_releases_retained_handles_before_identity_preserving_ren
         pending: Arc::new(Mutex::new(JournalCustody(Some(journal)))),
     });
     let vm = LocalVm::new(factory);
+    vm.cancel().await.unwrap();
+    // Stop alone retains the native factory's owner lock.
     assert!(matches!(Journal::open(&root), Err(RuntimeError::Busy)));
     let _quiesced = vm.quiesce_for_upgrade().await.unwrap();
     let parent = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
