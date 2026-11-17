@@ -9,6 +9,8 @@ mod fixture {
 }
 #[path = "workspace_upgrade_crash_tests.rs"]
 mod process;
+#[path = "workspace_upgrade_restore_tests.rs"]
+mod restore;
 struct Scene {
     _temp: tempfile::TempDir,
     data: PathBuf,
@@ -125,16 +127,7 @@ impl Scene {
             runtime.handle(),
             || self.target.take().ok_or(RuntimeError::Unavailable),
             |point| {
-                if std::env::var("BRIDGE_UPGRADE_CRASH_POINT").ok().as_deref() == Some(point) {
-                    let home = PathBuf::from(std::env::var_os("BRIDGE_UPGRADE_CRASH_HOME").unwrap());
-                    let bytes = serde_json::to_vec(&serde_json::json!({"data":self.data,"local":self.local,"source":self.source_id})).unwrap();
-                    let mut receipt = fs::File::create_new(home.join("ready.next")).unwrap();
-                    receipt.write_all(&bytes).unwrap();
-                    receipt.sync_all().unwrap();
-                    drop(receipt);
-                    fs::rename(home.join("ready.next"), home.join("ready.json")).unwrap();
-                    loop { std::thread::sleep(std::time::Duration::from_secs(1)); }
-                }
+                process::crash_at(&self.data, &self.local, self.source_id, point);
                 if Some(point) == stop_at {
                     Err(RuntimeError::Closed)
                 } else {

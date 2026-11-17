@@ -324,6 +324,32 @@ mod infrastructure_tests {
         assert_eq!(probe.starts.load(Ordering::SeqCst), 1, "retry stays gated");
     }
     #[tokio::test]
+    async fn restore_workspace_stops_and_releases_before_storage_and_failed_stop_never_enters_it() {
+        for fail_stop in [false, true] {
+            let probe = Arc::new(Probe {
+                fail_stop,
+                ..Probe::default()
+            });
+            let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+            ready(&probe, &vm).await;
+            let home = tempfile::tempdir().unwrap();
+            let data = home.path().join("data");
+            let local = home.path().join("local");
+            std::fs::create_dir(&local).unwrap();
+            assert!(vm
+                .restore_workspace(data, local.clone(), Uuid::new_v4())
+                .await
+                .is_err());
+            assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                probe.releases.load(Ordering::SeqCst),
+                usize::from(!fail_stop)
+            );
+            assert_eq!(local.join("workspace-upgrades-v1").exists(), !fail_stop);
+            assert!(!vm.model_connected());
+        }
+    }
+    #[tokio::test]
     async fn quiesce_for_upgrade_closes_the_gate_through_release_then_lifts_it() {
         let probe = Arc::new(Probe::default());
         let vm = LocalVm::new(Arc::new(Factory(probe.clone())));

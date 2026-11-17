@@ -540,6 +540,20 @@ impl LocalVm {
             _choice: choice,
         })
     }
+    /// Native-only recovery; the lifecycle guard spans the complete storage
+    /// operation, including blocking filesystem work and metadata publication.
+    #[allow(dead_code)]
+    pub(crate) async fn restore_workspace(
+        &self,
+        data: std::path::PathBuf,
+        local: std::path::PathBuf,
+        transaction: bridge_runtime_protocol::Uuid,
+    ) -> Result<crate::workspace_upgrade::UpgradeStatus, RuntimeError> {
+        let _quiesced = self.quiesce_for_upgrade().await?;
+        // No detached worker may outlive this borrowed lifecycle guard if the
+        // caller drops its future. Renderer activation remains a later task.
+        crate::workspace_upgrade::WorkspaceUpgrade::open(&data, &local)?.restore(transaction)
+    }
     /// Atomic Run/Chat admission, separate from each bounded VM request.
     pub fn try_authoring(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
         self.authoring.lock().unwrap().clone().try_lock_owned().ok()
