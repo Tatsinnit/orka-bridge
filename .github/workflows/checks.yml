@@ -71,18 +71,38 @@ jobs:
             artifact: macos-arm64-release-checks
             suite: release-checks
             rust-cache: app-macos-15-release-rust-1.98.1
-          # Debug fixture walks must not consume the release smoke's budget.
+          # Lifecycle setup must not consume the longer model walk's budget.
           - os: macos-15
-            artifact: macos-arm64-fixtures-light
-            suite: fixtures
+            artifact: macos-arm64-lifecycle-fixtures-light
+            suite: lifecycle-fixtures
             theme: light
-            rust-cache: app-macos-15-fixtures-rust-1.98.1
+            capture: native-lifecycle
+            rust-cache: app-macos-15-lifecycle-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
             rust-cache-restore: app-macos-15-bundle-rust-1.98.1
           - os: macos-15
-            artifact: macos-arm64-fixtures-dark
-            suite: fixtures
+            artifact: macos-arm64-lifecycle-fixtures-dark
+            suite: lifecycle-fixtures
             theme: dark
-            rust-cache: app-macos-15-fixtures-rust-1.98.1
+            capture: native-lifecycle
+            rust-cache: app-macos-15-lifecycle-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-model-fixtures-light
+            suite: model-fixtures
+            theme: light
+            capture: native-model
+            rust-cache: app-macos-15-model-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-model-fixtures-dark
+            suite: model-fixtures
+            theme: dark
+            capture: native-model
+            rust-cache: app-macos-15-model-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
             rust-cache-restore: app-macos-15-bundle-rust-1.98.1
           # Each GUI theme has its own existing 30m job budget.
           - os: macos-15
@@ -124,6 +144,8 @@ jobs:
             app/src-tauri/target
           key: ${{ matrix.rust-cache }}-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
           restore-keys: |
+            ${{ matrix.rust-cache }}-
+            ${{ matrix.rust-cache-legacy || matrix.rust-cache }}-
             ${{ matrix.rust-cache-restore || matrix.rust-cache }}-
             app-${{ matrix.os }}-rust-1.98.1-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
             app-${{ matrix.os }}-rust-1.98.1-
@@ -216,14 +238,18 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       # Restored targets do not include generated helper resources. Warm debug
       # dependencies outside the lifecycle walk's six-minute desktop deadline.
-      - name: Prepare Mac bundle builds
-        if: runner.os == 'macOS' && matrix.suite == 'fixtures'
+      - name: Prepare Mac lifecycle build
+        if: runner.os == 'macOS' && matrix.suite == 'lifecycle-fixtures'
         run: |
           bash ../scripts/build-vm-helper-macos.sh
           cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
+      - name: Prepare Mac model build
+        if: runner.os == 'macOS' && matrix.suite == 'model-fixtures'
+        run: |
+          bash ../scripts/build-vm-helper-macos.sh
           cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --example model_walk
       - name: Mac integrated debug lifecycle walk (no VM)
-        if: runner.os == 'macOS' && matrix.suite == 'fixtures'
+        if: runner.os == 'macOS' && matrix.suite == 'lifecycle-fixtures'
         timeout-minutes: 6
         run: |
           npm run tauri -- build --debug --features custom-protocol --bundles app --no-sign --no-binary-patching --config '{"identifier":"ai.orka.bridge.lifecycle"}' -- --locked
@@ -254,7 +280,7 @@ jobs:
           test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
           swift ../scripts/native-lifecycle-macos.swift "native-lifecycle/$theme" "$bundle" "$theme"
       - name: Mac native model renderer fixtures (no VM or credentials)
-        if: runner.os == 'macOS' && matrix.suite == 'fixtures'
+        if: runner.os == 'macOS' && matrix.suite == 'model-fixtures'
         run: |
           prior_dark="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
           prior_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
@@ -327,7 +353,7 @@ jobs:
           test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
           swift ../scripts/native-smoke.swift "native-walk/$theme" "$PWD/smoke-app/Bridge.app" "$theme"
       - name: Preserve native bundle cache
-        if: (matrix.suite == 'bundle' || matrix.suite == 'fixtures') && steps.rust-cache.outputs.cache-hit != 'true'
+        if: (matrix.suite == 'bundle' || matrix.suite == 'lifecycle-fixtures' || matrix.suite == 'model-fixtures') && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -336,7 +362,7 @@ jobs:
             app/src-tauri/target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Preserve compiled dependencies after a failed native check
-        if: failure() && matrix.suite != 'fixtures' && steps.rust-cache.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true'
+        if: failure() && matrix.suite != 'lifecycle-fixtures' && matrix.suite != 'model-fixtures' && steps.rust-cache.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -361,12 +387,10 @@ jobs:
           retention-days: 3
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always() && runner.os == 'macOS' && matrix.suite == 'fixtures'
+        if: always() && runner.os == 'macOS' && (matrix.suite == 'lifecycle-fixtures' || matrix.suite == 'model-fixtures')
         with:
           name: bridge-${{ matrix.artifact }}
-          path: |
-            app/native-lifecycle/
-            app/native-model/
+          path: app/${{ matrix.capture }}/
           retention-days: 3
           if-no-files-found: error
 
