@@ -71,22 +71,35 @@ pub struct SetupRequirements {
     memory_bytes: u64,
     image_bytes: u64,
     state_disk_bytes: u64,
+    download_bytes: Option<u64>,
 }
-fn requirements_from(image_bytes: Option<u64>) -> Option<SetupRequirements> {
+fn requirements_from(
+    image_bytes: Option<u64>,
+    download_bytes: Option<u64>,
+) -> Option<SetupRequirements> {
     Some(SetupRequirements {
         memory_bytes: bridge_runtime_protocol::MEMORY_BYTES,
         image_bytes: image_bytes?,
         state_disk_bytes: bridge_runtime_protocol::STATE_BYTES,
+        download_bytes,
     })
 }
 /// Debug overrides retain engineering sizes; release uses the selected platform image.
 #[cfg(debug_assertions)]
 pub fn setup_requirements() -> Option<SetupRequirements> {
-    requirements_from(crate::dev_image::pinned_image_bytes())
+    requirements_from(crate::dev_image::pinned_image_bytes(), None)
 }
 #[cfg(not(debug_assertions))]
 pub fn setup_requirements() -> Option<SetupRequirements> {
-    requirements_from(crate::catalog::IMAGE_BYTES)
+    use crate::{catalog::image_download_bytes, runtime::image_types::ImageTarget};
+    let download = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        image_download_bytes(ImageTarget::MacosArm64)
+    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        image_download_bytes(ImageTarget::WindowsAmd64)
+    } else {
+        None
+    };
+    requirements_from(crate::catalog::IMAGE_BYTES, download)
 }
 
 #[cfg(test)]
@@ -94,23 +107,46 @@ mod requirements_tests {
     use super::*;
     #[test]
     fn requirements_use_protocol_sizes_and_exact_fields() {
-        let r = requirements_from(Some(7)).unwrap();
+        let r = requirements_from(Some(7), Some(5)).unwrap();
         assert_eq!(
             serde_json::to_value(r).unwrap(),
             serde_json::json!({
                 "memoryBytes": bridge_runtime_protocol::MEMORY_BYTES,
                 "imageBytes": 7,
-                "stateDiskBytes": bridge_runtime_protocol::STATE_BYTES
+                "stateDiskBytes": bridge_runtime_protocol::STATE_BYTES,
+                "downloadBytes": 5
             })
         );
-        assert_eq!(requirements_from(None), None);
+        assert_eq!(requirements_from(None, None), None);
+        assert_eq!(
+            serde_json::to_value(requirements_from(Some(7), None).unwrap()).unwrap()
+                ["downloadBytes"],
+            serde_json::Value::Null
+        );
+    }
+    #[test]
+    fn download_sizes_include_compressed_image_and_direct_boot_files() {
+        use crate::{
+            catalog::image_download_bytes as download_bytes, runtime::image_types::ImageTarget,
+        };
+        assert_eq!(download_bytes(ImageTarget::MacosArm64), Some(2_380_070_756));
+        assert_eq!(
+            download_bytes(ImageTarget::WindowsAmd64),
+            Some(1_967_572_914)
+        );
     }
     #[cfg(not(debug_assertions))]
     #[test]
     fn release_reports_selected_platform_requirements() {
         assert_eq!(
-            setup_requirements(),
-            requirements_from(crate::catalog::IMAGE_BYTES)
+            setup_requirements().map(|r| r.image_bytes),
+            crate::catalog::IMAGE_BYTES
+        );
+        assert_eq!(
+            setup_requirements()
+                .and_then(|r| r.download_bytes)
+                .is_some(),
+            crate::catalog::IMAGE_AVAILABLE
         );
     }
     #[cfg(all(
@@ -123,6 +159,7 @@ mod requirements_tests {
     #[test]
     fn debug_supported_target_reports_pinned_bytes() {
         assert!(setup_requirements().unwrap().image_bytes > 0);
+        assert_eq!(setup_requirements().unwrap().download_bytes, None);
     }
 }
 

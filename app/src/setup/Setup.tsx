@@ -245,12 +245,12 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
                 <input id="workspace-local" name="workspace-location" type="radio" value="local" checked={location === 'local'} onChange={() => { setPreflightBlocked(true); setLocation('local'); }} />
                 <label htmlFor="workspace-local">On this computer</label><span className="chip">Recommended</span>
                 <div className="workspace-option-detail">
-                  <p>Bridge sets up a workspace on this computer. {requirements ? `It needs virtualization turned on and about ${formatRequirementGB(requirements.memoryBytes)} of installed memory.` : requirements === undefined ? "Reading this build's requirements…" : 'Requirements are not available yet for this build.'}</p>
+                  <p>{requirements ? `${requirements.downloadBytes !== null ? `Downloads about ${formatRequirementGB(requirements.downloadBytes)}. ` : ''}Needs virtualization and ${formatRequirementGB(requirements.memoryBytes)} of memory. Data disk can grow to ${formatRequirementGB(requirements.stateDiskBytes)}.` : requirements === undefined ? "Reading this build's requirements…" : 'Requirements are not available yet for this build.'}</p>
                   {location === 'local' && view === 'local' && !error && status && requirements && status.localVm !== 'notIntegrated' && <Preflight requiredMemoryBytes={requirements.memoryBytes} onBlocked={setPreflightBlocked} onCluster={() => { setLocation('cluster'); document.getElementById('workspace-cluster')?.focus(); }} />}
                   <Disclosure label="What's inside" open={inside} controls="workspace-inside" onOpenChange={setInside}>
                     <div id="workspace-inside" hidden={!inside}>
                       <p>The local cluster includes Orka and the tools your agents use. Bridge checks the download before starting it.</p>
-                      {requirements && <p>{`This build's image size is ${formatRequirementGB(requirements.imageBytes)} after installation, not the amount downloaded. Its data disk can grow to ${formatRequirementGB(requirements.stateDiskBytes)}.`}</p>}
+                      {requirements && <p>{`This build's image size is ${formatRequirementGB(requirements.imageBytes)} after installation, not the amount downloaded.`}</p>}
                     </div>
                   </Disclosure>
                 </div>
@@ -258,7 +258,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
               <div className={`workspace-option${location === 'cluster' ? ' workspace-selected' : ''}`}>
                 <input id="workspace-cluster" name="workspace-location" type="radio" value="cluster" checked={location === 'cluster'} onChange={() => setLocation('cluster')} />
                 <label htmlFor="workspace-cluster">On a cluster you already have</label>
-                <div className="workspace-option-detail"><p>For Kubernetes users. Pick a kubectl context and Bridge uses the Orka on that cluster.</p></div>
+                <div className="workspace-option-detail"><p>Use Orka on a Kubernetes cluster you already have.</p></div>
               </div>
             </fieldset>
           <div className="workspace-step-actions">{continueAction}</div>

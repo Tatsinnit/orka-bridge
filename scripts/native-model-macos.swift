@@ -333,7 +333,7 @@ for state in ["ready", "unknown", "blocked", "memory", "mixed", "cluster"] {
             let strings = nativeElements().flatMap { element in
                 ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
             }
-            if strings.contains(where: { $0.contains("These checks do not change") || $0.contains("Fix the computer requirements") || $0.contains("Bridge couldn't check this computer yet.") }) { checksSettled = true; break }
+            if strings.contains(where: { $0.contains("These checks do not change") || $0.contains("This computer has") || $0.contains("Virtualization:") || $0.contains("Bridge couldn't check") }) { checksSettled = true; break }
             Thread.sleep(forTimeInterval: 0.1)
         }
         require(checksSettled, "Computer requirements did not settle")
@@ -362,11 +362,13 @@ for state in ["ready", "unknown", "blocked", "memory", "mixed", "cluster"] {
             require(enabledButton("Check again") == nil && enabledButton("Copy details for help") == nil, "Nonfailed checks need no recovery controls")
         }
         if ["unknown", "mixed"].contains(state) {
-            require(strings.contains { $0.contains("Bridge couldn't check this computer yet. It checks again when the workspace starts.") },
+            let unchecked = state == "mixed" ? "virtualization" : "virtualization or memory"
+            require(strings.contains { $0.contains("Bridge couldn't check \(unchecked) yet. It checks again when the workspace starts.") },
                     "Unknown checks need one quiet startup explanation")
         }
         if ["memory", "mixed"].contains(state) {
-            require(strings.contains { $0.contains("Not enough installed memory") }, "Insufficient RAM must show its failed row")
+            require(strings.contains { $0.contains("This computer has 2.1 GB of memory; Bridge needs 4.3 GB.") }, "Insufficient RAM must show its native amounts")
+            require(enabledButton("Check again") == nil && enabledButton("Copy details for help") == nil, "RAM failure needs only the cluster alternative")
         }
         if state == "cluster" {
             click("Use a cluster instead", [])

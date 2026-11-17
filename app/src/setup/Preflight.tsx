@@ -19,6 +19,8 @@ export default function Preflight({ requiredMemoryBytes, onBlocked, onCluster }:
   const failedVirtualization = !['ready', 'unknown'].includes(virtualization);
   const uncertain = !checking && (virtualization === 'unknown' || memory === 'unknown');
   const windowsFix = result?.platform === 'windows' && (virtualization === 'disabled' || virtualization === 'hypervisorUnavailable');
+  const unchecked = virtualization === 'unknown' && memory === 'unknown' ? 'virtualization or memory' : virtualization === 'unknown' ? 'virtualization' : 'memory';
+  const status = checking ? 'Checking this computer before setup.' : uncertain ? `Bridge couldn't check ${unchecked} yet. It checks again when the workspace starts.` : failedVirtualization || memory === 'insufficient' ? '' : 'These checks do not change this computer.';
   useEffect(() => {
     let active = true;
     onBlocked(true);
@@ -53,18 +55,17 @@ export default function Preflight({ requiredMemoryBytes, onBlocked, onCluster }:
           : 'Turn on Windows Hypervisor Platform in Windows features, then restart this PC.'}</p>}</Disclosure>
       </section>}
       {!checking && memory === 'insufficient' && result?.installedMemoryBytes != null && <section aria-label="Installed memory">
-        <p className="preflight-result" role="alert"><StatusIcon state="failed" /><span><b>Installed memory: </b><span>{`about ${formatRequirementGB(result.installedMemoryBytes)} installed; about ${formatRequirementGB(requiredMemoryBytes)} needed. Not enough installed memory. See About this check for exact amounts.`}</span></span></p>
+        <p className="preflight-result" role="alert"><StatusIcon state="failed" /><span>{`${formatRequirementGB(result.installedMemoryBytes) === formatRequirementGB(requiredMemoryBytes) ? 'Not enough memory. ' : ''}This computer has ${formatRequirementGB(result.installedMemoryBytes)} of memory; Bridge needs ${formatRequirementGB(requiredMemoryBytes)}.`}</span></p>
         <Disclosure label="About this check" open={memoryHelp} controls="preflight-memory-help" onOpenChange={setMemoryHelp}>
-        {memoryHelp && <div id="preflight-memory-help"><p>This is installed RAM, not currently free memory. Closing apps does not increase installed memory. Use a computer with enough installed memory (about {formatRequirementGB(requiredMemoryBytes)}), or choose a cluster instead. An unreadable check is left to local cluster startup; no memory is reserved by this check.</p>
+        {memoryHelp && <div id="preflight-memory-help"><p>This is installed RAM, not currently free memory.</p>
           <p>{`Required: ${requiredMemoryBytes.toLocaleString()} bytes.${result?.installedMemoryBytes != null ? ` Installed: ${result.installedMemoryBytes.toLocaleString()} bytes.` : ''}`}</p></div>}</Disclosure>
       </section>}
     </div>
-    <p className={!checking && !failedVirtualization && memory === 'ready' && !uncertain && attempt === 0 ? 'sr-only' : 'muted'} id="preflight-reason" role="status" ref={reason} tabIndex={-1}>{checking ? 'Checking this computer before setup.' : failedVirtualization || memory === 'insufficient' ? 'Fix the computer requirements above before continuing.' : uncertain ? "Bridge couldn't check this computer yet. It checks again when the workspace starts." : 'These checks do not change this computer.'}</p>
-    {uncertain && (failedVirtualization || memory === 'insufficient') && <p className="muted">Bridge couldn't check this computer yet. It checks again when the workspace starts.</p>}
+    <p className={!status || !checking && !uncertain && attempt === 0 ? 'sr-only' : 'muted'} id="preflight-reason" role="status" ref={reason} tabIndex={-1}>{status}</p>
     {!checking && (failedVirtualization || memory === 'insufficient') && <div className="workspace-step-actions">
       <Button type="button" kind="secondary" onClick={onCluster}>Use a cluster instead</Button>
-      <Button type="button" kind="secondary" onClick={() => { reason.current?.focus(); onBlocked(true); setChecking(true); setNotice(''); setAttempt(value => value + 1); }}>Check again</Button>
-      <Button type="button" kind="quiet" onClick={() => { void copy(); }}>Copy details for help</Button>
+      {failedVirtualization && <><Button type="button" kind="secondary" onClick={() => { reason.current?.focus(); onBlocked(true); setChecking(true); setNotice(''); setAttempt(value => value + 1); }}>Check again</Button>
+      <Button type="button" kind="quiet" onClick={() => { void copy(); }}>Copy details for help</Button></>}
     </div>}
     {notice && <p role="status">{notice}</p>}
   </section>;

@@ -319,14 +319,14 @@ try {
         $requirements = Wait-For 'Computer requirements panel missing' { Find-Control $script:window 'Computer requirements' $null }
         Wait-For 'Computer requirements did not settle' {
             $lines = (Get-UiNames $requirements) -join ' '
-            $lines.Contains('These checks do not change this computer.') -or $lines.Contains('Fix the computer requirements above before continuing.') -or $lines.Contains("Bridge couldn't check this computer yet.")
+            $lines.Contains('These checks do not change this computer.') -or $lines.Contains('This computer has') -or $lines.Contains('Virtualization:') -or $lines.Contains("Bridge couldn't check")
         } | Out-Null
-        # Required RAM stays visible; image and maximum disk facts are behind What's inside.
+        # Required RAM and maximum data-disk growth stay visible; installed image size is disclosed.
         Press (Wait-For 'Workspace details disclosure missing' { Find-Control $script:window "What's inside" $button })
         Wait-For 'Local size facts did not settle' {
             $names = Get-UiNames $script:window
             $text = ($names -join ' ') -replace '\s+', ' '
-            ($text -cmatch 'about \d+\.\d GB of installed memory') -and ($text -cmatch 'image size is \d+\.\d GB after installation, not the amount downloaded') -and ($text -cmatch 'data disk can grow to \d+\.\d GB') -and !($names -cmatch '^Reading|Unavailable in this build')
+            ($text -cmatch 'Needs virtualization and \d+\.\d GB of memory') -and ($text -cmatch 'image size is \d+\.\d GB after installation, not the amount downloaded') -and ($text -cmatch 'Data disk can grow to \d+\.\d GB') -and !($names -cmatch '^Reading|Unavailable in this build')
         } | Out-Null
         # Observe the real runner; never inject Ready or select a local workspace.
         Capture 'computer-requirements'

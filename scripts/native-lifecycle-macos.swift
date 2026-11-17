@@ -243,15 +243,15 @@ press(setUp)
 let requirements = find(main, "computer-requirements-panel") { text($0).contains("Computer requirements") }
 wait("Computer requirements did not settle") {
     shownStrings(requirements).contains { line in
-        ["These checks do not change this computer.", "Fix the computer requirements above before continuing.", "Bridge couldn't check this computer yet."].contains { line.contains($0) }
+        ["These checks do not change this computer.", "This computer has", "Virtualization:", "Bridge couldn't check"].contains { line.contains($0) }
     }
 }
-// Required installed memory stays visible; image and maximum disk facts live in What's inside.
+// Required memory and maximum data-disk growth stay visible; installed image size is disclosed.
 press(find(main, "workspace-inside") { pressable($0, "What's inside") })
 currentStage = "local-size-block"; print("STAGE: \(currentStage)")
 wait("Local size facts did not settle") {
     let shown = shownStrings(main)
-    return [#"about \d+\.\d GB of installed memory"#, #"image size is \d+\.\d GB after installation, not the amount downloaded"#, #"data disk can grow to \d+\.\d GB"#].allSatisfy { pattern in
+    return [#"Needs virtualization and \d+\.\d GB of memory"#, #"image size is \d+\.\d GB after installation, not the amount downloaded"#, #"Data disk can grow to \d+\.\d GB"#].allSatisfy { pattern in
         shown.contains { $0.range(of: pattern, options: .regularExpression) != nil }
     } && !shown.contains { $0.hasPrefix("Reading") || $0.contains("Unavailable in this build") }
 }
