@@ -24,6 +24,9 @@ use std::{
 };
 use tokio::time::{timeout_at, Instant};
 
+#[path = "service_accounts.rs"]
+mod service_accounts;
+
 #[cfg(test)]
 #[path = "inventory_tests.rs"]
 mod inventory_tests;
@@ -837,56 +840,63 @@ async fn installations(
     }
     Ok(bindings)
 }
+const ORKA_PERMISSIONS: [(&str, &str); 10] = [
+    ("agents", "create"),
+    ("agents", "get"),
+    ("agents", "list"),
+    ("tasks", "create"),
+    ("tasks", "get"),
+    ("tasks", "list"),
+    ("providers", "get"),
+    ("providers", "list"),
+    ("tools", "get"),
+    ("tools", "list"),
+];
 async fn permissions(client: Client, namespace: &str) -> Result<(), AccessOutcome> {
-    for (resource, verbs) in [
-        ("agents", &["create", "get", "list"][..]),
-        ("tasks", &["create", "get", "list"][..]),
-        ("providers", &["get", "list"][..]),
-        ("tools", &["get", "list"][..]),
-    ] {
-        for verb in verbs {
-            let review = SelfSubjectAccessReview {
-                spec: SelfSubjectAccessReviewSpec {
-                    resource_attributes: Some(ResourceAttributes {
-                        namespace: Some(namespace.into()),
-                        group: Some("core.orka.ai".into()),
-                        resource: Some(resource.into()),
-                        verb: Some((*verb).into()),
-                        ..Default::default()
-                    }),
+    for (resource, verb) in ORKA_PERMISSIONS {
+        let review = SelfSubjectAccessReview {
+            spec: SelfSubjectAccessReviewSpec {
+                resource_attributes: Some(ResourceAttributes {
+                    namespace: Some(namespace.into()),
+                    group: Some("core.orka.ai".into()),
+                    resource: Some(resource.into()),
+                    verb: Some(verb.into()),
                     ..Default::default()
-                },
+                }),
                 ..Default::default()
-            };
-            let result = Api::<SelfSubjectAccessReview>::all(client.clone())
-                .create(&PostParams::default(), &review)
-                .await
-                .map_err(|e| kube_error(Check::Permissions, e))?;
-            let status = result.status.ok_or(AccessOutcome::Unavailable)?;
-            if status
-                .evaluation_error
-                .as_ref()
-                .is_some_and(|s| !s.is_empty())
-            {
-                return Err(AccessOutcome::Unavailable);
-            }
-            if !status.allowed || status.denied == Some(true) {
-                return Err(Check::Permissions.fail(CheckResult::PermissionDenied));
-            }
+            },
+            ..Default::default()
+        };
+        let result = Api::<SelfSubjectAccessReview>::all(client.clone())
+            .create(&PostParams::default(), &review)
+            .await
+            .map_err(|e| kube_error(Check::Permissions, e))?;
+        let status = result.status.ok_or(AccessOutcome::Unavailable)?;
+        if status
+            .evaluation_error
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
+        {
+            return Err(AccessOutcome::Unavailable);
+        }
+        if !status.allowed || status.denied == Some(true) {
+            return Err(Check::Permissions.fail(CheckResult::PermissionDenied));
         }
     }
     Ok(())
 }
 fn dns_label(s: &str) -> bool {
+    s.len() <= 63 && dns_part(s)
+}
+fn dns_part(s: &str) -> bool {
     !s.is_empty()
-        && s.len() <= 63
         && s.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
         && s.as_bytes().last().is_some_and(u8::is_ascii_alphanumeric)
         && s.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 fn dns_subdomain(s: &str) -> bool {
-    s.len() <= 253 && s.split('.').all(dns_label)
+    s.len() <= 253 && s.split('.').all(dns_part)
 }
 pub(super) fn items(page: &Value) -> Result<&Vec<Value>, AccessOutcome> {
     page["items"].as_array().ok_or(AccessOutcome::Unavailable)

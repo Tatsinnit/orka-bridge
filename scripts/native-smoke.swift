@@ -429,7 +429,7 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         // Vision can split the camel-case label even though the native field is present.
         let accountName = text.contains("ServiceAccount name") || text.contains("Service Account name")
         if name == "cluster-conditional" {
-            require(accountName && text.contains("existing account in agents"), "Conditional name-only access prompt missing: \(text)")
+            require(accountName && text.contains("cannot list ServiceAccounts in agents") && text.contains("cluster administrator"), "Forbidden-list name fallback missing: \(text)")
         } else {
             require(text.contains("account and namespace") && text.contains("Access was denied") && !accountName, "Denial incorrectly offered identity substitution: \(text)")
             guard let explanation = nativeTextBounds("Access was denied").first,

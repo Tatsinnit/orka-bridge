@@ -52,6 +52,21 @@ export const reconnectCluster = (key: string): Promise<TargetView> => call('clus
 export async function forgetCluster(key: string): Promise<void> {
   await call('cluster_forget', { key }, (v): v is null => v === null, 'configuration');
 }
+export type ServiceAccounts = { names: string[]; truncated: boolean };
+export const orkaPermissions = [['agents', 'create'], ['agents', 'get'], ['agents', 'list'], ['tasks', 'create'], ['tasks', 'get'], ['tasks', 'list'], ['providers', 'get'], ['providers', 'list'], ['tools', 'get'], ['tools', 'list']] as const;
+export type PermissionCheck = { resource: typeof orkaPermissions[number][0]; verb: typeof orkaPermissions[number][1]; status: 'allowed' | 'denied' | 'unknown' | 'notChecked' };
+export type AccountPreview = { status: 'allowed' | 'denied' | 'unknown'; checks: PermissionCheck[] };
+const accountName = (v: unknown): v is string => typeof v === 'string' && v.length <= 253 && v.split('.').every(part => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(part));
+function accountPreview(v: unknown): v is AccountPreview {
+  if (!object(v) || !keys(v, ['status', 'checks']) || !Array.isArray(v.checks) || v.checks.length !== 10) return false;
+  if (!v.checks.every((c: unknown, i: number) => object(c) && keys(c, ['resource', 'verb', 'status']) && c.resource === orkaPermissions[i][0] && c.verb === orkaPermissions[i][1] && ['allowed', 'denied', 'unknown', 'notChecked'].includes(c.status as string))) return false;
+  const states = (v.checks as PermissionCheck[]).map(c => c.status);
+  return v.status === 'allowed' ? states.every(s => s === 'allowed')
+    : v.status === 'denied' ? states.includes('denied') && !states.includes('unknown')
+    : v.status === 'unknown' && states.includes('unknown') && !states.includes('denied');
+}
+export const serviceAccounts = (targetId: string) => call('cluster_service_accounts', { targetId }, (v): v is ServiceAccounts => object(v) && keys(v, ['names', 'truncated']) && Array.isArray(v.names) && v.names.length <= 1000 && v.names.every(accountName) && new Set(v.names).size === v.names.length && typeof v.truncated === 'boolean', 'serviceAccount');
+export const previewServiceAccount = (targetId: string, saName: string) => call('cluster_service_account_preview', { targetId, saName }, accountPreview, 'serviceAccount');
 export const contexts = () => call('cluster_contexts', {}, (v): v is ContextView[] => list(v, context), 'configuration');
 export const reloadContexts = () => call('cluster_reload', {}, (v): v is ContextView[] => list(v, context), 'configuration');
 export const discover = (contextId: string) => call('cluster_discover', { contextId }, (v): v is TargetView[] => list(v, target) && v.every(t => t.context_id === contextId), 'clusterApi');

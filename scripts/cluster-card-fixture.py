@@ -130,6 +130,9 @@ class Discovery(BaseHTTPRequestHandler):
         if path.endswith("/portforward"):
             self.forward()
             return
+        if path == "/api/v1/namespaces/agents/serviceaccounts":
+            self.reply(403, {"apiVersion": "v1", "kind": "Status", "status": "Failure", "reason": "Forbidden", "code": 403})
+            return
         if path.endswith("/pods"):
             value = {"apiVersion": "v1", "kind": "PodList", "items": [{
                 "metadata": {"name": "ready", "namespace": "control", "uid": "pod-fixture" + suffix, "labels": {"app": "orka"},

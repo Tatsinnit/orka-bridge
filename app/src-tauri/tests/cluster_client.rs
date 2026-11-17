@@ -15,6 +15,8 @@ use std::{
 
 #[path = "support/cluster_forward.rs"]
 mod forward;
+#[path = "support/service_accounts.rs"]
+mod service_accounts;
 
 #[tokio::test]
 async fn select_connected_place_preserves_existing_target_and_provider_without_reads_or_tokens() {
@@ -952,6 +954,8 @@ struct ApiFixture {
     unrelated_api: Mutex<bool>,
     override_response: Mutex<Option<(String, u16, Value)>>,
     response_hook: Mutex<Option<ResponseHook>>,
+    raw_response: Mutex<Option<(String, Vec<u8>)>>,
+    raw_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     // Hold an individual check open to exercise lock queuing and deadline labels.
     gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     step_gate: Mutex<Option<std::sync::mpsc::Sender<GateStep>>>,
@@ -1028,6 +1032,16 @@ impl ApiFixture {
                         body,
                     ));
                     fixture.queries.lock().unwrap().push(path.clone());
+                    let raw = fixture.raw_response.lock().unwrap().clone();
+                    if let Some((suffix, bytes)) = raw {
+                        if path.split('?').next().unwrap().ends_with(&suffix) {
+                            let _ = stream.write_all(&bytes);
+                            if let Some(wait) = fixture.raw_gate.lock().unwrap().take() {
+                                let _ = wait.recv();
+                            }
+                            return;
+                        }
+                    }
                     let (status, mut response) = fixture.response(path.split('?').next().unwrap());
                     if let Some(hook) = fixture.response_hook.lock().unwrap().as_mut() {
                         hook(path.split('?').next().unwrap(), &mut response);
@@ -1075,6 +1089,15 @@ impl ApiFixture {
                 200,
                 json!({"apiVersion":"authentication.k8s.io/v1","kind":"TokenRequest", "spec":{"audiences":[]}, "status":{"token":"issued-fixture","expirationTimestamp":"2099-01-01T00:00:00Z"}}),
             );
+        }
+        if path.ends_with("/serviceaccounts") {
+            return (
+                200,
+                json!({"apiVersion":"v1","kind":"ServiceAccountList","metadata":{},"items":[{"metadata":{"name":"runner","namespace":"agents"}},{"metadata":{"name":"default","namespace":"agents"}}]}),
+            );
+        }
+        if path.ends_with("/localsubjectaccessreviews") {
+            return (200, json!({"status":{"allowed":true}}));
         }
         if path.ends_with("/selfsubjectaccessreviews") {
             return (

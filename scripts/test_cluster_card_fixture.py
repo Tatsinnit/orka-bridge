@@ -38,6 +38,20 @@ class SendFixtureTest(unittest.TestCase):
         self.assertEqual(response.status, 200)
         return json.loads(response.read())
 
+    def test_conditional_account_list_is_forbidden(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/api/v1/namespaces/agents/serviceaccounts?limit=200",
+                           headers={"Authorization": "Bearer conditional-fixture"})
+        response = connection.getresponse()
+        self.assertEqual(response.status, 403)
+        self.assertEqual(json.loads(response.read())["reason"], "Forbidden")
+        self.assertEqual(fixture.Discovery.objects, {})
+
     def test_named_patch_permission_uses_update_denial_mode(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), fixture.Discovery)
         threading.Thread(target=server.serve_forever, daemon=True).start()

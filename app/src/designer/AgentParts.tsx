@@ -18,8 +18,8 @@ const modelLabel = (id: string) => Object.hasOwn(modelNames, id) ? modelNames[id
 function toolDescription(tool: CatalogTool): string {
   return tool.kind === 'builtin' && Object.hasOwn(builtInToolDescriptions, tool.name) ? builtInToolDescriptions[tool.name] : tool.description;
 }
-export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_ID, readOnly, setupPending = false, catalog, catalogLoading = false, remote = false, onPendingEdit, onChange }: {
-  source: string; path?: string; documentId?: string; readOnly: boolean; setupPending?: boolean; catalog?: WorkspaceCatalogReply; catalogLoading?: boolean; remote?: boolean; onPendingEdit?: (pending: boolean) => void; onChange: (source: string) => void;
+export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_ID, readOnly, setupPending = false, catalog, catalogLoading = false, catalogAvailability = catalogLoading ? 'loading' : 'attempted', catalogDestination = 'This computer', remote = false, onPendingEdit, onChange }: {
+  source: string; path?: string; documentId?: string; readOnly: boolean; setupPending?: boolean; catalog?: WorkspaceCatalogReply; catalogLoading?: boolean; catalogAvailability?: 'unavailable' | 'needsConnection' | 'loading' | 'paused' | 'attempted'; catalogDestination?: string; remote?: boolean; onPendingEdit?: (pending: boolean) => void; onChange: (source: string) => void;
 }) {
   const form = readForm(source); const id = useId();
   // Markdown's separating blank lines stay in the file, not above the prompt.
@@ -67,14 +67,17 @@ export default function AgentParts({ source, path, documentId = SAMPLE_DOCUMENT_
   const listed = models?.some(model => model.id === form.model);
   const knownModel = catalog?.models.state === 'ready' && catalog.models.items.some(model => model.id === form.model);
   const unlistedLabel = !remote && models ? knownModel ? ' (not offered for chat)' : ' (unlisted)' : '';
+  const catalogReason = catalogAvailability === 'needsConnection' ? 'Choose an AI connection in Clusters to load tools and models'
+    : catalogAvailability === 'unavailable' ? remote ? 'Connect a cluster in Clusters to load tools and models' : 'Open Clusters to load tools and models on This computer.'
+    : catalogAvailability === 'paused' ? 'Tools and models are paused while another operation finishes.' : undefined;
   const toolReason = readOnly ? 'You can change tools after setup.' : !form.toolsEditable ? 'Edit this agent’s tools in File view.'
-    : setupPending ? 'Tools will be available when the local cluster is ready.' : catalogLoading ? 'Loading tools…' : tools === undefined ? 'Tools could not be read from this cluster. Check Clusters or edit File view.' : undefined;
+    : setupPending ? 'Tools will be available when the local cluster is ready.' : catalogLoading ? 'Loading tools…' : catalogReason ?? (tools === undefined ? `Couldn't read tools from ${catalogDestination}. Check Clusters or edit File view.` : undefined);
   useEffect(() => {
     if (toolReason) { setPicker(false); setQuery(''); return; }
     if (picker) { popover.current?.showPopover?.(); popover.current?.querySelector('input')?.focus(); }
   }, [picker, toolReason]);
   const modelReason = readOnly ? 'You can change the model after setup.' : !form.modelEditable ? 'Edit the model in File view for this file’s format.'
-    : setupPending ? 'Models will be available when the local cluster is ready.' : catalogLoading ? 'Loading models…' : models === undefined ? 'Models could not be read from this cluster. Check Clusters or edit File view.' : undefined;
+    : setupPending ? 'Models will be available when the local cluster is ready.' : catalogLoading ? 'Loading models…' : catalogReason ?? (models === undefined ? `Couldn't read models from ${catalogDestination}. Check Clusters or edit File view.` : undefined);
   const modelHelp = catalogLoading ? 'The model saved in your file is shown while choices load.' : modelReason
     ?? (remote ? models?.length ? 'The selected AI connection’s configured default. Other models can be entered in File view.' : 'No default model is configured for this AI connection. Enter a model in File view.'
       : models?.length ? undefined : 'No models listed by the local cluster.');

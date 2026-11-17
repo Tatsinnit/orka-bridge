@@ -382,7 +382,7 @@ try {
     })()`);
     await writeFile(join(output, `${theme}-${size}-${name}-comparison.png`), Buffer.from(comparison, 'base64'));
   }
-  if (runUi) actionFixtures.push('chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure');
+  if (runUi) actionFixtures.push('chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination');
   async function captureWorkspace(theme, size, name) {
     const card = '.returning-workspace';
     const capture = async (state, word, action, disabled = false) => {
@@ -479,7 +479,9 @@ try {
     ({ executionContextId: contextId } = await call('Page.createIsolatedWorld', { frameId, worldName: `actions-${theme}-${size}-${name}` }));
     const preflight = name.startsWith('local-preflight');
     const clusterScreen = name.startsWith('cluster-');
-    const places = name === 'welcome' || name.startsWith('places-') || preflight || clusterScreen;
+    const accountScene = name.startsWith('cluster-account-');
+    const noDestination = name === 'designer-no-destination';
+    const places = name === 'welcome' || name.startsWith('places-') || preflight || clusterScreen || noDestination;
     await evaluate(`(() => {
       const pair = ${JSON.stringify(pair)};
       const name = ${JSON.stringify(name)};
@@ -489,7 +491,7 @@ try {
       let documentName = 'web-reader';
       if (designer) pair.agent = ${JSON.stringify('---\nname: web-reader\nmodel: ' + (name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model') + '\nkmx:\n  runtime: orka\n  schemaVersion: 1\n  tools: []\n---\nFetch before answering.')};
       if (name === 'designer-reply-saved') pair.agent = ${JSON.stringify(replySavedAgent)};
-      let connected = designer && name !== 'designer';
+      let connected = designer && !['designer', 'designer-no-destination'].includes(name);
       let submitted = false;
       let attemptId = null;
       const context = { id: '00000000-0000-4000-8000-000000000001', name: 'team-dev', current: true };
@@ -513,6 +515,7 @@ try {
       window.__bridgeStops = 0;
       window.__bridgeLocalSelections = 0;
       window.__bridgeClusterUses = 0;
+      window.__bridgeAccountCalls = [];
       // The badge walk needs Designer's automatic failure path; a passed submission would stay on its first-pass story.
       window.__bridgeBadgeState = name === 'first-test-badges' ? 'failed' : 'passed';
       window.__bridgeRuns = 0;
@@ -536,7 +539,7 @@ try {
       };
       const status = () => {
         if (window.__bridgeWorkspaceUnreadable) throw Error('Synthetic workspace status unreadable');
-        const localVm = selected ? workspacePhase : window.__bridgeStops ? 'cancelled' : 'idle';
+        const localVm = selected ? workspacePhase : window.__bridgeStops || name === 'designer-no-destination' ? 'cancelled' : 'idle';
         return { selected: selected ? 'localVm' : null, localVm, model: localVm === 'ready' ? 'available' : 'locked', modelSupported: true,
           workspaceProgress: localVm === 'starting' ? { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 18000, remainingMs: null } : null,
           ...(localVm === 'failed' ? { workspaceFailure: stopFailed
@@ -580,6 +583,9 @@ try {
           if (workspace || localCancel) throw Error('Stop must use setup_cancel_local');
           window.__bridgeStops++; selected = false; connected = false; return status();
         }
+        if (name === 'designer-no-destination' && command === 'overview_files') return { state: 'complete', historyState: 'complete', runActive: false, runAgents: [], files: [{ documentId, name: documentName, state: 'readable', source, summary: { name: documentName, description: 'Synthetic saved agent', model: 'fixture-model', tools: [] }, reason: null, localResult: null }] };
+        if (name === 'designer-no-destination' && command === 'overview_agents') return { state: 'unavailable', installation: null, agents: [], observedAt: null, observation: null, runActive: false, reason: 'image' };
+        if (name === 'designer-no-destination' && command === 'overview_places') return { historyState: 'complete', unobserved: [], places: [] };
         if (command === 'agents_list') return [{ id: documentId, name: documentName, path: null, available: true }];
         if (command === 'agent_creation_root') return 'C:\\\\Users\\\\you\\\\Orka\\\\agents';
         if (command === 'setup_remove_model') { window.__bridgeRemovals++; throw { kind: 'modelBusy' }; }
@@ -616,12 +622,31 @@ try {
         if (designer && command === 'agent_selected') return documentId;
         if (designer && (command === 'workspace_catalog' || command === 'cluster_catalog')) {
           window.__bridgeCatalogCalls.push({ command, args });
+          if (name === 'designer-no-destination') throw Error('No destination must not request a catalog');
           if (name === 'designer-catalog-busy' && !window.__bridgeCatalogReleased) throw 'catalogBusy';
           return { defaultModel: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model', models: { state: 'ready', items: [{ id: name === 'designer-connected' ? 'gpt-5.6-terra' : 'fixture-model' }, ...command === 'workspace_catalog' ? [{ id: 'other-model' }] : []] }, tools: { state: 'ready', items: [{ kind: 'builtin', name: 'web_fetch', description: 'Fetch a page' }, { kind: 'builtin', name: 'request_approval', description: 'Ask a person to approve an action.' }, { kind: 'builtin', name: 'reply_in_conversation', description: 'Send a reply in the current conversation.' }] } };
         }
         if (name === 'designer-remote' && command === 'cluster_contexts') return [context];
         if (name === 'designer-remote' && command === 'cluster_discover') return [target];
-        if (command === 'cluster_use') { window.__bridgeClusterUses++; if (name === 'designer-remote') return { status: 'connected', providers: [provider], failure: null }; }
+        if (command === 'cluster_use') {
+          window.__bridgeClusterUses++;
+          if (name.startsWith('cluster-account-')) {
+            window.__bridgeAccountCalls.push({ command, args });
+            if (args.targetId !== target.id || args.saName !== null) throw Error('Only initial explicit Use is expected');
+            return { status: 'needServiceAccount', providers: [], failure: null };
+          }
+          if (name === 'designer-remote') return { status: 'connected', providers: [provider], failure: null };
+        }
+        if (command === 'cluster_service_accounts' || command === 'cluster_service_account_preview') {
+          window.__bridgeAccountCalls.push({ command, args });
+          if (args.targetId !== target.id) throw Error('Wrong account target');
+          if (command === 'cluster_service_accounts') {
+            if (name === 'cluster-account-forbidden') throw { check: 'serviceAccount', result: 'permissionDenied' };
+            return { names: ['team-runner', 'task-reader'], truncated: false };
+          }
+          if (args.saName !== 'team-runner') throw Error('Only the selected account may be previewed');
+          return { status: 'allowed', checks: [['agents', ['create', 'get', 'list']], ['tasks', ['create', 'get', 'list']], ['providers', ['get', 'list']], ['tools', ['get', 'list']]].flatMap(([resource, verbs]) => verbs.map(verb => ({ resource, verb, status: 'allowed' }))) };
+        }
         // A complete idle snapshot, so the blocked-Chat check proves Ready is suppressed, not merely that no status loaded.
         if (designer && !name.startsWith('chat-') && command === 'agent_chat_status') return { documentId, state: 'ready', busy: false, canSend: true, versions: [], error: null };
         if (command === 'send_status') return { documentId, view: null, busy: null };
@@ -642,6 +667,7 @@ try {
         }
         if (name.startsWith('cluster-') && command === 'cluster_contexts') return [context, { ...context, id: '00000000-0000-4000-8000-000000000004', name: 'team-west', current: false }];
         if (name.startsWith('cluster-') && command === 'cluster_discover') {
+          if (name.startsWith('cluster-account-')) return [target];
           window.__bridgeClusterUses++;
           if (name === 'cluster-picker-open') throw Error('Opening picker must not discover');
           if (name === 'cluster-checking') return new Promise(() => {});
@@ -699,6 +725,9 @@ try {
       await chooseContext('team-dev');
       await clickAction('Use this cluster');
       await clickAction('Open your agent');
+    } else if (noDestination) {
+      await evaluate(`document.querySelector('button[aria-label="Overview"]').click()`);
+      await clickAction('Open');
     } else if (name.startsWith('designer') || name.startsWith('local-cancel-') || name.startsWith('chat-') || name.startsWith('new-agent-')) await clickAction('Read its instructions');
     if (name.startsWith('chat-')) {
       await clickAction('Chat');
@@ -731,7 +760,32 @@ try {
         if (await evaluate('window.__bridgeClusterUses') !== 0) throw Error('Picker opened a background discovery');
       } else {
         await chooseContext('team-dev');
-        await until(() => evaluate(name === 'cluster-checking' ? `document.querySelector('.cluster-card')?.getAttribute('aria-busy') === 'true' && window.__bridgeClusterUses === 1` : `!!document.querySelector('.cluster-card .cluster-failure')`), name);
+        if (accountScene) {
+          await clickAction('Use this cluster');
+          const reason = 'Your current cluster sign-in cannot list ServiceAccounts in agents. Enter an existing account name from your cluster administrator.';
+          if (name === 'cluster-account-forbidden') {
+            await until(() => evaluate(`document.querySelector('.account-choice')?.innerText.includes(${JSON.stringify(reason)})`), 'forbidden account list');
+            await evaluate(`(() => { const input = document.querySelector('.account-choice input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'team-runner'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+          } else {
+            await until(() => evaluate(`!!document.querySelector('button[aria-label="ServiceAccount"]:not(:disabled)')`), 'account picker');
+            await evaluate(`document.querySelector('button[aria-label="ServiceAccount"]').click()`);
+            const dialog = '[role="dialog"][aria-label="Choose a ServiceAccount"]';
+            await until(() => evaluate(`document.querySelectorAll('${dialog} li').length === 2`), 'two unselected accounts');
+            await evaluate(`(() => { const input = document.querySelector('${dialog} input'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'team'); input.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+            await until(() => evaluate(`document.querySelectorAll('${dialog} li').length === 1`), 'account search');
+            await evaluate(`document.querySelector('${dialog} button[aria-label="Close picker"]').click()`);
+            await evaluate(`document.querySelector('button[aria-label="ServiceAccount"]').click()`);
+            if (name === 'cluster-account-allowed') {
+              await evaluate(`document.querySelector('${dialog} button[aria-label="team-runner"]').click()`);
+              await until(() => evaluate(`document.querySelector('.account-choice')?.innerText.includes('Required Orka permissions: Allowed')`), 'selected account Allowed');
+            }
+          }
+          const calls = await evaluate('window.__bridgeAccountCalls');
+          const commands = ['cluster_use', 'cluster_service_accounts', ...(name === 'cluster-account-allowed' ? ['cluster_service_account_preview'] : [])];
+          if (calls.map(call => call.command).join() !== commands.join() || await evaluate('window.__bridgeClusterUses') !== 1) throw Error('Account search/close/selection caused unexpected IPC: ' + JSON.stringify(calls));
+          if (name === 'cluster-account-forbidden' && !await evaluate(`document.querySelector('.account-choice input').value === 'team-runner' && [...document.querySelectorAll('button')].some(button => button.textContent === 'Use this cluster' && !button.disabled)`)) throw Error('Typed fallback must remain usable without automatic Use');
+          await evaluate(`document.querySelector('.account-choice').scrollIntoView({ block: 'center' })`);
+        } else await until(() => evaluate(name === 'cluster-checking' ? `document.querySelector('.cluster-card')?.getAttribute('aria-busy') === 'true' && window.__bridgeClusterUses === 1` : `!!document.querySelector('.cluster-card .cluster-failure')`), name);
       }
     }
     if (name.startsWith('designer') && name !== 'designer-loading' && name !== 'designer-open-error') {
@@ -743,9 +797,14 @@ try {
         await writeFile(join(output, `${theme}-${size}-catalog-first-loading.png`), Buffer.from(loading.data, 'base64'));
         await evaluate(`window.__bridgeCatalogReleased = true`);
       }
-      if (name !== 'designer') await until(() => evaluate(`!document.querySelector('.model-select').disabled`), 'connected Designer catalog');
-      await until(() => evaluate(`document.querySelector('#tab-status-Overview')?.textContent === '1 saved agent'`), 'hidden saved-file count');
-      if (await evaluate(`window.__bridgeOverviewLiveReads !== 0 || /\\bSaved\\b/.test(document.querySelector('footer').innerText)`)) throw Error('Untouched Designer claimed Saved or hidden Overview read live inventory');
+      if (noDestination) {
+        await until(() => evaluate(`document.body.innerText.includes('Open Clusters to load tools and models on This computer.')`), 'no destination guidance');
+        if (await evaluate(`window.__bridgeCatalogCalls.length || /Couldn't read (tools|models) from/.test(document.body.innerText)`)) throw Error('Unselected destination requested or blamed a catalog');
+        await evaluate(`document.querySelector('.model-select').scrollIntoView({ block: 'center' })`);
+      } else if (name !== 'designer') await until(() => evaluate(`!document.querySelector('.model-select').disabled`), 'connected Designer catalog');
+      // This case visits Overview: its header then uses live/partial counts, not the pre-visit saved-only label.
+      if (!noDestination) await until(() => evaluate(`document.querySelector('#tab-status-Overview')?.textContent === '1 saved agent'`), 'hidden saved-file count');
+      if (await evaluate(`(${!noDestination} && window.__bridgeOverviewLiveReads !== 0) || /\\bSaved\\b/.test(document.querySelector('footer').innerText)`)) throw Error('Untouched Designer claimed Saved or hidden Overview read live inventory');
       if (name === 'designer-catalog-busy') {
         await evaluate(`document.querySelector('button[aria-controls$="-picker"]').click()`);
         await until(() => evaluate(`!!document.querySelector('.tool-picker')?.getClientRects().length`), 'first tool list without Refresh');
@@ -950,7 +1009,7 @@ try {
       console.log(`Captured native WebView2 AI reset fixture: ${theme}/${size}`);
       return;
     }
-    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Ask your agent a question', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Couldn't reach this cluster.", 'cluster-account-picker-open': 'Find an account', 'cluster-account-allowed': 'Required Orka permissions: Allowed', 'cluster-account-forbidden': 'cannot list ServiceAccounts in agents', 'designer-no-destination': 'Open Clusters to load tools and models on This computer.', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check this computer yet.", 'local-preflight-blocked': 'Fix the computer requirements above', 'local-preflight-memory': 'Fix the computer requirements above', 'local-preflight-mixed': 'Fix the computer requirements above', 'local-preflight-cluster': 'Fix the computer requirements above', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first testRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Local cluster ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
@@ -1046,7 +1105,7 @@ try {
     if (['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale'].includes(name)) await compareDesigner(image.data, theme, size, name);
     if (['ai-idle', 'ai-key', 'ai-connected'].includes(name)) await compareReference(image.data, theme, size, name, 'ai');
     if (name.startsWith('places-') || clusterScreen) await compareReference(image.data, theme, size, name, 'clusters');
-    if (name.startsWith('chat-') || name.startsWith('new-agent-')) await compareDesigner(image.data, theme, size, name);
+    if (name.startsWith('chat-') || name.startsWith('new-agent-') || noDestination) await compareDesigner(image.data, theme, size, name);
     if (size !== 'wide' && ['new-agent-form', 'cluster-failure'].includes(name)) {
       await evaluate(`document.querySelector('main').scrollTop = document.querySelector('main').scrollHeight`);
       await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
@@ -1387,7 +1446,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     if (runCore) for (const name of ['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale']) await captureActions(theme, 'minimum', name);
   }
   await writeFile(join(output, 'compact-window.txt'), `Capture scope: ${captureScope}\n` + notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core and chat-agent-clusters artifacts separately; both are required for the complete matrix.\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority, loading/open-error fallback spacing, fixed wide tabs/host gap, compact subtitles/label, quiet padding and themed thin scrollbars. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Chat empty/pending/running/answer and waitingForSession Succeeded/null or known-answer, New agent form/blank-created, Clusters list, context picker/checking/failure are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core and chat-agent-clusters artifacts separately; both are required for the complete matrix.\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority, loading/open-error fallback spacing, fixed wide tabs/host gap, compact subtitles/label, quiet padding and themed thin scrollbars. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Chat empty/pending/running/answer and waitingForSession Succeeded/null or known-answer, New agent form/blank-created, Clusters list, context picker/checking/failure, account picker/Allowed/forbidden-list typed fallback and Designer no-destination guidance are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

@@ -110,12 +110,29 @@ RoleBindings, `bind`, `escalate`, and impersonation.
 ### Bridge connection access
 
 The roles above authorize calls through Orka. Connecting Bridge also needs a
-separately authorized Kubernetes identity: Service and Deployment discovery,
-Pod listing, namespaced ReplicaSet listing, and Pod port-forward access in the
-Orka installation namespace. ReplicaSet reads use a name-filtered list, not
+separately authorized Kubernetes identity: cluster-wide Service and Deployment
+listing and reads of the Agent, Task, Provider and Tool CRD definitions for
+discovery; namespaced Service, Deployment, Pod and ReplicaSet listing and Pod
+port-forward access in the Orka installation namespace for connection. ReplicaSet reads use a name-filtered list, not
 `get`; access must allow that list. These permissions are not added to the
 creator or observer roles in the fixture. A denied ReplicaSet read is reported
 as a Kubernetes connection permission failure, not an Orka authorization error.
+
+When Orka requires a namespace-local ServiceAccount, Bridge lists existing
+accounts in the watched namespace if the sign-in permits `list serviceaccounts`.
+Otherwise it explains why listing failed and accepts an administrator-provided
+name. No account is automatically selected or recommended. Choosing a listed
+account previews only its ten required Orka permissions through namespaced
+`create localsubjectaccessreviews`, using the existing sign-in's authority.
+A forbidden review stops the preview as “Couldn't check”; it is not evidence
+that the account lacks the requested Orka permission. These optional list and
+review capabilities are not added to the fixture's roles.
+
+The preview never issues tokens, changes RBAC or proves absence of broader
+access. **Use this cluster** alone requests the selected account's token, using
+the sign-in's existing named `create serviceaccounts/token` authority, and
+performs the normal identity, access and Orka reads. Discovery and forwarding
+rights belong to that sign-in, not the narrow ServiceAccount used for Orka.
 
 Before sending an Orka credential, Bridge checks the selected Pod's controller
 ReplicaSet and that ReplicaSet's controller Deployment against the recorded

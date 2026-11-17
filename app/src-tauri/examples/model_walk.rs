@@ -268,6 +268,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(move |invoke| {
+            let capture_phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+            let account_scene = matches!(capture_phase.as_deref(), Some("cluster-account-picker" | "cluster-account-forbidden"));
             let reply = match invoke.message.command() {
                 "overview_files" => {
                     let content = agent.lock().unwrap();
@@ -353,6 +355,7 @@ fn main() {
                 }
                 // Catalog choices are synthetic and never execute a tool or model.
                 "workspace_catalog" => {
+                    assert_ne!(capture_phase.as_deref(), Some("designer-no-destination"), "No destination must not request a catalog");
                     if catalog_release.as_ref().is_some_and(|path| !path.is_file()) {
                         invoke.resolver.reject("catalogBusy");
                         return true;
@@ -376,8 +379,34 @@ fn main() {
                 }], "selectedKey":cluster_selected.load(std::sync::atomic::Ordering::SeqCst).then_some("team-observed"), "persistenceState":"complete"}),
                 "cluster_reconnect" => target.clone(),
                 "cluster_use" => {
-                    cluster_selected.store(true, std::sync::atomic::Ordering::SeqCst);
-                    json!({"status":"connected", "providers":providers, "failure":null})
+                    if account_scene {
+                        assert!(matches!(invoke.message.payload(), tauri::ipc::InvokeBody::Json(args)
+                            if args["targetId"] == target["id"] && args["saName"].is_null()), "Picker actions must not Use a selected account");
+                        json!({"status":"needServiceAccount", "providers":[], "failure":null})
+                    } else {
+                        cluster_selected.store(true, std::sync::atomic::Ordering::SeqCst);
+                        json!({"status":"connected", "providers":providers, "failure":null})
+                    }
+                }
+                "cluster_service_accounts" | "cluster_service_account_preview" => {
+                    assert!(account_scene, "Account commands require the named synthetic scene");
+                    assert!(matches!(invoke.message.payload(), tauri::ipc::InvokeBody::Json(args)
+                        if args["targetId"] == target["id"]), "Wrong account target");
+                    if invoke.message.command() == "cluster_service_accounts" {
+                        if capture_phase.as_deref() == Some("cluster-account-forbidden") {
+                            invoke.resolver.reject(json!({"check":"serviceAccount", "result":"permissionDenied"}));
+                            return true;
+                        }
+                        json!({"names":["team-runner", "task-reader"], "truncated":false})
+                    } else {
+                        assert!(matches!(invoke.message.payload(), tauri::ipc::InvokeBody::Json(args)
+                            if args["saName"] == "team-runner"), "Only the selected account may be previewed");
+                        let checks: Vec<_> = [("agents", vec!["create", "get", "list"]), ("tasks", vec!["create", "get", "list"]),
+                            ("providers", vec!["get", "list"]), ("tools", vec!["get", "list"])]
+                            .into_iter().flat_map(|(resource, verbs)| verbs.into_iter().map(move |verb|
+                                json!({"resource":resource, "verb":verb, "status":"allowed"}))).collect();
+                        json!({"status":"allowed", "checks":checks})
+                    }
                 }
                 "send_preflight" => {
                     let content = agent.lock().unwrap();
@@ -392,6 +421,15 @@ fn main() {
                     {"id":"72345678-1234-4234-8234-123456789abc", "name":"team-west", "current":false}
                 ]),
                 "cluster_discover" => {
+                    if account_scene {
+                        let mut discovered = target.clone();
+                        if let tauri::ipc::InvokeBody::Json(args) = invoke.message.payload() {
+                            discovered["context_id"] = args["contextId"].clone();
+                            discovered["context_name"] = json!(if args["contextId"] == "72345678-1234-4234-8234-123456789abc" {"team-west"} else {"team-dev"});
+                        }
+                        invoke.resolver.resolve(json!([discovered]));
+                        return true;
+                    }
                     // A UI-action-only synthetic discovery held until the driver captures Checking.
                     let selector = setup_progress.clone();
                     let resolver = invoke.resolver;
@@ -465,6 +503,7 @@ fn main() {
                     }
                     if command == "setup_status" {
                         let progress = match phase.as_deref() {
+                            Some("designer-no-destination") => Some(json!({"selected":null, "localVm":"cancelled", "model":"locked", "modelSupported":true})),
                             Some("installing") => Some(json!({"selected":"localVm", "localVm":"installing", "model":"locked", "modelSupported":true,
                                 "workspaceProgress":{"phase":"materializing", "bytes":1073741824_u64, "totalBytes":2147483648_u64, "elapsedMs":20000, "remainingMs":30000}})),
                             Some("starting") => Some(json!({"selected":"localVm", "localVm":"starting", "model":"locked", "modelSupported":true,

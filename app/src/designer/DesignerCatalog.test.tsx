@@ -11,6 +11,58 @@ const catalog = (model: string) => ({ defaultModel: model, models: { state: 'rea
 const place = (targetId = '19dc68be-f597-4535-8ebd-7759f544b27a', providerId = '29dc68be-f597-4535-8ebd-7759f544b27a'): SelectedPlace => ({ kind: 'cluster', target: { id: targetId, context_id: targetId, context_name: 'team-dev', service_name: 'orka', service_namespace: 'control', watched_namespace: 'agents', image: 'fixture-image' }, providerId });
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
 
+test('without a connected destination no catalog is requested or blamed for failure', async () => {
+  vi.stubGlobal('isTauri', true); const ipc = vi.fn(command => command === 'agent_open' ? pair : null); mockIPC(ipc);
+  render(<Example remote place={{ kind: 'cluster' }} />);
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  expect(screen.getAllByText('Connect a cluster in Clusters to load tools and models').length).toBeGreaterThan(0);
+  expect(screen.queryByText(/(?:Tools|Models) could not be read|Couldn't read (?:tools|models)/)).toBeNull();
+  expect(ipc.mock.calls.some(([c]) => c === 'workspace_catalog' || c === 'cluster_catalog')).toBe(false);
+  expect(screen.getByRole('option', { name: 'saved-model' })).toBeTruthy();
+});
+test('local catalog recovery does not claim that a running cluster is disconnected', async () => {
+  vi.stubGlobal('isTauri', true); const ipc = vi.fn(command => command === 'agent_open' ? pair : null); mockIPC(ipc);
+  render(<Example place={{ kind: 'thisComputer' }} />);
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  expect(screen.getAllByText('Open Clusters to load tools and models on This computer.').length).toBeGreaterThan(0);
+  expect(screen.queryByText('Connect a cluster in Clusters to load tools and models')).toBeNull();
+  expect(ipc.mock.calls.some(([c]) => c === 'workspace_catalog' || c === 'cluster_catalog')).toBe(false);
+});
+
+test('a connected cluster without a chosen AI connection does not request or blame a catalog', async () => {
+  vi.stubGlobal('isTauri', true); const ipc = vi.fn(command => command === 'agent_open' ? pair : null); mockIPC(ipc);
+  render(<Example remote place={{ ...place(), kind: 'cluster', providerId: undefined }} catalogKey={1} />);
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  expect(screen.getAllByText('Choose an AI connection in Clusters to load tools and models').length).toBeGreaterThan(0);
+  expect(screen.queryByText('Connect a cluster in Clusters to load tools and models')).toBeNull();
+  expect(ipc.mock.calls.some(([c]) => c === 'workspace_catalog' || c === 'cluster_catalog')).toBe(false);
+  expect(screen.getByRole('option', { name: 'saved-model' })).toBeTruthy();
+});
+
+test.each([false, true])('failed catalog is attributed only to its actual destination (remote=%s)', async remote => {
+  vi.stubGlobal('isTauri', true); mockIPC(command => command === 'agent_open' ? pair : null);
+  render(<Example remote={remote} place={remote ? place() : { kind: 'thisComputer' }} catalogKey={1} />);
+  const destination = remote ? 'team-dev · control/orka · agents' : 'This computer';
+  await screen.findByText(`Couldn't read models from ${destination}. Check Clusters or edit File view.`);
+  expect(screen.getByText(`Couldn't read tools from ${destination}. Check Clusters or edit File view.`, { selector: 'p' })).toBeTruthy();
+});
+test('catalog failure distinguishes installations sharing a context and watched namespace', async () => {
+  vi.stubGlobal('isTauri', true); mockIPC(command => command === 'agent_open' ? pair : null);
+  const selected = place();
+  if (selected.kind === 'cluster' && selected.target) selected.target = { ...selected.target, service_namespace: 'other-control', service_name: 'other-orka' };
+  render(<Example remote place={selected} catalogKey={1} />);
+  await screen.findByText("Couldn't read models from team-dev · other-control/other-orka · agents. Check Clusters or edit File view.");
+  expect(screen.getByText("Couldn't read tools from team-dev · other-control/other-orka · agents. Check Clusters or edit File view.", { selector: 'p' })).toBeTruthy();
+});
+test('paused catalog makes no request and does not manufacture a failed-cluster message', async () => {
+  vi.stubGlobal('isTauri', true); const ipc = vi.fn(command => command === 'agent_open' ? pair : null); mockIPC(ipc);
+  render(<Example remote place={place()} catalogKey={1} catalogPaused />);
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  expect(screen.getAllByText('Tools and models are paused while another operation finishes.').length).toBeGreaterThan(0);
+  expect(screen.queryByText(/Couldn't read (?:tools|models)|(?:Tools|Models) could not be read/)).toBeNull();
+  expect(ipc.mock.calls.some(([c]) => c === 'cluster_catalog')).toBe(false);
+});
+
 test.each(['target', 'provider'])('remote catalog is scoped to the selected %s and rejects its late reply', async changed => {
   vi.stubGlobal('isTauri', true); const pending: ((value: unknown) => void)[] = []; const args: unknown[] = [];
   mockIPC((command, values) => {

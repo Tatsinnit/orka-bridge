@@ -515,6 +515,22 @@ async fn cluster_forget(
     state.forget(&key).await
 }
 #[tauri::command]
+async fn cluster_service_accounts(
+    target_id: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::ServiceAccountsView, bridge_engine::clusters::ClusterFailure> {
+    state.service_accounts(&target_id).await
+}
+#[tauri::command]
+async fn cluster_service_account_preview(
+    target_id: String,
+    sa_name: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::ServiceAccountPreview, bridge_engine::clusters::ClusterFailure>
+{
+    state.service_account_preview(&target_id, &sa_name).await
+}
+#[tauri::command]
 async fn cluster_use(
     target_id: String,
     sa_name: Option<String>,
@@ -763,6 +779,8 @@ fn main() {
             cluster_contexts,
             cluster_reload,
             cluster_discover,
+            cluster_service_accounts,
+            cluster_service_account_preview,
             cluster_use,
             send_preflight,
             send_start,

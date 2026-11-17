@@ -64,6 +64,8 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     return () => controller.abort();
   }, [catalogEnabled, catalogPaused, catalogKey, catalogIdentity, catalogAttempt, remote, targetId, providerId]);
   const currentCatalog = catalogEnabled && !catalogPaused && catalog?.key === catalogIdentity && catalog.attempt === catalogAttempt ? catalog : undefined;
+  const catalogAvailability = !catalogEnabled ? remote && targetId && !providerId ? 'needsConnection' : 'unavailable' : catalogPaused ? 'paused' : !currentCatalog ? 'loading' : 'attempted';
+  const catalogDestination = remote && place.kind === 'cluster' && place.target ? `${place.target.context_name} · ${place.target.service_namespace}/${place.target.service_name} · ${place.target.watched_namespace}` : 'This computer';
   const [pair, setPair] = useState<AgentPair>();
   useEffect(() => { let mounted = true; void listDocuments().then(value => { if (mounted) setEntries(value); }); return () => { mounted = false; }; }, [boundDocument, creating, pair?.documentId, agentsRevision, listAttempt]);
   const [draft, setDraft] = useState('');
@@ -268,7 +270,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
           <FileEditor value={draft} onChange={value => edit(value, true)} onSave={() => { void flush(); }} />
         </> : null}
         <div hidden={view !== 'Agent'}>
-          <AgentParts source={draft} path={pair.path} documentId={boundDocument} readOnly={false} setupPending={setupPending} catalog={currentCatalog?.reply} catalogLoading={catalogEnabled && !currentCatalog} remote={remote} onPendingEdit={observePendingSoul} onChange={edit} />
+          <AgentParts source={draft} path={pair.path} documentId={boundDocument} readOnly={false} setupPending={setupPending} catalog={currentCatalog?.reply} catalogLoading={catalogAvailability === 'loading'} catalogAvailability={catalogAvailability} catalogDestination={catalogDestination} remote={remote} onPendingEdit={observePendingSoul} onChange={edit} />
           {currentCatalog && (!currentCatalog.reply || currentCatalog.reply.models.state === 'unavailable' || currentCatalog.reply.tools.state === 'unavailable') && <Button type="button" kind="secondary" onClick={() => setCatalogAttempt(attempt => attempt + 1)}>Refresh tools and models</Button>}
         </div>
         {pair.storage && <p className="muted">{storageCopy[pair.storage]}</p>}

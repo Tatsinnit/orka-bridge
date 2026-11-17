@@ -358,6 +358,53 @@ impl ClusterSession {
         }
         Ok(())
     }
+    pub async fn service_accounts(
+        &self,
+        target_id: &str,
+    ) -> Result<ServiceAccountsView, ClusterFailure> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let unknown = Check::ServiceAccount
+            .unknown()
+            .failure(Check::ServiceAccount);
+        tokio::time::timeout_at(deadline, async {
+            let mut session = self.0.lock().await;
+            let id = Uuid::parse_str(target_id)
+                .ok()
+                .map(TargetId)
+                .ok_or(unknown)?;
+            session
+                .client(self)
+                .await?
+                .service_accounts(id, deadline)
+                .await
+        })
+        .await
+        .unwrap_or(Err(unknown))
+    }
+    pub async fn service_account_preview(
+        &self,
+        target_id: &str,
+        sa_name: &str,
+    ) -> Result<ServiceAccountPreview, ClusterFailure> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let unknown = Check::ServiceAccount
+            .unknown()
+            .failure(Check::ServiceAccount);
+        tokio::time::timeout_at(deadline, async {
+            let mut session = self.0.lock().await;
+            let id = Uuid::parse_str(target_id)
+                .ok()
+                .map(TargetId)
+                .ok_or(unknown)?;
+            session
+                .client(self)
+                .await?
+                .service_account_preview(id, sa_name, deadline)
+                .await
+        })
+        .await
+        .unwrap_or(Err(unknown))
+    }
     pub async fn use_target(&self, target_id: &str, sa_name: Option<String>) -> AccessView {
         let mut session = self.0.lock().await;
         *self.4.lock().unwrap() = None;
@@ -385,5 +432,48 @@ impl ClusterSession {
             }
             Err(outcome) => outcome.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod service_account_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn service_account_lock_queue_expires_without_publishing_late_work() {
+        let owner = ClusterSession::default();
+        let lock = owner.0.lock().await;
+        let list = tokio::spawn({
+            let owner = owner.clone();
+            async move {
+                owner
+                    .service_accounts("00000000-0000-0000-0000-000000000000")
+                    .await
+            }
+        });
+        let preview = tokio::spawn({
+            let owner = owner.clone();
+            async move {
+                owner
+                    .service_account_preview("00000000-0000-0000-0000-000000000000", "runner")
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(!list.is_finished() && !preview.is_finished());
+        tokio::time::advance(Duration::from_secs(31)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            list.is_finished() && preview.is_finished(),
+            "queue time must consume the operation budget"
+        );
+        assert!(list.await.unwrap().is_err());
+        assert!(preview.await.unwrap().is_err());
+        drop(lock);
+        tokio::task::yield_now().await;
+        assert!(
+            owner.0.lock().await.client.is_none(),
+            "expired waiter must never initialize or publish a client later"
+        );
     }
 }

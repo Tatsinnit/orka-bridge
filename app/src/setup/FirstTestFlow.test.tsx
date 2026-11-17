@@ -77,8 +77,8 @@ test('opening Designer during the automatic first test defers catalog discovery 
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
   await screen.findByRole('textbox', { name: 'Instructions' });
   expect(ipc.mock.calls.filter(([command]) => command === 'workspace_catalog')).toHaveLength(0);
-  expect(screen.getByText('Loading available tools and models…')).toBeTruthy();
-  expect(screen.queryByText(/Tools could not be read/)).toBeNull();
+  expect(screen.getAllByText('Tools and models are paused while another operation finishes.').length).toBeGreaterThan(0);
+  expect(screen.queryByText(/Couldn't read (tools|models)/)).toBeNull();
   finish();
   await waitFor(() => expect(ipc.mock.calls.some(([command]) => command === 'workspace_catalog')).toBe(true));
   expect(screen.queryByRole('button', { name: 'Refresh tools and models' })).toBeNull();

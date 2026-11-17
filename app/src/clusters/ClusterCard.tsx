@@ -1,5 +1,6 @@
 import { Disclosure } from '../components/Disclosure';
 import ContextPicker from './ContextPicker';
+import ServiceAccountPicker from './ServiceAccountPicker';
 import { useEffect, useRef, useState } from 'react';
 import { type AccessView, type ClusterFailure, type ContextView, connectCluster, contexts, discover, failedCheck, reloadContexts, reconnectCluster, forgetCluster, clusterPlaces, type SelectedPlace, type TargetView } from './api';
 import { clusterDetails, clusterRecovery } from './recovery';
@@ -39,7 +40,6 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
   const epoch = useRef(0); const admitted = useRef(false); const reloadActive = useRef(false);
   const reloadInterrupted = useRef(false); const initialLoaded = useRef(false); const wasActive = useRef(active);
   const providerName = useRef('');
-  const accountField = useRef<HTMLInputElement>(null);
   const providerField = useRef<HTMLSelectElement>(null);
   const contextField = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (active && changingContext && !busy && !confirmRemoval) contextField.current?.focus(); }, [active, changingContext, busy, confirmRemoval]);
@@ -75,7 +75,6 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
   }, [entry]);
   useEffect(() => {
     if (!active) return;
-    if (access?.status === 'needServiceAccount') accountField.current?.focus();
     if (access?.status === 'connected') providerField.current?.focus();
   }, [access, active]);
   useEffect(() => {
@@ -239,9 +238,7 @@ export default function ClusterCard({ active = true, entry, selection, onPlace, 
       </> : <>
         <div className="cluster-found"><b>Cluster found</b><span><code>{target.watched_namespace}</code> · <code>{target.service_namespace} / {target.service_name}</code></span></div>
         {!error && <p className="muted">Check that you can access this cluster.</p>}
-        {needsAccount && <><p>This cluster needs an existing service account. Ask your cluster administrator for its name.</p>
-          <label htmlFor="cluster-account">ServiceAccount name</label><input className="field" ref={accountField} id="cluster-account" autoComplete="off" spellCheck={false} disabled={busy} value={account} onChange={e => setAccount(e.target.value)} />
-          <p className="muted">An existing account in {target.watched_namespace}. Bridge does not create accounts or permissions.</p></>}
+        {needsAccount && <ServiceAccountPicker key={`${entry?.revision}/${target.id}`} target={target} active={active} disabled={busy} value={account} onChange={setAccount} />}
       </>}
       {!error && <Disclosure label={details ? 'Hide details' : 'Show details'} open={details} controls="cluster-details" onOpenChange={setDetails}>
       {details && <dl id="cluster-details" className="cluster-details"><div><dt>Context</dt><dd>{target.context_name}</dd></div><div><dt>Service</dt><dd>{target.service_namespace} / {target.service_name}</dd></div><div><dt>Watched namespace</dt><dd>{target.watched_namespace}</dd></div><div><dt>Orka image</dt><dd>{target.image}</dd></div>

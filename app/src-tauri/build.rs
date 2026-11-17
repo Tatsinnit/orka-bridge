@@ -49,6 +49,8 @@ fn main() {
             "cluster_contexts",
             "cluster_reload",
             "cluster_discover",
+            "cluster_service_accounts",
+            "cluster_service_account_preview",
             "cluster_use",
             "send_preflight",
             "send_start",

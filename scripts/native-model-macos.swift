@@ -123,7 +123,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         name.hasPrefix("chat-") ? ("designer-reference-\(theme)", "Designer design system (no dedicated Chat frame)")
         : name.hasPrefix("cluster-") ? ("cluster-reference-light", "Approved cluster cards (wide reference)")
         : name.hasPrefix("local-workspace-") || name == "local-stopped" ? ("workspace-reference-\(theme)", "Approved workspace frame (wide reference)")
-        : ["local-result", "local-answer", "local-story", "local-running", "local-stopping", "local-shell"].contains(where: { name.hasPrefix($0) }) ? ("designer-reference-\(theme)", "Approved Designer frame (wide reference)")
+        : ["local-result", "local-answer", "local-story", "local-running", "local-stopping", "local-shell", "local-catalog-no-destination"].contains(where: { name.hasPrefix($0) }) ? ("designer-reference-\(theme)", "Approved Designer frame (wide reference)")
         : name.hasPrefix("local-first-pass") ? ("setup-reference-first-pass", "Approved frame 1e, light (wide reference)")
         : name.hasPrefix("local-setup-installing") || name.hasPrefix("local-setup-meet") ? ("setup-reference-meet", "Approved frame 1c, light (wide reference)")
         : ["before-connect", "connected"].contains(name) || name.hasPrefix("local-setup-ai") || name.hasPrefix("local-setup-queued") || name.hasPrefix("local-setup-connected") || name.hasPrefix("local-key-anthropic-empty") ? ("setup-reference-ai", "Approved frame 1d, light (wide reference, cropped)")
@@ -160,7 +160,7 @@ func enabledButton(_ label: String) -> AXUIElement? {
     let buttons = nativeElements().filter { element in
         guard let role = attribute(element, "AXRole") as? String else { return false }
         // Keep ordinary controls distinct from the context's native popup trigger.
-        return (["AXButton", "AXCheckBox"].contains(role) || label == "kubectl context" && role == "AXPopUpButton")
+        return (["AXButton", "AXCheckBox"].contains(role) || ["kubectl context", "ServiceAccount"].contains(label) && role == "AXPopUpButton")
             && attribute(element, "AXEnabled") as? Bool == true
             && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == label })
     }
@@ -851,10 +851,10 @@ func waitForChatText(_ text: String) {
     }
     require(false, "Native Chat text did not appear: \(text)")
 }
-func fillMessage(_ text: String, secure: Bool = false) {
-    let label = secure ? "API key" : "Message"
+func fillMessage(_ text: String, secure: Bool = false, fieldLabel: String? = nil) {
+    let label = fieldLabel ?? (secure ? "API key" : "Message")
     let fields = nativeElements().filter { element in
-        (secure ? ["AXTextField", "AXSecureTextField"] : ["AXTextArea"]).contains(attribute(element, "AXRole") as? String ?? "")
+        (fieldLabel != nil ? ["AXTextField", "AXSearchField"] : secure ? ["AXTextField", "AXSecureTextField"] : ["AXTextArea"]).contains(attribute(element, "AXRole") as? String ?? "")
             && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == label })
     }
     require(fields.count == 1, "Expected one labelled \(label) editor")
@@ -1268,12 +1268,66 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     }
 }
 
+// Real picker/search/close/row actions against bounded synthetic account IPC.
+localSize(1280, 800)
+try "cluster-account-picker".write(to: setupProgress, atomically: true, encoding: .utf8)
+press("Check again")
+waitForButton("Use this cluster"); press("Use this cluster")
+waitForButton("ServiceAccount"); press("ServiceAccount")
+_ = try capture("cluster-account-picker-ready", ["Find an account"])
+waitForButton("task-reader")
+fillMessage("team", fieldLabel: "Find an account")
+require(!anyButton("task-reader") && anyButton("team-runner"), "Account search must filter names")
+click("Close picker", [])
+press("ServiceAccount")
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height))
+    _ = try capture("cluster-account-picker-open-\(size)", ["Find an account", "team-runner", "task-reader", "Not checked"])
+}
+click("team-runner", [])
+localSize(1280, 800)
+_ = try seek("Required Orka permissions: Allowed", -150)
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("Required Orka permissions", -100)
+    _ = try capture("cluster-account-allowed-\(size)", ["team-runner", "Required Orka permissions: Allowed", "Connection and broader access not verified."])
+}
+// A fresh context retires the prior selection before injecting the finite list403.
+localSize(1280, 800)
+try "cluster-account-forbidden".write(to: setupProgress, atomically: true, encoding: .utf8)
+press("kubectl context"); click("team-dev", [])
+waitForButton("Use this cluster"); press("Use this cluster")
+_ = try seek("ServiceAccount name", -100)
+fillMessage("team-runner", fieldLabel: "ServiceAccount name")
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("ServiceAccount name", -100)
+    _ = try capture("cluster-account-forbidden-\(size)", ["cannot list ServiceAccounts in agents", "ServiceAccount name"])
+}
+// Saved-file editing without a usable destination must not request/blame a catalog.
+try "designer-no-destination".write(to: setupProgress, atomically: true, encoding: .utf8)
+localSize(1280, 800)
+press("Overview"); press("Open web-reader")
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("Connect a cluster in Clusters", -100)
+    _ = try capture("local-catalog-no-destination-\(size)", ["Connect a cluster in Clusters to load tools and models"])
+    require(!nativeTextExists("Couldn't read tools from") && !nativeTextExists("Couldn't read models from"), "No prior destination may be blamed")
+}
+try FileManager.default.removeItem(at: setupProgress)
+
 // Stop/restart uses real UI actions. The existing selector settles only pending
 // synthetic IPC; no VM, credentials or provider is accessed.
 localSize(1280, 800)
 scroll(4000)
 click("Clusters", [])
-click("Manage", [])
+// The first click returns from Designer; the second opens the Clusters list.
+click("Clusters", [])
+// The unavailable snapshot unmounted Model and retired its in-memory consent.
+// Open the local page, then reconnect only the synthetic AI before the existing Stop walk.
+waitForButton("Connect the AI"); click("Connect the AI", [])
+press("Connect the AI")
+_ = try seek("Connected", -100)
 func workspacePhase(_ phase: String) throws {
     try phase.write(to: setupProgress, atomically: true, encoding: .utf8)
     Thread.sleep(forTimeInterval: 1.2)

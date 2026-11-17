@@ -47,6 +47,13 @@
 .cluster-card .field { width: 100%; }
 .cluster-card > button, .cluster-card > .coming-control { justify-self: start; }
 .cluster-card p { max-width: 65ch; }
+.account-choice { display: grid; gap: 8px; min-width: 0; }
+.account-choice p { margin: 0; }
+.account-choice > label { font-weight: 500; }
+.account-choice > button { justify-self: start; }
+.account-choice > .context-trigger { justify-self: stretch; }
+.account-permissions { padding: 0; margin: 8px 0; list-style: none; }
+.account-permissions li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 4px 0; }
 .cluster-found { display: grid; gap: 4px; }
 .cluster-found span, .cluster-details dd { overflow-wrap: anywhere; }
 .cluster-details { margin: 0; display: grid; gap: 8px; }

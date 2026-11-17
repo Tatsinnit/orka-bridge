@@ -39,6 +39,30 @@ pub struct TargetView {
     pub image: String,
 }
 #[derive(Clone, Debug, Serialize)]
+pub struct ServiceAccountsView {
+    pub names: Vec<String>,
+    pub truncated: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PermissionStatus {
+    Allowed,
+    Denied,
+    Unknown,
+    NotChecked,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct PermissionCheck {
+    pub resource: &'static str,
+    pub verb: &'static str,
+    pub status: PermissionStatus,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct ServiceAccountPreview {
+    pub status: PermissionStatus,
+    pub checks: Vec<PermissionCheck>,
+}
+#[derive(Clone, Debug, Serialize)]
 pub struct ProviderView {
     pub id: ProviderId,
     pub name: String,

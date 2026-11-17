@@ -31,14 +31,14 @@ function actions(chosen) {
   return names;
 }
 const all = actions(selection()), core = actions(selection('core')), ui = actions(selection('chat-agent-clusters'));
-assert.equal(all.length, 57);
+assert.equal(all.length, 61);
 assert.equal(core.length, 46);
-assert.equal(ui.length, 11);
+assert.equal(ui.length, 15);
 assert.ok(core.includes('designer-reply-saved'), 'saved reply captures belong to the core scope');
 assert.ok(!ui.includes('designer-reply-saved'), 'UI scope must not repeat saved reply captures');
 assert.equal(new Set([...core, ...ui]).size, all.length, 'scopes must partition, not repeat or omit cases');
 assert.deepEqual([...core, ...ui], all);
-assert.deepEqual(ui, ['chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure']);
+assert.deepEqual(ui, ['chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination']);
 const chatStatus = source.match(/if \(command === 'agent_chat_status'\) \{([\s\S]*?return \{ documentId,[^\n]+;)\n        \}/)?.[1];
 assert.ok(chatStatus, 'bounded Chat snapshot producer is missing');
 for (const name of ['chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer']) {
@@ -85,4 +85,51 @@ for (const [scope, directory] of [['core', 'native-recovery'], ['chat-agent-clus
   assert.match(step, /timeout-minutes: 3\n/, 'each scope keeps the existing three-minute ceiling');
 }
 assert.ok(workflow.includes('node ../scripts/test-native-recovery-scopes.mjs'));
-console.log('PASS real scope parsing; 46+11 unique action cases; Chat snapshot matrix; layout acceptance/rejection; disjoint CI scopes with unchanged three-minute ceilings');
+for (const path of ['build.rs', 'permissions/setup.toml']) {
+  const registration = await readFile(new URL(`../app/src-tauri/${path}`, import.meta.url), 'utf8');
+  for (const command of ['cluster_service_accounts', 'cluster_service_account_preview']) {
+    assert.ok(registration.includes(`"${command}"`), `${path} must permit the real desktop ${command} command`);
+  }
+}
+// Saved-only header counts apply before Overview is visited, not after its deliberate visit.
+const hiddenHeader = source.split('\n').find(line => line.includes("'hidden saved-file count'"));
+assert.ok(hiddenHeader);
+const checkHeader = Function('noDestination', 'until', 'evaluate', `return (async () => { ${hiddenHeader} })()`);
+let headerReads = 0;
+await checkHeader(true, async () => { headerReads++; }, () => true);
+assert.equal(headerReads, 0, 'visited Overview must not be required to keep its pre-visit saved-only label');
+await checkHeader(false, async () => { headerReads++; }, () => true);
+assert.equal(headerReads, 1, 'other Designer cases retain the hidden saved-only count gate');
+// Execute the driver's actual isolated-world IPC setup, not a second copy of its payloads.
+const captureActions = source.slice(source.indexOf('  async function captureActions('), source.indexOf('  // Overview renderer fixtures:'));
+for (const name of ['cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination']) {
+  let injection;
+  const stop = new Error('injection captured');
+  const capture = vm.runInNewContext(`(${captureActions})`, {
+    pair: { agent: '', tests: '' }, replySavedAgent: '', GiB: 1024 ** 3, fixtureAccount: 'synthetic-user',
+    call: async () => ({ frameTree: { frame: { id: 'fixture' } }, executionContextId: 1 }),
+    evaluate: async script => { injection = script; throw stop; },
+  });
+  await assert.rejects(capture('light', 'wide', name), error => error === stop);
+  const window = {};
+  vm.runInNewContext(injection, { window, localStorage: { setItem() {}, removeItem() {} }, document: { getElementById: () => ({ replaceWith() {} }), createElement: () => ({}) } });
+  const invoke = window.__TAURI_INTERNALS__.invoke;
+  if (name === 'designer-no-destination') {
+    assert.equal((await invoke('setup_status')).selected, null);
+    await assert.rejects(invoke('workspace_catalog'), /must not request a catalog/);
+    continue;
+  }
+  const [target] = await invoke('cluster_discover');
+  const args = { targetId: target.id, saName: null };
+  assert.equal((await invoke('cluster_use', args)).status, 'needServiceAccount');
+  if (name === 'cluster-account-forbidden') {
+    await assert.rejects(invoke('cluster_service_accounts', args), error => error.check === 'serviceAccount' && error.result === 'permissionDenied');
+  } else {
+    assert.equal(JSON.stringify(await invoke('cluster_service_accounts', args)), JSON.stringify({ names: ['team-runner', 'task-reader'], truncated: false }));
+    const preview = await invoke('cluster_service_account_preview', { ...args, saName: 'team-runner' });
+    assert.equal(preview.status, 'allowed');
+    assert.equal(preview.checks.map(check => `${check.resource}/${check.verb}/${check.status}`).join(), 'agents/create/allowed,agents/get/allowed,agents/list/allowed,tasks/create/allowed,tasks/get/allowed,tasks/list/allowed,providers/get/allowed,providers/list/allowed,tools/get/allowed,tools/list/allowed');
+    await assert.rejects(invoke('cluster_service_account_preview', { ...args, saName: 'task-reader' }), /Only the selected account/);
+  }
+}
+console.log('PASS real scope parsing; 46+15 unique action cases; Chat snapshot matrix; layout acceptance/rejection; IPC registration/injection; disjoint CI scopes with unchanged three-minute ceilings');
