@@ -163,6 +163,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
     if (!error) return;
     try {
       await navigator.clipboard.writeText(['Bridge AI connection', `Operation: ${failedAction === 'reset' ? 'Resetting AI connection' : failedAction === 'remove' ? 'Removing sign-in' : 'Connecting AI'}`, `Category: ${error.category}`,
+        ...(error.cleanup ? [`Cleanup operation: ${error.cleanup[0]}`, `Cleanup class: ${error.cleanup[1]}`] : []),
         ...error.codes.map(code => `OS code: ${code}`),
         ...(recovery ? [`Installation: ${recovery.installation}`, `Saved installation: ${recovery.savedInstallation}`, `Native credential slot: ${recovery.credentialSlot}`, `Reset stage: ${recovery.resetStage ?? (failedAction === 'reset' ? 'Unconfirmed' : 'Not started')}`] : [])].join('\n'));
       setNotice('Details copied. No keys or sign-in tokens are included.');

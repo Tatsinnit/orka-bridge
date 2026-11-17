@@ -172,12 +172,16 @@ jobs:
           cargo +1.98.1 fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --test engine
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --lib --test dev_image_profile
+          cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --lib native_store_all_phases -- --ignored
+          cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --lib native_credential_process_death -- --ignored
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --bin orka-bridge --features custom-protocol
           cargo +1.98.1 clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
       - name: Release Rust checks
         if: matrix.suite == 'release-checks'
         run: |
           cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
+          cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --lib native_store_all_phases -- --ignored
+          cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --lib native_credential_process_death -- --ignored
           cargo +1.98.1 clippy --release --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
       # Keep successful compilation/tests even if the later desktop walk fails.
       - name: Preserve verified Rust cache

@@ -325,7 +325,10 @@ mod infrastructure_tests {
     }
     #[tokio::test]
     async fn restore_workspace_stops_and_releases_before_storage_and_failed_stop_never_enters_it() {
-        for fail_stop in [false, true] {
+        for (fail_stop, operation) in [false, true]
+            .into_iter()
+            .flat_map(|fail| ["restore", "transfer", "remove"].map(|operation| (fail, operation)))
+        {
             let probe = Arc::new(Probe {
                 fail_stop,
                 ..Probe::default()
@@ -336,10 +339,23 @@ mod infrastructure_tests {
             let data = home.path().join("data");
             let local = home.path().join("local");
             std::fs::create_dir(&local).unwrap();
-            assert!(vm
-                .restore_workspace(data, local.clone(), Uuid::new_v4())
-                .await
-                .is_err());
+            let transaction = Uuid::new_v4();
+            let failed = match operation {
+                "restore" => vm
+                    .restore_workspace(data, local.clone(), transaction)
+                    .await
+                    .is_err(),
+                "transfer" => vm
+                    .transfer_workspace_credential(data, local.clone(), transaction)
+                    .await
+                    .is_err(),
+                "remove" => vm
+                    .remove_workspace_credential(data, local.clone(), transaction, Uuid::new_v4())
+                    .await
+                    .is_err(),
+                _ => unreachable!(),
+            };
+            assert!(failed, "{operation}");
             assert_eq!(probe.stops.load(Ordering::SeqCst), 1);
             assert_eq!(
                 probe.releases.load(Ordering::SeqCst),

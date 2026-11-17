@@ -19,6 +19,15 @@ pub struct VmClient {
 fn invalid() -> io::Error {
     io::Error::from(io::ErrorKind::InvalidData)
 }
+/// Distinguishes a decoded guest refusal from arbitrary transport Other errors.
+#[derive(Debug)]
+pub(crate) struct GuestRequestRefused;
+impl std::fmt::Display for GuestRequestRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("guest runtime refused request")
+    }
+}
+impl std::error::Error for GuestRequestRefused {}
 impl VmClient {
     pub fn established(channel: Box<dyn GuestChannel>, nonce: Uuid) -> io::Result<Self> {
         if nonce.is_nil() {
@@ -201,7 +210,7 @@ impl VmClient {
     fn ready_call(&mut self, body: RequestBody) -> io::Result<()> {
         match self.call(body)? {
             ResultBody::Ready {} => Ok(()),
-            ResultBody::Error { .. } => Err(io::Error::other("guest runtime refused request")),
+            ResultBody::Error { .. } => Err(io::Error::other(GuestRequestRefused)),
             _ => {
                 self.channel = None;
                 Err(invalid())

@@ -28,6 +28,7 @@ use std::{
 use tokio::sync::watch;
 
 const STORE: &str = "workspace-upgrades-v1";
+type MetadataFiles<'a> = [(&'static str, &'a Option<Vec<u8>>); 2];
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Installation {
@@ -81,6 +82,8 @@ struct Intent {
 enum CredentialDisposition {
     Absent,
     Reserved,
+    Transferring,
+    Transferred,
     Removed,
 }
 #[derive(Debug, PartialEq)]
@@ -312,12 +315,269 @@ impl WorkspaceUpgrade {
         image_cache::fs::sync(&self.directory)?;
         Ok(())
     }
+    fn slot(&self, intent: &Intent) -> Result<Option<Uuid>, RuntimeError> {
+        SetupStore::upgrade_slot(intent.model.as_deref()).map_err(|_| RuntimeError::RetainedState)
+    }
+    fn slot_outcome(&self, slot: Uuid) -> Result<Option<bool>, RuntimeError> {
+        match read_bytes(&self.local.join(STORE).join(format!("removed-{slot}")), 16)? {
+            None => Ok(None),
+            Some(bytes) if bytes == b"removing" => Ok(Some(false)),
+            Some(bytes) if bytes == b"removed" => Ok(Some(true)),
+            _ => Err(RuntimeError::RetainedState),
+        }
+    }
+    fn slot_removed(&self, slot: Uuid) -> Result<bool, RuntimeError> {
+        Ok(self.slot_outcome(slot)? == Some(true))
+    }
+    fn write_slot_outcome(&self, slot: Uuid, bytes: &[u8]) -> Result<(), RuntimeError> {
+        let pending = format!("removed-{slot}-{}.next", Uuid::new_v4());
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = self.directory.open_with(&pending, &options)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        let root = self.local.join(STORE);
+        crate::runtime::journal::replace(
+            &root.join(pending),
+            &root.join(format!("removed-{slot}")),
+        )?;
+        image_cache::fs::sync(&self.directory)?;
+        Ok(())
+    }
+    fn reconcile_removed(&self) -> Result<(), RuntimeError> {
+        let intents = self.intents()?;
+        if intents.is_empty() {
+            return Ok(());
+        }
+        let setup = SetupStore::new(Some(self.data.clone()));
+        let _owner = setup
+            .lock_upgrade_metadata()
+            .map_err(|_| RuntimeError::RetainedState)?;
+        for intent in intents {
+            for model in [
+                intent.model.as_deref(),
+                intent.restore.as_ref().and_then(|r| r.model.as_deref()),
+            ] {
+                if let Some(slot) =
+                    SetupStore::upgrade_slot(model).map_err(|_| RuntimeError::RetainedState)?
+                {
+                    if self.slot_removed(slot)? {
+                        setup
+                            .clear_upgrade_slot(slot)
+                            .map_err(|_| RuntimeError::RetainedState)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    fn intents(&self) -> Result<Vec<Intent>, RuntimeError> {
+        let mut intents: Vec<_> = self.read_intent()?.into_iter().collect();
+        for entry in fs::read_dir(self.local.join(STORE))? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                return Err(RuntimeError::RetainedState);
+            };
+            if name.starts_with("completed-") && name.ends_with(".json") {
+                let bytes =
+                    read_bytes(&entry.path(), 128 * 1024)?.ok_or(RuntimeError::RetainedState)?;
+                let intent: Intent =
+                    serde_json::from_slice(&bytes).map_err(|_| RuntimeError::RetainedState)?;
+                if intent.version != 1
+                    || intent.transaction.is_nil()
+                    || name != format!("completed-{}.json", intent.transaction)
+                {
+                    return Err(RuntimeError::RetainedState);
+                }
+                intents.push(intent);
+            }
+        }
+        Ok(intents)
+    }
+    /// Called while holding transaction then model custody, including direct native calls.
+    pub(crate) fn guard_model(
+        &self,
+        slot: Option<Uuid>,
+        removal: bool,
+    ) -> Result<(), RuntimeError> {
+        for (index, intent) in self.intents()?.iter().enumerate() {
+            let source = self.slot(intent)?;
+            let outcome = source.map(|s| self.slot_outcome(s)).transpose()?.flatten();
+            let removed = outcome == Some(true)
+                || matches!(intent.credential, CredentialDisposition::Removed);
+            let archived_b = intent
+                .restore
+                .as_ref()
+                .map(|r| SetupStore::upgrade_slot(r.model.as_deref()))
+                .transpose()
+                .map_err(|_| RuntimeError::RetainedState)?
+                .flatten();
+            let archived_outcome = archived_b
+                .map(|slot| self.slot_outcome(slot))
+                .transpose()?
+                .flatten();
+            if outcome == Some(false) || archived_outcome == Some(false) {
+                return Err(RuntimeError::RetainedState);
+            }
+            if index == 0 && !matches!(intent.phase, Phase::ImagePrepared | Phase::Restored) {
+                return Err(RuntimeError::RetainedState);
+            }
+            if index == 0
+                && intent.phase != Phase::Restored
+                && !removed
+                && matches!(
+                    intent.credential,
+                    CredentialDisposition::Reserved | CredentialDisposition::Transferring
+                )
+            {
+                return Err(RuntimeError::RetainedState);
+            }
+            if removal && slot.is_none() && source.is_some() && !removed {
+                return Err(RuntimeError::RetainedState);
+            }
+            if let Some(slot) = slot {
+                if (source == Some(slot) || archived_b == Some(slot))
+                    && (removal
+                        || self.slot_outcome(slot)?.is_some()
+                        || (source == Some(slot) && removed))
+                {
+                    return Err(RuntimeError::RetainedState);
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Explicit association reuse only; caller retains confirmed lifecycle quiescence.
+    pub(crate) fn transfer_credential(&mut self, transaction: Uuid) -> Result<bool, RuntimeError> {
+        self.transfer_credential_with(transaction, |_| Ok(()))
+    }
+    fn transfer_credential_with(
+        &mut self,
+        transaction: Uuid,
+        point: impl Fn(&str) -> Result<(), RuntimeError>,
+    ) -> Result<bool, RuntimeError> {
+        let mut intent = self.read_intent()?.ok_or(RuntimeError::RetainedState)?;
+        if intent.transaction != transaction
+            || intent.phase != Phase::ImagePrepared
+            || intent.restore.is_some()
+        {
+            return Err(RuntimeError::RetainedState);
+        }
+        self.recover()?;
+        let setup = SetupStore::new(Some(self.data.clone()));
+        let _owner = setup
+            .lock_upgrade_metadata()
+            .map_err(|_| RuntimeError::RetainedState)?;
+        let Some(slot) = self.slot(&intent)? else {
+            return Ok(false);
+        };
+        if self.slot_outcome(slot)?.is_some()
+            || matches!(intent.credential, CredentialDisposition::Removed)
+        {
+            return Err(RuntimeError::RetainedState);
+        }
+        let destination = intent
+            .destination
+            .as_ref()
+            .ok_or(RuntimeError::RetainedState)?;
+        let Some(model) =
+            SetupStore::transferred_model(intent.model.as_deref(), destination.installation)
+                .map_err(|_| RuntimeError::RetainedState)?
+        else {
+            return Ok(false);
+        };
+        let expected = [
+            ("model-v1", Some(model)),
+            ("model-account-v1", intent.account.clone()),
+        ];
+        for (name, bytes) in &expected {
+            let current = read_bytes(&self.data.join("setup-v1").join(name), 16384)?;
+            if current.is_some() && current != *bytes {
+                return Err(RuntimeError::RetainedState);
+            }
+        }
+        if matches!(intent.credential, CredentialDisposition::Transferred) {
+            return Ok(true);
+        }
+        intent.credential = CredentialDisposition::Transferring;
+        self.persist(&intent)?;
+        point("transfer-intent")?;
+        let root = self.data.join("setup-v1");
+        for (name, bytes) in expected {
+            if let Some(bytes) = bytes {
+                crate::setup::publish_upgrade_metadata(&root, name, &bytes)
+                    .map_err(|_| RuntimeError::RetainedState)?;
+            }
+            point(name)?;
+        }
+        intent.credential = CredentialDisposition::Transferred;
+        self.persist(&intent)?;
+        point("transferred")?;
+        Ok(true)
+    }
+    /// Exact host-slot removal after lifecycle shutdown, never archived guest cleanup.
+    pub(crate) fn remove_credential(
+        &mut self,
+        transaction: Uuid,
+        slot: Uuid,
+        store: &impl crate::runtime::credential_store::CredentialStore,
+    ) -> Result<(), RuntimeError> {
+        self.remove_credential_with(transaction, slot, store, |_| Ok(()))
+    }
+    fn remove_credential_with(
+        &mut self,
+        transaction: Uuid,
+        slot: Uuid,
+        store: &impl crate::runtime::credential_store::CredentialStore,
+        point: impl Fn(&str) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        self.recover()?;
+        let intents = self.intents()?;
+        let intent = intents
+            .iter()
+            .find(|i| i.transaction == transaction)
+            .ok_or(RuntimeError::RetainedState)?;
+        let archived_b = intent
+            .restore
+            .as_ref()
+            .map(|r| SetupStore::upgrade_slot(r.model.as_deref()))
+            .transpose()
+            .map_err(|_| RuntimeError::RetainedState)?
+            .flatten();
+        if slot.is_nil() || (self.slot(intent)? != Some(slot) && archived_b != Some(slot)) {
+            return Err(RuntimeError::RetainedState);
+        }
+        // A must already be stopped and retained, or coherently restored under the lifecycle owner.
+        if !matches!(intent.phase, Phase::ImagePrepared | Phase::Restored) {
+            return Err(RuntimeError::RetainedState);
+        }
+        let setup = SetupStore::new(Some(self.data.clone()));
+        let _owner = setup
+            .lock_upgrade_metadata()
+            .map_err(|_| RuntimeError::RetainedState)?;
+        if !self.slot_removed(slot)? {
+            self.write_slot_outcome(slot, b"removing")?;
+            point("removal-intent")?;
+            store.delete(slot).map_err(|_| RuntimeError::Unavailable)?;
+            point("vault-deleted")?;
+            self.write_slot_outcome(slot, b"removed")?;
+        }
+        point("removal-recorded")?;
+        setup
+            .clear_upgrade_slot(slot)
+            .map_err(|_| RuntimeError::RetainedState)?;
+        point("metadata-removed")?;
+        Ok(())
+    }
     pub(crate) fn inspect(&self) -> Result<UpgradeStatus, RuntimeError> {
         self.recover()
     }
     /// Reconcile identities, not the last phase label. No recovery path synthesizes
     /// creation authority or moves an unexpected canonical directory out of the way.
     pub(crate) fn recover(&self) -> Result<UpgradeStatus, RuntimeError> {
+        self.reconcile_removed()?;
         let Some(intent) = self.read_intent()? else {
             return Ok(UpgradeStatus::None);
         };
@@ -332,9 +592,29 @@ impl WorkspaceUpgrade {
         {
             // B may have acquired a different saved association since setup.
             // Validate its current ownership rather than comparing it with A.
-            let _metadata = SetupStore::new(Some(self.data.clone()))
-                .snapshot_for_upgrade(b.installation)
-                .map_err(|_| RuntimeError::RetainedState)?;
+            let removed = self
+                .slot(&intent)?
+                .map(|slot| self.slot_removed(slot))
+                .transpose()?
+                .unwrap_or(false);
+            if matches!(intent.credential, CredentialDisposition::Transferring) && !removed {
+                let expected =
+                    SetupStore::transferred_model(intent.model.as_deref(), b.installation)
+                        .map_err(|_| RuntimeError::RetainedState)?;
+                for (name, bytes) in [
+                    ("model-v1", &expected),
+                    ("model-account-v1", &intent.account),
+                ] {
+                    let current = read_bytes(&self.data.join("setup-v1").join(name), 16384)?;
+                    if current.is_some() && current != *bytes {
+                        return Err(RuntimeError::RetainedState);
+                    }
+                }
+            } else {
+                let _metadata = SetupStore::new(Some(self.data.clone()))
+                    .snapshot_for_upgrade(b.installation)
+                    .map_err(|_| RuntimeError::RetainedState)?;
+            }
         } else {
             for (name, snapshot) in [
                 ("model-v1", &intent.model),
@@ -581,13 +861,20 @@ impl WorkspaceUpgrade {
     pub(crate) fn restore(&mut self, transaction: Uuid) -> Result<UpgradeStatus, RuntimeError> {
         self.restore_with(transaction, |_| Ok(()))
     }
-    fn source_metadata<'a>(&self, intent: &'a Intent) -> [(&'static str, &'a Option<Vec<u8>>); 2] {
-        let (model, account) = if matches!(intent.credential, CredentialDisposition::Removed) {
-            (&None, &None)
-        } else {
-            (&intent.model, &intent.account)
-        };
-        [("model-v1", model), ("model-account-v1", account)]
+    fn source_metadata<'a>(&self, intent: &'a Intent) -> Result<MetadataFiles<'a>, RuntimeError> {
+        let removed = self
+            .slot(intent)?
+            .map(|s| self.slot_outcome(s))
+            .transpose()?
+            .flatten()
+            .is_some();
+        let (model, account) =
+            if removed || matches!(intent.credential, CredentialDisposition::Removed) {
+                (&None, &None)
+            } else {
+                (&intent.model, &intent.account)
+            };
+        Ok([("model-v1", model), ("model-account-v1", account)])
     }
     fn restore_status(&self, intent: &Intent) -> Result<UpgradeStatus, RuntimeError> {
         let restore = intent.restore.as_ref().ok_or(RuntimeError::RetainedState)?;
@@ -640,7 +927,7 @@ impl WorkspaceUpgrade {
             return Ok(UpgradeStatus::Restored);
         }
         for ((name, wanted), archived) in self
-            .source_metadata(intent)
+            .source_metadata(intent)?
             .into_iter()
             .zip([&restore.model, &restore.account])
         {
@@ -663,6 +950,7 @@ impl WorkspaceUpgrade {
         transaction: Uuid,
         point: impl Fn(&str) -> Result<(), RuntimeError>,
     ) -> Result<UpgradeStatus, RuntimeError> {
+        self.reconcile_removed()?;
         let mut intent = self.read_intent()?.ok_or(RuntimeError::RetainedState)?;
         if intent.transaction != transaction || intent.phase == Phase::Restored {
             return Err(RuntimeError::RetainedState);
@@ -766,7 +1054,7 @@ impl WorkspaceUpgrade {
         }
         self.restore_status(&intent)?;
         for ((name, snapshot), boundary) in self
-            .source_metadata(&intent)
+            .source_metadata(&intent)?
             .into_iter()
             .zip(["restore-model-published", "restore-account-published"])
         {

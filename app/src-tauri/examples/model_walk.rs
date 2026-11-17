@@ -697,6 +697,16 @@ fn main() {
                 }
                 "setup_remove_model" => {
                     connected.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+                    let cleanup = match phase.as_deref() {
+                        Some("cleanup-status") => Some(("modelStatus", "unsupported")),
+                        Some("cleanup-preconditions") => Some(("modelStatusPreconditions", "refused")),
+                        _ => None,
+                    };
+                    if let Some(cleanup) = cleanup {
+                        invoke.resolver.reject(json!({"kind":"modelReconnect", "cleanup":cleanup, "message":"synthetic-private-token"}));
+                        return true;
+                    }
                     if key_connected.load(std::sync::atomic::Ordering::SeqCst)
                         && !key_removed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
                         invoke.resolver.reject(json!({"kind":"modelKeyCleanup"}));
@@ -704,7 +714,7 @@ fn main() {
                     }
                     key_connected.store(false, std::sync::atomic::Ordering::SeqCst);
                     if !removed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        invoke.resolver.reject(json!({"kind":"modelBusy"}));
+                        invoke.resolver.reject(json!({"kind":"modelReconnect", "cleanup":["disconnectRetainedModel","refused"], "message":"synthetic-private-token"}));
                         return true;
                     }
                     json!({"ready":false})

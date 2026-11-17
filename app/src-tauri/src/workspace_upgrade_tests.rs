@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 mod fixture {
     include!("../tests/support/runtime_image_fixture.rs");
 }
+#[path = "workspace_upgrade_credential_tests.rs"]
+mod credentials;
 #[path = "workspace_upgrade_crash_tests.rs"]
 mod process;
 #[path = "workspace_upgrade_restore_tests.rs"]

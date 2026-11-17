@@ -674,7 +674,10 @@ fn main() {
         .setup(move |app| {
             #[cfg(debug_assertions)]
             eprintln!("bridge-startup: setup");
-            let store = Arc::new(SetupStore::new(app.path().app_data_dir().ok()));
+            let store = Arc::new(SetupStore::with_upgrade_root(
+                app.path().app_data_dir().ok(),
+                app.path().app_local_data_dir().ok(),
+            ));
             let recovery = match (app.path().app_data_dir(), app.path().app_local_data_dir()) {
                 (Ok(data), Ok(local)) => {
                     bridge_engine::workspace_upgrade::recover_startup(&data, &local)

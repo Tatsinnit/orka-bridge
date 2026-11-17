@@ -66,7 +66,16 @@ function recoveryInfo(value: unknown): ModelRecovery | undefined {
   if (r.resetStage !== undefined && r.resetStage !== 'credentialRemovalUnconfirmed' && r.resetStage !== 'recordRemovalUnconfirmed') return;
   return { installation: r.installation, savedInstallation: r.savedInstallation, credentialSlot: r.credentialSlot, ...(r.resetStage ? { resetStage: r.resetStage } : {}) };
 }
-export type ModelFailure = { message: string; category: keyof typeof errors | 'unknown'; codes: number[]; vendor?: KeyVendor; recovery?: ModelRecovery };
+const cleanupOperations = ['modelStatus', 'modelStatusPreconditions', 'disconnectRetainedModel'] as const;
+const cleanupClasses = ['timeout', 'unsupported', 'protocol', 'connection', 'permission', 'refused', 'io'] as const;
+type CleanupDiagnostic = [typeof cleanupOperations[number], typeof cleanupClasses[number]];
+function cleanupInfo(value: unknown): CleanupDiagnostic | undefined {
+  if (!Array.isArray(value) || value.length !== 2) return;
+  const operation = cleanupOperations.find(item => item === value[0]);
+  const classification = cleanupClasses.find(item => item === value[1]);
+  return operation && classification ? [operation, classification] : undefined;
+}
+export type ModelFailure = { message: string; category: keyof typeof errors | 'unknown'; codes: number[]; vendor?: KeyVendor; recovery?: ModelRecovery; cleanup?: CleanupDiagnostic };
 export type ModelResult = { ok: true; connection?: ModelConnection } | ({ ok: false } & ModelFailure);
 export const connectModel = (vendor?: KeyVendor) => call('setup_connect_model', true, 'The AI connection could not be completed.', vendor ? { vendor } : undefined);
 export const resetModel = () => call('setup_reset_model', false, 'Bridge could not confirm the AI connection was reset.');
@@ -91,7 +100,8 @@ async function call(command: string, ready: boolean, fallback: string, args?: { 
       const category = error.kind as keyof typeof errors;
       const vendor = 'vendor' in error && (error.vendor === 'openai' || error.vendor === 'anthropic') ? error.vendor : undefined;
       const recovery = 'recovery' in error ? recoveryInfo(error.recovery) : undefined;
-      const context: Pick<ModelFailure, 'vendor' | 'recovery'> = { ...(vendor ? { vendor } : {}), ...(recovery ? { recovery } : {}) };
+      const cleanup = 'cleanup' in error ? cleanupInfo(error.cleanup) : undefined;
+      const context: Pick<ModelFailure, 'vendor' | 'recovery' | 'cleanup'> = { ...(vendor ? { vendor } : {}), ...(recovery ? { recovery } : {}), ...(cleanup ? { cleanup } : {}) };
       if (category === 'modelStore' && 'native' in error) {
         const detail = error.native;
         if (typeof detail === 'object' && detail !== null && 'call' in detail && 'code' in detail

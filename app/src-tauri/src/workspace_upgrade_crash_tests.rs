@@ -112,6 +112,49 @@ fn transaction_owner_drop_releases_fork_inheritance_but_child_drop_cannot_unlock
         }
     }
 }
+struct CredentialCrashVault;
+impl crate::runtime::credential_store::CredentialStore for CredentialCrashVault {
+    fn save(&self, _: Uuid, _: &[u8]) -> Result<(), crate::runtime::credential_store::StoreError> {
+        panic!("crash recovery must not save secrets")
+    }
+    fn load(
+        &self,
+        _: Uuid,
+    ) -> Result<
+        bridge_runtime_protocol::CredentialPayload,
+        crate::runtime::credential_store::StoreError,
+    > {
+        panic!("crash recovery must not load secrets")
+    }
+    fn delete(&self, slot: Uuid) -> Result<(), crate::runtime::credential_store::StoreError> {
+        use crate::runtime::credential_store::OsCredentialStore;
+        if native_store() {
+            OsCredentialStore.delete(slot)
+        } else {
+            Ok(())
+        }
+    }
+}
+fn native_store() -> bool {
+    cfg!(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(windows, target_arch = "x86_64")
+    )) && std::env::var("BRIDGE_TEST_NATIVE_CREDENTIAL_STORE").as_deref() == Ok("1")
+}
+struct OwnedSyntheticSlot(PathBuf);
+impl Drop for OwnedSyntheticSlot {
+    fn drop(&mut self) {
+        use crate::runtime::credential_store::{CredentialStore, OsCredentialStore};
+        if !native_store() {
+            return;
+        }
+        let Ok(bytes) = fs::read(&self.0) else { return };
+        let Ok(slot) = serde_json::from_slice::<Uuid>(&bytes) else {
+            return;
+        };
+        let _ = OsCredentialStore.delete(slot);
+    }
+}
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
@@ -127,8 +170,59 @@ fn crash_child() {
     } else {
         ImageTarget::WindowsAmd64
     });
+    let credential_phase = std::env::var("BRIDGE_UPGRADE_CREDENTIAL_PHASE").ok();
+    if let Some(phase) = &credential_phase {
+        use crate::runtime::credential_store::{CredentialStore, OsCredentialStore};
+        let (slot, _) = super::credentials::phase(&scene, phase);
+        let home = PathBuf::from(std::env::var_os("BRIDGE_UPGRADE_CRASH_HOME").unwrap());
+        // Parent cleanup owns only this freshly generated stand-in slot, including failed setup.
+        fs::write(
+            home.join("owned-slot.json"),
+            serde_json::to_vec(&slot).unwrap(),
+        )
+        .unwrap();
+        if native_store() {
+            OsCredentialStore
+                .save(slot, b"synthetic-model-only")
+                .unwrap();
+        }
+    }
     scene.replace(None).unwrap();
     let point = std::env::var("BRIDGE_UPGRADE_CRASH_POINT").unwrap();
+    if credential_phase.is_some() {
+        let mut owner = WorkspaceUpgrade::open(&scene.data, &scene.local).unwrap();
+        let intent = owner.read_intent().unwrap().unwrap();
+        let hook = |p: &str| {
+            crash_at(
+                &scene.data,
+                &scene.local,
+                scene.source_id,
+                &format!("credential-{p}"),
+            );
+            Ok(())
+        };
+        if point.starts_with("credential-transfer")
+            || matches!(
+                point.as_str(),
+                "credential-model-v1" | "credential-model-account-v1" | "credential-transferred"
+            )
+        {
+            owner
+                .transfer_credential_with(intent.transaction, hook)
+                .unwrap();
+        } else {
+            owner.transfer_credential(intent.transaction).unwrap();
+            owner
+                .remove_credential_with(
+                    intent.transaction,
+                    owner.slot(&intent).unwrap().unwrap(),
+                    &CredentialCrashVault,
+                    hook,
+                )
+                .unwrap();
+        }
+        panic!("credential crash point was not reached");
+    }
     if RESTORE_POINTS.contains(&point.as_str()) {
         let b = super::restore::consumed_destination(&scene);
         super::restore::destination_metadata(&scene, b.installation);
@@ -142,6 +236,105 @@ fn crash_child() {
             .unwrap();
     }
     panic!("crash point was not reached");
+}
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(windows, target_arch = "x86_64")
+))]
+#[test]
+#[ignore = "explicit native synthetic-slot verification; CI opts in"]
+fn native_credential_process_death_uses_only_owned_synthetic_slots() {
+    let output=Command::new(std::env::current_exe().unwrap())
+        .args(["--exact","workspace_upgrade::tests::process::credential_process_death_preserves_all_phase_reservations_and_exact_slot_outcomes","--nocapture"])
+        .env("BRIDGE_TEST_NATIVE_CREDENTIAL_STORE","1")
+        .output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+}
+#[test]
+fn credential_process_death_preserves_all_phase_reservations_and_exact_slot_outcomes() {
+    for phase in ["storing", "stored", "pending", "connected", "cleared"] {
+        let mut points = vec![
+            "removal-intent",
+            "vault-deleted",
+            "removal-recorded",
+            "metadata-removed",
+        ];
+        if matches!(phase, "stored" | "connected") {
+            points.extend([
+                "transfer-intent",
+                "model-v1",
+                "model-account-v1",
+                "transferred",
+            ]);
+        }
+        for boundary in points {
+            let home = tempfile::tempdir().unwrap();
+            let _slot = OwnedSyntheticSlot(home.path().join("owned-slot.json"));
+            let point = format!("credential-{boundary}");
+            let child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "workspace_upgrade::tests::process::crash_child",
+                ])
+                .env("BRIDGE_UPGRADE_CRASH_HOME", home.path())
+                .env("BRIDGE_UPGRADE_CRASH_POINT", &point)
+                .env("BRIDGE_UPGRADE_CREDENTIAL_PHASE", phase)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let mut child = ChildGuard(child);
+            let start = Instant::now();
+            let ready = home.path().join("ready.json");
+            while !ready.exists() {
+                assert!(
+                    child.0.try_wait().unwrap().is_none(),
+                    "{phase}/{point}: child exited early"
+                );
+                assert!(
+                    start.elapsed() < Duration::from_secs(15),
+                    "{phase}/{point}: no boundary"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
+            let receipt: serde_json::Value =
+                serde_json::from_slice(&fs::read(ready).unwrap()).unwrap();
+            let data = PathBuf::from(receipt["data"].as_str().unwrap());
+            let local = PathBuf::from(receipt["local"].as_str().unwrap());
+            let mut owner = WorkspaceUpgrade::open(&data, &local).unwrap();
+            let intent = owner.read_intent().unwrap().unwrap();
+            let slot = owner.slot(&intent).unwrap().unwrap();
+            owner.recover().unwrap();
+            if matches!(
+                boundary,
+                "transfer-intent" | "model-v1" | "model-account-v1" | "transferred"
+            ) {
+                assert!(owner.transfer_credential(intent.transaction).unwrap());
+                let binding: serde_json::Value =
+                    serde_json::from_slice(&fs::read(data.join("setup-v1/model-v1")).unwrap())
+                        .unwrap();
+                assert_eq!(binding["slot"], slot.to_string());
+                assert_eq!(binding["phase"], "stored");
+                assert!(binding["nonce"].is_null() && binding["connection"].is_null());
+            }
+            owner
+                .remove_credential(intent.transaction, slot, &CredentialCrashVault)
+                .unwrap();
+            owner.restore(intent.transaction).unwrap();
+            assert!(!data.join("setup-v1/model-v1").exists(), "{phase}/{point}");
+            assert!(owner.slot_removed(slot).unwrap());
+            assert!(owner.take_destination().is_none());
+        }
+    }
 }
 #[test]
 fn process_death_at_each_boundary_releases_ownership_without_adopting_unknown_state() {

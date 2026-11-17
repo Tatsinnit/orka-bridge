@@ -554,6 +554,33 @@ impl LocalVm {
         // caller drops its future. Renderer activation remains a later task.
         crate::workspace_upgrade::WorkspaceUpgrade::open(&data, &local)?.restore(transaction)
     }
+    /// Native-only explicit intents; neither method connects AI or addresses an archived guest.
+    #[allow(dead_code)]
+    pub(crate) async fn transfer_workspace_credential(
+        &self,
+        data: std::path::PathBuf,
+        local: std::path::PathBuf,
+        transaction: bridge_runtime_protocol::Uuid,
+    ) -> Result<bool, RuntimeError> {
+        let _quiesced = self.quiesce_for_upgrade().await?;
+        crate::workspace_upgrade::WorkspaceUpgrade::open(&data, &local)?
+            .transfer_credential(transaction)
+    }
+    #[allow(dead_code)]
+    pub(crate) async fn remove_workspace_credential(
+        &self,
+        data: std::path::PathBuf,
+        local: std::path::PathBuf,
+        transaction: bridge_runtime_protocol::Uuid,
+        slot: bridge_runtime_protocol::Uuid,
+    ) -> Result<(), RuntimeError> {
+        let _quiesced = self.quiesce_for_upgrade().await?;
+        crate::workspace_upgrade::WorkspaceUpgrade::open(&data, &local)?.remove_credential(
+            transaction,
+            slot,
+            &crate::runtime::credential_store::OsCredentialStore,
+        )
+    }
     /// Atomic Run/Chat admission, separate from each bounded VM request.
     pub fn try_authoring(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
         self.authoring.lock().unwrap().clone().try_lock_owned().ok()

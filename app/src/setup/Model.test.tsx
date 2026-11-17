@@ -79,6 +79,22 @@ test('uncertain connection failure retains explicit cleanup without echoing raw 
   view.rerender(<Model enabled paused />);
   expect(screen.getByRole('button', { name: 'Retry removal' }).hasAttribute('disabled')).toBe(true);
 });
+test.each([
+  [['disconnectRetainedModel', 'refused'], 'Cleanup operation: disconnectRetainedModel\nCleanup class: refused'],
+  [['modelStatus', 'timeout'], 'Cleanup operation: modelStatus\nCleanup class: timeout'],
+  [['modelStatusPreconditions', 'refused'], 'Cleanup operation: modelStatusPreconditions\nCleanup class: refused'],
+  [['modelStatus', 'synthetic-private-token'], ''],
+  [['synthetic-private-token', 'refused'], ''],
+])('copies only finite previous-boot diagnostic fields %j', async (diagnostic, expected) => {
+  const user = userEvent.setup(); const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+  invoke.mockRejectedValue({ kind: 'modelReconnect', cleanup: diagnostic, message: 'synthetic-private-token' });
+  render(<Model enabled />);
+  await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  await screen.findByRole('alert');
+  await user.click(screen.getByRole('button', { name: 'Copy details for help' }));
+  expect(copy.mock.calls[0][0]).toBe('Bridge AI connection\nOperation: Connecting AI\nCategory: modelReconnect' + (expected ? `\n${expected}` : ''));
+  expect(copy.mock.calls[0][0]).not.toContain('synthetic-private-token');
+});
 test('failed removal retries cleanup rather than Connect and copies its own operation', async () => {
   const user = userEvent.setup(); const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
   invoke.mockRejectedValue({ kind: 'modelStore', native: { call: 'CredDeleteW', code: 5 }, message: 'SECRET' });

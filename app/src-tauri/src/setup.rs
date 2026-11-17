@@ -190,6 +190,8 @@ pub struct SetupError {
     recovery: Option<Box<ModelRecovery>>,
     #[serde(skip)]
     diagnostic: Option<bridge_runtime_protocol::ModelDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cleanup: Option<(&'static str, &'static str)>,
 }
 impl SetupError {
     pub(crate) fn connect(diagnostic: Option<bridge_runtime_protocol::ModelDiagnostic>) -> Self {
@@ -206,6 +208,9 @@ impl SetupError {
         }
     }
     pub(crate) fn model_detail(&self) -> Option<String> {
+        if let Some((operation, class)) = self.cleanup {
+            return Some(format!("{operation}:{class}"));
+        }
         self.diagnostic
             .as_ref()
             .and_then(|d| serde_json::to_string(d).ok())
@@ -254,6 +259,7 @@ impl SetupError {
             kind,
             message,
             vendor: None,
+            cleanup: None,
             diagnostic: None,
             native: None,
             recovery: None,
@@ -265,6 +271,7 @@ fn storage_error() -> SetupError {
         kind: "storage",
         message: "The setup choice could not be read or saved.",
         vendor: None,
+        cleanup: None,
         diagnostic: None,
         native: None,
         recovery: None,
@@ -279,16 +286,29 @@ pub mod help;
 #[path = "setup_model.rs"]
 mod model;
 pub use model::{KeyVendor, ModelSetupState};
+pub(crate) fn publish_upgrade_metadata(
+    root: &Path,
+    name: &str,
+    bytes: &[u8],
+) -> Result<(), SetupError> {
+    model::write_upgrade_file(root, name, bytes)
+}
 
 /// Owns preferences and an opaque sign-in association, never stored secret bytes.
 pub struct SetupStore {
     root: Option<PathBuf>,
+    upgrade_root: Option<PathBuf>,
     access: Mutex<()>,
 }
 impl SetupStore {
     pub fn new(app_data: Option<PathBuf>) -> Self {
+        Self::with_upgrade_root(app_data.clone(), app_data)
+    }
+    /// Both native-owned roots are required: Windows roaming/local are distinct.
+    pub fn with_upgrade_root(app_data: Option<PathBuf>, local: Option<PathBuf>) -> Self {
         Self {
             root: app_data.map(|path| path.join("setup-v1")),
+            upgrade_root: local,
             access: Mutex::new(()),
         }
     }

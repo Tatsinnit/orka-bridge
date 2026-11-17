@@ -511,7 +511,8 @@ try {
       window.__bridgeResets = [];
       window.__bridgeResetOutcome = 'credential';
       window.__bridgeCopied = [];
-      if (name === 'ai-reset') Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.__bridgeCopied.push(text); } } });
+      window.__bridgeCleanupDiagnostic = ['disconnectRetainedModel', 'refused'];
+      if (name === 'ai-reset' || name === 'ai-removal-retry') Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.__bridgeCopied.push(text); } } });
       window.__bridgeStops = 0;
       window.__bridgeLocalSelections = 0;
       window.__bridgeClusterUses = 0;
@@ -588,7 +589,7 @@ try {
         if (name === 'designer-no-destination' && command === 'overview_places') return { historyState: 'complete', unobserved: [], places: [] };
         if (command === 'agents_list') return [{ id: documentId, name: documentName, path: null, available: true }];
         if (command === 'agent_creation_root') return 'C:\\\\Users\\\\you\\\\Orka\\\\agents';
-        if (command === 'setup_remove_model') { window.__bridgeRemovals++; throw { kind: 'modelBusy' }; }
+        if (command === 'setup_remove_model') { window.__bridgeRemovals++; throw { kind: 'modelReconnect', cleanup: window.__bridgeCleanupDiagnostic, message: 'synthetic-private-token' }; }
         // Known and missing size facts: fixture IPC, not the native catalog.
         if (command === 'setup_requirements') return name.startsWith('local-preflight') && name !== 'local-preflight-missing' ? ${JSON.stringify({ memoryBytes: 4 * GiB, imageBytes: Math.round(2.8 * GiB), stateDiskBytes: 20 * GiB, downloadBytes: 2800000000 })} : null;
         if (command === 'setup_preflight') return { platform: 'windows', virtualization: ['local-preflight-unknown', 'local-preflight-mixed'].includes(name) ? 'unknown' : ['local-preflight-blocked', 'local-preflight-cluster'].includes(name) ? 'disabled' : 'ready', memory: name === 'local-preflight-unknown' ? 'unknown' : ['local-preflight-memory', 'local-preflight-mixed'].includes(name) ? 'insufficient' : 'ready', installedMemoryBytes: name === 'local-preflight-unknown' ? null : ['local-preflight-memory', 'local-preflight-mixed'].includes(name) ? ${2 * GiB} : ${16 * GiB}, requiredMemoryBytes: ${4 * GiB} };
@@ -712,8 +713,21 @@ try {
       if (name === 'ai-removal-retry') {
         await clickAction('Remove sign-in');
         await until(() => evaluate(`!!document.querySelector('button.button-primary') && [...document.querySelectorAll('button.button-primary')].some(button => button.textContent === 'Retry removal')`), 'primary removal retry');
+        const diagnostics = [['disconnectRetainedModel', 'refused'], ['modelStatus', 'unsupported'], ['modelStatusPreconditions', 'refused']];
+        for (const [index, diagnostic] of diagnostics.entries()) {
+          if (index > 0) {
+            await evaluate(`window.__bridgeCleanupDiagnostic = ${JSON.stringify(diagnostic)}`);
+            await clickAction('Retry removal');
+            await until(() => evaluate(`window.__bridgeRemovals === ${index + 1}`), 'cleanup failure boundary');
+            await evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+          }
+          await clickAction('Copy details for help');
+          await until(() => evaluate(`window.__bridgeCopied.length === ${index + 1}`), 'copied cleanup diagnostic');
+          const details = await evaluate(`window.__bridgeCopied[${index}]`);
+          if (!details.includes(`Cleanup operation: ${diagnostic[0]}`) || !details.includes(`Cleanup class: ${diagnostic[1]}`) || details.includes('synthetic-private-token')) throw Error('Copy details lost finite cleanup fields or disclosed raw errors');
+        }
         await clickAction('Retry removal');
-        await until(() => evaluate(`window.__bridgeRemovals === 2 && !document.querySelector('[aria-label="Remove sign-in confirmation"]')`), 'direct cleanup retry without reconfirmation');
+        await until(() => evaluate(`window.__bridgeRemovals === 4 && !document.querySelector('[aria-label="Remove sign-in confirmation"]')`), 'direct cleanup retry without reconfirmation');
       }
     }
     if (name === 'switch-place') {

@@ -1037,6 +1037,60 @@ fn older_image_refuses_reconnect_without_poisoning_its_existing_control_channel(
 }
 
 #[test]
+fn unknown_transport_other_is_not_mislabeled_as_a_guest_refusal() {
+    let error = std::io::Error::other("synthetic-private-token /private/path");
+    assert_eq!(cleanup_error_class(&error), "io");
+}
+#[test]
+fn previous_boot_failures_keep_finite_operation_and_class_without_secrets() {
+    for (case, expected) in [
+        (0, "modelStatus:unsupported"),
+        (1, "modelStatusPreconditions:refused"),
+        (2, "disconnectRetainedModel:refused"),
+    ] {
+        let (_tmp, setup, install, vault) = associated();
+        let root = setup.root.as_deref().unwrap();
+        let mut binding = read_binding(root).unwrap().unwrap();
+        binding.phase = Phase::Connected;
+        binding.nonce = Some(Uuid::new_v4());
+        binding.connection = Some(connection());
+        write_binding(root, &binding).unwrap();
+        let before = fs::read(root.join("model-v1")).unwrap();
+        let (mut client, worker) = peer(Uuid::new_v4(), move |request| {
+            Some(match request.body {
+                RequestBody::ModelStatus {} if case == 0 => ResultBody::Error {
+                    code: ErrorCode::Unavailable,
+                },
+                RequestBody::ModelStatus {} if case == 1 => {
+                    let ResultBody::ModelState(mut state) = idle() else {
+                        unreachable!()
+                    };
+                    state.retained_cleanup = false;
+                    ResultBody::ModelState(state)
+                }
+                RequestBody::ModelStatus {} => idle(),
+                RequestBody::ModelDisconnectRetained { .. } => ResultBody::Error {
+                    code: ErrorCode::Unavailable,
+                },
+                _ => panic!("cleanup failure must not touch credentials"),
+            })
+        });
+        let error = setup
+            .sign_out_model(install, Some(&mut client), &vault)
+            .unwrap_err();
+        assert_eq!(error.kind, "modelReconnect");
+        assert_eq!(error.model_detail().as_deref(), Some(expected));
+        drop(client);
+        worker.join().unwrap();
+        assert_eq!(vault.counts(), (1, 0, 0));
+        assert_eq!(fs::read(root.join("model-v1")).unwrap(), before);
+        assert!(!serde_json::to_string(&error)
+            .unwrap()
+            .contains(&binding.slot.to_string()));
+    }
+}
+
+#[test]
 fn new_boot_cleanup_refusal_preserves_slot_and_binding_before_any_secret_load() {
     for reply in [
         idle(),
