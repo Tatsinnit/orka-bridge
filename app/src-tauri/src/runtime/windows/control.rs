@@ -212,6 +212,28 @@ impl ControlEndpoint {
     }
 }
 
+/// Account for retained native endpoints without opening socket-file data,
+/// connecting to a stale peer, or deleting its namespace.
+#[cfg_attr(test, allow(dead_code))] // Native backend-only harnesses omit the upgrade owner.
+pub(crate) fn retained_allocation(
+    directory: &Path,
+) -> Result<u64, crate::runtime::types::RuntimeError> {
+    let _directory = security::private_af_directory(directory)?;
+    let mut bytes = 0u64;
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_name() != "s" {
+            return Err(crate::runtime::types::RuntimeError::RetainedState);
+        }
+        let file = socket_metadata(&entry.path())?;
+        security::private_af_object(file.as_raw_handle(), false)?;
+        bytes = bytes
+            .checked_add(crate::runtime::image_install::allocation(&file)?)
+            .ok_or(crate::runtime::image_types::ImageError::NoSpace)?;
+    }
+    Ok(bytes)
+}
+
 fn socket_metadata(path: &Path) -> io::Result<File> {
     use windows_sys::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, READ_CONTROL};
     // This capability validates attributes and security, never socket-file data.

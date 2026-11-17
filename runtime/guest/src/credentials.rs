@@ -1,6 +1,6 @@
 //! Fixed endpoint for the authenticated host channel only. Callers must finish
 //! Disconnect before clear/replacement: truncation does not revoke cached tokens.
-use bridge_runtime_protocol::Uuid;
+use bridge_runtime_protocol::{Uuid, CREDENTIAL_PROFILE, MODEL_API_KEY_PROFILE};
 #[cfg(test)]
 use std::path::PathBuf;
 use std::{
@@ -13,24 +13,46 @@ use std::{
     },
     path::Path,
 };
-const NAME: &CStr = c"copilot-github-token";
+fn endpoint_name(profile: u16) -> io::Result<&'static CStr> {
+    match profile {
+        CREDENTIAL_PROFILE => Ok(c"copilot-github-token"),
+        MODEL_API_KEY_PROFILE => Ok(c"model-api-key"),
+        _ => Err(io::ErrorKind::InvalidInput.into()),
+    }
+}
 const FLAGS: libc::c_ulong = libc::ST_NOSUID | libc::ST_NODEV | libc::ST_NOEXEC;
 
 #[derive(Debug)]
 pub struct State {
+    pub profile: u16,
     pub generation: Option<Uuid>,
     pub installed: bool,
 }
-#[derive(Default)]
 pub struct CredentialStore {
+    profile: u16,
     generation: Option<Uuid>,
     installed: bool,
     handles: Option<(File, File)>,
-    known: Option<File>,
+    known: [Option<File>; 2],
     temporary: Option<(CString, File)>,
     failed: bool,
     #[cfg(test)]
     layout: Option<(PathBuf, u32, u32, libc::c_ulong)>,
+}
+impl Default for CredentialStore {
+    fn default() -> Self {
+        Self {
+            profile: CREDENTIAL_PROFILE,
+            generation: None,
+            installed: false,
+            handles: None,
+            known: [None, None],
+            temporary: None,
+            failed: false,
+            #[cfg(test)]
+            layout: None,
+        }
+    }
 }
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidData.into()
@@ -126,7 +148,7 @@ fn entries(file: &File) -> io::Result<Vec<CString>> {
         let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
         if name != c"." && name != c".." {
             names.push(name.to_owned());
-            if names.len() > 2 {
+            if names.len() > 3 {
                 break Err(invalid());
             }
         }
@@ -170,15 +192,28 @@ impl CredentialStore {
                 return Err(invalid());
             }
         }
-        if let Some(known) = &self.known {
-            let actual = open(dir.as_raw_fd(), NAME, libc::O_RDONLY)?;
-            if !same(known, &actual)? {
-                return Err(invalid());
+        for profile in [CREDENTIAL_PROFILE, MODEL_API_KEY_PROFILE] {
+            if let Some(known) = &self.known[usize::from(profile - 1)] {
+                let actual = open(dir.as_raw_fd(), endpoint_name(profile)?, libc::O_RDONLY)?;
+                if !same(known, &actual)? {
+                    return Err(invalid());
+                }
+                endpoint(
+                    &actual.metadata()?,
+                    uid,
+                    gid,
+                    self.installed && self.profile == profile,
+                )?;
             }
-            endpoint(&actual.metadata()?, uid, gid, self.installed)?;
         }
         for name in entries(&dir)? {
-            if name.as_c_str() == NAME && self.known.is_some() {
+            if [CREDENTIAL_PROFILE, MODEL_API_KEY_PROFILE]
+                .into_iter()
+                .any(|profile| {
+                    endpoint_name(profile).is_ok_and(|n| n == name.as_c_str())
+                        && self.known[usize::from(profile - 1)].is_some()
+                })
+            {
                 continue;
             }
             if let Some((owned_name, owned_file)) = &self.temporary {
@@ -209,6 +244,7 @@ impl CredentialStore {
     }
     fn state(&self) -> State {
         State {
+            profile: self.profile,
             generation: self.generation,
             installed: self.installed,
         }
@@ -229,7 +265,13 @@ impl CredentialStore {
         self.cleanup()?;
         Ok(self.state())
     }
-    pub fn publish(&mut self, expected: Option<Uuid>, token: &[u8]) -> io::Result<State> {
+    pub fn publish(
+        &mut self,
+        profile: u16,
+        expected: Option<Uuid>,
+        token: &[u8],
+    ) -> io::Result<State> {
+        endpoint_name(profile)?;
         if token.is_empty() || token.len() > 16384 || !token.iter().all(|b| (33..=126).contains(b))
         {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -239,13 +281,15 @@ impl CredentialStore {
             return Err(invalid());
         }
         self.cleanup()?;
-        let result = self.publish_inner(token);
+        let result = self.publish_inner(profile, token);
         if result.is_err() {
             self.cleanup().map_err(safe)?;
         }
         result.map_err(safe)
     }
-    fn publish_inner(&mut self, token: &[u8]) -> io::Result<State> {
+    fn publish_inner(&mut self, profile: u16, token: &[u8]) -> io::Result<State> {
+        let target = endpoint_name(profile)?;
+        let index = usize::from(profile - 1);
         let (_, uid, gid, _) = self.layout();
         let dirfd = self.handles.as_ref().ok_or_else(invalid)?.1.as_raw_fd();
         let name =
@@ -263,7 +307,7 @@ impl CredentialStore {
         let (name, file) = self.temporary.as_ref().ok_or_else(invalid)?;
         // Fresh publication must never overwrite an unknown endpoint. Replacement
         // is allowed only for the retained, checked, already-cleared inode.
-        if self.known.is_none() {
+        if self.known[index].is_none() {
             // musl does not export a renameat2 wrapper. The Linux syscall returns
             // only 0 or -1 here, so narrowing its result preserves errno handling.
             syscall(unsafe {
@@ -272,20 +316,21 @@ impl CredentialStore {
                     libc::c_long::from(dirfd),
                     name.as_ptr(),
                     libc::c_long::from(dirfd),
-                    NAME.as_ptr(),
+                    target.as_ptr(),
                     libc::c_long::from(libc::RENAME_NOREPLACE),
                 ) as libc::c_int
             })?;
         } else {
-            syscall(unsafe { libc::renameat(dirfd, name.as_ptr(), dirfd, NAME.as_ptr()) })?;
+            syscall(unsafe { libc::renameat(dirfd, name.as_ptr(), dirfd, target.as_ptr()) })?;
         }
-        let actual = open(dirfd, NAME, libc::O_RDONLY)?;
+        let actual = open(dirfd, target, libc::O_RDONLY)?;
         if !same(file, &actual)? {
             self.failed = true;
             return Err(invalid());
         }
         let (_, file) = self.temporary.take().ok_or_else(invalid)?;
-        self.known = Some(file);
+        self.known[index] = Some(file);
+        self.profile = profile;
         self.installed = true;
         self.check()?;
         self.generation = Some(Uuid::new_v4());
@@ -299,7 +344,9 @@ impl CredentialStore {
         }
         self.cleanup()?;
         self.check()?;
-        let file = self.known.as_ref().ok_or_else(invalid)?;
+        let file = self.known[usize::from(self.profile - 1)]
+            .as_ref()
+            .ok_or_else(invalid)?;
         file.set_len(0).map_err(safe)?;
         file.sync_all().map_err(safe)?;
         self.installed = false;
@@ -373,13 +420,87 @@ mod tests {
     }
 
     #[test]
+    fn profiles_switch_only_after_clear_and_keep_inactive_inodes_empty() {
+        let f = Fixture::new();
+        let mut s = f.store();
+        let key = f.dir().join("model-api-key");
+        let first = s.publish(1, None, TOKEN).unwrap();
+        let copilot_reader = File::open(f.file()).unwrap();
+        assert!(s.publish(2, first.generation, b"synthetic-key").is_err());
+        assert!(!key.exists());
+        let cleared = s.clear(first.generation.unwrap()).unwrap();
+        assert!(s.publish(2, first.generation, b"synthetic-key").is_err());
+        let installed = s.publish(2, cleared.generation, b"synthetic-key").unwrap();
+        assert_eq!(installed.profile, 2);
+        assert_eq!(s.status().unwrap().profile, 2);
+        assert_eq!(fs::read(&key).unwrap(), b"synthetic-key");
+        assert_eq!(copilot_reader.metadata().unwrap().len(), 0);
+        let key_reader = File::open(&key).unwrap();
+        let m = key_reader.metadata().unwrap();
+        assert_eq!((m.mode() & 0o7777, m.nlink()), (0o640, 1));
+        assert_eq!(
+            (m.uid(), m.gid()),
+            (unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+        );
+        let zero = s.clear(installed.generation.unwrap()).unwrap();
+        let again = s.publish(2, zero.generation, b"synthetic-next").unwrap();
+        assert_ne!(again.generation, installed.generation);
+        assert_eq!(key_reader.metadata().unwrap().len(), 0);
+        let zero = s.clear(again.generation.unwrap()).unwrap();
+        let last = s.publish(1, zero.generation, TOKEN).unwrap();
+        assert_eq!(last.profile, 1);
+        assert_ne!(
+            identity(&f.file()),
+            (
+                copilot_reader.metadata().unwrap().dev(),
+                copilot_reader.metadata().unwrap().ino()
+            )
+        );
+        assert_eq!(copilot_reader.metadata().unwrap().len(), 0);
+        assert_eq!(fs::read(&key).unwrap(), b"");
+        assert_eq!(fs::read_dir(f.dir()).unwrap().count(), 2);
+        assert!(
+            f.store().status().is_err(),
+            "restart must not adopt either endpoint"
+        );
+    }
+    #[test]
+    fn api_key_endpoint_and_inactive_file_tampering_are_never_adopted() {
+        for tamper in [false, true] {
+            let f = Fixture::new();
+            let mut s = f.store();
+            let key = f.dir().join("model-api-key");
+            if tamper {
+                let a = s.publish(1, None, TOKEN).unwrap();
+                let zero = s.clear(a.generation.unwrap()).unwrap();
+                s.publish(2, zero.generation, b"synthetic-key").unwrap();
+                fs::write(f.file(), TOKEN).unwrap();
+            } else {
+                fs::write(&key, TOKEN).unwrap();
+            }
+            assert!(s.status().is_err());
+            assert!(s.publish(2, None, b"replacement").is_err());
+            assert!(!fs::read(&key).unwrap().is_empty());
+        }
+        let f = Fixture::new();
+        let mut s = f.store();
+        assert!(s.publish(3, None, TOKEN).is_err());
+        assert_eq!(fs::read_dir(f.dir()).unwrap().count(), 0);
+        let first = s.publish(1, None, TOKEN).unwrap();
+        let zero = s.clear(first.generation.unwrap()).unwrap();
+        s.publish(2, zero.generation, b"synthetic-key").unwrap();
+        fs::write(f.dir().join("unknown"), TOKEN).unwrap();
+        assert!(s.status().is_err());
+        assert_eq!(fs::read(f.dir().join("unknown")).unwrap(), TOKEN);
+    }
+    #[test]
     fn publish_clear_and_republish_real_file() {
         let f = Fixture::new();
         let mut s = f.store();
         let initial = s.status().unwrap();
         assert_eq!(initial.generation, None);
         assert!(!initial.installed);
-        let first = s.publish(None, TOKEN).unwrap();
+        let first = s.publish(1, None, TOKEN).unwrap();
         unchanged(&f);
         assert!(first.installed);
         assert!(first.generation.is_some());
@@ -399,7 +520,7 @@ mod tests {
         assert_eq!(old_reader.metadata().unwrap().len(), 0);
         assert_eq!(fs::read(f.file()).unwrap(), b"");
         assert_eq!(s.status().unwrap().generation, cleared.generation);
-        let second = s.publish(cleared.generation, b"synthetic-B").unwrap();
+        let second = s.publish(1, cleared.generation, b"synthetic-B").unwrap();
         assert_ne!(second.generation, cleared.generation);
         assert!(second.installed);
         assert_ne!(identity(&f.file()), inode);
@@ -422,17 +543,17 @@ mod tests {
     fn generations_and_explicit_clear_gate_all_writes() {
         let f = Fixture::new();
         let mut s = f.store();
-        assert!(s.publish(Some(Uuid::new_v4()), TOKEN).is_err());
+        assert!(s.publish(1, Some(Uuid::new_v4()), TOKEN).is_err());
         assert!(!f.file().exists());
-        let state = s.publish(None, TOKEN).unwrap();
+        let state = s.publish(1, None, TOKEN).unwrap();
         assert!(s.clear(Uuid::new_v4()).is_err());
         unchanged(&f);
-        assert!(s.publish(state.generation, b"replacement").is_err());
+        assert!(s.publish(1, state.generation, b"replacement").is_err());
         unchanged(&f);
-        assert!(s.publish(None, b"replacement").is_err());
+        assert!(s.publish(1, None, b"replacement").is_err());
         unchanged(&f);
         let zero = s.clear(state.generation.unwrap()).unwrap();
-        assert!(s.publish(state.generation, b"replacement").is_err());
+        assert!(s.publish(1, state.generation, b"replacement").is_err());
         assert!(s.clear(state.generation.unwrap()).is_err());
         assert_eq!(s.status().unwrap().generation, zero.generation);
         assert_eq!(fs::read(f.file()).unwrap(), b"");
@@ -449,15 +570,15 @@ mod tests {
             vec![127],
             vec![128],
         ] {
-            let e = s.publish(None, &invalid).unwrap_err();
+            let e = s.publish(1, None, &invalid).unwrap_err();
             assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
             assert!(!e.to_string().contains("bad"));
             assert_eq!(fs::read_dir(f.dir()).unwrap().count(), 0);
         }
-        let state = s.publish(None, &[33; 16384]).unwrap();
+        let state = s.publish(1, None, &[33; 16384]).unwrap();
         assert_eq!(fs::metadata(f.file()).unwrap().len(), 16384);
         let zero = s.clear(state.generation.unwrap()).unwrap();
-        s.publish(zero.generation, &[126]).unwrap();
+        s.publish(1, zero.generation, &[126]).unwrap();
         assert_eq!(fs::read(f.file()).unwrap(), b"~");
     }
     #[test]
@@ -465,7 +586,7 @@ mod tests {
         for zero in [false, true] {
             let f = Fixture::new();
             let mut s = f.store();
-            let state = s.publish(None, TOKEN).unwrap();
+            let state = s.publish(1, None, TOKEN).unwrap();
             if zero {
                 s.clear(state.generation.unwrap()).unwrap();
             }
@@ -473,7 +594,7 @@ mod tests {
             drop(s);
             let mut restarted = f.store();
             assert!(restarted.status().is_err());
-            assert!(restarted.publish(None, b"new").is_err());
+            assert!(restarted.publish(1, None, b"new").is_err());
             assert_eq!(fs::read(f.file()).unwrap(), before);
         }
     }
@@ -484,7 +605,7 @@ mod tests {
         fs::write(&temp, TOKEN).unwrap();
         let mut s = f.store();
         assert!(s.status().is_err());
-        assert!(s.publish(None, TOKEN).is_err());
+        assert!(s.publish(1, None, TOKEN).is_err());
         assert_eq!(fs::read(temp).unwrap(), TOKEN);
         assert!(!f.file().exists());
     }
@@ -494,7 +615,7 @@ mod tests {
         let outside = f.root.path().join("outside");
         fs::write(&outside, TOKEN).unwrap();
         symlink(&outside, f.file()).unwrap();
-        assert!(f.store().publish(None, b"new").is_err());
+        assert!(f.store().publish(1, None, b"new").is_err());
         assert_eq!(fs::read(&outside).unwrap(), TOKEN);
         fs::remove_file(f.file()).unwrap();
         let path = std::ffi::CString::new(f.file().as_os_str().as_encoded_bytes()).unwrap();
@@ -506,7 +627,7 @@ mod tests {
         for hardlink in [false, true] {
             let f = Fixture::new();
             let mut s = f.store();
-            let state = s.publish(None, TOKEN).unwrap();
+            let state = s.publish(1, None, TOKEN).unwrap();
             if hardlink {
                 fs::hard_link(f.file(), f.root.path().join("alias")).unwrap();
             } else {
@@ -521,7 +642,7 @@ mod tests {
     fn replaced_file_is_not_cleared_or_overwritten() {
         let f = Fixture::new();
         let mut s = f.store();
-        let state = s.publish(None, TOKEN).unwrap();
+        let state = s.publish(1, None, TOKEN).unwrap();
         fs::rename(f.file(), f.root.path().join("old")).unwrap();
         f.seed(TOKEN);
         assert!(s.clear(state.generation.unwrap()).is_err());
@@ -537,7 +658,7 @@ mod tests {
         fs::rename(f.dir(), &old).unwrap();
         fs::create_dir(f.dir()).unwrap();
         fs::set_permissions(f.dir(), fs::Permissions::from_mode(0o750)).unwrap();
-        assert!(s.publish(None, TOKEN).is_err());
+        assert!(s.publish(1, None, TOKEN).is_err());
         assert_eq!(fs::read_dir(old).unwrap().count(), 0);
         assert_eq!(fs::read_dir(f.dir()).unwrap().count(), 0);
     }
@@ -545,7 +666,7 @@ mod tests {
     fn replaced_parent_is_rejected() {
         let f = Fixture::new();
         let mut s = f.store();
-        let state = s.publish(None, TOKEN).unwrap();
+        let state = s.publish(1, None, TOKEN).unwrap();
         let saved = f.root.path().join("saved");
         // Exchange the held parent with a separately owned real directory.
         let replacement = tempfile::Builder::new()
@@ -568,7 +689,7 @@ mod tests {
         for parent in [false, true] {
             let f = Fixture::new();
             let mut s = f.store();
-            let state = s.publish(None, TOKEN).unwrap();
+            let state = s.publish(1, None, TOKEN).unwrap();
             let path = if parent {
                 f.root.path().to_owned()
             } else {
@@ -612,11 +733,11 @@ mod tests {
     fn cleared_endpoint_replacement_blocks_publication() {
         let f = Fixture::new();
         let mut s = f.store();
-        let installed = s.publish(None, TOKEN).unwrap();
+        let installed = s.publish(1, None, TOKEN).unwrap();
         let cleared = s.clear(installed.generation.unwrap()).unwrap();
         fs::rename(f.file(), f.root.path().join("zero")).unwrap();
         f.seed(TOKEN);
-        assert!(s.publish(cleared.generation, b"synthetic-new").is_err());
+        assert!(s.publish(1, cleared.generation, b"synthetic-new").is_err());
         unchanged(&f);
         assert_eq!(fs::metadata(f.root.path().join("zero")).unwrap().len(), 0);
         assert_eq!(fs::read_dir(f.dir()).unwrap().count(), 1);
@@ -625,7 +746,7 @@ mod tests {
     fn changed_owned_file_length_is_rejected_before_clear() {
         let f = Fixture::new();
         let mut s = f.store();
-        let installed = s.publish(None, TOKEN).unwrap();
+        let installed = s.publish(1, None, TOKEN).unwrap();
         fs::write(f.file(), vec![b'x'; 16385]).unwrap();
         assert!(s.clear(installed.generation.unwrap()).is_err());
         assert_eq!(fs::metadata(f.file()).unwrap().len(), 16385);
@@ -638,7 +759,7 @@ mod tests {
         assert!(s.status().is_err());
         fs::remove_file(f.file()).unwrap();
         assert!(s.status().is_err());
-        assert!(s.publish(None, TOKEN).is_err());
+        assert!(s.publish(1, None, TOKEN).is_err());
         assert_eq!(fs::read_dir(f.dir()).unwrap().count(), 0);
     }
     #[test]
@@ -648,7 +769,7 @@ mod tests {
         let outside = f.root.path().join("outside");
         fs::create_dir(&outside).unwrap();
         symlink(&outside, f.dir()).unwrap();
-        let err = f.store().publish(None, TOKEN).unwrap_err();
+        let err = f.store().publish(1, None, TOKEN).unwrap_err();
         assert!(!err.to_string().contains(f.root.path().to_str().unwrap()));
         assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
         let mut missing = f.store();

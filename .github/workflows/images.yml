@@ -7,9 +7,14 @@ on:
     paths: ['images/**', 'app/src-tauri/src/runtime/manifest.rs', 'app/src-tauri/src/runtime/image_types.rs', 'app/src-tauri/tests/image_manifest.rs', 'runtime/protocol/tests/image_manifest.rs', '.github/workflows/images.yml']
   workflow_dispatch:
     inputs:
-      profile:
-        description: Reviewed checked-in publisher profile (none approved yet)
+      stage:
+        description: Explicit candidate operation (never publishes)
         required: true
+        type: choice
+        options: [images, build-candidate, app-draft]
+      candidate_tag:
+        description: v<app version> tag required for build-candidate and app-draft
+        required: false
         type: string
 
 permissions: {}
@@ -37,49 +42,240 @@ jobs:
       - name: Test without network
         run: sudo unshare --net sh -c 'PYTHONPATH=images /usr/bin/python3 -m unittest discover -s images -p "test_*.py" -v'
 
-  prepare:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge'
+  images:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge' && inputs.stage == 'images'
     needs: tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      tag: ${{ steps.prepare.outputs.tag }}
-      manifest_sha256: ${{ steps.prepare.outputs.manifest_sha256 }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - id: prepare
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PROFILE: ${{ inputs.profile }}
-          OUT: ${{ runner.temp }}/image-package
-        run: python3 images/qualify.py prepare --profile "$PROFILE" --out "$OUT"
-
-  draft:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge'
-    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: write
       actions: read
     concurrency:
-      group: image-${{ needs.prepare.outputs.tag }}
+      group: paired-image-draft
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Requalify exact bytes and roundtrip draft assets by ID
+      - name: Qualify both images and read back exact image-only draft
         env:
           GH_TOKEN: ${{ github.token }}
-          PROFILE: ${{ inputs.profile }}
-          EXPECTED_MANIFEST: ${{ needs.prepare.outputs.manifest_sha256 }}
-          OUT: ${{ runner.temp }}/image-package
-        run: python3 images/qualify.py draft --profile "$PROFILE" --out "$OUT" --manifest-sha256 "$EXPECTED_MANIFEST"
+        run: python3 images/candidate.py images --out "$RUNNER_TEMP/image-package"
+
+  public-images:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge' && inputs.stage == 'build-candidate'
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate future app tag
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: PYTHONPATH=images python3 -c 'import os, candidate; candidate.validate_app_tag(os.environ["CANDIDATE_TAG"], candidate.package.read_json(candidate.q.ROOT / "app/src-tauri/tauri.conf.json")["version"])'
+      - name: Anonymous full public image roundtrip (no authentication)
+        run: python3 images/candidate.py public --out "$RUNNER_TEMP/public-images"
+
+  qemu-inputs:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge' && inputs.stage == 'build-candidate'
+    needs: public-images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.inputs.outputs.artifact-id }}
+    permissions:
+      # GitHub requires push access to list/read unpublished release assets.
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read and verify fixed input draft (no build or release writes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 runtime/windows/delivery.py fetch --out "$RUNNER_TEMP/qemu-inputs"
+      - id: inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: qemu-inputs
+          path: |
+            ${{ runner.temp }}/qemu-inputs/bridge-windows-runtime-portable.zip
+            ${{ runner.temp }}/qemu-inputs/bridge-windows-runtime-source.zip
+            ${{ runner.temp }}/qemu-inputs/build-report.json
+            ${{ runner.temp }}/qemu-inputs/verification.json
+            ${{ runner.temp }}/qemu-inputs/SHA256SUMS
+            ${{ runner.temp }}/qemu-inputs/producer-run.json
+            ${{ runner.temp }}/qemu-inputs/producer-artifact.json
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+  windows-candidate:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge' && inputs.stage == 'build-candidate'
+    needs: [public-images, qemu-inputs]
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      # External lock hashes refer to repository bytes, not a CRLF checkout.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.qemu-inputs.outputs.artifact_id }}
+          path: ${{ runner.temp }}/qemu-inputs
+          merge-multiple: true
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
+        with:
+          python-version: '3.11'
+      - name: Independently recheck transferred inputs
+        run: python runtime/windows/delivery.py check --inputs "$env:RUNNER_TEMP/qemu-inputs"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '26.5.0'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: '1.98.1'
+      - name: Measure before Windows build
+        run: python images/candidate.py measure --out "$env:RUNNER_TEMP/windows-before.json" --stage before-windows
+      - name: Build Windows app
+        working-directory: app
+        run: |
+          npm install --global npm@11.17.0 --ignore-scripts
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm ci
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run tauri -- build --no-bundle -- --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Assemble portable app and inspect native extraction with restricted PATH
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          python runtime/windows/delivery.py assemble --inputs "$env:RUNNER_TEMP/qemu-inputs" --executable app/src-tauri/target/release/orka-bridge.exe --licenses app/public/licenses --release-tag "$env:CANDIDATE_TAG" --out "$env:RUNNER_TEMP/windows-delivery"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & runtime/windows/inspect-delivery.ps1 -Archive "$env:RUNNER_TEMP/windows-delivery/bridge-windows-x64.zip"
+      - name: Measure final Windows assets
+        run: |
+          Move-Item "$env:RUNNER_TEMP/windows-before.json" "$env:RUNNER_TEMP/windows-delivery/windows-before.json"
+          python images/candidate.py measure --out "$env:RUNNER_TEMP/windows-delivery/windows-after.json" --stage after-windows --files "$env:RUNNER_TEMP/windows-delivery/bridge-windows-x64.zip" "$env:RUNNER_TEMP/windows-delivery/bridge-windows-runtime-source.zip"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bridge-windows-candidate
+          path: ${{ runner.temp }}/windows-delivery/*
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+  macos-candidate:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge' && inputs.stage == 'build-candidate'
+    needs: public-images
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '26.5.0'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: '1.98.1'
+      - name: Measure before Mac build
+        run: python3 images/candidate.py measure --out "$RUNNER_TEMP/macos-before.json" --stage before-macos
+      - name: Build and verify true arm64 app bundle (no VM walk)
+        working-directory: app
+        run: |
+          npm install --global npm@11.17.0 --ignore-scripts
+          npm ci
+          npm run build
+          bash ../scripts/build-vm-helper-macos.sh
+          npm run tauri -- build --bundles app --no-sign --no-binary-patching -- --locked
+          bundle=src-tauri/target/release/bundle/macos/Bridge.app
+          bash ../scripts/check-vm-helper-bundle-macos.sh "$bundle"
+          test "$(lipo -archs "$bundle/Contents/MacOS/orka-bridge")" = arm64
+          codesign --verify --ignore-resources "$bundle/Contents/MacOS/orka-bridge"
+          mkdir "$RUNNER_TEMP/macos-delivery"
+          tar -czf "$RUNNER_TEMP/macos-delivery/bridge-macos-arm64.tar.gz" -C src-tauri/target/release/bundle/macos Bridge.app
+          mkdir "$RUNNER_TEMP/smoke-app"
+          tar -xzf "$RUNNER_TEMP/macos-delivery/bridge-macos-arm64.tar.gz" -C "$RUNNER_TEMP/smoke-app"
+          test -x "$RUNNER_TEMP/smoke-app/Bridge.app/Contents/MacOS/orka-bridge"
+          bash ../scripts/check-vm-helper-bundle-macos.sh "$RUNNER_TEMP/smoke-app/Bridge.app"
+          cmp "$bundle/Contents/MacOS/orka-bridge" "$RUNNER_TEMP/smoke-app/Bridge.app/Contents/MacOS/orka-bridge"
+          for notice in public/licenses/*.txt; do cmp "$notice" "$RUNNER_TEMP/smoke-app/Bridge.app/Contents/Resources/licenses/${notice##*/}"; done
+      - name: Measure final Mac asset
+        run: |
+          mv "$RUNNER_TEMP/macos-before.json" "$RUNNER_TEMP/macos-delivery/macos-before.json"
+          python3 images/candidate.py measure --out "$RUNNER_TEMP/macos-delivery/macos-after.json" --stage after-macos --files "$RUNNER_TEMP/macos-delivery/bridge-macos-arm64.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bridge-macos-candidate
+          path: ${{ runner.temp }}/macos-delivery/*
+          retention-days: 14
+          compression-level: 0
+          if-no-files-found: error
+
+  app-draft:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'orka-agents/orka-bridge' && inputs.stage == 'app-draft'
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: app-draft-${{ inputs.candidate_tag }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Admit later committed approval and read back exact paired app draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: python3 images/candidate.py apps --out "$RUNNER_TEMP/app-draft" --candidate-tag "$CANDIDATE_TAG"
+      - name: Retain app admission evidence (including failed drafts)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bridge-app-evidence
+          path: |
+            ${{ runner.temp }}/app-draft/evidence/image-pins.json
+            ${{ runner.temp }}/app-draft/evidence/manifest-macos-arm64.json
+            ${{ runner.temp }}/app-draft/evidence/manifest-windows-amd64.json
+            ${{ runner.temp }}/app-draft/evidence/size-space.json
+            ${{ runner.temp }}/app-draft/evidence/windows-before.json
+            ${{ runner.temp }}/app-draft/evidence/windows-after.json
+            ${{ runner.temp }}/app-draft/evidence/macos-before.json
+            ${{ runner.temp }}/app-draft/evidence/macos-after.json
+          retention-days: 14
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'ignore' }}

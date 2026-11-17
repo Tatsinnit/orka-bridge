@@ -25,10 +25,22 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## YAML editing
+
+The form uses yaml 2.9.1 under its ISC license. Its upstream notice is shipped
+as `licenses/yaml-ISC.txt` in the same app artifact directories.
+
 ## JavaScript bridge
 
 The Tauri JavaScript API is distributed under its MIT license option.
 Its complete notice is shipped as `licenses/Tauri-API-MIT.txt`.
+
+## Native folder picker
+
+The folder picker uses tauri-plugin-dialog 2.8.4, tauri-plugin-fs 2.7.1 and
+rfd 0.17.2 under their MIT license options. Their complete upstream notices
+are shipped as `licenses/tauri-plugin-dialog-MIT.txt`,
+`licenses/tauri-plugin-fs-MIT.txt` and `licenses/rfd-MIT.txt`.
 
 ## Embedded Git
 
@@ -69,7 +81,7 @@ Their upstream notices are shipped as `licenses/tempfile-MIT.txt` and
 
 ## Fonts
 
-Geist and Geist Mono are bundled under the SIL Open Font License 1.1.
+Inter and JetBrains Mono are bundled under the SIL Open Font License 1.1.
 Their complete notices are in `app/public/licenses/` and are included in app
 artifacts. These licenses do not replace this project's Microsoft MIT license.
 

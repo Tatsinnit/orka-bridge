@@ -37,6 +37,94 @@ fn execute(request: OrkaRequest) -> Frame {
 }
 
 #[test]
+fn cancel_requires_only_an_acknowledged_uid_on_a_generated_run_task() {
+    let path = format!("tasks/{TASK}/cancel");
+    for uid in ["ack-uid".to_owned(), "u".repeat(64)] {
+        let request = post(&path, json!({"uid":uid}));
+        assert_eq!(request.validate(), Ok(true));
+        assert!(encode(&execute(request)).is_ok());
+    }
+    for body in [
+        json!({}),
+        json!({"uid":""}),
+        json!({"uid":"u".repeat(65)}),
+        json!({"uid":null}),
+        json!({"uid":1}),
+        json!({"uid":[]}),
+        json!({"uid":"u","reason":"stop"}),
+        json!({"uid":"u","namespace":"other"}),
+        json!([]),
+        json!(null),
+    ] {
+        assert_eq!(post(&path, body).validate(), Err(ProtocolError::Invalid));
+    }
+    assert!(get(&path, None).validate().is_err());
+    let mut request = post(&path, json!({"uid":"u"}));
+    request.after = Some(0);
+    assert!(request.validate().is_err());
+    for path in [
+        format!("agents/{RUN}/cancel"),
+        format!("tasks/{RUN}/cancel"),
+        "tasks/bridge-task-x/cancel".into(),
+        format!("tasks/{TASK}/cancel/"),
+        format!("tasks/{TASK}/cancel?namespace=default"),
+        format!("tasks/{TASK}%2fcancel"),
+        "tasks/bridge-chat-task-0123456789abcdef0123456789abcdef/cancel".into(),
+    ] {
+        assert!(
+            post(&path, json!({"uid":"u"})).validate().is_err(),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn worker_action_is_typed_and_validates_name_and_uid_before_execution() {
+    let wire = json!({"type":"runWorker","name":TASK,"uid":"ack-uid"});
+    let action: EngineActionWire = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&action).unwrap(), wire);
+    assert!(validate_action(&action).is_ok());
+    for (field, value) in [
+        ("name", json!("bridge-task-x")),
+        ("name", json!("--all")),
+        (
+            "name",
+            json!("bridge-chat-task-0123456789abcdef0123456789abcdef"),
+        ),
+        ("uid", json!("")),
+        ("uid", json!("u".repeat(65))),
+    ] {
+        let mut bad = wire.clone();
+        bad[field] = value;
+        let action: EngineActionWire = serde_json::from_value(bad).unwrap();
+        assert_eq!(validate_action(&action), Err(ProtocolError::Invalid));
+        let mut frame = execute(get(&format!("tasks/{TASK}"), None));
+        if let Frame::Request(WireRequest {
+            body: RequestBody::Execute { action: a, .. },
+            ..
+        }) = &mut frame
+        {
+            *a = action;
+        }
+        assert!(frame.validate().is_err());
+    }
+    let reply: RunWorkerReply = serde_json::from_value(json!({"finished":true,"pods":0})).unwrap();
+    assert!(reply.finished && reply.pods == 0);
+    for value in [
+        json!({"finished":true,"pods":-1}),
+        json!({"finished":true}),
+        json!({"finished":true,"pods":0,"items":[]}),
+    ] {
+        assert!(serde_json::from_value::<RunWorkerReply>(value).is_err());
+    }
+    for extra in ["namespace", "selector", "command", "method"] {
+        let mut bad = wire.clone();
+        bad[extra] = json!("injected");
+        assert!(serde_json::from_value::<EngineActionWire>(bad).is_err());
+    }
+}
+
+#[test]
 fn only_run_create_and_generated_reads_are_allowed() {
     assert_eq!(post("agents", agent()).validate(), Ok(true));
     assert_eq!(post("tasks", task()).validate(), Ok(true));

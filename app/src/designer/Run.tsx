@@ -1,55 +1,108 @@
-import { useEffect, useRef, useState } from 'react';
-import { errors, runCall, type RunSnapshot } from './run-api';
-import { sameSource, type SourceId } from './agent-api';
-export default function Run({ onSnapshot, blocked = false, stale = false, onStart, source }: { onSnapshot?: (snapshot: RunSnapshot | undefined) => void; blocked?: boolean; stale?: boolean; onStart?: () => void; source?: SourceId }) {
-  const [snapshot, setSnapshot] = useState<RunSnapshot>();
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button } from '../components/Button';
+import { DesignerTests } from '../components/DesignerTests';
+import { CardSection, Details, GeneratedValue, LongCard, type Status, StatusPill } from '../components/DesignSystem';
+import { changedFiles, resultAnnouncement, resultLabel, TestProgress } from '../components/TestResults';
+import { SAMPLE_DOCUMENT_ID, type SourceId, sameSource } from './agent-api';
+import { errors, type RunSnapshot, runCall } from './run-api';
+import { testDefinitions } from './test-definitions';
+export default function Run({ tests, documentId = SAMPLE_DOCUMENT_ID, onSnapshot, blocked = false, stale = false, onStart, source, onStopLocalCluster, onChooseCluster, onEditInstructions, startRequest, onStartRequestHandled }: { tests?: string; documentId?: string; onSnapshot?: (snapshot: RunSnapshot | undefined) => void; blocked?: boolean; stale?: boolean; onStart?: () => void; source?: SourceId; onStopLocalCluster?: () => void; onChooseCluster?: () => void; onEditInstructions?: () => void; startRequest?: number; onStartRequestHandled?: () => void }) {
+  const definitions = useMemo(() => tests === undefined ? undefined : testDefinitions(tests), [tests]);
+  const [received, setSnapshot] = useState<RunSnapshot>();
+  const snapshot = received?.documentId === documentId ? received : undefined;
+  const canRun = !!snapshot?.canRun && snapshot.modelConnected !== false;
   const [message, setMessage] = useState<string>();
-  const [sending, setSending] = useState(false);
-  const active = useRef(false);
+  const [action, setAction] = useState<'agent_run' | 'agent_run_cancel' | 'agent_run_check_cancellation'>();
+  const [actionMessage, setActionMessage] = useState<string>();
+  const admitted = useRef(false);
+  const observations = useRef(0);
+  const epoch = useRef(0);
   const sourceCurrent = sameSource(source, snapshot?.source);
   useEffect(() => {
-    active.current = true;
+    const request = ++epoch.current;
+    setMessage(undefined); setAction(undefined); setActionMessage(undefined); admitted.current = false;
+    let polling = false;
     const observe = async () => {
-      const result = await runCall('setup_run_status');
-      if (!active.current) return;
+      if (admitted.current || polling) return;
+      polling = true;
+      const observation = ++observations.current;
+      const result = await runCall('agent_run_status', documentId);
+      polling = false;
+      if (request !== epoch.current || observation !== observations.current || admitted.current) return;
       if (result.ok) { setSnapshot(result.snapshot); setMessage(undefined); } else setMessage(result.message);
     };
     void observe(); const timer = window.setInterval(() => { void observe(); }, 500);
-    return () => { active.current = false; window.clearInterval(timer); };
-  }, []);
+    return () => { epoch.current++; window.clearInterval(timer); };
+  }, [documentId]);
   useEffect(() => { if (snapshot || message) onSnapshot?.(message ? undefined : snapshot ? { ...snapshot, sourceCurrent } : undefined); }, [snapshot, message, onSnapshot, sourceCurrent]);
-  const start = async () => {
-    if (sending || blocked || !snapshot?.canRun) return;
-    setSending(true);
-    const result = await runCall('setup_run_example');
-    if (!active.current) return;
-    if (result.ok) { onStart?.(); setSnapshot(result.snapshot); setMessage(undefined); } else setMessage(result.message);
-    setSending(false);
+  const act = async (command: NonNullable<typeof action>) => {
+    if (admitted.current || !snapshot || command === 'agent_run' && (blocked || !canRun)
+      || command === 'agent_run_cancel' && !(snapshot.canCancel || snapshot.canRetryCancellation)
+      || command === 'agent_run_check_cancellation' && !snapshot.canCheckCancellation) return;
+    admitted.current = true; observations.current++; setAction(command); setActionMessage(undefined);
+    const request = epoch.current;
+    const result = await runCall(command, documentId);
+    if (request !== epoch.current) return;
+    if (result.ok) { if (command === 'agent_run') onStart?.(); setSnapshot(result.snapshot); setMessage(undefined); }
+    else setActionMessage(result.message);
+    observations.current++; admitted.current = false; setAction(undefined);
   };
-  const running = sending || snapshot?.state === 'running';
+  const handledStart = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!startRequest || handledStart.current === startRequest || (!snapshot && !message)) return;
+    handledStart.current = startRequest;
+    // A card click is one attempt, never an intent held until the cluster reconnects.
+    if (!message) void act('agent_run');
+    onStartRequestHandled?.();
+  });
+  const cancelling = action === 'agent_run_cancel' || action === 'agent_run_check_cancellation' || snapshot?.cancellation === 'cancelling';
+  const running = action === 'agent_run' || cancelling || snapshot?.state === 'running';
+  const unconfirmed = snapshot?.cancellation === 'unconfirmed';
+  const beforeStart = snapshot?.cancellation === 'beforeStart';
+  const confirmed = snapshot?.cancellation === 'cancelled';
   const outdated = stale || (sourceCurrent === false && !!snapshot?.report);
-  return <div className="example-run" aria-labelledby="run-title">
-    <h3 id="run-title">Test on the local VM</h3>
-    <p className="muted">Run creates an Orka Agent and Task from these exact files.{snapshot?.modelConnected === false && ' Connect the model in Clusters first.'}</p>
-    <button type="button" className="setup-button" disabled={blocked || running || !snapshot?.canRun} title={blocked ? 'Save your changes before running the check' : running ? 'Check is running' : !snapshot?.canRun ? 'Connect your workspace and AI in Clusters first' : undefined} onClick={() => { void start(); }}>Run test</button>
-    {outdated && <p role="status">Not run since your change. Any result below is from the earlier file.</p>}
-    {running && <p role="status">Running on the local VM…</p>}
-    {message && <p role="status">{message}</p>}
-    {snapshot?.error && !(snapshot.error === 'model' && snapshot.modelConnected) && <p role="alert">{errors[snapshot.error]}</p>}
-    {snapshot?.pending && <p>Possibly created {snapshot.pending.kind}: {snapshot.pending.name}</p>}
-    {snapshot?.report && <>
-      <p role="status">{outdated ? 'Earlier test verdict' : 'Test verdict'}: {snapshot.report.verdict}</p>
-      {snapshot.report.cases.map(c => <div key={c.id}>
-        <h4>{c.id}</h4>
-        <p>Task: {c.phase}</p>
-        <h4>Answer</h4>
-        {c.answer !== null ? <pre className="example-source" tabIndex={0}>{c.answer}</pre> : <p>No answer was observed.</p>}
-        <h4>Completed tool calls</h4>
-        {c.completedTools.length ? <ul>{c.completedTools.map(tool => <li key={tool}>{tool}</li>)}</ul> : <p>No completed tool calls were observed. Missing evidence is unknown.</p>}
-        <h4>Assertions</h4>
-        <ul>{c.assertions.map(a => <li key={a.id}><span>{a.kind}: {a.verdict}</span> <span className="muted">({a.id})</span></li>)}</ul>
-      </div>)}
-    </>}
-    {!!snapshot?.acknowledged.length && <details><summary>Acknowledged resources</summary><ul>{snapshot.acknowledged.map(r => <li key={r.uid}>{r.kind}: {r.name}</li>)}</ul></details>}
-  </div>;
+  const uncertain = snapshot?.state === 'unknown' || snapshot?.report?.verdict === 'unknown';
+  const failed = snapshot?.error && !(snapshot.error === 'model' && snapshot.modelConnected);
+  const state: Status = outdated ? 'stale' : running ? 'running' : unconfirmed ? 'needs-you' : confirmed || beforeStart ? 'not-started' : uncertain ? 'stale' : failed ? 'failed' : snapshot?.report?.verdict === 'passed' ? 'passed' : snapshot?.report?.verdict === 'failed' ? 'failed' : 'not-started';
+  const counts = snapshot?.report?.cases;
+  const unknownCount = counts?.filter(c => c.verdict === 'unknown').length ?? 0;
+  const countLine = counts ? `${counts.filter(c => c.verdict === 'passed').length} passed, ${counts.filter(c => c.verdict === 'failed').length} failed, ${counts.filter(c => c.verdict === 'cancelled').length} cancelled${unknownCount ? `, ${unknownCount} unknown` : ''}.` : '';
+  const cancellationLine = beforeStart ? 'Cancelled before any test started.' : unconfirmed ? 'Cancellation not confirmed. Work may still be running on this computer.'
+    : confirmed ? `${counts?.some(c => c.verdict === 'cancelled') ? 'Tests cancelled.' : 'Tests finished before cancellation.'} The test worker on this computer has stopped. ${countLine}` : undefined;
+  const stage = { capture: 'Reading your saved files', model: 'Checking the local model', submit: 'Starting your tests', observe: 'Waiting for answers and evaluating tests', cancel: 'Cancelling tests', done: 'Tests finished' };
+  return <section className="example-run" aria-label="Tests on the local cluster">
+    <LongCard title="Tests on the local cluster" status={<><StatusPill state={state}>{outdated ? undefined : cancelling ? 'Cancelling' : unconfirmed ? 'Not confirmed' : confirmed || beforeStart ? 'Cancelled' : undefined}</StatusPill><span className="status-description">{outdated ? 'Not run since your edit' : running || cancellationLine ? undefined : uncertain ? 'Result unknown' : resultLabel(snapshot?.report)}</span></>} summary={<>On this computer{snapshot?.model && <> · <code>{snapshot.model}</code></>}.{snapshot?.modelConnected === false && ' Connect the AI in Clusters first.'}</>}
+      action={running ? !cancelling && snapshot?.canCancel && <Button type="button" kind="secondary" onClick={() => { void act('agent_run_cancel'); }}>Stop</Button>
+        : (!unconfirmed || !snapshot?.canCheckCancellation) && <div className="workspace-step-actions">{snapshot?.modelConnected === false && onChooseCluster && <Button type="button" kind="primary" onClick={onChooseCluster}>Connect the AI</Button>}<Button type="button" kind={canRun && !blocked ? 'primary' : 'secondary'} disabled={!!action || blocked || !canRun} title={blocked ? 'Save your changes before running the test' : !canRun ? 'Start the local cluster and connect the AI in Clusters first' : undefined} onClick={() => { void act('agent_run'); }}>Run tests</Button></div>}>
+      <p className="sr-only test-announcement" role="status" aria-live="polite" aria-atomic="true">{!running ? cancellationLine ?? (!outdated ? uncertain ? 'Test result unknown.' : resultAnnouncement(snapshot?.report) : undefined) : undefined}</p>
+      <CardSection title={snapshot?.report || running ? "What happened" : "Tests"}>
+        {snapshot?.busy && snapshot.busy.documentId !== documentId && <p role="status">{snapshot.busy.name} is running a test.</p>}
+        {outdated && <p role="status">{changedFiles(source, snapshot?.source, stale)}</p>}
+        {running && <TestProgress stage={cancelling ? 'Cancelling tests · waiting for the test worker to stop' : snapshot?.stage && snapshot.stage !== 'done' ? stage[snapshot.stage] : 'Starting your tests'} />}
+        {running && !cancelling && snapshot?.canCancel && <p>Stop ends the tests on this computer and keeps answers that already finished.</p>}
+        {!running && cancellationLine && <p>{cancellationLine}</p>}
+        {!running && unconfirmed && <><p>Stop the local cluster to stop all work on this computer. Actions already taken are not undone.</p>
+          <div className="workspace-step-actions">
+            {snapshot?.canRetryCancellation && <Button type="button" kind="primary" onClick={() => { void act('agent_run_cancel'); }}>Retry cancellation</Button>}
+            {snapshot?.canCheckCancellation && <Button type="button" kind="quiet" onClick={() => { void act('agent_run_check_cancellation'); }}>Check again</Button>}
+            <Button type="button" kind="quiet" onClick={onStopLocalCluster}>Stop the local cluster</Button>
+          </div>
+        </>}
+        {actionMessage && <p role="status">{actionMessage}</p>}
+        {message && <p role="status">{message}</p>}
+        {snapshot?.error && !(snapshot.error === 'model' && snapshot.modelConnected) && <p role="alert">{errors[snapshot.error]}</p>}
+        {!running && !outdated && !uncertain && !cancellationLine && snapshot?.report?.verdict === 'failed' && <div className="test-next-step">
+          <p>{snapshot.report.cases.some(c => c.verdict === 'failed' && c.phase !== 'Succeeded') ? 'The task did not finish successfully. Review its answer and tool activity below before trying again.' : 'The agent answered, but its checks failed. Compare the answer with the test, then adjust the instructions or test file.'}</p>
+          {onEditInstructions && <Button type="button" kind="secondary" onClick={onEditInstructions}>Edit instructions</Button>}
+        </div>}
+        <DesignerTests definitions={running && sourceCurrent === false ? undefined : definitions} report={snapshot?.report} stale={outdated} running={running} vendor={snapshot?.vendor} />
+      </CardSection>
+      {(tests !== undefined || !!snapshot?.acknowledged.length || snapshot?.pending || snapshot?.source) && <Details hint="Test file, resources and file hashes">
+        {tests !== undefined && <section className="test-file-source" aria-label="Test file, read-only"><h5 className="section-label">Test file, read-only</h5><pre className="example-source">{tests}</pre></section>}
+        {snapshot?.source && <><GeneratedValue label="Agent file hash" value={snapshot.source.agent} /><GeneratedValue label="Test file hash" value={snapshot.source.tests} /></>}
+        {snapshot?.acknowledged.map(r => <GeneratedValue key={r.uid} label={r.kind} value={r.name} />)}
+        {snapshot?.pending && <GeneratedValue label={`Possibly created ${snapshot.pending.kind}`} value={snapshot.pending.name} />}
+      </Details>}
+    </LongCard>
+  </section>;
 }

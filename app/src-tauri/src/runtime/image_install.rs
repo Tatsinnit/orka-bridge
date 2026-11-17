@@ -139,6 +139,29 @@ pub struct InstalledImageSet {
     identity: ImageIdentity,
 }
 impl InstalledImageSet {
+    /// Binding self-consistency does not authenticate its claims. Reuse the
+    /// app-selected manifest for immutable boot facts, not the writable OS bytes.
+    #[cfg_attr(test, allow(dead_code))] // Some protocol harnesses omit the native caller.
+    pub(crate) fn validate_pinned(&self, image: &ResolvedImage) -> Result<(), ImageError> {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(image.manifest_bytes()).map_err(|_| ImageError::Integrity)?;
+        let boot: Boot = serde_json::from_value(manifest["directBoot"].clone())
+            .map_err(|_| ImageError::Integrity)?;
+        let identity = image.identity();
+        if self.identity.manifest_sha256 != identity.manifest_sha256
+            || self.identity.image_id != identity.image_id
+            || self.identity.state_compatibility_id != identity.state_compatibility_id
+            || self.identity.build_source_commit != identity.build_source_commit
+            || self.target() != image.target()
+            || self.launch_mode() != image.launch_mode()
+            || self.binding.boot != boot
+            || self.binding.os.initial_bytes != image.disk_bytes()
+            || self.binding.os.initial_sha256 != image.disk_sha256()
+        {
+            return Err(ImageError::Integrity);
+        }
+        Ok(())
+    }
     pub fn installation_id(&self) -> Uuid {
         self.binding.installation_id
     }
@@ -393,7 +416,6 @@ fn validate_binding(
         || binding.image_generation != 1
         || binding.installation_id != target.id
         || binding.target != target_name(target.target)
-        || binding.identity.state_compatibility_id != target.compatibility
         || binding.installation_directory != dir_id(target.root)?
         || !valid_hash(&binding.identity.manifest_sha256)
         || binding.identity.image_id.is_empty()
@@ -515,18 +537,40 @@ fn verify_files(
 pub fn open_installed_image(
     target: &InstallationImageTarget<'_>,
 ) -> Result<InstalledImageSet, ImageError> {
+    let image = read_installed_image(target)?.ok_or(ImageError::RetainedImage)?;
+    if image.identity().state_compatibility_id != target.compatibility {
+        return Err(ImageError::RetainedImage);
+    }
+    Ok(image)
+}
+/// Owned structural inspection is not permission to boot a different image.
+#[cfg_attr(test, allow(dead_code))] // Some actual-source harnesses omit the native caller.
+pub(crate) fn inspect_installed_image(
+    target: &InstallationImageTarget<'_>,
+) -> Result<InstalledImageSet, ImageError> {
+    // Only absence can mean an unfinished new install. A committed malformed
+    // binding must not fall through to acquisition as RetainedImage does.
+    read_installed_image(target)
+        .map_err(|error| match error {
+            ImageError::RetainedImage => ImageError::Integrity,
+            other => other,
+        })?
+        .ok_or(ImageError::RetainedImage)
+}
+fn read_installed_image(
+    target: &InstallationImageTarget<'_>,
+) -> Result<Option<InstalledImageSet>, ImageError> {
     validate_target(target.root, target.owner, target.id)?;
-    let binding: Binding = json(target.root, "image-binding.json").map_err(|e| {
-        if missing(&e) {
-            ImageError::RetainedImage
-        } else {
-            e
-        }
-    })?;
+    match target.root.symlink_metadata("image-binding.json") {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(storage(error)),
+        Ok(_) => {}
+    }
+    let binding: Binding = json(target.root, "image-binding.json")?;
     validate_binding(&binding, target)?;
     verify_files(target.root, &binding, false, || Ok(()))?;
     sync_namespace(target, &binding)?;
-    Ok(installed(binding))
+    Ok(Some(installed(binding)))
 }
 fn sync_namespace(
     target: &InstallationImageTarget<'_>,
@@ -680,6 +724,14 @@ impl PreparedImage {
     pub fn target(&self) -> ImageTarget {
         self.target
     }
+    #[allow(dead_code)] // Portable image-only harnesses omit the native upgrade owner.
+    pub(crate) fn required_install_bytes(&self) -> Result<u64, ImageError> {
+        self.disk_bytes
+            .checked_add(self.boot.kernel.bytes)
+            .and_then(|n| n.checked_add(self.boot.initrd.bytes))
+            .and_then(|n| n.checked_add(bridge_runtime_protocol::STATE_BYTES))
+            .ok_or(ImageError::Integrity)
+    }
     pub async fn materialize(
         self,
         target: &InstallationImageTarget<'_>,
@@ -772,7 +824,7 @@ fn write_json<T: Serialize>(root: &Dir, name: &str, value: &T) -> Result<(), Ima
     file.sync_all().map_err(storage)
 }
 #[cfg(unix)]
-fn allocation(file: &File) -> Result<u64, ImageError> {
+pub(crate) fn allocation(file: &File) -> Result<u64, ImageError> {
     use std::os::unix::fs::MetadataExt;
     file.metadata()
         .map_err(storage)?
@@ -781,7 +833,7 @@ fn allocation(file: &File) -> Result<u64, ImageError> {
         .ok_or(ImageError::NoSpace)
 }
 #[cfg(windows)]
-fn allocation(file: &File) -> Result<u64, ImageError> {
+pub(crate) fn allocation(file: &File) -> Result<u64, ImageError> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         FileStandardInfo, GetFileInformationByHandleEx, FILE_STANDARD_INFO,

@@ -1,6 +1,6 @@
 [package]
 name = "orka-bridge"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.90"
 license = "MIT"
@@ -12,6 +12,7 @@ name = "bridge_engine"
 tauri-build = "=2.7.4"
 
 [dependencies]
+base64 = "=0.23.1"
 kube = { version = "=5.0.0", default-features = false, features = ["client", "ws", "rustls-tls", "ring", "http-proxy"] }
 k8s-openapi = { version = "=0.29.0", features = ["v1_35"] }
 http = "=1.5.0"
@@ -23,10 +24,13 @@ git2 = { version = "=0.21.0", default-features = false, features = ["vendored-li
 cap-std = "=4.0.3"
 cap-fs-ext = "=4.0.3"
 libc = "=0.2.191"
-tauri = { version = "=2.12.5", features = [] }
+tauri = { version = "=2.12.5", features = ["tray-icon"] }
+tauri-plugin-single-instance = "=2.5.5"
+tauri-plugin-dialog = "=2.8.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 serde_yaml_ng = "=0.10.0"
+regex = "=1.13.1"
 sha2 = "=0.10.9"
 sha1 = "=0.10.6"
 semver = "=1.0.28"
@@ -37,20 +41,29 @@ bridge-runtime-protocol = { path = "../../runtime/protocol" }
 tokio = { version = "=1.54.1", features = ["process", "io-util", "sync", "rt", "macros", "time", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_System_IO", "Win32_System_SystemServices", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_System_Com", "Wdk_Storage_FileSystem", "Wdk_System_SystemServices"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_System_IO", "Win32_System_SystemServices", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Wdk_Storage_FileSystem", "Wdk_System_SystemServices"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+tauri = { version = "=2.12.5", features = ["unstable"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "=3.7.0"
 security-framework-sys = "=2.17.0"
 core-foundation = "=0.10.1"
+objc2 = "=0.6.5"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 
 [dev-dependencies]
 tungstenite = "=0.30.0"
-base64 = "=0.23.1"
 rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }
-tokio = { version = "=1.54.1", features = ["time", "net"] }
+tokio = { version = "=1.54.1", features = ["time", "net", "test-util"] }
+
+[[test]]
+name = "native_termination"
+path = "tests/native_termination.rs"
+harness = false
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

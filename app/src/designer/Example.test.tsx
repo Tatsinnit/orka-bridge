@@ -2,28 +2,132 @@ import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
-import Example from './Example';
-const pair = { agent: '---\nname: web-reader\ndescription: Reads a page you name.\n---\nRead the page.\n', tests: 'Checks from disk' };
-const idle = { state: 'idle', canRun: true, report: null, acknowledged: [], pending: null, error: null };
+import { useState, type ComponentProps } from 'react';
+import ExampleView from './Example';
+// Exercise the save-state boundary used by App's single status-bar label.
+function Example(props: ComponentProps<typeof ExampleView>) {
+  const [state, setState] = useState('');
+  return <><ExampleView {...props} onSaveState={(value, id) => { setState(value); props.onSaveState?.(value, id); }} /><output aria-label="Save-state observer">{state === 'saved' ? 'Saved' : ''}</output></>;
+}
+const pair = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', name: 'web-reader', agent: '---\nname: web-reader\ndescription: Reads a page you name.\n---\nRead the page.\n', tests: 'Checks from disk' };
+const idle = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', busy: null, state: 'idle', canRun: true, report: null, acknowledged: [], pending: null, error: null };
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
 function native(save?: (content: string) => unknown) {
   vi.stubGlobal('isTauri', true);
   mockIPC((command, args) => {
     if (command === 'agent_open') return pair;
     if (command === 'agent_save') return save ? save((args as { content: string }).content) : { ...pair, agent: (args as { content: string }).content };
-    if (command === 'setup_run_status' || command === 'setup_run_example') return idle;
+    if (command === 'agent_run_status' || command === 'agent_run') return idle;
+    if (command === 'send_status') return { documentId: pair.documentId, view: null, busy: null };
+    if (command === 'send_history') return [];
     throw Error(`Unexpected command ${command}`);
   });
 }
+test.each([false, true])('prepared sample revision refreshes only a clean mounted draft (dirty: %s)', async dirty => {
+  vi.stubGlobal('isTauri', true); let agent = pair.agent;
+  mockIPC((command, args) => command === 'agent_open' ? { ...pair, agent }
+    : command === 'agent_save' ? { ...pair, agent: (args as { content: string }).content } : idle);
+  const view = render(<Example sampleRevision={0} />); await screen.findByRole('textbox', { name: 'Instructions' });
+  fireEvent.click(screen.getByRole('button', { name: 'File' }));
+  const editor = () => screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement;
+  if (dirty) fireEvent.change(editor(), { target: { value: `${pair.agent}My unsaved instruction.` } });
+  agent = pair.agent.replace('Read the page.', 'Use the prepared model.');
+  await act(async () => view.rerender(<Example sampleRevision={1} />));
+  await waitFor(() => expect(editor().value).toBe(dirty ? `${pair.agent}My unsaved instruction.` : agent));
+});
+test('a prepared refresh owns the read over an older initial open and preserves later edits', async () => {
+  vi.stubGlobal('isTauri', true); const reads: ((value: unknown) => void)[] = [];
+  mockIPC(command => command === 'agent_open' ? new Promise(resolve => reads.push(resolve)) : idle);
+  const view = render(<Example sampleRevision={0} />);
+  await waitFor(() => expect(reads).toHaveLength(1));
+  view.rerender(<Example sampleRevision={1} />);
+  await waitFor(() => expect(reads).toHaveLength(2));
+  const prepared = pair.agent.replace('Read the page.', 'Use the prepared model.');
+  await act(async () => reads[1]({ ...pair, agent: prepared }));
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  fireEvent.click(screen.getByRole('button', { name: 'File' }));
+  const editor = () => screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement;
+  const changed = `${prepared}My unsaved instruction.`;
+  fireEvent.change(editor(), { target: { value: changed } });
+  await act(async () => reads[0](pair));
+  expect(editor().value).toBe(changed);
+});
+test('a newer preparation supersedes an in-flight prepared reload without replacing later edits', async () => {
+  vi.stubGlobal('isTauri', true); const reads: ((value: unknown) => void)[] = []; let opens = 0;
+  mockIPC(command => command === 'agent_open' ? opens++ === 0 ? pair : new Promise(resolve => reads.push(resolve)) : idle);
+  const view = render(<Example sampleRevision={0} />); await screen.findByRole('textbox', { name: 'Instructions' });
+  view.rerender(<Example sampleRevision={1} />); await waitFor(() => expect(reads).toHaveLength(1));
+  view.rerender(<Example sampleRevision={2} />); await waitFor(() => expect(reads).toHaveLength(2));
+  const prepared = pair.agent.replace('Read the page.', 'Use the latest prepared model.');
+  await act(async () => reads[1]({ ...pair, agent: prepared }));
+  fireEvent.click(screen.getByRole('button', { name: 'File' }));
+  const editor = () => screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement;
+  const edited = `${prepared}My unsaved instruction.`; fireEvent.change(editor(), { target: { value: edited } });
+  await act(async () => reads[0]({ ...pair, agent: pair.agent.replace('Read the page.', 'Use an older model.') }));
+  expect(editor().value).toBe(edited);
+});
+test('a failed local open keeps saved Send history accessible without the source folder', async () => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(command => {
+    if (command === 'agent_open') throw Error('Folder unavailable');
+    if (command === 'send_history') return [];
+    throw Error(`Unexpected command ${command}`);
+  });
+  render(<Example />);
+  await screen.findByRole('button', { name: 'Try opening again' });
+  const history = await screen.findByRole('button', { name: 'Past Sends' });
+  expect(history.getAttribute('aria-expanded')).toBe('false');
+  fireEvent.click(history);
+  expect(await screen.findByText('No saved Sends yet.')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Send to a cluster' }).hasAttribute('disabled')).toBe(true);
+});
+test('opening keeps a form-shaped skeleton until the owned document arrives', async () => {
+  vi.stubGlobal('isTauri', true); let finish!: (value: unknown) => void;
+  mockIPC(command => command === 'agent_open' ? new Promise(resolve => { finish = resolve; }) : idle);
+  render(<Example />);
+  const loading = screen.getByRole('status', { name: 'Opening your agent' });
+  expect(loading.getAttribute('aria-busy')).toBe('true');
+  expect(loading.querySelectorAll('.skeleton-field').length).toBeGreaterThan(2);
+  await act(async () => finish(pair));
+  expect(screen.queryByRole('status', { name: 'Opening your agent' })).toBeNull();
+  expect(screen.getByRole('textbox', { name: 'Instructions' })).toBeTruthy();
+});
 test('opens the owned pair without a VM and exposes a keyboard File switch', async () => {
   native(); const user = userEvent.setup(); render(<Example />);
   expect(await screen.findByRole('heading', { name: 'web-reader', level: 1 })).toBeTruthy();
-  expect(screen.getByText('Reads a page you name.')).toBeTruthy();
+  expect(screen.getByText('Reads a page you name.', { selector: 'p' })).toBeTruthy();
   expect(screen.getByText('Checks from disk')).toBeTruthy();
   const chat = screen.getByRole('button', { name: 'Chat' });
-  expect(chat.hasAttribute('disabled')).toBe(true); expect(chat.title).toMatch(/coming/i);
+  expect(chat.hasAttribute('disabled')).toBe(false);
   screen.getByRole('button', { name: 'File' }).focus(); await user.keyboard('{Enter}');
   expect((screen.getByRole('textbox', { name: 'Agent file' }) as HTMLTextAreaElement).value).toBe(pair.agent);
+});
+test('the editor leads and local tests sit above the Team cluster Send card, with history inside it', async () => {
+  native(); const user = userEvent.setup(); const { container } = render(<Example />);
+  const run = await screen.findByRole('region', { name: 'Tests on the local cluster' });
+  const editor = container.querySelector('.designer-file')!;
+  const history = screen.getByRole('region', { name: 'Past Sends' });
+  expect(editor.compareDocumentPosition(run) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(run.compareDocumentPosition(history) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(run.closest('.designer-tests')).toBeTruthy();
+  expect(history.closest('.designer-tests')).toBeNull();
+  expect(history.closest('.designer-checks')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'File' }));
+  expect(screen.getByRole('textbox', { name: 'Agent file' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Tests on the local cluster' })).toBe(run);
+});
+test('setup-pending local tests stay disabled, and a selected cluster keeps both areas in view', async () => {
+  native(); const { container, rerender } = render(<Example setupPending />);
+  await screen.findByRole('textbox', { name: 'Instructions' });
+  const pending = screen.getByRole('button', { name: 'Run tests' });
+  expect(pending.hasAttribute('disabled')).toBe(true);
+  expect(container.querySelector('.designer-file')!.compareDocumentPosition(pending) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(pending.classList.contains('button-primary')).toBe(false);
+  rerender(<Example remote />);
+  expect(await screen.findByRole('region', { name: 'Tests on the local cluster' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Team cluster' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Past Sends' }).closest('.designer-checks')).toBeTruthy();
+  expect(screen.getByText('Checks from disk').closest('.designer-tests')).toBeTruthy();
 });
 test('does not claim Saved or allow Run before the commit reply', async () => {
   let finish!: (value: unknown) => void; let saved = '';
@@ -34,11 +138,11 @@ test('does not claim Saved or allow Run before the commit reply', async () => {
   fireEvent.blur(screen.getByRole('textbox'));
   await screen.findByText('Saving…');
   expect(screen.queryByText('Saved')).toBeNull();
-  expect(screen.getByRole('button', { name: 'Run test' }).hasAttribute('disabled')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Run tests' }).hasAttribute('disabled')).toBe(true);
   expect(saved).toBe('New instructions');
   await act(async () => finish({ ...pair, agent: saved }));
   await screen.findByText('Saved');
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Run test' }).hasAttribute('disabled')).toBe(false));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Run tests' }).hasAttribute('disabled')).toBe(false));
 });
 test('a newer draft survives a late save reply and is committed next', async () => {
   const writes: string[] = []; let finish!: (value: unknown) => void;
@@ -94,74 +198,77 @@ test.each([
   mockIPC((command, args) => command === 'agent_open' ? { ...pair, source } : command === 'agent_save'
     ? { ...pair, agent: (args as { content: string }).content, source: (args as { content: string }).content === pair.agent ? source : { ...source, agent: 'd'.repeat(64) } } : {
     ...idle, state: 'complete', source: older ? { ...source, agent: 'b'.repeat(64) } : source,
-    report: { verdict: 'passed', cases: [{ id: 'reads-page', phase: 'Succeeded', answer: 'Checked answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', verdict: 'passed' }], verdict: 'passed' }] },
+    report: { verdict: 'passed', cases: [{ id: 'reads-page', question: 'What did the page say?', phase: 'Succeeded', answer: 'Checked answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] },
   });
   const user = userEvent.setup(); render(<Example onStale={onStale} />);
   await user.click(await screen.findByRole('button', { name: 'File' }));
-  await screen.findByText(older ? 'Earlier test verdict: passed' : 'Test verdict: passed');
+  await screen.findByText(older ? 'Not run since your edit' : '1 of 1 passed');
   const editor = screen.getByRole('textbox');
   fireEvent.change(editor, { target: { value: 'Temporary draft' } });
-  expect(screen.getByText('Earlier test verdict: passed')).toBeTruthy();
-  expect(onStale).toHaveBeenLastCalledWith(true);
+  expect(screen.getByText('Not run since your edit')).toBeTruthy();
+  expect(onStale).toHaveBeenLastCalledWith(true, pair.documentId);
   if (autosave) { fireEvent.blur(editor); await screen.findByText('Saved'); }
   fireEvent.change(editor, { target: { value: pair.agent } }); fireEvent.blur(editor);
   await screen.findByText('Saved');
-  await waitFor(() => expect(onStale).toHaveBeenLastCalledWith(false));
-  expect(screen.getByText(older ? 'Earlier test verdict: passed' : 'Test verdict: passed')).toBeTruthy();
-  expect(!!screen.queryByText(/Not run since your change/)).toBe(older);
+  await waitFor(() => expect(onStale).toHaveBeenLastCalledWith(false, pair.documentId));
+  expect(screen.getByText(older ? 'Not run since your edit' : '1 of 1 passed')).toBeTruthy();
+  expect(!!screen.queryByText(/Not run since your edit/)).toBe(older);
 });
 test('source-less replies keep an older verdict stale after undo to a newer saved file', async () => {
   vi.stubGlobal('isTauri', true);
   mockIPC((command, args) => command === 'agent_open' ? pair : command === 'agent_save'
     ? { ...pair, agent: (args as { content: string }).content }
-    : { ...idle, state: 'complete', report: { verdict: 'passed', cases: [{ id: 'reads-page', phase: 'Succeeded', answer: 'Earlier answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', verdict: 'passed' }], verdict: 'passed' }] } });
+    : { ...idle, state: 'complete', report: { verdict: 'passed', cases: [{ id: 'reads-page', question: 'What did the page say?', phase: 'Succeeded', answer: 'Earlier answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] } });
   const user = userEvent.setup(); render(<Example />);
   await user.click(await screen.findByRole('button', { name: 'File' }));
-  await screen.findByText('Test verdict: passed');
+  await screen.findByText('1 of 1 passed');
   const editor = screen.getByRole('textbox');
   fireEvent.change(editor, { target: { value: 'Saved newer file' } }); fireEvent.blur(editor);
   await screen.findByText('Saved');
   fireEvent.change(editor, { target: { value: 'Temporary draft' } });
   fireEvent.change(editor, { target: { value: 'Saved newer file' } }); fireEvent.blur(editor);
   await screen.findByText('Saved');
-  expect(screen.getByText('Earlier test verdict: passed')).toBeTruthy();
-  expect(screen.queryByText('Test verdict: passed')).toBeNull();
+  expect(screen.getByText('Not run since your edit')).toBeTruthy();
+  expect(screen.queryByText('1 of 1 passed')).toBeNull();
 });
 test('a failed Run request does not make an earlier verdict current after editing', async () => {
+  let attempted = false;
   vi.stubGlobal('isTauri', true);
   mockIPC((command, args) => {
     if (command === 'agent_open') return pair;
     if (command === 'agent_save') return { ...pair, agent: (args as { content: string }).content };
-    if (command === 'setup_run_example') return Promise.reject(new Error('IPC failure'));
-    return { ...idle, state: 'complete', report: { verdict: 'passed', cases: [{ id: 'reads-page', phase: 'Succeeded', answer: 'Earlier answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', verdict: 'passed' }], verdict: 'passed' }] } };
+    if (command === 'agent_run') { attempted = true; return Promise.reject(new Error('IPC failure')); }
+    return { ...idle, state: 'complete', report: { verdict: 'passed', cases: [{ id: 'reads-page', question: 'What did the page say?', phase: 'Succeeded', answer: 'Earlier answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] } };
   });
   const user = userEvent.setup(); render(<Example />);
   await user.click(await screen.findByRole('button', { name: 'File' }));
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New draft' } }); fireEvent.blur(screen.getByRole('textbox'));
   await screen.findByText('Saved');
-  await user.click(screen.getByRole('button', { name: 'Run test' }));
-  await screen.findByText('Run information is not supported by this build.');
-  expect(screen.getByText('Earlier test verdict: passed')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Run tests' }));
+  // Status polling may replace the transient IPC error; the verdict must stay stale.
+  expect(attempted).toBe(true);
+  expect(screen.getByText('Not run since your edit')).toBeTruthy();
+  expect(screen.queryByText('1 of 1 passed')).toBeNull();
 });
 test('an edit during a delayed Run reply keeps the earlier result stale', async () => {
   let finish!: (value: unknown) => void;
   vi.stubGlobal('isTauri', true);
   mockIPC((command, args) => command === 'agent_open' ? pair : command === 'agent_save' ? { ...pair, agent: (args as { content: string }).content }
-    : command === 'setup_run_example' ? new Promise(resolve => { finish = resolve; }) : idle);
+    : command === 'agent_run' ? new Promise(resolve => { finish = resolve; }) : idle);
   const user = userEvent.setup(); render(<Example />);
   await user.click(await screen.findByRole('button', { name: 'File' }));
-  await user.click(screen.getByRole('button', { name: 'Run test' }));
+  await user.click(screen.getByRole('button', { name: 'Run tests' }));
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Edited while submitting' } }); fireEvent.blur(screen.getByRole('textbox'));
   await screen.findByText('Saved');
   await act(async () => finish(idle));
-  expect(screen.getByText(/Not run since your change/)).toBeTruthy();
+  expect(screen.getByText(/Not run since your edit/)).toBeTruthy();
 });
 test('remounting with an old native report keeps it visibly stale', async () => {
   vi.stubGlobal('isTauri', true);
-  mockIPC(command => command === 'agent_open' ? { ...pair, source: { agent: 'b'.repeat(64), tests: 'c'.repeat(64) } } : { ...idle, state: 'complete', source: { agent: 'a'.repeat(64), tests: 'c'.repeat(64) }, report: { verdict: 'passed', cases: [{ id: 'reads-page', phase: 'Succeeded', answer: 'Earlier answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', verdict: 'passed' }], verdict: 'passed' }] } });
+  mockIPC(command => command === 'agent_open' ? { ...pair, source: { agent: 'b'.repeat(64), tests: 'c'.repeat(64) } } : { ...idle, state: 'complete', source: { agent: 'a'.repeat(64), tests: 'c'.repeat(64) }, report: { verdict: 'passed', cases: [{ id: 'reads-page', question: 'What did the page say?', phase: 'Succeeded', answer: 'Earlier answer', completedTools: [], assertions: [{ id: 'contains-1', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] } });
   render(<Example />);
-  expect(await screen.findByText('Earlier test verdict: passed')).toBeTruthy();
-  expect(screen.queryByText('Test verdict: passed')).toBeNull();
+  expect(await screen.findByText('Not run since your edit')).toBeTruthy();
+  expect(screen.queryByText('1 of 1 passed')).toBeNull();
 });
 test('typing autosaves without leaving the field', async () => {
   native(); const user = userEvent.setup(); render(<Example />);
@@ -173,9 +280,12 @@ test('typing autosaves without leaving the field', async () => {
 });
 test.each([null, {}, { agent: 'SECRET_MARKER', tests: '', extra: 'secret' }])('malformed folder reply cannot render private data', async value => {
   vi.stubGlobal('isTauri', true); mockIPC(() => value); render(<Example />);
-  expect(await screen.findByRole('alert')).toBeTruthy(); expect(document.body.textContent).not.toContain('SECRET_MARKER');
+  expect((await screen.findByText('Your agent folder could not be opened. Open it again from Designer.')).getAttribute('role')).toBe('alert');
+  expect(document.body.textContent).not.toContain('SECRET_MARKER');
 });
 test('browser preview does not fabricate a native folder', async () => {
   vi.stubGlobal('isTauri', false); const ipc = vi.fn(); mockIPC(ipc); render(<Example />);
-  expect(await screen.findByRole('alert')).toBeTruthy(); expect(ipc).not.toHaveBeenCalled();
+  expect((await screen.findByText('Your agent folder could not be opened. Open it again from Designer.')).getAttribute('role')).toBe('alert');
+  expect(screen.queryByText(/Saved Send summaries could not be read/)).toBeNull();
+  expect(ipc).not.toHaveBeenCalled();
 });

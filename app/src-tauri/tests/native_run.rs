@@ -13,6 +13,77 @@ const AGENT: &str = "---\nname: reader\ndescription: inert\nmodel: 'model:exact'
 const TESTS: &str = "---\nschemaVersion: 1\n---\n# Cases\n```yaml agent-test\nid: checksum\ninput: |\n  Fetch https://example.test/checksum\nassertions:\n  - id: answer\n    type: contains\n    value: secret-expected\n  - id: fetched\n    type: toolCalled\n    tool: web_fetch\n```\n";
 
 #[test]
+fn test_titles_are_display_only_and_roundtrip_without_changing_untitled_cases() {
+    let original = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
+    let old = serde_json::to_value(&original.cases()[0]).unwrap();
+    assert!(old.get("title").is_none());
+    for title in [
+        "Copies the checksum",
+        "  é 🙂  ",
+        &"🙂".repeat(160),
+        &format!("Täsk-{}", "A".repeat(20)),
+        &format!("é{}", "a".repeat(52)),
+    ] {
+        let tests = TESTS.replace("id: checksum", &format!("id: checksum\ntitle: '{}'", title));
+        let pair = ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).unwrap();
+        let saved = serde_json::to_value(&pair.cases()[0]).unwrap();
+        assert_eq!(saved["title"], title);
+        assert_eq!(pair.prompt(), original.prompt());
+        assert_eq!(pair.cases()[0].input(), original.cases()[0].input());
+        let restored: RunCase = serde_json::from_value(saved.clone()).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), saved);
+    }
+    let mut historical = old.clone();
+    historical["title"] = json!(format!("{}{}", "ghp_", "A".repeat(30)));
+    // Historical metadata must load even if today\'s source-title policy rejects it.
+    assert!(serde_json::from_value::<RunCase>(historical).is_ok());
+    let restored: RunCase = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), old);
+}
+#[test]
+fn malformed_or_credential_shaped_titles_are_not_display_metadata() {
+    for title in [
+        "null".to_owned(),
+        "42".into(),
+        "true".into(),
+        "''".into(),
+        "' '".into(),
+        format!("'{}'", "🙂".repeat(161)),
+        r#""a\nb""#.into(),
+        "'a\u{200b}b'".into(),
+        "'a\u{2028}b'".into(),
+        format!("'{}{}'", "ghp_", "A".repeat(30)),
+    ] {
+        let tests = TESTS.replace("id: checksum", &format!("id: checksum\ntitle: {title}"));
+        assert!(
+            ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).is_err(),
+            "{title}"
+        );
+    }
+}
+#[test]
+fn string_fields_preserve_yaml_scalar_spelling_without_coercing_titles() {
+    for scalar in ["42", "true", "null", "0x2A", "1.20", "FALSE", "1e+3", "~"] {
+        let tests = format!("---\nschemaVersion: 1\n---\n\x60\x60\x60yaml agent-test\nid: {scalar}\ntitle: Reads the page\ninput: {scalar}\nassertions: [{{id: answer, type: contains, value: checksum}}]\n\x60\x60\x60\n");
+        let pair = ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).unwrap();
+        let saved = serde_json::to_value(&pair.cases()[0]).unwrap();
+        assert_eq!(saved["id"], scalar);
+        assert_eq!(saved["input"], scalar);
+        assert_eq!(saved["title"], "Reads the page");
+        // Internally tagged assertions buffer typed YAML values before reading String.
+        for assertion in [
+            format!("{{id: {scalar}, type: contains, value: checksum}}"),
+            format!("{{id: answer, type: contains, value: {scalar}}}"),
+            format!("{{id: answer, type: toolCalled, tool: {scalar}}}"),
+        ] {
+            assert!(
+                serde_yaml_ng::from_str::<Assertion>(&assertion).is_err(),
+                "{assertion}"
+            );
+        }
+    }
+}
+#[test]
 fn real_yaml_preserves_prompt_input_model_and_exact_byte_provenance() {
     // Catches trimming/rebuilding source, a handwritten YAML subset, or lost hashes.
     let pair = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
@@ -30,12 +101,32 @@ fn real_yaml_preserves_prompt_input_model_and_exact_byte_provenance() {
     let changed = ParsedPair::parse(format!("{AGENT}\n").as_bytes(), TESTS.as_bytes()).unwrap();
     assert_ne!(pair.snapshot(), changed.snapshot());
 }
+#[tokio::test]
+async fn declared_tool_kind_keeps_the_same_name_only_mapping() {
+    for (syntax, kind) in [("builtin", ToolKind::Builtin), ("tool", ToolKind::Resource)] {
+        let source = AGENT.replace("kind: builtin", &format!("kind: {syntax}"));
+        let pair = ParsedPair::parse(source.as_bytes(), TESTS.as_bytes()).unwrap();
+        assert_eq!(pair.declared_tools()[0].kind, kind);
+        assert_eq!(pair.declared_tools()[0].name, "web_fetch");
+        let (runner, receive, posts) = stopping_runner(usize::MAX, usize::MAX, None);
+        runner
+            .submit_prepared(runner.prepare(pair).unwrap(), receive)
+            .await
+            .unwrap();
+        assert_eq!(
+            posts.lock().unwrap()[0]["spec"]["tools"],
+            json!([{"name":"web_fetch"}])
+        );
+    }
+}
+
 #[test]
 fn closed_parser_refuses_unsupported_or_empty_semantics() {
     // Removing any closed-schema check would accept one of these invalid sources.
     for agent in [
         AGENT.replace("runtime: orka", "runtime: other"),
         AGENT.replace("kind: builtin", "kind: mcp"),
+        AGENT.replace("kind: builtin", "kind: resource"),
         AGENT.replace("  tools:", "  repeats: 2\n  tools:"),
         AGENT.replace("model: 'model:exact'", "model: ''"),
         AGENT.replace("name: reader", "name: reader\nunknown: true"),
@@ -47,102 +138,227 @@ fn closed_parser_refuses_unsupported_or_empty_semantics() {
     }
 }
 
-#[test]
-fn unsupported_test_fences_cannot_hide_beside_a_valid_case() {
-    for opening in [
-        " ```yaml agent-test",
-        "   ```yaml agent-test",
-        "\t```yaml agent-test",
-        "~~~yaml agent-test",
-        "  ~~~yaml agent-test",
-        "````yaml agent-test",
-        "```yml agent-test",
-        "```yaml agent-test extra",
+// Removing soul admission or name-only mapping must fail these consumer tests.
+#[tokio::test]
+async fn soul_and_both_tool_kinds_survive_preparation_and_acknowledgment() {
+    for soul in [
+        json!({"inline":"Kind.\r\nExact."}),
+        json!({"inline":"Kind.","digest":"sha256:f9fcd6e31bd6311467d29894fae0db1c16acb84bfe9cfb30b666ea77eec43b69"}),
+        json!({"configMapRef":{"name":"persona.v1","key":"SOUL.md"},"digest":format!("sha256:{}", "a".repeat(64))}),
     ] {
-        let hidden = TESTS
-            .replace("```yaml agent-test", opening)
-            .replace("id: checksum", "id: hidden");
-        for source in [hidden.clone(), format!("{TESTS}\n{hidden}")] {
-            assert!(
-                matches!(
-                    ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()),
-                    Err(ErrorKind::Source)
-                ),
-                "{opening}"
+        let source = AGENT
+            .replace("  tools:", &format!("  soul: {}\n  tools:", soul))
+            .replace(
+                "name: web_fetch",
+                "name: web_fetch\n    - kind: tool\n      name: workspace_lookup",
             );
+        let parsed = ParsedPair::parse(source.as_bytes(), TESTS.as_bytes()).unwrap();
+        let (runner, receive, posts) = stopping_runner(usize::MAX, usize::MAX, None);
+        let prepared = runner.prepare(parsed).unwrap();
+        assert!(posts.lock().unwrap().is_empty());
+        let handle = runner.submit_prepared(prepared, receive).await.unwrap();
+        assert!(handle.agent().is_some());
+        let bodies = posts.lock().unwrap();
+        assert_eq!(bodies[0]["spec"]["soul"], soul);
+        assert_eq!(
+            bodies[0]["spec"]["systemPrompt"],
+            json!({"inline":"\nFetch only.\n"})
+        );
+        assert_eq!(
+            bodies[0]["spec"]["tools"],
+            json!([{"name":"web_fetch"},{"name":"workspace_lookup"}])
+        );
+    }
+}
+
+#[test]
+fn soul_parser_checks_decoded_bytes_sources_and_references() {
+    use sha2::{Digest, Sha256};
+    let source = |soul: Value| AGENT.replace("  tools:", &format!("  soul: {soul}\n  tools:"));
+    for text in [
+        "é".repeat(4096),
+        "Kind.\nExact.".into(),
+        "Kind.\r\nExact.".into(),
+    ] {
+        let digest = format!("sha256:{:x}", Sha256::digest(text.as_bytes()));
+        let agent = source(json!({"inline":text,"digest":digest}));
+        assert!(ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()).is_ok());
+    }
+    // Shared vector with the form test: YAML 1.1 folds raw NEL/LS/PS, so the
+    // renderer must write explicit escapes to preserve these decoded bytes.
+    let separators = AGENT.replace("  tools:", "  soul: {inline: \"a\\u0085b c\\u2028 d\\u2029e\", digest: sha256:226df73f14b454e1a1ee85887e4a410dab81d028eb849b524100a3382b72dac2}\n  tools:");
+    assert!(ParsedPair::parse(separators.as_bytes(), TESTS.as_bytes()).is_ok());
+    let ref_digest = format!("sha256:{}", "a".repeat(64));
+    for invalid in [
+        json!({}),
+        json!({"inline":""}),
+        json!({"inline":"  "}),
+        json!({"inline":"a\0b"}),
+        json!({"inline":"é".repeat(4097)}),
+        json!({"inline":"hi","digest":ref_digest}),
+        json!({"inline":"hi","digest":format!("SHA256:{}", "A".repeat(64))}),
+        json!({"inline":"hi","configMapRef":{"name":"persona","key":"SOUL.md"},"digest":ref_digest}),
+        json!({"configMapRef":{"name":"persona","key":"SOUL.md"}}),
+        json!({"configMapRef":{"name":"Bad/name","key":"SOUL.md"},"digest":ref_digest}),
+        json!({"configMapRef":{"name":"persona","key":"../key"},"digest":ref_digest}),
+        json!({"configMapRef":{"name":"persona","key":"."},"digest":ref_digest}),
+        json!({"configMapRef":{"name":"persona","key":"SOUL.md","namespace":"other"},"digest":ref_digest}),
+        json!({"inline":"hi","unknown":true}),
+        json!({"inline":null}),
+    ] {
+        assert!(
+            ParsedPair::parse(source(invalid.clone()).as_bytes(), TESTS.as_bytes()).is_err(),
+            "{invalid}"
+        );
+    }
+    let duplicate = AGENT.replace(
+        "name: web_fetch",
+        "name: web_fetch\n    - kind: tool\n      name: web_fetch",
+    );
+    assert!(ParsedPair::parse(duplicate.as_bytes(), TESTS.as_bytes()).is_err());
+}
+
+#[tokio::test]
+async fn durable_checkpoints_bracket_each_post_and_failure_bars_next_mutation() {
+    for fail_at in [0, 1, 2, 3, usize::MAX] {
+        let fixture = Fixture::start(Behavior::default()).await;
+        let runner = fixture.runner();
+        let pair = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let mut order = Vec::new();
+        let result = runner
+            .submit_checkpointed(runner.prepare(pair).unwrap(), stop, &mut |event| {
+                match event {
+                    RunCheckpoint::Before(r) => order.push(format!("before:{}", r.kind)),
+                    RunCheckpoint::Acknowledged(r) => {
+                        assert!(r.uid.is_some());
+                        order.push(format!("ack:{}", r.kind));
+                    }
+                    RunCheckpoint::AgentAcknowledged(_) => return Ok(()),
+                    _ => panic!("unexpected case during submission"),
+                }
+                if order.len() - 1 == fail_at {
+                    Err(ErrorKind::Storage)
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+        let posts = fixture
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method.starts_with("POST"))
+            .count();
+        assert_eq!(
+            posts,
+            match fail_at {
+                0 => 0,
+                1 | 2 => 1,
+                _ => 2,
+            }
+        );
+        assert_eq!(
+            order,
+            ["before:Agent", "ack:Agent", "before:Task", "ack:Task"]
+                .into_iter()
+                .take((fail_at.saturating_add(1)).min(4))
+                .map(String::from)
+                .collect::<Vec<_>>()
+        );
+        if fail_at != usize::MAX {
+            assert_eq!(result.unwrap_err().kind, ErrorKind::Storage);
         }
     }
 }
 
-#[test]
-fn markdown_examples_use_matching_fence_character_and_length() {
-    assert!(matches!(
-        ParsedPair::parse(
-            AGENT.as_bytes(),
-            format!("{TESTS}\n~~~~markdown\n{TESTS}").as_bytes()
-        ),
-        Err(ErrorKind::Source)
-    ));
-    for (open, close) in [
-        ("~~~~markdown", "~~~~"),
-        ("````markdown", "````"),
-        ("  ~~~~markdown", "   ~~~~"),
-    ] {
-        // The apparent test and shorter/mixed fences belong to the example.
-        let source =
-            format!("---\nschemaVersion: 1\n---\n{open}\n{TESTS}\n```\n~~~\n{close}\n{TESTS}");
-        let parsed = ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()).unwrap();
-        assert_eq!(parsed.cases().len(), 1);
-        assert_eq!(parsed.cases()[0].id, "checksum");
-    }
-    // Whitespace and a longer closing fence are legal; they do not swallow the next case.
-    let source = TESTS.replace("```\n", " ````  \n");
+#[tokio::test]
+async fn recovery_reads_only_gets_uses_captured_rules_and_preserves_answer_when_missing() {
+    let fixture = Fixture::start(Behavior::default()).await;
+    let runner = fixture.runner();
+    let pair = ParsedPair::parse(AGENT.as_bytes(), TESTS.as_bytes()).unwrap();
+    let cases = pair.cases().to_vec();
+    let (_tx, stop) = tokio::sync::watch::channel(false);
+    let mut resources = Vec::new();
+    let handle = runner
+        .submit_checkpointed(runner.prepare(pair).unwrap(), stop.clone(), &mut |event| {
+            if let RunCheckpoint::Acknowledged(r) = event {
+                resources.push(r)
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut saved = Vec::new();
+    let report = runner
+        .observe_checkpointed(&handle, stop, &mut |event| {
+            if let RunCheckpoint::Case(_, r) = event {
+                saved.push(r)
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+    let before = fixture.requests.lock().unwrap().len();
+    let read = runner
+        .recover(&mut resources, &cases, Some(report.clone()))
+        .await;
+    assert_eq!(read.availability, "available");
+    assert_eq!(read.report.unwrap().verdict, Verdict::Passed);
+    assert!(resources
+        .iter()
+        .filter(|r| r.kind == "Task")
+        .all(|r| r.terminal));
+    assert!(fixture.requests.lock().unwrap()[before..]
+        .iter()
+        .all(|(m, _)| m.starts_with("GET")));
+    // Same name is not the acknowledged Task. Existing answer remains readable.
+    resources.iter_mut().find(|r| r.kind == "Task").unwrap().uid = Some("replaced".into());
+    let read = runner.recover(&mut resources, &cases, Some(report)).await;
+    assert_eq!(read.availability, "missing");
     assert_eq!(
-        ParsedPair::parse(AGENT.as_bytes(), source.as_bytes())
-            .unwrap()
-            .cases()
-            .len(),
-        1
+        read.report.unwrap().cases[0].answer.as_deref(),
+        Some("secret-expected")
     );
 }
 
-#[test]
-fn builtin_names_are_exact_and_unknown_custom_names_are_source_errors() {
-    for name in [
-        "custom_authorized_tool",
-        "web_fetc",
-        "WEB_FETCH",
-        " web_fetch",
-        "web_fetch ",
-    ] {
-        let agent = AGENT.replace("name: web_fetch", &format!("name: '{name}'"));
-        assert!(
-            matches!(
-                ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()),
-                Err(ErrorKind::Source)
-            ),
-            "{name}"
-        );
-    }
-    // Known names are classification only; runtime/permission checks remain separate.
-    for name in [
-        "web_fetch",
-        "file_read",
-        "request_approval",
-        "delegate_task",
-        "list_connections",
-    ] {
-        let agent = AGENT.replace("name: web_fetch", &format!("name: {name}"));
-        assert!(
-            ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()).is_ok(),
-            "{name}"
-        );
-    }
+#[tokio::test]
+async fn saved_send_recheck_keeps_the_shared_cancelled_verdict_without_assertions() {
+    let fixture = Fixture::start(Behavior {
+        phase: "Cancelled",
+        ..Behavior::default()
+    })
+    .await;
+    let runner = fixture.runner();
+    let pair = pair();
+    let cases = pair.cases().to_vec();
+    let (_tx, stop) = tokio::sync::watch::channel(false);
+    let mut resources = Vec::new();
+    runner
+        .submit_checkpointed(runner.prepare(pair).unwrap(), stop, &mut |event| {
+            if let RunCheckpoint::Acknowledged(resource) = event {
+                resources.push(resource);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let report = runner
+        .recover(&mut resources, &cases, None)
+        .await
+        .report
+        .unwrap();
+    assert_eq!(report.verdict, Verdict::Cancelled);
+    assert_eq!(report.cases[0].verdict, Verdict::Cancelled);
+    assert!(report.cases[0].assertions.is_empty());
 }
 
 #[derive(Clone, Copy)]
 struct Behavior {
     phase: &'static str,
+    message: &'static str,
     answer: Option<&'static str>,
     events: &'static str,
     fault: &'static str,
@@ -151,6 +367,7 @@ impl Default for Behavior {
     fn default() -> Self {
         Self {
             phase: "Succeeded",
+            message: "",
             answer: Some("secret-expected"),
             events: "complete",
             fault: "",
@@ -234,7 +451,7 @@ impl Fixture {
                         continue;
                     }
                     status = 201;
-                    response = json!({"apiVersion":"core.orka.ai/v1alpha1", "kind":if path.ends_with("agents") {"Agent"} else {"Task"}, "metadata":{"name":body["name"],"namespace":body["namespace"],"uid":format!("uid-{}",body["name"].as_str().unwrap()),"generation":1},"spec":body["spec"],"status":{"phase":b.phase}});
+                    response = json!({"apiVersion":"core.orka.ai/v1alpha1", "kind":if path.ends_with("agents") {"Agent"} else {"Task"}, "metadata":{"name":body["name"],"namespace":body["namespace"],"uid":format!("uid-{}",body["name"].as_str().unwrap()),"generation":1},"spec":body["spec"],"status":{"phase":b.phase,"message":b.message}});
                     if path.ends_with("agents") {
                         response["spec"]["defaulted"] = json!(true);
                     } else {
@@ -549,6 +766,41 @@ async fn partial_submission_preserves_known_failures_and_missing_cases_stay_unkn
     }
 }
 #[tokio::test]
+async fn reused_agent_checkpoints_its_revision_and_only_creates_fresh_tasks() {
+    let (runner, stop, posts) = stopping_runner(usize::MAX, usize::MAX, None);
+    let first = runner
+        .submit_prepared(runner.prepare(pair()).unwrap(), stop.clone())
+        .await
+        .unwrap();
+    let agent = first.agent().unwrap().clone();
+    let mut receipts = Vec::new();
+    let second = runner
+        .submit_checkpointed(
+            runner.prepare_reuse(pair(), agent.clone()).unwrap(),
+            stop,
+            &mut |event| {
+                match event {
+                    RunCheckpoint::Before(r) => receipts.push((r.kind, r.uid)),
+                    RunCheckpoint::Acknowledged(r) => receipts.push((r.kind, r.uid)),
+                    _ => (),
+                }
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.agent().unwrap().uid, "uid-1");
+    assert_eq!(posts.lock().unwrap().len(), 3);
+    assert_eq!(
+        posts.lock().unwrap()[2]["spec"]["agentRef"]["name"],
+        agent.name
+    );
+    assert_ne!(first.tasks()[0].name, second.tasks()[0].name);
+    assert_eq!(receipts[0], ("Agent".into(), Some("uid-1".into())));
+    assert_eq!(receipts[1], ("Agent".into(), Some("uid-1".into())));
+}
+
+#[tokio::test]
 async fn planned_agent_before_post() {
     let fixture = Fixture::start(Behavior::default()).await;
     let runner = fixture.runner();
@@ -789,6 +1041,43 @@ async fn native_runner_accepts_a_borrowed_transport_without_a_second_http_target
     assert!(error.handle.agent().is_none());
 }
 #[tokio::test]
+async fn captured_titles_survive_observation_and_old_report_deserialization() {
+    let source = TESTS.replace("id: checksum", "id: checksum\ntitle: Copies the checksum");
+    let pair = ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()).unwrap();
+    let fixture = Fixture::start(Behavior {
+        events: "paged",
+        ..Behavior::default()
+    })
+    .await;
+    let runner = fixture.runner();
+    let handle = runner.submit(pair).await.unwrap();
+    let report = runner.observe(&handle).await.unwrap();
+    assert_eq!(
+        report.cases[0].title.as_deref(),
+        Some("Copies the checksum")
+    );
+    assert_eq!(
+        serde_json::from_value::<RunReport>(serde_json::to_value(&report).unwrap())
+            .unwrap()
+            .cases[0]
+            .title,
+        report.cases[0].title
+    );
+    let mut legacy = serde_json::to_value(report).unwrap();
+    legacy["cases"][0].as_object_mut().unwrap().remove("title");
+    assert!(
+        serde_json::from_value::<RunReport>(legacy).unwrap().cases[0]
+            .title
+            .is_none()
+    );
+    for (_, body) in fixture.requests.lock().unwrap().iter() {
+        assert!(
+            !body.to_string().contains("Copies the checksum"),
+            "display metadata entered execution"
+        );
+    }
+}
+#[tokio::test]
 async fn submits_exact_mapping_and_observes_only_acknowledged_unique_resources() {
     // Catches prompt contamination, model fallback, retries, namespace omission and accidental writes in observe.
     let fixture = Fixture::start(Behavior {
@@ -805,6 +1094,16 @@ async fn submits_exact_mapping_and_observes_only_acknowledged_unique_resources()
     let report = runner.observe(&handle).await.unwrap();
     assert_eq!(report.verdict, Verdict::Passed);
     assert_eq!(report.cases[0].answer.as_deref(), Some("secret-expected"));
+    let display = serde_json::to_value(&report).unwrap();
+    assert_eq!(display["cases"][0]["question"], pair().cases()[0].input());
+    assert_eq!(
+        display["cases"][0]["assertions"][0]["expected"],
+        "secret-expected"
+    );
+    assert_eq!(
+        display["cases"][0]["assertions"][1]["expected"],
+        "web_fetch"
+    );
     let second = runner.submit(pair()).await.unwrap();
     assert_ne!(handle.agent().unwrap().name, second.agent().unwrap().name);
     assert_ne!(handle.tasks()[0].name, second.tasks()[0].name);
@@ -853,6 +1152,274 @@ async fn creates_one_task_per_case_without_reusing_inputs_or_expected_values() {
     assert!(!requests[2].1.to_string().contains("different-expected"));
 }
 #[tokio::test]
+async fn credit_phase_uses_only_failed_task_status_evidence_and_never_copies_it() {
+    for (phase, message, answer, expected) in [
+        (
+            "Failed",
+            "upstream HTTP 429: private-diagnostic",
+            "wrong",
+            "CreditLimited",
+        ),
+        (
+            "Failed",
+            "status_code=429: private-diagnostic",
+            "wrong",
+            "CreditLimited",
+        ),
+        (
+            "Failed",
+            "insufficient_quota: private-diagnostic",
+            "wrong",
+            "CreditLimited",
+        ),
+        (
+            "Failed",
+            "Credit balance too low: private-diagnostic",
+            "wrong",
+            "CreditLimited",
+        ),
+        (
+            "Failed",
+            "Rate limit exceeded: private-diagnostic",
+            "wrong",
+            "CreditLimited",
+        ),
+        (
+            "Failed",
+            "rate_limit_exceeded: private-diagnostic",
+            "wrong",
+            "CreditLimited",
+        ),
+        (
+            "Failed",
+            "error 1429: private-diagnostic",
+            "wrong",
+            "Failed",
+        ),
+        (
+            "Failed",
+            "request429: private-diagnostic",
+            "wrong",
+            "Failed",
+        ),
+        (
+            "Failed",
+            "prompt failed: private-diagnostic",
+            "429 insufficient_quota",
+            "Failed",
+        ),
+        (
+            "Succeeded",
+            "insufficient_quota: private-diagnostic",
+            "429 credit balance too low",
+            "Succeeded",
+        ),
+    ] {
+        let transport = VerdictTransport::new(Behavior {
+            phase,
+            message,
+            answer: Some(answer),
+            ..Behavior::default()
+        });
+        let runner = NativeRunner::with_transport(&transport);
+        let handle = runner.submit(pair()).await.unwrap();
+        let report = runner.observe(&handle).await.unwrap();
+        assert_eq!(report.cases[0].phase, expected, "{message}");
+        assert_eq!(report.verdict, Verdict::Failed);
+        assert!(!serde_json::to_string(&report)
+            .unwrap()
+            .contains("private-diagnostic"));
+    }
+}
+#[tokio::test]
+async fn cancelled_is_neutral_has_no_assertions_and_reads_evidence_once() {
+    let fixture = Fixture::start(Behavior {
+        phase: "Cancelled",
+        ..Behavior::default()
+    })
+    .await;
+    let runner = fixture.runner();
+    let handle = runner.submit(pair()).await.unwrap();
+    let report = runner.observe(&handle).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["verdict"],
+        "cancelled"
+    );
+    assert_eq!(
+        serde_json::to_value(&report).unwrap()["cases"][0]["verdict"],
+        "cancelled"
+    );
+    assert!(report.cases[0].assertions.is_empty());
+    assert_eq!(
+        fixture
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p.contains("/result?"))
+            .count(),
+        1
+    );
+}
+
+// Verdict proofs use raw responses without an unrelated loopback scheduling deadline.
+// Real HTTP mapping, status and timeout behavior remain in the HTTP fixture tests.
+struct VerdictTransport {
+    behavior: Behavior,
+    objects: Mutex<HashMap<String, Value>>,
+    event_reads: Mutex<usize>,
+}
+impl VerdictTransport {
+    fn new(behavior: Behavior) -> Self {
+        assert!(behavior.fault.is_empty());
+        Self {
+            behavior,
+            objects: Mutex::new(HashMap::new()),
+            event_reads: Mutex::new(0),
+        }
+    }
+}
+impl RunTransport for &VerdictTransport {
+    fn namespace(&self) -> &str {
+        "sandbox"
+    }
+    fn provider(&self) -> &str {
+        "provider"
+    }
+    fn limits(&self) -> RunLimits {
+        RunLimits {
+            request_timeout: Duration::from_millis(50),
+            operation_timeout: Duration::from_secs(2),
+            poll_interval: Duration::from_millis(1),
+        }
+    }
+    fn request<'a>(
+        &'a self,
+        path: &'a str,
+        after: Option<u64>,
+        body: Option<&'a Value>,
+        _: tokio::time::Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async move {
+            let b = self.behavior;
+            let mut objects = self.objects.lock().unwrap();
+            if let Some(body) = body {
+                assert!(matches!(path, "agents" | "tasks"), "{path}");
+                let mut resource = json!({
+                    "apiVersion": "core.orka.ai/v1alpha1",
+                    "kind": if path == "agents" { "Agent" } else { "Task" },
+                    "metadata": {"name": body["name"], "namespace": body["namespace"],
+                        "uid": format!("uid-{}", body["name"].as_str().unwrap()), "generation": 1},
+                    "spec": body["spec"], "status": {"phase": b.phase, "message": b.message}
+                });
+                if path == "agents" {
+                    resource["spec"]["defaulted"] = json!(true);
+                } else {
+                    resource["spec"]["timeout"] = json!("2m0s");
+                    resource["spec"]["retryPolicy"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("maxRetries");
+                }
+                objects.insert(
+                    format!("{path}/{}", body["name"].as_str().unwrap()),
+                    resource.clone(),
+                );
+                resource.as_object_mut().unwrap().remove("apiVersion");
+                resource.as_object_mut().unwrap().remove("kind");
+                return Ok(resource);
+            }
+            if path.ends_with("/result") {
+                return b
+                    .answer
+                    .map(|answer| json!({"result": answer}))
+                    .ok_or(ErrorKind::NotFound);
+            }
+            if let Some(task_path) = path.strip_suffix("/events") {
+                let mut reads = self.event_reads.lock().unwrap();
+                *reads += 1;
+                if b.events == "disabled" {
+                    return Err(ErrorKind::Response);
+                }
+                let task = task_path.strip_prefix("tasks/").unwrap();
+                let agent = objects.values().find(|o| o["kind"] == "Agent").unwrap()["metadata"]
+                    ["name"]
+                    .clone();
+                let after = after.unwrap();
+                let seq = after + 1;
+                let typ = match b.events {
+                    "started" => "ToolCallStarted",
+                    "failed" => "ToolCallFailed",
+                    _ => "ToolCallCompleted",
+                };
+                let mut event = json!({"namespace":"sandbox", "streamType":"task", "streamID":task,
+                    "seq":seq, "type":typ, "taskName":task, "agentName":agent,
+                    "toolName":"web_fetch", "toolCallID":"call-1"});
+                match b.events {
+                    "wrong-task" => event["taskName"] = json!("unrelated"),
+                    "wrong-agent" => event["agentName"] = json!("unrelated"),
+                    "wrong-event-stream" => event["streamID"] = json!("unrelated"),
+                    "no-call-id" => event["toolCallID"] = json!(""),
+                    "gap" => event["seq"] = json!(seq + 1),
+                    "repeated-seq" => event["seq"] = json!(after),
+                    "complete" | "missing" | "late" | "started" | "failed" | "wrong-stream"
+                    | "wrong-namespace" | "wrong-cursor" => {}
+                    other => panic!("unsupported verdict events: {other}"),
+                }
+                let empty = b.events == "missing" || (b.events == "late" && *reads < 3);
+                let mut page = json!({"namespace":"sandbox", "streamType":"task", "streamID":task,
+                    "afterSeq":after, "latestSeq":if empty {after} else {seq},
+                    "events":if empty {vec![]} else {vec![event]}});
+                match b.events {
+                    "wrong-stream" => page["streamID"] = json!("unrelated"),
+                    "wrong-namespace" => page["namespace"] = json!("elsewhere"),
+                    "wrong-cursor" => page["afterSeq"] = json!(99),
+                    _ => {}
+                }
+                return Ok(page);
+            }
+            Ok(objects
+                .get(path)
+                .unwrap_or_else(|| panic!("unexpected verdict GET {path}"))
+                .clone())
+        })
+    }
+}
+
+#[tokio::test]
+async fn http_missing_result_and_disabled_events_remain_unknown() {
+    for (behavior, assertion) in [
+        (
+            Behavior {
+                answer: None,
+                ..Behavior::default()
+            },
+            0,
+        ),
+        (
+            Behavior {
+                events: "disabled",
+                ..Behavior::default()
+            },
+            1,
+        ),
+    ] {
+        let fixture = Fixture::start(behavior).await;
+        let runner = fixture.runner();
+        let h = runner.submit(pair()).await.unwrap();
+        let report = runner.observe(&h).await.unwrap();
+        assert_eq!(
+            report.cases[0].assertions[assertion].verdict,
+            Verdict::Unknown
+        );
+        assert_eq!(report.verdict, Verdict::Unknown);
+        let requests = fixture.requests.lock().unwrap();
+        assert!(requests.iter().any(|(p, _)| p.contains("/result?")));
+        assert!(requests.iter().any(|(p, _)| p.contains("/events?")));
+    }
+}
+
+#[tokio::test]
 async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evidence() {
     // Each row attacks a different proof source; missing tools are never a negative completeness claim.
     for (behavior, contains, tool, overall) in [
@@ -895,15 +1462,6 @@ async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evi
         ),
         (
             Behavior {
-                phase: "Cancelled",
-                ..Behavior::default()
-            },
-            Verdict::Passed,
-            Verdict::Passed,
-            Verdict::Failed,
-        ),
-        (
-            Behavior {
                 events: "late",
                 ..Behavior::default()
             },
@@ -912,10 +1470,13 @@ async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evi
             Verdict::Passed,
         ),
     ] {
-        let fixture = Fixture::start(behavior).await;
-        let runner = fixture.runner();
+        let transport = VerdictTransport::new(behavior);
+        let runner = NativeRunner::with_transport(&transport);
         let h = runner.submit(pair()).await.unwrap();
         let report = runner.observe(&h).await.unwrap();
+        if behavior.events == "late" {
+            assert_eq!(*transport.event_reads.lock().unwrap(), 3);
+        }
         assert_eq!(report.cases[0].assertions[0].verdict, contains);
         assert_eq!(report.cases[0].assertions[1].verdict, tool);
         if tool == Verdict::Passed {
@@ -941,12 +1502,11 @@ async fn verdicts_depend_on_answer_completion_and_positive_attributable_tool_evi
         "gap",
         "repeated-seq",
     ] {
-        let fixture = Fixture::start(Behavior {
+        let transport = VerdictTransport::new(Behavior {
             events,
             ..Behavior::default()
-        })
-        .await;
-        let runner = fixture.runner();
+        });
+        let runner = NativeRunner::with_transport(&transport);
         let h = runner.submit(pair()).await.unwrap();
         let report = runner.observe(&h).await.unwrap();
         assert_eq!(

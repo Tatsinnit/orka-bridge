@@ -14,6 +14,7 @@ mock results when its search backend fails.
 
 ```yaml agent-test
 id: published-checksum
+title: "Copies the checksum from the page"
 input: What SHA-256 checksum does https://dl.k8s.io/release/v1.35.0/bin/darwin/arm64/kubectl.sha256 publish for kubectl v1.35.0 on Apple silicon Macs?
 assertions:
   - id: checksum-from-page

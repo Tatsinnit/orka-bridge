@@ -215,6 +215,20 @@ fn assert_reaped(d: &tempfile::TempDir) {
 }
 
 #[test]
+fn closed_helper_control_preserves_buffered_reply_and_eof() {
+    let (control, mut helper) = UnixStream::pair().unwrap();
+    helper.write_all(b"BRVM\x01").unwrap();
+    drop(helper);
+    let mut reply = [0; 5];
+    read_until(&control, &mut reply, Instant::now() + Duration::from_secs(2)).unwrap();
+    assert_eq!(&reply, b"BRVM\x01");
+    assert_eq!(
+        read_until(&control, &mut [0], Instant::now() + Duration::from_secs(2)),
+        Err(HelperError::Io(io::ErrorKind::UnexpectedEof))
+    );
+}
+
+#[test]
 fn helper_owns_only_selected_channels_and_cannot_inherit_ambient_tokens() {
     let (d, mut owner, cmd) = setup("normal");
     let parent_flags = unsafe { libc::fcntl(owner.ownership.as_raw_fd(), libc::F_GETFD) };

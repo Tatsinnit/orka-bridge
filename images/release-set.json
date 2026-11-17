@@ -1,0 +1,166 @@
+{
+  "schemaVersion": "bridge-release-set/v1",
+  "imageRelease": {
+    "tag": "bridge-images-preview-43e73491-r2",
+    "title": "Bridge VM images — preview-43e73491-r2",
+    "sourceCommit": "43e7349115b4c7e9b1865a4d5f0989a02726724c"
+  },
+  "images": {
+    "macos-arm64": {
+      "profile": "preview-macos-arm64",
+      "manifestName": "manifest-macos-arm64.json",
+      "manifestSha256": "f8c2d2b1423aa63b9f9b626eb428c944e5283277303872e47df655ee6064709e"
+    },
+    "windows-amd64": {
+      "profile": "preview-windows-amd64",
+      "manifestName": "manifest-windows-amd64.json",
+      "manifestSha256": "be18ce4298a22b28bec2de5776288726bc5bd020c2dc9a62c360fc256a9718e9"
+    }
+  },
+  "appCandidates": {
+    "v0.1.2": {
+      "runId": 43876543370,
+      "workflowId": 406543958,
+      "runAttempt": 1,
+      "buildCommit": "ff8258bbfee15c562bbb211a46f7a3ef53c20087",
+      "artifacts": {
+        "bridge-windows-candidate": {
+          "id": 14231775454,
+          "sha256": "2cc191fb9140813e6f7c758ed2793eae88e7242c6cac2b16b85f95c8a1251215",
+          "files": {
+            "windows-after.json": {
+              "bytes": 191,
+              "sha256": "04c445061b4170d1e022cfe3f7d6e91b1efbd270396e454577fd41e6a756fa9a"
+            },
+            "bridge-windows-x64.zip": {
+              "bytes": 57881452,
+              "sha256": "08566144dde02895b2c0caa1ed178f44238f3ace27c36fd67f8a13784482214d"
+            },
+            "windows-before.json": {
+              "bytes": 102,
+              "sha256": "21a90963953e4df5b7d5cbd0152cb938625d4032746fe0829bbe3f94cb54949a"
+            },
+            "bridge-windows-runtime-source.zip": {
+              "bytes": 930666861,
+              "sha256": "1f1d8d6409a744a80bb726c243f864701298f4f94af01bee4487a4df023fdfcb"
+            }
+          }
+        },
+        "bridge-macos-candidate": {
+          "id": 14229529000,
+          "sha256": "3da1859a1d3f5636d32cc92f75da262bb2c5c70c766be439442d0b4e3fad4b65",
+          "files": {
+            "bridge-macos-arm64.tar.gz": {
+              "bytes": 11218731,
+              "sha256": "45003eb22d9a9398d0ebddd5302c990b1ba4a896cc2f15c0a5764fd44d249950"
+            },
+            "macos-after.json": {
+              "bytes": 142,
+              "sha256": "6e7d5cffced4b3327a1e7554fe1e8f66c9652f9b0598b40063880d556616ea0c"
+            },
+            "macos-before.json": {
+              "bytes": 99,
+              "sha256": "8a2ad29ff1153d6384a2784f6e2665ee3e38c1c37fa128e1e1aeb80ff72f5880"
+            }
+          }
+        }
+      }
+    },
+    "v0.1.1": {
+      "runId": 43778672556,
+      "workflowId": 406543958,
+      "runAttempt": 1,
+      "buildCommit": "46d667c05fcce06833a823c2445a0d260cb8af56",
+      "artifacts": {
+        "bridge-windows-candidate": {
+          "id": 14188670378,
+          "sha256": "aa6b26755301bbdd94f8a02ddf522f228676370b83c7531311f9a6ec5376fc2e",
+          "files": {
+            "bridge-windows-x64.zip": {
+              "bytes": 57615472,
+              "sha256": "a0685367320378c01b6467b618e4373f2f99e509d0fc8dae2085f4d51151d87b"
+            },
+            "windows-after.json": {
+              "bytes": 191,
+              "sha256": "614c2b59210b23644a7b5630d06e8660dfc72949e4c7c97d04514757464d5eef"
+            },
+            "windows-before.json": {
+              "bytes": 102,
+              "sha256": "77fbbfad9e4b583cf1da6ee86fe3ba1cc3d77d7cbb780ddabcd05c333f2e31ae"
+            },
+            "bridge-windows-runtime-source.zip": {
+              "bytes": 930666861,
+              "sha256": "1f1d8d6409a744a80bb726c243f864701298f4f94af01bee4487a4df023fdfcb"
+            }
+          }
+        },
+        "bridge-macos-candidate": {
+          "id": 14187414532,
+          "sha256": "2ed21c286c4f312ffa4f916c128e9ceefe2f3691d1dbc4cfbb886185bdacd079",
+          "files": {
+            "bridge-macos-arm64.tar.gz": {
+              "bytes": 10918676,
+              "sha256": "287704d6614fa8a8d0339e3cba1631df64d09b113bd52cd02eba94e60e833862"
+            },
+            "macos-after.json": {
+              "bytes": 142,
+              "sha256": "547026cedf1a4664818964586971f4e5a68b57af8eecc7ba3d81a9866ac8588b"
+            },
+            "macos-before.json": {
+              "bytes": 99,
+              "sha256": "e5e7f3d320b389d32c1efc246421275c7cce4d037c5da9ab9388b97202129682"
+            }
+          }
+        }
+      }
+    },
+    "v0.1.0": {
+      "runId": 43723273684,
+      "workflowId": 406543958,
+      "runAttempt": 1,
+      "buildCommit": "4bfa919f3510e6d61aae93d83cd75e2b5deeee9a",
+      "artifacts": {
+        "bridge-windows-candidate": {
+          "id": 14165478622,
+          "sha256": "c4933597aedd34941a4a6bd217e62c86f41a981abf173e7e5ddd8fc5970fccde",
+          "files": {
+            "bridge-windows-x64.zip": {
+              "bytes": 57542055,
+              "sha256": "3142aff413ef91df8d34db1711edeafaf7705848bcb1e8559c3952cc08d4d3e2"
+            },
+            "windows-after.json": {
+              "bytes": 191,
+              "sha256": "3550a0b760c79f0b1fe07b7d1b0c9c74b42ee812ad089475f74c47b962164096"
+            },
+            "windows-before.json": {
+              "bytes": 102,
+              "sha256": "520479be40b6d070a74a87045562f48ed063e2f3f340764c47f9b0961e289db3"
+            },
+            "bridge-windows-runtime-source.zip": {
+              "bytes": 930666861,
+              "sha256": "1f1d8d6409a744a80bb726c243f864701298f4f94af01bee4487a4df023fdfcb"
+            }
+          }
+        },
+        "bridge-macos-candidate": {
+          "id": 14165887151,
+          "sha256": "c6897686c3f2fe86e8bd3677c4ed2a4d332d7f383568117b05433472d278498f",
+          "files": {
+            "bridge-macos-arm64.tar.gz": {
+              "bytes": 10839588,
+              "sha256": "b93131afd8eed60d23449989e7e46558ff9f3e09595025be922b3d8a313714dd"
+            },
+            "macos-before.json": {
+              "bytes": 99,
+              "sha256": "857fe4afdc6b02c6750ef8f1926a8ea6a50e337063344a1ed02aa067051bf357"
+            },
+            "macos-after.json": {
+              "bytes": 142,
+              "sha256": "b60af5f46d3f3d842c464425e31051cdbffd4003baa9297bfb936f74aff5a7a4"
+            }
+          }
+        }
+      }
+    }
+  }
+}

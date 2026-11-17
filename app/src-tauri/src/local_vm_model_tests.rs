@@ -27,6 +27,7 @@ async fn restart_cannot_reuse_the_previous_sessions_model_acknowledgment() {
         ready: true,
         unknown: false,
         connection: None,
+        account: None,
     }));
     assert!(vm.model_connected());
     vm.inner
@@ -37,6 +38,94 @@ async fn restart_cannot_reuse_the_previous_sessions_model_acknowledgment() {
         .publish(LocalProgress::Status(LocalVmStatus::Ready));
     assert!(!vm.model_connected());
     vm.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn catalog_does_not_probe_unsupported_or_disconnected_workspaces() {
+    struct NoProbe;
+    impl LocalSession for NoProbe {
+        fn with_client(
+            &mut self,
+            _: &mut dyn FnMut(Uuid, &mut VmClient) -> Result<(), RuntimeError>,
+        ) -> Result<(), RuntimeError> {
+            panic!("unavailable catalog must not reach a guest")
+        }
+        fn execute(&mut self, _: EngineRequest) -> TransportFuture<'_> {
+            panic!("no generic engine request")
+        }
+        fn stop(&mut self) -> Result<(), RuntimeError> {
+            Ok(())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let setup = Arc::new(SetupStore::new(Some(dir.path().into())));
+    let vm = LocalVm::unavailable();
+    vm.inner.state.lock().unwrap().phase = LocalVmStatus::Ready;
+    let supported = cfg!(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ));
+    let connected = !supported;
+    vm.inner.state.lock().unwrap().model_connected = connected;
+    *vm.inner.session.lock().await = Some(Box::new(NoProbe));
+    assert_eq!(
+        vm.workspace_catalog(setup).await.unwrap_err(),
+        crate::catalog::CatalogError::CatalogUnavailable
+    );
+    assert_eq!(vm.model_connected(), connected);
+}
+#[tokio::test]
+#[cfg(any(
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+async fn catalog_reports_busy_without_queuing_or_probing_the_owned_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let setup = Arc::new(SetupStore::new(Some(dir.path().into())));
+    let vm = LocalVm::unavailable();
+    {
+        let mut state = vm.inner.state.lock().unwrap();
+        state.phase = LocalVmStatus::Ready;
+        state.model_connected = true;
+    }
+    let held = vm.inner.session.lock().await;
+    assert_eq!(
+        vm.workspace_catalog(setup.clone()).await.unwrap_err(),
+        crate::catalog::CatalogError::CatalogBusy
+    );
+    drop(held);
+    // The slot is now free but has no live session: this is not a busy retry.
+    assert_eq!(
+        vm.workspace_catalog(setup).await.unwrap_err(),
+        crate::catalog::CatalogError::CatalogUnavailable
+    );
+}
+
+#[test]
+fn reset_result_only_clears_acknowledgment_and_stale_failure_on_success() {
+    let vm = LocalVm::unavailable();
+    {
+        let mut state = vm.inner.state.lock().unwrap();
+        state.phase = LocalVmStatus::Ready;
+        state.model_connected = true;
+        state.failure = Some("earlier model failure".into());
+    }
+    vm.inner
+        .model_reset_result(&Err(SetupError::model("modelUnavailable")));
+    assert!(
+        vm.model_connected(),
+        "a refused current-installation reset cannot invalidate its connection"
+    );
+    assert!(vm.inner.state.lock().unwrap().failure.is_some());
+    vm.inner.model_reset_result(&Ok(ModelSetupState {
+        associated: false,
+        ready: false,
+        unknown: false,
+        connection: None,
+        account: None,
+    }));
+    assert!(!vm.model_connected());
+    assert!(vm.inner.state.lock().unwrap().failure.is_none());
 }
 
 #[test]
@@ -72,6 +161,7 @@ fn model_failure_details_survive_generic_retry_without_failing_the_running_vm() 
         ready: true,
         unknown: false,
         connection: None,
+        account: None,
     });
     vm.inner.model_result(&success);
     let ready = serde_json::to_value(vm.snapshot(store.status().unwrap())).unwrap();

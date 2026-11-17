@@ -5,11 +5,13 @@ on:
     paths:
       - 'runtime/windows/**'
       - '.github/workflows/windows-runtime.yml'
+      - '.github/workflows/images.yml'
   push:
     branches-ignore: [main]
     paths:
       - 'runtime/windows/**'
       - '.github/workflows/windows-runtime.yml'
+      - '.github/workflows/images.yml'
 permissions:
   contents: read
 concurrency:

@@ -1,7 +1,10 @@
 //! App-level custody of one delivered native session; not a second VM lifecycle.
 use crate::{
     engine::{types::*, EngineTransport, TransportFuture},
-    runtime::{client::VmClient, types::RuntimeError},
+    runtime::{
+        client::VmClient,
+        types::{RuntimeError, WorkspaceFailure, WorkspaceOperation},
+    },
 };
 use serde::Serialize;
 use std::{
@@ -11,7 +14,7 @@ use std::{
 };
 use tokio::sync::{watch, Mutex as AsyncMutex};
 #[path = "local_vm_native.rs"]
-mod native;
+pub(crate) mod native;
 pub use native::configured;
 #[derive(Serialize)]
 pub struct ExamplePair {
@@ -25,9 +28,8 @@ pub fn example() -> ExamplePair {
     }
 }
 
-// The pinned Mac guest predates model RPCs; probing it retires its shared channel.
-// Enable Mac model setup only when its matching development image is delivered.
-pub const MODEL_IMAGE_AVAILABLE: bool = !cfg!(target_os = "macos");
+// Both supported platforms now use the paired model-capable guest images.
+pub const MODEL_IMAGE_AVAILABLE: bool = crate::catalog::IMAGE_AVAILABLE;
 
 pub async fn setup_status(
     store: Arc<crate::setup::SetupStore>,
@@ -112,7 +114,14 @@ impl LocalVmStatus {
 }
 fn failure_reason(error: &RuntimeError) -> String {
     match error {
+        RuntimeError::Preflight(failure) => failure.summary().to_owned(),
+        RuntimeError::Io(error) if error.kind() == std::io::ErrorKind::StorageFull => {
+            format!("NoSpace: {error}")
+        }
         RuntimeError::Io(error) => error.to_string(),
+        RuntimeError::StopUnconfirmed(detail) => format!("startupStopFailed: {detail}"),
+        // Already formatted when retained, including any NoSpace prefix.
+        RuntimeError::Startup(context) => context.diagnostic.clone(),
         _ => error.to_string(),
     }
 }
@@ -131,8 +140,16 @@ pub trait LocalFactory: Send + Sync {
         closed: watch::Receiver<bool>,
         progress: Arc<dyn Fn(LocalProgress) + Send + Sync>,
     ) -> StartFuture<'_>;
+    /// Drop retained factory handles only after native stop and all queued work joined.
+    fn release_stopped(&self) -> Result<(), RuntimeError> {
+        Ok(())
+    }
 }
 pub trait LocalSession: Send {
+    /// From the installed guest build metadata, never a probing guest request.
+    fn run_cancel_supported(&self) -> bool {
+        false
+    }
     /// Only called under the whole-session blocking custody; no client transfer.
     fn with_client(
         &mut self,
@@ -149,7 +166,12 @@ pub trait LocalSession: Send {
 struct State {
     phase: LocalVmStatus,
     model_connected: bool,
+    run_cancel_supported: bool,
     failure: Option<String>,
+    preflight_failure: Option<crate::setup::preflight::Failure>,
+    workspace_failure: Option<WorkspaceFailure>,
+    /// Latest typed progress, captured before failure clears the progress clock.
+    operation: WorkspaceOperation,
     closing: bool,
     close_started: bool,
     stopped: Option<bool>,
@@ -200,6 +222,11 @@ impl ProgressClock {
 #[cfg(test)]
 mod progress_tests {
     use super::*;
+    #[test]
+    fn full_disk_diagnostic_keeps_the_actionable_category() {
+        let error = RuntimeError::Io(std::io::ErrorKind::StorageFull.into());
+        assert!(failure_reason(&error).starts_with("NoSpace: "));
+    }
     #[test]
     fn startup_snapshot_has_native_elapsed_without_fake_bytes_or_eta() {
         let vm = LocalVm::unavailable();
@@ -305,6 +332,16 @@ struct Inner {
     session: Arc<AsyncMutex<Option<Box<dyn LocalSession>>>>,
 }
 impl Inner {
+    fn model_reset_result(
+        &self,
+        result: &Result<crate::setup::ModelSetupState, crate::setup::SetupError>,
+    ) {
+        if result.is_ok() {
+            let mut state = self.state.lock().unwrap();
+            state.model_connected = false;
+            state.failure = None;
+        }
+    }
     fn model_result(
         &self,
         result: &Result<crate::setup::ModelSetupState, crate::setup::SetupError>,
@@ -334,6 +371,11 @@ impl Inner {
         match progress {
             LocalProgress::Status(phase) => {
                 state.phase = phase;
+                match phase {
+                    LocalVmStatus::Installing => state.operation = WorkspaceOperation::Prepare,
+                    LocalVmStatus::Starting => state.operation = WorkspaceOperation::Start,
+                    _ => {}
+                }
                 if phase == LocalVmStatus::Starting {
                     state.progress = Some(ProgressClock {
                         started: std::time::Instant::now(),
@@ -358,6 +400,10 @@ impl Inner {
                     }
                     _ => return,
                 };
+                state.operation = match phase {
+                    WorkspacePhase::Verifying => WorkspaceOperation::Verify,
+                    _ => WorkspaceOperation::Prepare,
+                };
                 let now = std::time::Instant::now();
                 let clock = state.progress.get_or_insert(ProgressClock {
                     started: now,
@@ -378,13 +424,25 @@ impl Inner {
             }
         }
     }
-    fn fail(&self, reason: String) {
+    fn fail(
+        &self,
+        reason: String,
+        error: &RuntimeError,
+        operation: WorkspaceOperation,
+        stop_unconfirmed: bool,
+    ) {
         let mut state = self.state.lock().unwrap();
         state.failure = Some(reason);
+        state.preflight_failure = match error {
+            RuntimeError::Preflight(failure) => Some(*failure),
+            _ => None,
+        };
+        state.workspace_failure = Some(WorkspaceFailure::from_error(error, operation));
         state.progress = None;
         if !state.closing {
             state.phase = LocalVmStatus::Failed;
         }
+        state.closing |= stop_unconfirmed;
     }
     fn ready(&self) -> bool {
         let state = self.state.lock().unwrap();
@@ -395,6 +453,21 @@ pub struct LocalVm {
     inner: Arc<Inner>,
     factory: Option<Arc<dyn LocalFactory>>,
     choice: AsyncMutex<()>,
+    authoring: Mutex<Arc<AsyncMutex<()>>>,
+    upgrading: std::sync::atomic::AtomicBool,
+}
+/// Keep native launch admission and setup choice serialized through the switch.
+#[allow(dead_code)]
+pub(crate) struct UpgradeQuiescence<'a> {
+    vm: &'a LocalVm,
+    _choice: tokio::sync::MutexGuard<'a, ()>,
+}
+impl Drop for UpgradeQuiescence<'_> {
+    fn drop(&mut self) {
+        self.vm
+            .upgrading
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 impl LocalVm {
     fn make(factory: Option<Arc<dyn LocalFactory>>) -> Arc<Self> {
@@ -409,7 +482,11 @@ impl LocalVm {
                         LocalVmStatus::NotIntegrated
                     },
                     model_connected: false,
+                    run_cancel_supported: false,
                     failure: None,
+                    preflight_failure: None,
+                    workspace_failure: None,
+                    operation: WorkspaceOperation::Verify,
                     closing: false,
                     close_started: false,
                     stopped: None,
@@ -423,6 +500,8 @@ impl LocalVm {
             }),
             factory,
             choice: AsyncMutex::new(()),
+            authoring: Mutex::new(Arc::new(AsyncMutex::new(()))),
+            upgrading: std::sync::atomic::AtomicBool::new(false),
         })
     }
     pub fn new(factory: Arc<dyn LocalFactory>) -> Arc<Self> {
@@ -430,6 +509,61 @@ impl LocalVm {
     }
     pub fn unavailable() -> Arc<Self> {
         Self::make(None)
+    }
+    pub fn recovery_blocked() -> Arc<Self> {
+        let vm = Self::make(None);
+        vm.inner.fail(
+            "Workspace recovery is required before starting the local cluster.".into(),
+            &RuntimeError::RetainedState,
+            WorkspaceOperation::Verify,
+            false,
+        );
+        vm
+    }
+    /// A timeout keeps the gate and journal custody quarantined until process exit.
+    #[allow(dead_code)] // Unexposed native upgrade owner; renderer activation is a later change.
+    pub(crate) async fn quiesce_for_upgrade(&self) -> Result<UpgradeQuiescence<'_>, RuntimeError> {
+        let choice = self.choice.lock().await;
+        self.upgrading
+            .store(true, std::sync::atomic::Ordering::Release);
+        tokio::time::timeout(std::time::Duration::from_secs(30), self.stop(false))
+            .await
+            .map_err(|_| {
+                RuntimeError::StopUnconfirmed("Workspace stop did not complete.".into())
+            })??;
+        self.factory
+            .as_ref()
+            .ok_or(RuntimeError::Unavailable)?
+            .release_stopped()?;
+        Ok(UpgradeQuiescence {
+            vm: self,
+            _choice: choice,
+        })
+    }
+    /// Native-only recovery; the lifecycle guard spans the complete storage
+    /// operation, including blocking filesystem work and metadata publication.
+    #[allow(dead_code)]
+    pub(crate) async fn restore_workspace(
+        &self,
+        data: std::path::PathBuf,
+        local: std::path::PathBuf,
+        transaction: bridge_runtime_protocol::Uuid,
+    ) -> Result<crate::workspace_upgrade::UpgradeStatus, RuntimeError> {
+        let _quiesced = self.quiesce_for_upgrade().await?;
+        // No detached worker may outlive this borrowed lifecycle guard if the
+        // caller drops its future. Renderer activation remains a later task.
+        crate::workspace_upgrade::WorkspaceUpgrade::open(&data, &local)?.restore(transaction)
+    }
+    /// Atomic Run/Chat admission, separate from each bounded VM request.
+    pub fn try_authoring(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.authoring.lock().unwrap().clone().try_lock_owned().ok()
+    }
+    /// Reject a captured operation whose admission belongs to an earlier boot.
+    pub fn authoring_current(&self, lease: &tokio::sync::OwnedMutexGuard<()>) -> bool {
+        Arc::ptr_eq(
+            &self.authoring.lock().unwrap(),
+            tokio::sync::OwnedMutexGuard::mutex(lease),
+        )
     }
     pub fn status(&self) -> LocalVmStatus {
         self.inner.state.lock().unwrap().phase
@@ -439,6 +573,10 @@ impl LocalVm {
         let state = self.inner.state.lock().unwrap();
         !state.closing && state.phase == LocalVmStatus::Ready && state.model_connected
     }
+    pub fn run_cancel_supported(&self) -> bool {
+        let state = self.inner.state.lock().unwrap();
+        !state.closing && state.phase == LocalVmStatus::Ready && state.run_cancel_supported
+    }
     /// A successful guest observation can invalidate an earlier Connect acknowledgment.
     pub fn clear_model_acknowledgment(&self) {
         self.inner.state.lock().unwrap().model_connected = false;
@@ -446,8 +584,19 @@ impl LocalVm {
     fn snapshot(&self, mut snapshot: crate::setup::SetupSnapshot) -> crate::setup::SetupSnapshot {
         let state = self.inner.state.lock().unwrap();
         snapshot.workspace_progress = state.progress.as_ref().map(ProgressClock::snapshot);
+        snapshot.preflight_failure = if state.phase == LocalVmStatus::Failed {
+            state.preflight_failure
+        } else {
+            None
+        };
+        snapshot.workspace_failure = if state.phase == LocalVmStatus::Failed {
+            state.workspace_failure.clone()
+        } else {
+            None
+        };
         // Publish phase, failure text and model availability from the same observation.
         snapshot
+            .with_model_support(MODEL_IMAGE_AVAILABLE)
             .with_local_vm(state.phase.as_str(), state.failure.clone())
             .with_model(
                 if state.phase == LocalVmStatus::Ready && MODEL_IMAGE_AVAILABLE {
@@ -460,17 +609,27 @@ impl LocalVm {
     pub fn start(self: &Arc<Self>) {
         let mut state = self.inner.state.lock().unwrap();
         if state.terminal
+            || self.upgrading.load(std::sync::atomic::Ordering::Acquire)
             || state.closing
-            || !matches!(state.phase, LocalVmStatus::Idle | LocalVmStatus::Cancelled)
+            || !matches!(
+                state.phase,
+                LocalVmStatus::Idle | LocalVmStatus::Cancelled | LocalVmStatus::Failed
+            )
         {
             return;
         }
         let Some(factory) = self.factory.clone() else {
             return;
         };
+        // Unknown work on an old boot must not own a new workspace's admission.
+        *self.authoring.lock().unwrap() = Arc::new(AsyncMutex::new(()));
         state.phase = LocalVmStatus::Preparing;
         state.model_connected = false;
+        state.run_cancel_supported = false;
         state.failure = None;
+        state.preflight_failure = None;
+        state.workspace_failure = None;
+        state.operation = WorkspaceOperation::Verify;
         state.close_started = false;
         state.stopped = None;
         state.progress = None;
@@ -492,10 +651,17 @@ impl LocalVm {
                     Err(RuntimeError::Closed
                         | RuntimeError::Image(crate::runtime::image_types::ImageError::Cancelled))
                 );
-            let successful = result.is_ok() || cancelled_error;
+            // Native preflight/version policy refuses before creating a session.
+            // Its retained journal still needs explicit release for replacement.
+            let successful = result.is_ok()
+                || cancelled_error
+                || matches!(&result, Err(RuntimeError::Preflight(_)
+                    | RuntimeError::Image(crate::runtime::image_types::ImageError::WorkspaceUpdateRequired
+                        | crate::runtime::image_types::ImageError::WorkspaceVersionUnsupported)));
             let mut session = inner.session.lock().await;
             match result {
                 Ok(live) => {
+                    inner.state.lock().unwrap().run_cancel_supported = live.run_cancel_supported();
                     *session = Some(live);
                     inner.publish(LocalProgress::Status(LocalVmStatus::Ready));
                 }
@@ -503,10 +669,15 @@ impl LocalVm {
                     RuntimeError::Closed
                     | RuntimeError::Image(crate::runtime::image_types::ImageError::Cancelled),
                 ) if cancelled_error => {}
-                Err(error) => inner.fail(format!(
-                    "Starting the local VM failed: {}",
-                    failure_reason(&error)
-                )),
+                Err(error) => {
+                    let operation = inner.state.lock().unwrap().operation;
+                    inner.fail(
+                        format!("Starting the local VM failed: {}", failure_reason(&error)),
+                        &error,
+                        operation,
+                        matches!(error, RuntimeError::StopUnconfirmed(_)),
+                    )
+                }
             }
             successful
         }));
@@ -549,9 +720,45 @@ impl LocalVm {
         .await
         .map_err(|_| RuntimeError::Unavailable)?
     }
+    pub async fn workspace_catalog(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+    ) -> Result<crate::catalog::CatalogReply, crate::catalog::CatalogError> {
+        use crate::catalog::CatalogError;
+        if !crate::catalog::IMAGE_AVAILABLE {
+            return Err(CatalogError::CatalogUnavailable);
+        }
+        let failure = CatalogError::CatalogUnavailable;
+        if !self.model_connected() {
+            return Err(failure);
+        }
+        let result = self
+            .with_client(move |id, client| setup.workspace_catalog(id, client))
+            .await
+            .map_err(CatalogError::from)?
+            .map_err(|_| CatalogError::CatalogUnavailable)?;
+        if !self.model_connected() {
+            return Err(failure);
+        }
+        Ok(result)
+    }
     pub async fn connect_model(
         &self,
         setup: Arc<crate::setup::SetupStore>,
+    ) -> Result<crate::setup::ModelSetupState, crate::setup::SetupError> {
+        self.connect_model_choice(setup, None).await
+    }
+    pub async fn connect_saved_key_model(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+        vendor: bridge_runtime_protocol::ModelVendor,
+    ) -> Result<crate::setup::ModelSetupState, crate::setup::SetupError> {
+        self.connect_model_choice(setup, Some(vendor)).await
+    }
+    async fn connect_model_choice(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+        vendor: Option<bridge_runtime_protocol::ModelVendor>,
     ) -> Result<crate::setup::ModelSetupState, crate::setup::SetupError> {
         if !MODEL_IMAGE_AVAILABLE {
             return Err(crate::setup::SetupError::model("modelGuest"));
@@ -559,13 +766,130 @@ impl LocalVm {
         let runtime = tokio::runtime::Handle::current();
         let inner = self.inner.clone();
         self.with_client(move |id, client| {
-            let result = setup.connect_stored_model(
+            let result =
+                if let Some(vendor) = vendor {
+                    setup.connect_saved_key_model(
+                        id,
+                        vendor,
+                        client,
+                        &crate::runtime::credential_store::OsCredentialStore,
+                    )
+                } else {
+                    setup.connect_stored_model(
+                    id, client, &crate::runtime::credential_store::OsCredentialStore,
+                    || runtime.block_on(crate::runtime::credentials::capture_stored_github_token()),
+                )
+                };
+            // The owned worker retains details even if its IPC waiter is dropped.
+            inner.model_result(&result);
+            result
+        })
+        .await
+        .map_err(|error| {
+            crate::setup::SetupError::model(if matches!(error, RuntimeError::Busy) {
+                "modelBusy"
+            } else {
+                "modelSession"
+            })
+        })?
+    }
+    pub async fn connect_key_model(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+        vendor: bridge_runtime_protocol::ModelVendor,
+        key: String,
+    ) -> Result<crate::setup::ModelSetupState, crate::setup::SetupError> {
+        if !MODEL_IMAGE_AVAILABLE {
+            return Err(crate::setup::SetupError::model("modelGuest"));
+        }
+        let inner = self.inner.clone();
+        self.with_client(move |id, client| {
+            let result = setup.connect_key_model(
                 id,
+                vendor,
+                &key,
                 client,
                 &crate::runtime::credential_store::OsCredentialStore,
-                || runtime.block_on(crate::runtime::credentials::capture_stored_github_token()),
             );
-            // The owned worker retains details even if its IPC waiter is dropped.
+            // As with Copilot, the owned worker outlives a dropped IPC waiter.
+            inner.model_result(&result);
+            result
+        })
+        .await
+        .map_err(|error| {
+            crate::setup::SetupError::model(if matches!(error, RuntimeError::Busy) {
+                "modelBusy"
+            } else {
+                "modelSession"
+            })
+        })?
+    }
+    /// Setup-only preparation shares VM custody with Connect/Remove, never general reconnect.
+    pub async fn prepare_example(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+        folder: Arc<crate::agent_folder::AgentFolder>,
+    ) -> Result<(String, &'static str), &'static str> {
+        if !self.model_connected() {
+            return Err("Connect the AI before preparing the example.");
+        }
+        self.with_client(move |_, _| {
+            let binding = setup
+                .model_binding_status()
+                .map_err(|_| "The AI connection is unavailable.")?;
+            if binding.unknown {
+                return Err("The AI connection is unavailable.");
+            }
+            let connection = binding
+                .connection
+                .ok_or("The AI connection is unavailable.")?;
+            let pair = crate::agent_folder::example_for_model(&connection.selection.model)
+                .ok_or("The example model is unavailable.")?;
+            folder.prepare_example_model(&connection.selection.model)?;
+            Ok(pair)
+        })
+        .await
+        .map_err(|error| {
+            if matches!(error, RuntimeError::Busy) {
+                "exampleBusy"
+            } else {
+                "The local cluster is unavailable."
+            }
+        })?
+    }
+    pub async fn reset_model(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+    ) -> Result<crate::setup::ModelSetupState, crate::setup::SetupError> {
+        let inner = self.inner.clone();
+        self.with_client(move |id, _client| {
+            let result = setup
+                .reset_mismatched_model(id, &crate::runtime::credential_store::OsCredentialStore);
+            // A refused reset must not invalidate a newer, current-install connection.
+            inner.model_reset_result(&result);
+            result
+        })
+        .await
+        .map_err(|error| {
+            crate::setup::SetupError::model(if matches!(error, RuntimeError::Busy) {
+                "modelBusy"
+            } else {
+                "modelSession"
+            })
+        })?
+    }
+    pub async fn remove_model(
+        &self,
+        setup: Arc<crate::setup::SetupStore>,
+    ) -> Result<crate::setup::ModelSetupState, crate::setup::SetupError> {
+        let inner = self.inner.clone();
+        self.with_client(move |id, client| {
+            let result = setup.sign_out_model(
+                id,
+                Some(client),
+                &crate::runtime::credential_store::OsCredentialStore,
+            );
+            // Even a failed remove may already have stopped the guest model.
             inner.model_result(&result);
             result
         })
@@ -625,10 +949,15 @@ impl LocalVm {
                             }
                             Err(error) => {
                                 // Never replace a late session whose native stop failed.
-                                stop_inner.fail(format!(
-                                    "Stopping the local VM failed: {}",
-                                    failure_reason(&error)
-                                ));
+                                stop_inner.fail(
+                                    format!(
+                                        "Stopping the local VM failed: {}",
+                                        failure_reason(&error)
+                                    ),
+                                    &error,
+                                    WorkspaceOperation::Stop,
+                                    true,
+                                );
                                 false
                             }
                         }

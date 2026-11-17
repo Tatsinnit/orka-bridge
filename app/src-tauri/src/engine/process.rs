@@ -109,7 +109,13 @@ mod spawn_tests {
             Poll::Pending
         ));
         drop(window);
-        assert_eq!(call.await.unwrap().stdout, b"FIXTURE_ONLY_clean");
+        let output = call.await.unwrap();
+        assert_eq!(
+            output.stdout,
+            b"FIXTURE_ONLY_clean",
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[tokio::test]

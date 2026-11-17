@@ -1,0 +1,43 @@
+{
+  "repository": "orka-agents/orka-bridge",
+  "repositoryId": 1444972279,
+  "producerCommit": "006b30f02a3c9cec61f8f3cc32fde6b0d248fc34",
+  "runId": 42120608528,
+  "workflowId": 407645856,
+  "releaseId": 443053174,
+  "tag": "qemu-inputs-2c88887550c3a6c860dbed057fe3990a51b93e453d187f6d1bda3d091826d36b",
+  "runtimeManifest": {
+    "bytes": 117615,
+    "sha256": "a1dead19c0d1dcef558008e556cd9bd4a8c5082daf4ecea6f531d03173748385"
+  },
+  "assets": {
+    "bridge-windows-runtime-source.zip": {
+      "bytes": 930666861,
+      "sha256": "1f1d8d6409a744a80bb726c243f864701298f4f94af01bee4487a4df023fdfcb"
+    },
+    "SHA256SUMS": {
+      "bytes": 202,
+      "sha256": "ad4bb62eba7768b175540e089192d29883062d567b5b6e47b2965be18409f2d3"
+    },
+    "build-report.json": {
+      "bytes": 45706,
+      "sha256": "7c2609a55d338ad2dc5fe6c899945aff439a4a24a51269d4c18605a4de9604df"
+    },
+    "verification.json": {
+      "bytes": 376,
+      "sha256": "1ed9b522878de5f9e544f35fbf18212db2a6387c9a36f1dce46f972f0d3177a7"
+    },
+    "bridge-windows-runtime-portable.zip": {
+      "bytes": 46654090,
+      "sha256": "94f6b45258f81143cd2ba8338fe7c794a30430db954cd7b9ef85d0e185776752"
+    },
+    "producer-run.json": {
+      "bytes": 260,
+      "sha256": "bf4c66ba1ac1a9e106dea4db55311d3178a9edbc945896c6ae15b5b73048d065"
+    },
+    "producer-artifact.json": {
+      "bytes": 742,
+      "sha256": "702698dce85c8eb6d1f9bd14993bba1383518d3bb2d6a6bad0aecafe3774a98e"
+    }
+  }
+}

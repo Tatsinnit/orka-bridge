@@ -1,0 +1,42 @@
+import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, expect, test, vi } from 'vitest';
+import FileLocation from './FileLocation';
+import { SAMPLE_DOCUMENT_ID } from './agent-api';
+afterEach(() => { cleanup(); clearMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+test('copies the complete native path and reveals by document identity, never a renderer path', async () => {
+  const user = userEvent.setup(); const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue();
+  vi.stubGlobal('isTauri', true); const calls: unknown[] = [];
+  mockIPC((command, args) => { calls.push([command, args]); return null; });
+  const path = '/home/creator/Orka/agents/a-long-agent/a-long-agent.agent.md';
+  render(<FileLocation path={path} documentId={SAMPLE_DOCUMENT_ID} />);
+  expect(screen.getByText(path)).toBeTruthy();
+  const copyButton = screen.getByRole('button', { name: 'Copy file path' });
+  expect(copyButton.getAttribute('title')).toBe('Copy file path');
+  expect(copyButton.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+  await user.click(copyButton);
+  await screen.findByText('Path copied'); expect(copy).toHaveBeenCalledWith(path);
+  await user.click(screen.getByRole('button', { name: 'Show in folder' }));
+  expect(calls).toEqual([['agent_reveal', { documentId: SAMPLE_DOCUMENT_ID }]]);
+});
+test('an owned document with no UTF-8 display path can still be shown in its folder', async () => {
+  const user = userEvent.setup(); const calls: unknown[] = [];
+  vi.stubGlobal('isTauri', true); mockIPC((command, args) => { calls.push([command, args]); return null; });
+  render(<FileLocation documentId={SAMPLE_DOCUMENT_ID} />);
+  expect(screen.getByText('The file path is unavailable.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Copy file path' })).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Show in folder' }));
+  await screen.findByText('Folder opened');
+  expect(calls).toEqual([['agent_reveal', { documentId: SAMPLE_DOCUMENT_ID }]]);
+});
+test('clipboard and native failures are visible without exposing native errors', async () => {
+  const user = userEvent.setup(); vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(Error('secret'));
+  vi.stubGlobal('isTauri', true); mockIPC(() => { throw Error('private-native-path'); });
+  render(<FileLocation path="/owned/agent.md" documentId={SAMPLE_DOCUMENT_ID} />);
+  await user.click(screen.getByRole('button', { name: 'Copy file path' }));
+  await screen.findByText('Could not copy the path');
+  await user.click(screen.getByRole('button', { name: 'Show in folder' }));
+  await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Could not show the folder'));
+  expect(document.body.textContent).not.toContain('private-native-path');
+});

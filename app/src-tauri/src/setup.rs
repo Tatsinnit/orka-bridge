@@ -37,11 +37,22 @@ pub struct SetupSnapshot {
     local_vm: &'static str,
     local_vm_error: Option<String>,
     model: &'static str,
+    /// Affirmed by the native VM facet, never inferred from saved selection or readiness.
+    model_supported: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_progress: Option<WorkspaceProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preflight_failure: Option<preflight::Failure>,
+    /// Present only while the local workspace is failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_failure: Option<crate::runtime::types::WorkspaceFailure>,
 }
 
 impl SetupSnapshot {
+    pub fn with_model_support(mut self, supported: bool) -> Self {
+        self.model_supported = supported;
+        self
+    }
     pub fn with_model(mut self, state: &'static str) -> Self {
         self.model = state;
         self
@@ -68,14 +79,14 @@ fn requirements_from(image_bytes: Option<u64>) -> Option<SetupRequirements> {
         state_disk_bytes: bridge_runtime_protocol::STATE_BYTES,
     })
 }
-/// Release builds carry no engineering pins and report none.
+/// Debug overrides retain engineering sizes; release uses the selected platform image.
 #[cfg(debug_assertions)]
 pub fn setup_requirements() -> Option<SetupRequirements> {
     requirements_from(crate::dev_image::pinned_image_bytes())
 }
 #[cfg(not(debug_assertions))]
 pub fn setup_requirements() -> Option<SetupRequirements> {
-    requirements_from(None)
+    requirements_from(crate::catalog::IMAGE_BYTES)
 }
 
 #[cfg(test)]
@@ -96,8 +107,11 @@ mod requirements_tests {
     }
     #[cfg(not(debug_assertions))]
     #[test]
-    fn release_reports_no_requirements() {
-        assert_eq!(setup_requirements(), None);
+    fn release_reports_selected_platform_requirements() {
+        assert_eq!(
+            setup_requirements(),
+            requirements_from(crate::catalog::IMAGE_BYTES)
+        );
     }
     #[cfg(all(
         debug_assertions,
@@ -118,20 +132,40 @@ struct StoreDiagnostic {
     code: u32,
 }
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelRecovery {
+    installation: bridge_runtime_protocol::Uuid,
+    saved_installation: bridge_runtime_protocol::Uuid,
+    credential_slot: bridge_runtime_protocol::Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reset_stage: Option<&'static str>,
+}
+#[derive(Debug, Serialize)]
 pub struct SetupError {
     kind: &'static str,
     message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor: Option<bridge_runtime_protocol::ModelVendor>,
     // Only the finite call and numeric code may cross to the sign-in error UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     native: Option<StoreDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery: Option<Box<ModelRecovery>>,
     #[serde(skip)]
     diagnostic: Option<bridge_runtime_protocol::ModelDiagnostic>,
 }
 impl SetupError {
     pub(crate) fn connect(diagnostic: Option<bridge_runtime_protocol::ModelDiagnostic>) -> Self {
+        use bridge_runtime_protocol::ModelErrorCode;
+        let kind = match diagnostic.as_ref().and_then(|d| d.error_code) {
+            Some(ModelErrorCode::CredentialRejected) => "modelCredentialRejected",
+            Some(ModelErrorCode::ProviderUnreachable) => "modelProviderUnreachable",
+            Some(ModelErrorCode::ModelUnavailable) => "modelModelUnavailable",
+            _ => "modelConnect",
+        };
         Self {
             diagnostic,
-            ..Self::model("modelConnect")
+            ..Self::model(kind)
         }
     }
     pub(crate) fn model_detail(&self) -> Option<String> {
@@ -151,6 +185,13 @@ impl SetupError {
     }
     pub(crate) fn model(kind: &'static str) -> Self {
         let message = match kind {
+            "modelInstallationMismatch" => "Bridge's saved AI connection is from an earlier setup.",
+            "modelKeyInvalid" => "Paste the whole key with the selected company's key prefix.",
+            "modelAlreadyAssociated" => "Remove the saved AI connection before connecting another.",
+            "modelCredentialRejected" => "The model company did not accept this key.",
+            "modelProviderUnreachable" => "The workspace could not reach the model company.",
+            "modelModelUnavailable" => "The selected model is not listed for this key.",
+            "modelKeyCleanup" => "Key removal was not confirmed. The saved connection was kept for another removal attempt.",
             "modelCaptureUnavailable" => {
                 "Install GitHub CLI and sign in to github.com before connecting."
             }
@@ -161,6 +202,7 @@ impl SetupError {
             "modelCaptureTimedOut" => "Reading the stored GitHub sign-in timed out.",
             "modelStore" => "The native credential store could not save or load the sign-in.",
             "modelGuest" => "The guest model handler is unavailable or is not idle.",
+            "modelReconnect" => "Bridge could not clean up the previous model connection. The local cluster may need a newer image. The saved sign-in was kept.",
             "modelDelivery" => {
                 "Private credential delivery was not acknowledged. Completion is unknown."
             }
@@ -174,8 +216,10 @@ impl SetupError {
         Self {
             kind,
             message,
+            vendor: None,
             diagnostic: None,
             native: None,
+            recovery: None,
         }
     }
 }
@@ -183,14 +227,21 @@ fn storage_error() -> SetupError {
     SetupError {
         kind: "storage",
         message: "The setup choice could not be read or saved.",
+        vendor: None,
         diagnostic: None,
         native: None,
+        recovery: None,
     }
 }
 
+#[path = "setup_preflight.rs"]
+pub mod preflight;
+
+#[path = "setup_help.rs"]
+pub mod help;
 #[path = "setup_model.rs"]
 mod model;
-pub use model::ModelSetupState;
+pub use model::{KeyVendor, ModelSetupState};
 
 /// Owns preferences and an opaque sign-in association, never stored secret bytes.
 pub struct SetupStore {
@@ -283,7 +334,10 @@ fn snapshot(root: &Path) -> Result<SetupSnapshot, SetupError> {
         local_vm: "notIntegrated",
         local_vm_error: None,
         model: "locked",
+        model_supported: false,
         workspace_progress: None,
+        preflight_failure: None,
+        workspace_failure: None,
     })
 }
 
@@ -294,6 +348,30 @@ mod tests {
         sync::{mpsc, Arc, Barrier},
         time::Duration,
     };
+
+    #[test]
+    fn only_native_enrichment_affirms_model_support() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SetupStore::new(Some(tmp.path().to_owned()));
+        let selected = store
+            .select_local()
+            .unwrap()
+            .with_local_vm("ready", None)
+            .with_model("available");
+        assert!(!selected.model_supported);
+        for supported in [false, true] {
+            let enriched = store
+                .status()
+                .unwrap()
+                .with_model_support(supported)
+                .with_local_vm("installing", None)
+                .with_model("locked");
+            assert_eq!(
+                serde_json::to_value(enriched).unwrap()["modelSupported"],
+                supported
+            );
+        }
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn filesystem_waits_do_not_stall_the_async_caller() {

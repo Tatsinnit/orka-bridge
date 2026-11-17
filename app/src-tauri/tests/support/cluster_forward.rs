@@ -7,12 +7,25 @@ use std::{
 };
 use tungstenite::{protocol::Role, Message, WebSocket};
 
+#[path = "cluster_peer.rs"]
+mod peer;
+#[path = "cluster_send.rs"]
+mod send;
+
 #[derive(Default)]
 pub(super) struct Wire {
     calls: Mutex<Vec<(String, Value)>>,
     mode: Mutex<&'static str>,
+    catalog: Mutex<Option<Vec<(u16, Value)>>>,
     active: AtomicUsize,
     forwards: AtomicUsize,
+    closed: AtomicUsize,
+    before_upgrade: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    objects: Mutex<HashMap<String, Value>>,
+    after_post: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    before_cancel: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    before_result: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    lose_task_reply: AtomicUsize,
 }
 impl Wire {
     pub(super) fn serve(&self, mut stream: std::net::TcpStream, headers: &str) {
@@ -44,23 +57,30 @@ impl Wire {
             })
             .unwrap();
         let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
+        if let Some(hook) = self.before_upgrade.lock().unwrap().take() {
+            hook();
+        }
         write!(stream, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: v4.channel.k8s.io\r\n\r\n").unwrap();
         let mut ws = WebSocket::from_raw_socket(stream, Role::Server, None);
         self.active.fetch_add(1, Ordering::SeqCst);
-        struct Active<'a>(&'a AtomicUsize);
+        struct Active<'a>(&'a Wire);
         impl Drop for Active<'_> {
             fn drop(&mut self) {
-                self.0.fetch_sub(1, Ordering::SeqCst);
+                self.0.active.fetch_sub(1, Ordering::SeqCst);
+                self.0.closed.fetch_add(1, Ordering::SeqCst);
             }
         }
-        let _active = Active(&self.active);
+        let _active = Active(self);
         for channel in [0, 1] {
             let [lo, hi] = port.to_le_bytes();
-            ws.send(Message::Binary(vec![channel, lo, hi].into()))
-                .unwrap();
+            if ws
+                .send(Message::Binary(vec![channel, lo, hi].into()))
+                .is_err()
+            {
+                return;
+            }
         }
         let mut bytes = Vec::new();
-        let mut objects = HashMap::new();
         while let Ok(message) = ws.read() {
             let Message::Binary(data) = message else {
                 continue;
@@ -105,19 +125,116 @@ impl Wire {
                 if mode == "broken" && method == "POST" {
                     return;
                 }
-                if mode == "hang" && method == "POST" {
+                if (mode == "hang" && method == "POST")
+                    || (mode == "update-hang" && method == "PUT")
+                    || (mode == "hang-tools" && path.starts_with("/api/v1/tools?"))
+                {
                     // Wait for the owner's close to tear down the actual websocket.
                     while ws.read().is_ok() {}
                     return;
                 }
+                while mode == "hold-history" && *self.mode.lock().unwrap() == "hold-history" {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 let route = path.split('?').next().unwrap();
-                let (mut status, mut value) = if method == "POST" {
+                let mut objects = self.objects.lock().unwrap();
+                let (mut status, mut value) = if method == "POST" && route.ends_with("/cancel") {
+                    if let Some(hook) = self.before_cancel.lock().unwrap().take() {
+                        hook();
+                    }
+                    let task = objects.get_mut(route.trim_end_matches("/cancel")).unwrap();
+                    assert_eq!(body, json!({"uid":task["metadata"]["uid"]}));
+                    let status = match mode {
+                        "cancel-denied" => 403,
+                        "cancel-missing" => 404,
+                        "cancel-unsupported" => 405,
+                        "cancel-conflict" => 409,
+                        _ => 200,
+                    };
+                    if mode == "cancel-lost" {
+                        return;
+                    }
+                    if status == 200 && !matches!(mode, "cancel-running" | "cancel-already") {
+                        task["status"]["phase"] = json!("Cancelled");
+                    }
+                    if mode == "cancel-conflict" {
+                        task["status"]["phase"] = json!("Succeeded");
+                    }
+                    (
+                        status,
+                        json!({"name":task["metadata"]["name"],"namespace":"agents","requested":mode != "cancel-already","phase":task["status"]["phase"],"message":"caller creator-fixture issued-fixture"}),
+                    )
+                } else if method == "PUT" {
+                    assert!(
+                        route.starts_with("/api/v1/agents/") && route.ends_with("/spec"),
+                        "unsafe update route: {route}"
+                    );
+                    let path = route.trim_end_matches("/spec");
+                    let current = objects.get(path).unwrap().clone();
+                    assert_eq!(body["expectedUID"], current["metadata"]["uid"]);
+                    assert_eq!(
+                        body["expectedGeneration"],
+                        current["metadata"]["generation"]
+                    );
+                    if mode == "update-missing" {
+                        objects.remove(path);
+                    }
+                    let status = match mode {
+                        "update400" => 400,
+                        "update403" => 403,
+                        "update404" | "update-missing" => 404,
+                        "update405" => 405,
+                        "update409" => 409,
+                        _ => 200,
+                    };
+                    if status == 200 && mode != "update-lost-old" {
+                        let object = objects.get_mut(path).unwrap();
+                        object["spec"] = body["spec"].clone();
+                        object["metadata"]["generation"] = json!(
+                            current["metadata"]["generation"].as_u64().unwrap()
+                                + if mode == "update-noop" { 0 } else { 1 }
+                        );
+                    }
+                    if matches!(mode, "update-lost" | "update-lost-old") {
+                        return;
+                    }
+                    (
+                        status,
+                        if status == 200 {
+                            objects[path].clone()
+                        } else {
+                            json!({"error":"rejected"})
+                        },
+                    )
+                } else if method == "POST"
+                    && ((route == "/api/v1/agents" && mode.starts_with("reject-agent"))
+                        || (route == "/api/v1/tasks" && mode == "reject-task403"))
+                {
+                    let status = if mode.ends_with("400") {
+                        400
+                    } else if mode.ends_with("409") {
+                        409
+                    } else {
+                        403
+                    };
+                    (status, json!({"error":"rejected before creation"}))
+                } else if method == "POST" {
                     let kind = if route.ends_with("agents") {
                         "Agent"
                     } else {
                         "Task"
                     };
-                    let mut object = json!({"apiVersion":"core.orka.ai/v1alpha1","kind":kind,"metadata":{"name":body["name"],"namespace":"agents","uid":format!("uid-{}",body["name"].as_str().unwrap()),"generation":1},"spec":body["spec"],"status":{"phase":if mode == "failed" {"Failed"} else {"Succeeded"}}});
+                    let phase = match mode {
+                        "failed" => "Failed",
+                        "running" => "Running",
+                        "mixed-pending"
+                            if objects.values().filter(|o| o["kind"] == "Task").count() >= 1 =>
+                        {
+                            "Running"
+                        }
+                        _ => "Succeeded",
+                    };
+                    let mut object = json!({"apiVersion":"core.orka.ai/v1alpha1","kind":kind,"metadata":{"name":body["name"],"namespace":"agents","uid":format!("uid-{}",body["name"].as_str().unwrap()),"generation":1},"spec":body["spec"],"status":{"phase":phase}});
                     if kind == "Task" {
                         object["spec"]["timeout"] = json!("2m0s");
                         object["spec"]["retryPolicy"]
@@ -139,7 +256,7 @@ impl Wire {
                     } else {
                         (
                             200,
-                            json!({"authenticated":true,"authType":"oidc","namespace":"agents"}),
+                            json!({"authenticated":true,"authType":if mode == "token-review" { "tokenReview" } else { "oidc" },"namespace":"agents"}),
                         )
                     }
                 } else if route.ends_with("/providers") && mode == "paged" {
@@ -154,16 +271,42 @@ impl Wire {
                 } else if route.ends_with("/providers") {
                     (
                         200,
-                        json!({"items":[{"metadata":{"name":"model","namespace":"agents"},"status":{"ready":true}}],"metadata":{}}),
+                        json!({"items":[{"metadata":{"name":"model","namespace":"agents"},"status":{"ready":mode != "unready"}}],"metadata":{}}),
                     )
                 } else if route.ends_with("/tools") {
+                    let pages = self.catalog.lock().unwrap();
+                    if let Some(pages) = pages.as_ref() {
+                        let url = reqwest::Url::parse(&format!("http://fixture{path}")).unwrap();
+                        let index = url
+                            .query_pairs()
+                            .find(|(k, _)| k == "continue")
+                            .map(|(_, v)| {
+                                assert_eq!(v, "next+/ =?");
+                                1
+                            })
+                            .unwrap_or(0);
+                        pages[index].clone()
+                    } else {
+                        (
+                            200,
+                            json!({"items":[{"name":"web_fetch","builtin":true}],"metadata":{}}),
+                        )
+                    }
+                } else if route.ends_with("/agents") && mode == "paged-agents" {
+                    let url = reqwest::Url::parse(&format!("http://fixture{path}")).unwrap();
+                    let next = url
+                        .query_pairs()
+                        .any(|(k, v)| k == "continue" && v == "next+/ =?");
                     (
                         200,
-                        json!({"items":[{"name":"web_fetch","builtin":true}],"metadata":{}}),
+                        json!({"items":[{"metadata":{"name":"reader","namespace":"agents","uid":if next {"second"} else {"first"}}}],"metadata":if next {json!({})} else {json!({"continue":"next+/ =?"})}}),
                     )
                 } else if route.ends_with("/agents") {
                     (200, json!({"items":[],"metadata":{}}))
                 } else if route.ends_with("/result") {
+                    if let Some(hook) = self.before_result.lock().unwrap().take() {
+                        hook();
+                    }
                     if mode == "result-404" {
                         (404, json!({"error":"missing"}))
                     } else if mode == "result-403" {
@@ -179,16 +322,101 @@ impl Wire {
                         .rsplit('/')
                         .next()
                         .unwrap();
-                    let agent = objects.values().find(|o| o["kind"] == "Agent").unwrap()
-                        ["metadata"]["name"]
+                    let agent = objects.get(route.trim_end_matches("/events")).unwrap()["spec"]
+                        ["agentRef"]["name"]
                         .clone();
                     (
                         200,
                         json!({"namespace":"agents","streamType":"task","streamID":task,"afterSeq":0,"latestSeq":1,"events":[{"namespace":"agents","streamType":"task","streamID":task,"seq":1,"type":"ToolCallCompleted","taskName":task,"agentName":agent,"toolName":"web_fetch","toolCallID":"call"}]}),
                     )
                 } else {
-                    (200, objects.get(route).unwrap().clone())
+                    objects
+                        .get(route)
+                        .map(|v| (200, v.clone()))
+                        .unwrap_or((404, json!({"error":"missing"})))
                 };
+                let task_count = objects.values().filter(|o| o["kind"] == "Task").count();
+                drop(objects);
+                if mode == "lose-agent" && method == "POST" && route == "/api/v1/agents" {
+                    return;
+                }
+                if method == "POST" && route == "/api/v1/tasks" {
+                    if self.lose_task_reply.load(Ordering::SeqCst) != 0 {
+                        return;
+                    }
+                    if mode == "mixed-pending" && task_count == 2 {
+                        while ws.read().is_ok() {}
+                        return;
+                    }
+                }
+                if method == "POST" {
+                    if let Some(hook) = self.after_post.lock().unwrap().take() {
+                        hook();
+                    }
+                }
+                if method == "GET"
+                    && route.ends_with("/result")
+                    && ["wrong-result", "wrong-result-events-missing"].contains(&mode)
+                {
+                    value = json!({"result":"wrong answer"});
+                }
+                if method == "GET" && route.ends_with("/result") && mode == "empty-result" {
+                    value = json!({"result":null});
+                }
+                if method == "GET"
+                    && mode == "empty-result"
+                    && route.contains("/tasks/")
+                    && !route.ends_with("/result")
+                    && !route.ends_with("/events")
+                {
+                    value["status"]["phase"] = json!("Succeeded");
+                }
+                if method == "GET" && mode == "failed-empty" && route.contains("/tasks/") {
+                    if route.ends_with("/result") {
+                        status = 404;
+                        value = json!({"error":"missing"});
+                    } else if !route.ends_with("/events") {
+                        value["status"]["phase"] = json!("Failed");
+                    }
+                }
+                if method == "GET" && route.ends_with("/result") && mode == "large-result" {
+                    value = json!({"result": format!("expected answer{}", "x".repeat(900_000))});
+                }
+                if method == "GET" && route.contains("/agents/") && mode == "agent-replaced" {
+                    value["metadata"]["uid"] = json!("replacement");
+                }
+                if method == "GET" && route.contains("/agents/") && mode == "agent-generation" {
+                    value["metadata"]["generation"] = json!(2);
+                }
+                if method == "GET"
+                    && route.ends_with("/events")
+                    && ["events-404", "wrong-result-events-missing"].contains(&mode)
+                {
+                    status = 404;
+                    value = json!({"error":"missing"});
+                }
+                if method == "GET"
+                    && route.contains("/tasks/")
+                    && !route.ends_with("/result")
+                    && !route.ends_with("/events")
+                    && mode == "task-404"
+                {
+                    status = 404;
+                    value = json!({"error":"missing"});
+                }
+                if method == "GET"
+                    && mode
+                        .strip_prefix("get-")
+                        .is_some_and(|m| route.ends_with(m))
+                {
+                    status = 401;
+                } else if method == "GET"
+                    && mode
+                        .strip_prefix("deny-")
+                        .is_some_and(|m| route.ends_with(m))
+                {
+                    status = 403;
+                }
                 if method == "POST" {
                     match mode {
                         "401" => {
@@ -222,7 +450,7 @@ impl Wire {
             }
         }
     }
-    fn posts(&self) -> usize {
+    pub(super) fn posts(&self) -> usize {
         self.calls
             .lock()
             .unwrap()
@@ -273,6 +501,63 @@ fn pair_with_prompt(extra: &str) -> ParsedPair {
     std::fs::write(agent, "changed after capture").unwrap();
     parsed
 }
+#[tokio::test]
+async fn pod_reads_keep_kubernetes_and_orka_status_origins() {
+    let cases = [
+        (
+            "get-whoami",
+            Check::OrkaIdentity,
+            CheckResult::AuthenticationRejected,
+        ),
+        (
+            "deny-whoami",
+            Check::OrkaIdentity,
+            CheckResult::PermissionDenied,
+        ),
+        ("deny-agents", Check::Agents, CheckResult::PermissionDenied),
+        (
+            "get-providers",
+            Check::Providers,
+            CheckResult::AuthenticationRejected,
+        ),
+    ];
+    for (mode, check, result) in cases {
+        let api = Arc::new(ApiFixture::default());
+        *api.wire.mode.lock().unwrap() = mode;
+        let mut client = ClusterClient::new(
+            config(&api.start(), json!({"token":"creator-fixture"})),
+            Arc::new(PodOrkaRead),
+        );
+        let id = target(&mut client).await;
+        assert_eq!(
+            client.connect(id, None).await.err(),
+            Some(failed(check, result)),
+            "{mode}"
+        );
+    }
+    // Opening the Pod stream is the Orka connection check, with Kubernetes' own status.
+    for (code, result) in [
+        (401, CheckResult::AuthenticationRejected),
+        (403, CheckResult::PermissionDenied),
+    ] {
+        let api = Arc::new(ApiFixture::default());
+        let mut client = ClusterClient::new(
+            config(&api.start(), json!({"token":"creator-fixture"})),
+            Arc::new(PodOrkaRead),
+        );
+        let id = target(&mut client).await;
+        *api.override_response.lock().unwrap() = Some((
+            "/pods".into(),
+            code,
+            json!({"kind":"Status","apiVersion":"v1","status":"Failure","message":"creator-fixture","reason":"Fixture","code":code}),
+        ));
+        assert_eq!(
+            client.connect(id, None).await.err(),
+            Some(failed(Check::OrkaConnection, result))
+        );
+        assert_eq!(api.wire.posts(), 0);
+    }
+}
 async fn transport(api: &Arc<ApiFixture>) -> OrkaStreamTransport {
     let (client, access) = access(api).await;
     access
@@ -304,6 +589,56 @@ async fn disk_pair_to_cluster_checks_pass() {
         "model:exact"
     );
 }
+#[tokio::test]
+async fn overview_inventory_wire_has_one_scoped_page_limit_not_the_access_probe() {
+    let api = Arc::new(ApiFixture::default());
+    let mut client = ClusterClient::new(
+        config(&api.start(), json!({"token":"creator-fixture"})),
+        Arc::new(PodOrkaRead),
+    );
+    let id = target(&mut client).await;
+    let access = client.connect(id, None).await.unwrap();
+    api.wire.calls.lock().unwrap().clear();
+    *api.wire.mode.lock().unwrap() = "paged-agents";
+    assert_eq!(access.inventory().await.unwrap().len(), 2);
+    let calls = api.wire.calls.lock().unwrap();
+    let requests: Vec<_> = calls
+        .iter()
+        .filter(|c| c.0.starts_with("GET /api/v1/agents?"))
+        .collect();
+    assert_eq!(requests.len(), 2);
+    for (index, call) in requests.iter().enumerate() {
+        let request = &call.0;
+        let url = reqwest::Url::parse(&format!(
+            "http://fixture{}",
+            request.trim_start_matches("GET ")
+        ))
+        .unwrap();
+        assert_eq!(
+            url.query_pairs()
+                .filter(|(k, _)| k == "limit")
+                .map(|(_, v)| v.into_owned())
+                .collect::<Vec<_>>(),
+            ["10"]
+        );
+        assert!(url
+            .query_pairs()
+            .any(|(k, v)| k == "namespace" && v == "agents"));
+        assert_eq!(
+            url.query_pairs()
+                .find(|(k, _)| k == "continue")
+                .map(|(_, v)| v.into_owned()),
+            if index == 0 {
+                None
+            } else {
+                Some("next+/ =?".into())
+            }
+        );
+    }
+    drop(calls);
+    assert_eq!(api.wire.posts(), 0);
+}
+
 #[tokio::test]
 async fn agent_access_probe_requests_only_one_item() {
     let api = Arc::new(ApiFixture::default());
@@ -359,7 +694,7 @@ async fn selected_ready_pod_resolves_named_target_port_during_rollout() {
     *api.override_response.lock().unwrap() = Some((
         "/pods".into(),
         200,
-        json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"ready","namespace":"control","uid":"rollout-uid","labels":{"app":"orka"}},"spec":{"containers":[{"name":"controller","ports":[{"name":"api","containerPort":9090}]}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}),
+        json!({"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"ready","namespace":"control","uid":"rollout-uid","labels":{"app":"orka"},"ownerReferences":[{"apiVersion":"apps/v1","kind":"ReplicaSet","name":"controller-old","uid":"rs-uid","controller":true}]},"spec":{"containers":[{"name":"controller","ports":[{"name":"api","containerPort":9090}]}]},"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}),
     ));
     let transport = transport(&api).await;
     assert_eq!(transport.peer().port, 9090);

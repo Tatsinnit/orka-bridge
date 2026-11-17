@@ -3,37 +3,93 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import Run from './Run';
+import { StrictMode } from 'react';
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); });
-const idle = { state: 'idle', canRun: true, report: null, acknowledged: [], pending: null, error: null };
-const complete = { ...idle, state: 'complete', report: { verdict: 'unknown', cases: [{ id: 'published-checksum', phase: 'Succeeded', answer: '<script>not executable</script>', completedTools: [], assertions: [{ id: 'checksum-from-page', kind: 'contains', verdict: 'passed' }, { id: 'fetched-page', kind: 'toolCalled', verdict: 'unknown' }], verdict: 'unknown' }] } };
+const idle = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', busy: null, state: 'idle', canRun: true, report: null, acknowledged: [], pending: null, error: null };
+const complete = { ...idle, state: 'complete', report: { verdict: 'unknown', cases: [{ id: 'published-checksum', question: 'What did the page say?', phase: 'Succeeded', answer: '<script>not executable</script>', completedTools: [], assertions: [{ id: 'checksum-from-page', kind: 'contains', expected: 'checksum', verdict: 'passed' }, { id: 'fetched-page', kind: 'toolCalled', expected: 'web_fetch', verdict: 'unknown' }], verdict: 'unknown' }] } };
+test('an Overview request waits for this document status and starts once in StrictMode', async () => {
+  vi.stubGlobal('isTauri', true);
+  let resolve!: (value: unknown) => void;
+  const handled = vi.fn();
+  const ipc = vi.fn((command: string) => command === 'agent_run_status' ? new Promise(r => { resolve = r; }) : { ...idle, state: 'running', canRun: false });
+  mockIPC(ipc);
+  render(<StrictMode><Run startRequest={1} onStartRequestHandled={handled} /></StrictMode>);
+  await waitFor(() => expect(resolve).toBeTypeOf('function'));
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(0);
+  resolve(idle);
+  await waitFor(() => expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(1));
+  expect(handled).toHaveBeenCalledTimes(1);
+});
+test.each(['blocked', 'cannot-run', 'unreadable'])('an Overview request is consumed without replay when %s', async reason => {
+  vi.stubGlobal('isTauri', true);
+  let available = reason !== 'cannot-run';
+  const handled = vi.fn();
+  const ipc = vi.fn((command: string) => command === 'agent_run_status' && reason === 'unreadable' ? null : { ...idle, canRun: available });
+  mockIPC(ipc);
+  const view = render(<Run startRequest={1} onStartRequestHandled={handled} blocked={reason === 'blocked'} />);
+  await waitFor(() => expect(handled).toHaveBeenCalledTimes(1));
+  available = true;
+  view.rerender(<Run startRequest={1} onStartRequestHandled={handled} />);
+  expect(ipc.mock.calls.some(([cmd]) => cmd === 'agent_run')).toBe(false);
+});
+test('Designer shows the saved test list before running and Stop uses native cancellation', async () => {
+  vi.stubGlobal('isTauri', true);
+  let snapshot = { ...idle, state: 'idle', stage: null as string | null, canCancel: false };
+  const ipc = vi.fn(command => {
+    if (command === 'agent_run') snapshot = { ...snapshot, state: 'running', canRun: false, stage: 'observe', canCancel: true };
+    if (command === 'agent_run_cancel') snapshot = { ...snapshot, stage: 'cancel', canCancel: false };
+    return snapshot;
+  });
+  mockIPC(ipc);
+  const tests = '---\nschemaVersion: 1\n---\n' + '\x60\x60\x60yaml agent-test\nid: page\ntitle: Reads the page\ninput: What did it say?\nassertions: [{id: a, type: contains, value: checksum}]\n\x60\x60\x60\n';
+  render(<Run tests={tests} />);
+  expect(screen.getByText('Reads the page')).toBeTruthy();
+  await userEvent.click(await screen.findByRole('button', { name: 'Run tests' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Stop' }));
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run_cancel')).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+});
 test('Run is explicit, duplicate clicks and remounts only observe existing work', async () => {
   vi.stubGlobal('isTauri', true); let value: unknown = idle;
   const ipc = vi.fn(command => {
-    if (command === 'setup_run_example') value = { ...idle, state: 'running', canRun: false };
+    if (command === 'agent_run') value = { ...idle, state: 'running', canRun: false };
     return value;
   }); mockIPC(ipc);
-  const view = render(<Run />); const button = await screen.findByRole('button', { name: 'Run test' });
-  await userEvent.dblClick(button); expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_run_example')).toHaveLength(1);
-  view.unmount(); render(<Run />); expect(await screen.findByText('Running on the local VM…')).toBeTruthy();
-  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_run_example')).toHaveLength(1);
+  const view = render(<Run />); const button = await screen.findByRole('button', { name: 'Run tests' });
+  await userEvent.dblClick(button); expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(1);
+  view.unmount(); render(<Run />); expect(await screen.findByText('Starting your tests')).toBeTruthy();
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(1);
+  const live = screen.getAllByRole('status').find(node => node.classList.contains('sr-only'));
+  expect(live).toBeTruthy();
   value = complete;
   expect(await screen.findByText('<script>not executable</script>')).toBeTruthy();
-  expect(screen.getByText('contains: passed')).toBeTruthy(); expect(screen.getByText('toolCalled: unknown')).toBeTruthy();
-  expect(document.querySelector('script')).toBeNull(); expect(screen.getByText('No completed tool calls were observed. Missing evidence is unknown.')).toBeTruthy();
+  expect(screen.getByText('published-checksum').closest('details')?.open).toBe(true);
+  expect(screen.getByText('What did the page say?')).toBeTruthy();
+  expect(document.querySelector('script')).toBeNull();
+  expect(screen.getByText('A call to web_fetch was not observed; this result is unknown.')).toBeTruthy();
+  expect(live?.isConnected).toBe(true);
+  expect(live?.textContent).toBe('Test result unknown.');
+});
+test.each(['passed', 'failed'])('unknown local operation overrides a retained %s report announcement', async verdict => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(() => ({ ...complete, state: 'unknown', report: { verdict, cases: [{ id: 'a', question: 'What did the page say?', phase: 'Succeeded', answer: verdict === 'passed' ? 'checksum' : 'other', completedTools: [], verdict, assertions: [{ id: 'text', kind: 'contains', expected: 'checksum', verdict }] }] } }));
+  render(<Run />);
+  await waitFor(() => expect(screen.getAllByRole('status').find(node => node.classList.contains('test-announcement'))?.textContent).toBe('Test result unknown.'));
 });
 test('model connection advice follows the acknowledged model state, not Run availability', async () => {
   vi.stubGlobal('isTauri', true);
   let modelConnected = false;
   mockIPC(() => ({ ...idle, state: 'running', canRun: false, modelConnected }));
   const view = render(<Run />);
-  expect(screen.queryByText(/Connect the model in Clusters first\./)).toBeNull();
-  expect(await screen.findByText(/Connect the model in Clusters first\./)).toBeTruthy();
+  expect(screen.queryByText(/Connect the AI in Clusters first\./)).toBeNull();
+  expect(await screen.findByText(/Connect the AI in Clusters first\./)).toBeTruthy();
   modelConnected = true;
   view.unmount();
   render(<Run />);
-  expect(await screen.findByText('Running on the local VM…')).toBeTruthy();
-  expect(screen.queryByText(/Connect the model in Clusters first\./)).toBeNull();
-  expect(screen.getByRole('button', { name: 'Run test' }).title).toBe('Check is running');
+  expect(await screen.findByText('Starting your tests')).toBeTruthy();
+  expect(screen.queryByText(/Connect the AI in Clusters first\./)).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Run tests' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
 });
 test.each([
   { error: 'model', modelConnected: false, alert: true },
@@ -44,18 +100,67 @@ test.each([
   vi.stubGlobal('isTauri', true);
   mockIPC(() => ({ ...idle, state: 'unknown', error, modelConnected }));
   render(<Run />);
-  // Wait for the native response, not the initial disabled rendering.
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Run test' }).hasAttribute('disabled')).toBe(false));
+  await screen.findByText('Result unknown');
+  expect(screen.getByRole('button', { name: 'Run tests' }).hasAttribute('disabled')).toBe(!modelConnected);
   expect(!!screen.queryByRole('alert')).toBe(alert);
 });
 test('uncertain submission names retained receipts and never retries automatically', async () => {
-  vi.stubGlobal('isTauri', true); const ipc = vi.fn((command: string) => { expect(command).toBe('setup_run_status'); return { ...idle, state: 'unknown', error: 'submit', acknowledged: [{ kind: 'Agent', name: 'bridge-run-example', uid: 'uid-a' }], pending: { kind: 'Task', name: 'bridge-task-example' } }; }); mockIPC(ipc); render(<Run />);
-  expect(await screen.findByText(/bridge-task-example/)).toBeTruthy(); expect(screen.getByText(/bridge-run-example/)).toBeTruthy();
-  expect(ipc.mock.calls.every(([cmd]) => cmd === 'setup_run_status')).toBe(true);
+  vi.stubGlobal('isTauri', true); const ipc = vi.fn((command: string) => { expect(command).toBe('agent_run_status'); return { ...idle, state: 'unknown', error: 'submit', acknowledged: [{ kind: 'Agent', name: 'bridge-run-example', uid: 'uid-a' }], pending: { kind: 'Task', name: 'bridge-task-example' } }; }); mockIPC(ipc); render(<Run />);
+  expect(await screen.findAllByText('brid…mple')).toHaveLength(2);
+  expect(screen.getByRole('button', { name: 'Copy Possibly created Task', hidden: true })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Copy Agent', hidden: true })).toBeTruthy();
+  expect(ipc.mock.calls.every(([cmd]) => cmd === 'agent_run_status')).toBe(true);
 });
 test.each([null, { ...idle, modelConnected: 'true' }, { ...idle, state: ['idle'] }, { ...idle, error: 'PRIVATE_DIAGNOSTIC' }, { ...complete, extra: 'PRIVATE_DIAGNOSTIC' }, { ...complete, report: { ...complete.report, verdict: 'passed', cases: [{ secret: 'PRIVATE_DIAGNOSTIC' }] } }])('malformed Run data never renders raw diagnostics', async value => {
   vi.stubGlobal('isTauri', true); mockIPC(() => value); render(<Run />); expect(await screen.findByText('Run information is not supported by this build.')).toBeTruthy(); expect(document.body.textContent).not.toContain('PRIVATE_DIAGNOSTIC');
 });
+test.each(['submit', 'observe', null])('uncertain %s is not labelled failed or not started', async error => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(() => ({ ...idle, state: 'unknown', error }));
+  const { container } = render(<Run />);
+  expect((await screen.findByText('Result unknown')).closest('.pill')).toBeNull();
+  expect(container.querySelector('.pill.status-stale')?.textContent).toBe('Stale');
+  expect(container.querySelector('.pill.status-failed')).toBeNull();
+});
+test('an older pass is a stale pill and never a green result', async () => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(() => ({ ...complete, report: { ...complete.report, verdict: 'passed' } }));
+  const { container } = render(<Run stale />);
+  await screen.findByText('Not run since your edit');
+  expect(container.querySelector('.pill.status-stale')).toBeTruthy();
+  expect(container.querySelector('.pill.status-passed')).toBeNull();
+  expect(screen.getByText('<script>not executable</script>').tagName).toBe('P');
+});
+test.each([
+  ['capture', 'Reading your saved files'], ['model', 'Checking the local model'],
+  ['submit', 'Starting your tests'], ['observe', 'Waiting for answers and evaluating tests'],
+])('native %s stage is factual, with no local Stop or disabled primary', async (stage, text) => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(() => ({ ...idle, state: 'running', canRun: false, stage, model: 'captured-model' }));
+  render(<Run />);
+  expect(await screen.findByText(text)).toBeTruthy();
+  expect(screen.getByText('captured-model')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Run tests' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+});
+test.each([false, true])('disconnected AI keeps Run secondary/disabled even when native canRun is %s', async canRun => {
+  vi.stubGlobal('isTauri', true); mockIPC(() => ({ ...idle, canRun, modelConnected: false }));
+  const choose = vi.fn(); const user = userEvent.setup(); render(<Run onChooseCluster={choose} />);
+  const run = await screen.findByRole('button', { name: 'Run tests' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Connect the AI' })).toBeTruthy());
+  expect(run.classList.contains('button-primary')).toBe(false);
+  expect(run.hasAttribute('disabled')).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Connect the AI' })); expect(choose).toHaveBeenCalledOnce();
+});
+test.each(['Succeeded', 'Failed'])('failed %s gives factual next steps and editor navigation', async phase => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(() => ({ ...complete, report: { verdict: 'failed', cases: [{ ...complete.report.cases[0], phase, verdict: 'failed', assertions: [{ id: 'contains', kind: 'contains', expected: 'checksum', verdict: 'failed' }] }] } }));
+  const edit = vi.fn(); const user = userEvent.setup(); render(<Run onEditInstructions={edit} />);
+  await screen.findByText(phase === 'Succeeded' ? /The agent answered, but its checks failed/ : /The task did not finish successfully/);
+  await user.click(screen.getByRole('button', { name: 'Edit instructions' })); expect(edit).toHaveBeenCalledOnce();
+  expect(document.body.textContent).not.toContain('page is unavailable');
+});
+
 test('preview never fabricates a native test or sends Run IPC', async () => {
   vi.stubGlobal('isTauri', false); const ipc = vi.fn(); mockIPC(ipc); render(<Run />);
   expect(await screen.findByText('Run is available only in the native app.')).toBeTruthy(); expect(ipc).not.toHaveBeenCalled();

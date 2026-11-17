@@ -92,6 +92,29 @@ class QualificationTests(unittest.TestCase):
         self.profile["artifactSha256"] = sha(path.read_bytes())
         return path
 
+    def test_download_accept_header_matches_endpoint_kind(self):
+        endpoints = (
+            ("repos/orka-agents/orka-bridge/actions/artifacts/12/zip",
+             "application/vnd.github+json"),
+            ("repos/orka-agents/orka-bridge/releases/assets/34",
+             "application/octet-stream"),
+        )
+        for index, (endpoint, accept) in enumerate(endpoints):
+            with self.subTest(endpoint=endpoint):
+                destination = self.root / f"download-{index}"
+
+                def download(args, *, input, stdout, check):
+                    self.assertEqual(args[:5], ["gh", "api", endpoint, "--method", "GET"])
+                    self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == "-H"],
+                                     ["X-GitHub-Api-Version: 2022-11-28", "Accept: " + accept])
+                    self.assertIsNone(input)
+                    self.assertTrue(check)
+                    stdout.write(b"archive bytes")
+
+                with patch.object(self.q.subprocess, "run", side_effect=download):
+                    self.assertIsNone(self.q.gh(endpoint, download=destination))
+                self.assertEqual(destination.read_bytes(), b"archive bytes")
+
     def test_public_cli_denies_empty_policy_before_any_gh(self):
         # The checked-in policy must reject without creating any package directory.
         for command in ("prepare", "draft"):
@@ -109,14 +132,30 @@ class QualificationTests(unittest.TestCase):
     def test_profile_accepts_the_manifest_image_id_grammar(self):
         selected = dict(self.profile, imageId="fixture.v1")
         policy = dict(schemaVersion="bridge-image-policy/v1", acceptedSchemaSha256="c" * 64,
-                      profiles={"reviewed": selected})
+                      sourcePreviews={}, profiles={"reviewed": selected})
         with patch.object(self.q, "read_json", return_value=policy), \
              patch.object(self.q, "file_hash", return_value="c" * 64), \
-             patch.dict(self.q.VERSIONS, {"releaseProfiles": {"synthetic": {}}}):
+             patch.dict(self.q.VERSIONS, {"releaseProfiles": {"synthetic": {"amd64": selected['inputIdentity']}}}):
             self.assertEqual(self.q.approved_profile("reviewed"), selected)
             selected["imageId"] = "fixture..v1"
             with self.assertRaisesRegex(ValueError, "image"):
                 self.q.approved_profile("reviewed")
+
+    def test_profile_requires_exact_reviewed_input_before_network(self):
+        policy = dict(schemaVersion='bridge-image-policy/v1', acceptedSchemaSha256='c' * 64,
+                      sourcePreviews={'3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea':
+                                      {'amd64': self.profile['inputIdentity']}},
+                      profiles={'preview': self.profile})
+        with patch.object(self.q, 'read_json', return_value=policy), \
+             patch.object(self.q, 'file_hash', return_value='c' * 64), \
+             patch.object(self.q, 'gh', side_effect=AssertionError('network before admission')):
+            self.assertEqual(self.q.approved_profile('preview'), self.profile)
+            self.profile['inputIdentity'] = 'f' * 64
+            with self.assertRaisesRegex(ValueError, 'input.*approved'):
+                self.q.approved_profile('preview')
+            policy['sourcePreviews'] = {'bad-commit': {'amd64': 'f' * 64}}
+            with self.assertRaises(ValueError):
+                self.q.approved_profile('preview')
 
     def test_remote_accepts_only_pinned_successful_nonfork_run(self):
         with patch.object(self.q, "gh", side_effect=self.api):
@@ -337,9 +376,121 @@ class QualificationTests(unittest.TestCase):
                 return None
             return self.api(endpoint, **kwargs)
         with patch.object(self.q, "gh", side_effect=api):
-            with self.assertRaisesRegex(ValueError, "production requires"):
+            with self.assertRaisesRegex(ValueError, "preview.*not approved"):
                 self.q.prepare(self.profile, self.root / "never-created")
         self.assertFalse((self.root / "never-created").exists())
+
+    def input_draft(self):
+        data = self.archive().read_bytes()
+        # The Actions artifact is the endpoint, not this disk archive.
+        self.profile['artifactSha256'] = '0' * 64
+        self.artifact['digest'] = 'sha256:' + '0' * 64
+        pieces = [data[:len(data)//2], data[len(data)//2:]]
+        self.profile['inputDraft'] = dict(
+            releaseId=51, tag='bridge-image-inputs-amd64-' + sha(data),
+            archiveBytes=len(data), archiveSha256=sha(data),
+            parts=[dict(name=f'archive.zip.part-{i:06d}', bytes=len(b), sha256=sha(b))
+                   for i, b in enumerate(pieces)])
+        self.release = dict(id=51, tag_name=self.profile['inputDraft']['tag'], draft=True,
+                            published_at=None, target_commitish='a' * 40)
+        self.input_assets = [dict(id=100+i, name=p['name'], size=p['bytes'], state='uploaded', download_count=0)
+                             for i, p in enumerate(self.profile['inputDraft']['parts'])]
+        self.input_pieces = pieces
+
+    def input_api(self, endpoint, **kwargs):
+        if endpoint.endswith('/releases?per_page=100'):
+            return [[copy.deepcopy(self.release)]]
+        if '/git/matching-refs/' in endpoint:
+            return [[]]
+        if endpoint.endswith('/releases/51/assets?per_page=100'):
+            return [copy.deepcopy(self.input_assets)]
+        if '/releases/assets/' in endpoint:
+            index = int(endpoint.rsplit('/', 1)[1]) - 100
+            self.input_assets[index]['download_count'] += 1
+            kwargs['download'].write_bytes(self.input_pieces[index])
+            return None
+        return self.api(endpoint, **kwargs)  # Deliberately denies endpoint /zip download.
+
+    def test_input_draft_prepares_actual_archive_not_endpoint_even_after_expiry(self):
+        self.input_draft()
+        self.artifact['expired'] = True
+        with patch.object(self.q, 'gh', side_effect=self.input_api), patch.object(self.q, 'validate_lock'):
+            manifest = self.q.prepare(self.profile, self.root/'package')
+        self.assertEqual(manifest['artifact']['uncompressedSha256'], sha(self.payload))
+        self.assertEqual(manifest['directBoot']['kernel']['sha256'], self.profile['kernelSha256'])
+        self.assertIs(manifest['publicationReady'], False)
+
+    def test_input_draft_rejects_identity_inventory_and_corrupt_parts(self):
+        self.input_draft()
+        cases = [('draft', False), ('target_commitish', 'f'*40), ('id', 99),
+                 ('published_at', '2026-01-01'), ('tag_name', 'different')]
+        with patch.object(self.q, 'gh', side_effect=self.input_api):
+            for field, value in cases:
+                previous = self.release[field]
+                self.release[field] = value
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'input draft identity'):
+                    self.q.prepare(self.profile, self.root/'never-created')
+                self.release[field] = previous
+            for change in ('missing', 'extra', 'wrong-size', 'corrupt'):
+                before = copy.deepcopy(self.input_assets)
+                pieces = self.input_pieces[:]
+                if change == 'missing': self.input_assets.pop()
+                if change == 'extra': self.input_assets.append(dict(id=999,name='extra',size=1,state='uploaded'))
+                if change == 'wrong-size': self.input_assets[0]['size'] += 1
+                if change == 'corrupt': self.input_pieces[0] = b'!' * len(self.input_pieces[0])
+                message = 'input part checksum' if change == 'corrupt' else 'input.*(inventory|size)'
+                with self.subTest(change=change), self.assertRaisesRegex(ValueError, message):
+                    self.q.prepare(self.profile, self.root/'never-created')
+                self.input_assets, self.input_pieces = before, pieces
+        self.assertFalse((self.root/'never-created').exists())
+
+    def test_input_draft_policy_denies_reordered_parts_and_output_tag_before_network(self):
+        self.input_draft()
+        policy = dict(schemaVersion='bridge-image-policy/v1', acceptedSchemaSha256='c'*64,
+                      sourcePreviews={'3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea':
+                                      {'amd64': self.profile['inputIdentity']}}, profiles={'preview':self.profile})
+        with patch.object(self.q, 'read_json', return_value=policy), \
+             patch.object(self.q, 'file_hash', return_value='c'*64), \
+             patch.object(self.q, 'gh', side_effect=AssertionError('network before admission')):
+            self.q.approved_profile('preview')
+            self.profile['inputDraft']['parts'].reverse()
+            with self.assertRaisesRegex(ValueError, 'input part'): self.q.approved_profile('preview')
+            self.profile['inputDraft']['parts'].reverse()
+            self.profile['inputDraft']['tag'] = self.q.tag(self.profile)
+            with self.assertRaisesRegex(ValueError, 'input draft tag'): self.q.approved_profile('preview')
+
+    def test_input_draft_rejects_competing_tag_and_replaced_asset(self):
+        self.input_draft()
+        for change in ('tag', 'asset'):
+            listings = 0
+            def api(endpoint, **kwargs):
+                nonlocal listings
+                if change == 'tag' and '/git/matching-refs/' in endpoint:
+                    return [[dict(ref='refs/tags/' + self.profile['inputDraft']['tag'],
+                                  object=dict(type='commit', sha='f'*40))]]
+                if endpoint.endswith('/releases/51/assets?per_page=100'):
+                    listings += 1
+                    if listings == 2:
+                        self.input_assets[0]['id'] += 1000
+                return self.input_api(endpoint, **kwargs)
+            message = 'tag/source' if change == 'tag' else 'changed during download'
+            with self.subTest(change=change), patch.object(self.q,'gh',side_effect=api):
+                with self.assertRaisesRegex(ValueError, message):
+                    self.q.prepare(self.profile,self.root/'never-created')
+            self.assertFalse((self.root/'never-created').exists())
+
+    def test_input_draft_does_not_relax_other_producer_checks(self):
+        self.input_draft()
+        self.artifact['expired'] = True
+        for field in ('id', 'repository_id', 'head_repository_id', 'head_sha'):
+            original = self.artifact['workflow_run'][field]
+            self.artifact['workflow_run'][field] = 'wrong'
+            with self.subTest(field=field), patch.object(self.q,'gh',side_effect=self.input_api):
+                with self.assertRaisesRegex(ValueError, 'artifact source'): self.q.prepare(self.profile,self.root/'never-created')
+            self.artifact['workflow_run'][field] = original
+        self.artifact['digest'] = 'sha256:' + 'f'*64
+        with patch.object(self.q,'gh',side_effect=self.input_api), self.assertRaisesRegex(ValueError, 'artifact mismatch'):
+            self.q.prepare(self.profile,self.root/'never-created')
 
     def prepared(self):
         package = importlib.import_module("images.package")

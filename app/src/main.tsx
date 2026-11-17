@@ -1,9 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import '@fontsource-variable/geist';
-import '@fontsource-variable/geist-mono';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
 import './app.css';
 import './shell.css';
+import './components/controls.css';
 import App from './App';
 
 createRoot(document.getElementById('root')!).render(

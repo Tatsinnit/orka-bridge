@@ -49,10 +49,9 @@ pub fn establish(
     let result = exchange(worker, channel, nonce, host_utc);
     if let Err(ref exchange) = result {
         if let Err(stop) = worker.stop() {
-            return Err(io::Error::other(format!(
+            return Err(RuntimeError::StopUnconfirmed(format!(
                 "boot exchange failed: {exchange}; stop unobserved: {stop}"
-            ))
-            .into());
+            )));
         }
     }
     result
@@ -64,6 +63,7 @@ fn exchange(
     host_utc: u64,
 ) -> Result<VmClient, RuntimeError> {
     let mut reader = BufReader::new(channel);
+    let mut serving_hello = None;
     for stage in [Stage::Early, Stage::Serve] {
         // A distinct expected stage, not a poisoned decoder reset. The shared
         // worker validates the actual nonce transition and durable New authority.
@@ -72,6 +72,9 @@ fn exchange(
             return Err(RuntimeError::Unavailable);
         };
         let request = worker.boot_request(&hello, host_utc)?;
+        if stage == Stage::Serve {
+            serving_hello = Some(hello);
+        }
         reader
             .get_mut()
             .write_all(&encode(&Frame::Request(request.clone()))?)?;
@@ -84,5 +87,10 @@ fn exchange(
         }
     }
     // Carry all prefetched bytes through the existing client constructor.
-    VmClient::established(Box::new(BufferedChannel(reader)), nonce).map_err(Into::into)
+    VmClient::established_with_hello(
+        Box::new(BufferedChannel(reader)),
+        nonce,
+        serving_hello.as_ref().ok_or(RuntimeError::Unavailable)?,
+    )
+    .map_err(Into::into)
 }

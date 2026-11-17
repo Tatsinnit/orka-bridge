@@ -107,6 +107,59 @@ both top-level and `/finalizers` writes. The role also omits direct access to
 Secrets, Pods, Jobs, Deployments, ServiceAccounts, token creation, Roles,
 RoleBindings, `bind`, `escalate`, and impersonation.
 
+### Bridge connection access
+
+The roles above authorize calls through Orka. Connecting Bridge also needs a
+separately authorized Kubernetes identity: cluster-wide Service and Deployment
+listing and reads of the Agent, Task, Provider and Tool CRD definitions for
+discovery; namespaced Service, Deployment, Pod and ReplicaSet listing and Pod
+port-forward access in the Orka installation namespace for connection. ReplicaSet reads use a name-filtered list, not
+`get`; access must allow that list. These permissions are not added to the
+creator or observer roles in the fixture. A denied ReplicaSet read is reported
+as a Kubernetes connection permission failure, not an Orka authorization error.
+
+When Orka requires a namespace-local ServiceAccount, Bridge lists existing
+accounts in the watched namespace if the sign-in permits `list serviceaccounts`.
+Otherwise it explains why listing failed and accepts an administrator-provided
+name. No account is automatically selected or recommended. Choosing a listed
+account previews only its ten required Orka permissions through namespaced
+`create localsubjectaccessreviews`, using the existing sign-in's authority.
+A forbidden review stops the preview as “Couldn't check”; it is not evidence
+that the account lacks the requested Orka permission. These optional list and
+review capabilities are not added to the fixture's roles.
+
+The preview never issues tokens, changes RBAC or proves absence of broader
+access. **Use this cluster** alone requests the selected account's token, using
+the sign-in's existing named `create serviceaccounts/token` authority, and
+performs the normal identity, access and Orka reads. Discovery and forwarding
+rights belong to that sign-in, not the narrow ServiceAccount used for Orka.
+
+Before sending an Orka credential, Bridge checks the selected Pod's controller
+ReplicaSet and that ReplicaSet's controller Deployment against the recorded
+Deployment UID. It repeats the checks around opening the forward and refuses
+changed Service selectors, ports, Pod identities or controller ownership.
+Legitimate rollout Pods under the recorded Deployment can still connect.
+Kubernetes forwards by Pod name without a UID precondition: these checks narrow
+the replacement race but are not an atomic or authenticated Pod attestation.
+Anyone who can create Pods in Orka's namespace is inside this trust boundary;
+owner references can be forged by a Pod creator.
+
+Saved places and Send ownership include a hash of the API endpoint and configured
+TLS trust. Changing either no longer attaches history or linked Agents merely
+because object UIDs match. Authentication credentials are not part of this hash.
+A changed endpoint or TLS configuration, including CA rotation, is a distinct
+destination: a fresh Send can create a separate Agent there rather than reuse
+the old link. The old Agent and ownership are not deleted or transferred.
+An exact clone preserving the endpoint, trust keys and UIDs is outside this
+guarantee. Existing TLS verification settings are unchanged.
+
+Older saved history remains readable but cannot be associated with live Agents,
+checked remotely or cancelled without its original verified destination. Older
+linked-Agent ownership blocks Send and separate-Agent recovery rather than
+adopting or duplicating the Agent; Bridge does not erase pending work. There is
+no automatic re-enrolment. A legacy remembered place remains stale and separate
+from a newly confirmed place until explicitly forgotten.
+
 ### Observer
 
 An observer can read Agents, Tasks and Sessions in each explicitly enrolled

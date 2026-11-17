@@ -6,9 +6,9 @@ Boot's Ready acknowledgment validates identity, mounts and the endpoint, not Ork
 Post-boot Readiness also reports the matching bootstrap phase and current infrastructure
 service state. Native startup waits for `infrastructure-ready` and successful service
 completion before unlocking model setup. Older storage-only replies cannot satisfy this check.
-Serve accepts digest-committed agent/test snapshots and the delivered typed kmx
-Version and ListAgents actions. File-Test, mutations, remote cancellation and model
-credentials remain unavailable until their upstream contracts are delivered.
+Serve accepts digest-committed agent/test snapshots, typed kmx Version and
+ListAgents actions, and bounded native Run/Chat Orka requests. The Chat contract
+below does not enable generic command execution or a general HTTP proxy.
 
 ## Files and typed operations
 
@@ -32,14 +32,164 @@ once their payload expires. Future file-execution support must pin active input 
 
 Operations record their caller ID before fixed `/usr/local/bin/kmx` execution.
 Argv uses the existing version and scoped JSON agent-list commands; no shell or
-caller environment is accepted. Guest HOME and KUBECONFIG are fixed to `/root`
-and `/root/.kube/config`; image integration must supply the pinned kmx and its
-helper dependencies. Output is bounded; only version/Agent metadata is persisted,
-not CRD specs or raw stderr. Results are ID-bound chunks, never guest-selected
-paths or writes over creator files. A lost response stays Unknown until an explicit
-ID lookup; duplicate IDs never reexecute. Interrupted active records become Unknown.
-Current actions are read-only: no file execution flags, Task/package lookup or
-cancellation is inferred from incomplete upstream machine-output work.
+caller environment is accepted. Guest HOME is fixed to `/root`. ListAgents uses
+bootstrap's state-disk `KUBECONFIG=/var/lib/bridge/kubeconfig` and
+`KMX_HOME=/var/lib/bridge/kmx`; Version keeps `/root/.kube/config` and no KMX_HOME.
+Image integration must supply the pinned kmx and its helper dependencies. Output
+is bounded; only version/Agent metadata is persisted, not CRD specs or raw stderr.
+Results are ID-bound chunks, never guest-selected paths or writes over creator
+files. A lost response stays Unknown until an explicit ID lookup; duplicate IDs
+never reexecute. Interrupted active records become Unknown.
+The kmx actions remain read-only: no file execution flags, Task/package lookup
+or cancellation is inferred from incomplete upstream machine-output work. Native
+Orka requests use their separate guest-owned transport.
+
+## Model credentials and connections
+
+Only the physical host channel can publish credentials or connect a model. A
+`credentialPublish` request may specify `profile: 2` for a model API key; an
+omitted profile means the existing Copilot profile 1. Profile 1 is omitted when
+serialized, preserving older Copilot requests. Other profiles are invalid.
+The checked tmpfs endpoints are `copilot-github-token` (1) and `model-api-key`
+(2), both root:65532, mode 0640, single-link regular files. No credential is
+passed in command arguments or persisted with operation results.
+
+A model selection keeps the Kubernetes `provider` name and model ID. An absent
+`vendor` selects Copilot; `vendor: "openai"` or `"anthropic"` selects the key
+route. Connect requires the corresponding installed credential profile. The
+guest supplies kmx's route/vendor flags and checks both in its connection reply,
+including partial failures and disconnect. Only closed diagnostic codes and
+safe stderr messages cross back, never upstream response bodies.
+
+There is one installed credential at a time. Disconnect the owned connection
+before clearing or replacing its credential, then explicitly clear before
+switching profiles. A cleared endpoint stays empty and inode-checked while the
+other profile is used. A guest-process restart refuses either existing endpoint,
+even when empty, rather than adopting it; a VM boot recreates the memory-only
+folder. Retained cleanup uses the full saved `ModelConnection`, including
+`selection.vendor`, before any new credential is installed.
+
+Using the key route requires a rebuilt guest image with kmx supporting
+`model connect --route key --vendor openai|anthropic`. This protocol support does
+not add a host key-entry flow, change the catalog or update installed images.
+
+## Native Run cancellation observations
+
+The physical host channel accepts Run `orka` requests to
+`tasks/bridge-task-<32 lowercase hex>/cancel`. This is a POST with exactly
+`{"uid":"<acknowledged Task UID>"}` (nonempty, at most 64 bytes), no event cursor.
+HTTP status and JSON are preserved, including 200, 409 and denials; the guest
+never retries the request. Run still cannot DELETE resources.
+
+The typed `runWorker` action accepts only a generated Run Task `name` and its
+acknowledged `uid`. It reads that Task, refuses a missing or mismatched UID,
+then lists pods labelled `job-name=<status.jobName>` in `orka-system`. Both reads
+use the fixed guest kubeconfig and impersonate `bridge-native-run`. No bearer
+is minted for this observation, and no caller-selected namespace, selector,
+command, pod spec or log is exposed. Only `{finished: bool, pods: number}` is
+returned and persisted. `finished` means the Task is Succeeded, Failed or
+Cancelled. `pods` counts every pod except those in Succeeded or Failed,
+including terminating pods in other phases. Completed pods may remain for
+results. Cancellation proof requires **both** `finished` and `pods == 0`.
+An absent Job name gives zero pods; a nonterminal Task still gives
+`finished: false`, as before scheduling or during a Pending retry. This
+observation is for native Run's AI Tasks, which disable retries and do not use
+autonomous iterations; it does not track workers from earlier Job attempts.
+Failed or incomplete reads are not zero counts. Neither operation is available
+through the local guest socket.
+
+Run's Role adds namespace-wide `update` on `core.orka.ai` `tasks/cancel` and
+`list` on core `pods`; validated guest requests restrict reachable Run names.
+Chat's Role is unchanged. This requires a rebuilt guest image, Orka with the
+cancel API, and a fresh local cluster. Identity setup never rewrites an existing
+Role: a new guest encountering the old Role refuses all Run calls rather than
+expanding its permissions. These guest operations alone add no host cancellation
+loop or UI, and do not update an installed image.
+
+## Local test Agent cleanup
+
+The serving Hello advertises optional `runCleanup: true`; Early never does.
+Omission means unsupported. The native host must not send the new action to an
+older guest: unknown actions can close that guest's strict control channel.
+Use a rebuilt guest image with the matching app. Older apps reject the new guest's
+Hello field and fail boot. This does not update image pins or installed images:
+cleanup remains inactive in shipped builds until a compatible guest is pinned.
+
+After a local Run returns, the native host sweeps superseded recorded UIDs while
+still holding authoring admission and its client. Every retained result keeps its
+Agent; Tasks and answers remain. A rotating cursor tries at most eight candidates,
+starting calls for up to five seconds per sweep. An in-flight guest check has its
+own five-second budget, so this is not a hard five-second host limit.
+
+The physical-host-only `cleanupRunAgent` action accepts only a recorded Agent
+`uid` (nonempty, at most 64 bytes), not a name or namespace. The native caller
+must first exclude every Agent needed by retained results or unfinished work.
+Within one five-second budget, including lazy identity setup, the guest resolves
+that UID from a complete Agent list in `orka-system`, requires a generated
+`bridge-run-<32 lowercase hex>` name, and checks all Tasks referring to that name
+and effective namespace. A matching Task must be Succeeded, Failed or Cancelled,
+have a valid `status.jobName`, and have no live pods under the existing
+`job-name=<jobName>` selector. Missing associations, unknown phases, malformed or
+partial lists and command failures never establish inactivity. An Agent with
+no Tasks can be reclaimed, including creation interrupted before Task submission.
+
+Cleanup uses a separate, lazily verified `bridge-native-run-cleanup` identity:
+Agent get/list/delete, Task get/list, and core pod list only. Existing Run/Chat
+manifests and generic Run's prohibition on DELETE are unchanged. No token or
+port-forward is created. Kubernetes raw DELETE carries `DeleteOptions` with the
+recorded UID precondition and `propagationPolicy: Orphan`, so a name replacement
+is fenced and Tasks, results, events and completed pods are preserved. Cleanup
+never deletes Tasks. Only typed `{removed: bool}` reaches operation storage;
+`true` requires a complete list confirming that UID absent, including a bounded
+post-delete observation. Already-absent UIDs also return true. A finalizer can
+leave `removed: false`; failures return an error, never a successful absence.
+Mutations are not retried or replayed. A later sweep must observe again.
+
+Each complete namespace list must fit the existing 1 MiB guest output bound.
+Larger retained Task histories skip cleanup; pagination is not implemented.
+Tasks and answers are never discarded to make a cleanup observation fit.
+
+## Native Chat transport
+
+The physical host channel also accepts the separate `orkaChat` action. Its request
+has an explicit `method` (`get`, `post`, `delete`), `path`, optional event cursor
+`after`, and optional JSON `body`. Run's existing `orka` schema and identity do not
+accept DELETE. Neither action can be invoked through the in-guest local socket or
+translated into a kmx command.
+
+Chat creates generated `bridge-chat-agent-<32 lowercase hex>` Agents and
+`bridge-chat-task-<32 lowercase hex>` native AI Tasks in `orka-system`, with
+`bridge-chat-<32 lowercase hex>` conversation references. It reads those named
+Agents, Tasks, Task results/events and Sessions. Only generated Chat Tasks may be
+deleted; lists, arbitrary paths/URLs and Agent/Session deletion are unavailable.
+Task references must name Chat resources; an Agent reference's optional namespace
+must be `orka-system`. Other Agent/Task configuration remains the native caller's
+responsibility, as with Run.
+
+The lazy guest-owned `bridge-native-chat` identity has separate credentials and
+forward state from `bridge-native-run`. Its namespaced RBAC permits Agent
+create/get, Task create/get/delete, Session get and provider/tool reads. Kubernetes
+Task deletion permission is namespace-wide: validated Chat paths and the bearer
+remaining inside the guest, not RBAC name restrictions, provide Chat-only access.
+Identity setup reuses only exact guest-owned manifests, never rewrites Run's Role,
+and never sends bearer credentials to the host. Requests retain the existing
+64 KiB create-body and 128 KiB frame bounds, no redirects or automatic HTTP
+retries. Both the raw reply and its status-wrapped JSON must fit 1 MiB, so a
+near-limit raw response can still be withheld with an Unknown operation outcome.
+Oversized replies and bearer echoes are withheld before result persistence.
+
+A DELETE acknowledgement is only a deletion request acknowledgement, not evidence
+that the worker terminated. Preserve HTTP status and JSON for the host to report
+best-effort Stop with execution termination unconfirmed. Task deletion removes
+its stored result and events; it cannot undo tool effects. Operation-ID replay
+returns the recorded outcome without repeating the request. Generated Agents and
+Sessions are not cleaned up by this transport. Submitted message bodies can also
+remain in the VM's private operation records; quitting the app is not erasure.
+
+This is guest/protocol groundwork only: it does not enable Designer Chat, provide
+host conversation state, or ship a new VM image. Using it requires a rebuilt guest
+image; older guests do not understand the action. The host follow-on must detect
+an unsupported image, not fall back to another credential or transport authority.
 
 ## Image integration boundary
 

@@ -17,16 +17,20 @@ fn surviving_wrapper_has_no_fd_and_blocked_read_stops_without_io_lock_deadlock()
             socket.read(&mut b)
         })
     });
-    ready.recv_timeout(Duration::from_secs(1)).unwrap();
+    ready.recv().unwrap();
     let mut second = slot.channel();
     assert_eq!(
         second.write(b"x").unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
     slot.seal();
-    slot.revoke(Instant::now() + Duration::from_secs(1))
-        .unwrap();
-    assert!(reader.join().unwrap().is_ok());
+    // Shutdown must wake the read, but its thread need not be scheduled within
+    // a cleanup budget. An active scoped reference may legitimately outlive it.
+    if let Err(error) = slot.revoke(Instant::now()) {
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    }
+    assert_eq!(reader.join().unwrap().unwrap(), 0);
+    slot.revoke(Instant::now()).unwrap();
     assert_eq!(
         second.read(&mut [0]).unwrap_err().kind(),
         std::io::ErrorKind::NotConnected

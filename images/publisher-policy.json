@@ -1,5 +1,113 @@
 {
   "schemaVersion": "bridge-image-policy/v1",
-  "acceptedSchemaSha256": null,
-  "profiles": {}
+  "acceptedSchemaSha256": "80a867ef73ef29685f3d7e7d4d72365ca823cc9a56ce6e0ea9e1ee3e39b92d21",
+  "sourcePreviews": {
+    "7916cd1c8c083ade6b10df6ba408f854d930190c": {
+      "arm64": "11086737f80398db135f68b545c386e907a1fca46c98e978294ca5d81878dec3",
+      "amd64": "b300cb469ad8491c7e7bb0120931c0aadcebd9b256bfcb45a949dd7fe0e15452"
+    },
+    "3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea": {
+      "arm64": "834779815b4e31e8c5557261d760cb108983a9f5e7716bb83f6f8a3fb3371a65",
+      "amd64": "69cf8cb32c2e0f7d406d1cb8c24c0a27740d7e32c73ec5d16292dda55316723d"
+    }
+  },
+  "profiles": {
+    "preview-macos-arm64": {
+      "architecture": "arm64",
+      "artifactId": 14124258890,
+      "artifactSha256": "d0ca283c4178539a49b66667ae16591959fae3f902b44097d203b6e7101d4507",
+      "bootReceiptPath": "boot-assets.json",
+      "bootReceiptSha256": "2aec683295a0358a9a5b41b45e45db4ef2776ed9526d75bc7bc0d9d1b7c00c13",
+      "buildReceiptPath": "build.json",
+      "buildReceiptSha256": "3e3c00823c7c1d469de3433c13f2aba3ffddae3f63d170b8df27737b00d112dc",
+      "imageId": "preview-43e73491",
+      "initrdBytes": 35865741,
+      "initrdPath": "os.initrd",
+      "initrdSha256": "375394b72b6aeea1e6cc70e00cfba99d6269d0936ece451657449da1899dad93",
+      "inputDraft": {
+        "archiveBytes": 2356840736,
+        "archiveSha256": "2ec835a30f759405804ccfde8903cc3e2c330ae911cc2ba359e5617e9d63bc41",
+        "parts": [
+          {
+            "bytes": 1073741824,
+            "name": "archive.zip.part-000000",
+            "sha256": "f17ed4216cd963db7e645d23aa5006ea90d287c46255b61e5405ba255fa2cadf"
+          },
+          {
+            "bytes": 1073741824,
+            "name": "archive.zip.part-000001",
+            "sha256": "bcbfb12f43c0a2ab95e7a8d58495dcbf8d78b1d00b66c52016059e429080df32"
+          },
+          {
+            "bytes": 209357088,
+            "name": "archive.zip.part-000002",
+            "sha256": "02c4c7f315ed70f82e584c31b2a39f06d74a6a4dcf3209a17716ec8df1d284c3"
+          }
+        ],
+        "releaseId": 445659234,
+        "tag": "bridge-image-inputs-arm64-2ec835a30f759405804ccfde8903cc3e2c330ae911cc2ba359e5617e9d63bc41"
+      },
+      "inputIdentity": "834779815b4e31e8c5557261d760cb108983a9f5e7716bb83f6f8a3fb3371a65",
+      "kernelBytes": 44158912,
+      "kernelPath": "os.kernel",
+      "kernelSha256": "27f833e233753a0a601f3a6792dcd73e2f2c7c8bd30e00b837315c71c5996dcb",
+      "metadataPath": "metadata.json",
+      "metadataSha256": "118ee1720039f788f60e36b086278bb3f8d2762072e3286a5d1e49f5c016c0ca",
+      "nativeReceiptSha256": "004a5e1ab77095204ae089018a676d30cd425742e1ccefb044aa2f4737e13c07",
+      "payloadPath": "os.raw",
+      "payloadSha256": "3d4379c1002febfb31b081b92805ffd542eca3ae5e9b65f007e20f1d8656b160",
+      "platform": "macos",
+      "repository": "orka-agents/orka-bridge",
+      "repositoryId": 1444972279,
+      "runId": 43622534938,
+      "sourceCommit": "43e7349115b4c7e9b1865a4d5f0989a02726724c",
+      "workflowId": 406606708
+    },
+    "preview-windows-amd64": {
+      "architecture": "amd64",
+      "artifactId": 14124273825,
+      "artifactSha256": "febe39e18569fba9c7124648a05b24d30790788b6dba4d7811bf9cd6752ecf6d",
+      "bootReceiptPath": "boot-assets.json",
+      "bootReceiptSha256": "9d25627b1b5e6bd7952f18f18e8850f531794c8474e7f76aff29affd9a0d8e20",
+      "buildReceiptPath": "build.json",
+      "buildReceiptSha256": "963d44336e92e1e8c2ff98011347a1a124c7439532681a381e7a4d681dd4f5fc",
+      "imageId": "preview-43e73491",
+      "initrdBytes": 17000871,
+      "initrdPath": "os.initrd",
+      "initrdSha256": "2a05265fb7e7407e389fc7518ded27f876545cd50d2e14d994b2c9e9cf3fd414",
+      "inputDraft": {
+        "archiveBytes": 1970396055,
+        "archiveSha256": "3b638b5ee9be0133a4cc98d78a5a044bc07df6166f3dad47805402daeff3dfac",
+        "parts": [
+          {
+            "bytes": 1073741824,
+            "name": "archive.zip.part-000000",
+            "sha256": "cfd3284ef2b33a6047a87eeeb380bf7b0cf668ab92347559fe05bbac464213cb"
+          },
+          {
+            "bytes": 896654231,
+            "name": "archive.zip.part-000001",
+            "sha256": "50d361b1145ed4fbcf2534ac396e5d1a5e578c1fb15877224e5bc3ac505e3335"
+          }
+        ],
+        "releaseId": 445537001,
+        "tag": "bridge-image-inputs-amd64-3b638b5ee9be0133a4cc98d78a5a044bc07df6166f3dad47805402daeff3dfac"
+      },
+      "inputIdentity": "69cf8cb32c2e0f7d406d1cb8c24c0a27740d7e32c73ec5d16292dda55316723d",
+      "kernelBytes": 14170048,
+      "kernelPath": "os.kernel",
+      "kernelSha256": "4a44487bb3cfdc2be1d7697b8c71c97733d6ab2db62e6e6e8f1c6af9431ffd2e",
+      "metadataPath": "metadata.json",
+      "metadataSha256": "6c3ba97ba7862798d60fe7642214e5b9f9b4154e31160340c6d6794fd39eda01",
+      "nativeReceiptSha256": "f8439ee70be1daa54ca7d61b31782d6a15ba707e042a8279dda538e9cf41351a",
+      "payloadPath": "os.qcow2",
+      "payloadSha256": "226cfa6e3f7ffc3cde467a3c8e9498aeb1db2aeac68e60c3f27e8f086528850c",
+      "platform": "windows",
+      "repository": "orka-agents/orka-bridge",
+      "repositoryId": 1444972279,
+      "runId": 43622534938,
+      "sourceCommit": "43e7349115b4c7e9b1865a4d5f0989a02726724c",
+      "workflowId": 406606708
+    }
+  }
 }

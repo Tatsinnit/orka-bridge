@@ -19,6 +19,8 @@ npm ci
 npm run tauri dev
 ```
 
+The default window is 1280×800, with a 540×640 minimum. The native smoke walk also captures a 540×900 content area in both system themes.
+
 This opens the native app with frontend hot reload. You can edit the UI without
 a VM; running an agent needs the local development image described below.
 Dependency lifecycle scripts are disabled in `app/.npmrc`. Do not enable them
@@ -80,15 +82,39 @@ BRIDGE_DEV_IMAGE_DIR=/path/to/image npm run tauri dev
 
 Mac builds compile and ad-hoc sign the bundled VM helper automatically.
 See [the helper build instructions](app/src-tauri/native/macos/README.md).
-Intel Macs can build the app but cannot run its local VM. The current Mac
-image can boot the VM but cannot connect a model or run the example agent.
+Intel Macs can build the app but cannot run its local VM. Both pinned images
+support model Connect, the workspace catalog and the example agent.
 
-In Clusters, dismiss the one-time welcome with Get started, then press Continue
-for On this computer. On Windows, the running VM
-unlocks Use GitHub sign-in, which needs GitHub CLI already installed and signed
+In Clusters, dismiss the one-time welcome with Get started, then press Set up
+on This computer's place and Continue after its computer checks. On Windows and
+Apple-silicon Mac, the running VM unlocks Use GitHub sign-in, which needs GitHub CLI already installed and signed
 in to github.com. Bridge does not install it or open browser sign-in. Starting
 a VM alone does not verify model inference. Local images are debug-only;
-release builds ignore `BRIDGE_DEV_IMAGE_DIR`.
+release builds ignore `BRIDGE_DEV_IMAGE_DIR`. Supported release builds select
+reviewed hash-pinned images from the image-only prerelease and download them
+anonymously. Before that prerelease is published, startup reports a missing-image
+download error; it never falls back to GitHub credentials. A release candidate
+still needs the [preview walks](docs/preview.md) before app publication.
+
+## Reopen and remove the saved sign-in
+
+After **Stop the local cluster and quit**, reopen Bridge and use **Use GitHub sign-in**
+once the workspace is running. Bridge reuses its native-store copy without
+reading GitHub CLI again. A new VM boot first disconnects the prior owned model
+route. This requires an image built with the retained-connection cleanup handler;
+older development images cannot reconnect across boots. Build and pin the new
+guest together with its matching app and a new source-bound state compatibility
+ID. New guest replies are not supported by older app builds.
+
+While the workspace is running, choose **Remove sign-in** in the model section
+before removing Bridge. This stops the owned model route, clears its guest
+credential and removes only Bridge's native-store copy. You can connect again.
+GitHub CLI remains signed in; removal is not token revocation. A failed or
+unknown guest cleanup keeps the saved sign-in for another explicit attempt.
+An interrupted first Connect with no acknowledged connection identity, or a
+completed disconnect whose host update was lost before another VM boot, may
+still require maintainer help. Bridge never guesses an identity or deletes
+metadata to bypass cleanup.
 
 ## Checks
 

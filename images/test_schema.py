@@ -1,14 +1,28 @@
 """JSON Schema parity tests; the validator is a development-only dependency."""
 import copy
+import hashlib
 import importlib
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
 
 from images import package
 from images.test_package import BoundedStream, boot_inputs, metadata
+
+
+class AcceptanceTests(unittest.TestCase):
+    def test_publisher_acceptance_matches_schema_and_native_consumer(self):
+        root = Path(package.__file__).resolve().parents[1]
+        policy = json.loads((root / 'images/publisher-policy.json').read_bytes())
+        digest = hashlib.sha256((root / 'images/manifest.schema.json').read_bytes()).hexdigest()
+        consumer = (root / 'app/src-tauri/src/runtime/manifest.rs').read_text()
+        pin = re.search(r'const SCHEMA_SHA256: &str = "([0-9a-f]{64})";', consumer)
+        assert pin is not None, 'native consumer schema pin missing'
+        self.assertEqual(policy['acceptedSchemaSha256'], digest)
+        self.assertEqual(pin.group(1), digest)
 
 
 @unittest.skipUnless(importlib.util.find_spec("jsonschema"), "Install python3-jsonschema to run schema tests")

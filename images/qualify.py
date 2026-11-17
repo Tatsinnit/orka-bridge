@@ -38,7 +38,11 @@ def gh(endpoint, *, paginate=False, download=None, body=None, upload=None):
     if paginate:
         args += ["--paginate", "--slurp"]
     if download:
-        args += ["-H", "Accept: application/octet-stream"]
+        # Actions archives redirect to ZIP bytes but require the API media type.
+        accept = ("application/vnd.github+json"
+                  if "/actions/artifacts/" in endpoint and endpoint.endswith("/zip")
+                  else "application/octet-stream")
+        args += ["-H", "Accept: " + accept]
     if body is not None:
         args += ["--input", "-"]
     if upload:
@@ -51,22 +55,33 @@ def gh(endpoint, *, paginate=False, download=None, body=None, upload=None):
     return read_json(subprocess.run(args, input=data, stdout=subprocess.PIPE, check=True).stdout)
 
 
-def approved_profile(name):
+def publisher_policy():
     policy = read_json((ROOT / "images/publisher-policy.json").read_bytes())
-    shape(policy, ("schemaVersion", "acceptedSchemaSha256", "profiles"))
+    shape(policy, ("schemaVersion", "acceptedSchemaSha256", "profiles", "sourcePreviews"))
     require(policy["schemaVersion"] == "bridge-image-policy/v1", "unsupported publisher policy")
     require(isinstance(policy["profiles"], dict), "invalid profiles")
+    require(isinstance(policy["sourcePreviews"], dict), "invalid source previews")
+    for commit, targets in policy["sourcePreviews"].items():
+        require(matches(commit, r"[0-9a-f]{40}"), "invalid preview source")
+        shape(targets, (), ("amd64", "arm64"))
+        require(targets and all(matches(v, HEX) for v in targets.values()), "invalid preview identity")
+    return policy
+
+
+def approved_profile(name):
+    policy = publisher_policy()
     require(matches(policy["acceptedSchemaSha256"], HEX) and name in policy["profiles"],
             "schema/profile not approved; no network permitted")
     require(file_hash(ROOT / "images/manifest.schema.json") == policy["acceptedSchemaSha256"],
             "schema bytes not approved")
     p = policy["profiles"][name]
+    # With inputDraft, the Actions fields bind the endpoint producer, not the disk ZIP.
     shape(p, ("repository", "repositoryId", "runId", "workflowId", "sourceCommit",
               "artifactId", "artifactSha256", "payloadPath", "payloadSha256",
               "metadataPath", "metadataSha256", "imageId", "platform", "architecture",
               "nativeReceiptSha256", "inputIdentity", "buildReceiptPath", "buildReceiptSha256",
               "bootReceiptPath", "bootReceiptSha256", "kernelPath", "kernelSha256", "kernelBytes",
-              "initrdPath", "initrdSha256", "initrdBytes"))
+              "initrdPath", "initrdSha256", "initrdBytes"), ("inputDraft",))
     require(p["repository"] == REPOSITORY, "unapproved repository")
     for field in ("repositoryId", "runId", "workflowId", "artifactId"):
         require(type(p[field]) is int and p[field] > 0, "invalid API identity")
@@ -77,7 +92,12 @@ def approved_profile(name):
     require((p["platform"], p["architecture"]) in (("macos", "arm64"), ("windows", "amd64")),
             "unsupported profile target")
     selected_members(p)
-    require(bool(VERSIONS["releaseProfiles"]), "no reviewed guest production profiles")
+    if "inputDraft" in p:
+        validate_input_draft(p)
+    approvals = [policy["sourcePreviews"].get(VERSIONS["orkaSource"], {}),
+                 *VERSIONS["releaseProfiles"].values()]
+    require(any(a.get(p["architecture"]) == p["inputIdentity"] for a in approvals),
+            "guest input identity not approved; no network permitted")
     return p
 
 
@@ -110,12 +130,76 @@ def validate_remote(p):
     blob = hashlib.sha1(b"blob " + str(len(raw_policy)).encode() + b"\0" + raw_policy, usedforsecurity=False).hexdigest()
     require(policy["type"] == "file" and policy["sha"] == blob, "builder/publisher version policy mismatch")
     artifact = gh(base + "/actions/artifacts/" + str(p["artifactId"]))
-    require(artifact["id"] == p["artifactId"] and artifact["expired"] is False
+    require(artifact["id"] == p["artifactId"] and (artifact["expired"] is False or "inputDraft" in p)
             and artifact["digest"] == "sha256:" + p["artifactSha256"], "artifact mismatch")
     source = artifact["workflow_run"]
     require(source["id"] == p["runId"]
             and source["repository_id"] == source["head_repository_id"] == p["repositoryId"]
             and source["head_sha"] == p["sourceCommit"], "artifact source mismatch")
+
+
+def validate_input_draft(p):
+    d = p["inputDraft"]
+    shape(d, ("releaseId", "tag", "archiveBytes", "archiveSha256", "parts"))
+    require(type(d["releaseId"]) is int and d["releaseId"] > 0, "invalid input release identity")
+    require(matches(d["archiveSha256"], HEX) and type(d["archiveBytes"]) is int
+            and d["archiveBytes"] > 0, "invalid input archive identity")
+    require(d["tag"] == "bridge-image-inputs-" + p["architecture"] + "-" + d["archiveSha256"],
+            "invalid input draft tag")
+    parts = d["parts"]
+    require(isinstance(parts, list) and 0 < len(parts) <= 64, "invalid input archive parts")
+    for i, part in enumerate(parts):
+        shape(part, ("name", "bytes", "sha256"))
+        require(part["name"] == f"archive.zip.part-{i:06d}" and type(part["bytes"]) is int
+                and 0 < part["bytes"] <= 1024**3 and matches(part["sha256"], HEX), "invalid input part")
+    require(sum(part["bytes"] for part in parts) == d["archiveBytes"], "input archive size mismatch")
+
+
+def input_release(p):
+    d, base = p["inputDraft"], "repos/" + p["repository"]
+    releases = [r for page in gh(base + "/releases?per_page=100", paginate=True)
+                for r in page if r["tag_name"] == d["tag"]]
+    require(len(releases) == 1 and releases[0]["id"] == d["releaseId"]
+            and releases[0]["draft"] is True and releases[0]["published_at"] is None
+            and releases[0]["target_commitish"] == p["sourceCommit"], "input draft identity mismatch")
+    refs = [r for page in gh(base + "/git/matching-refs/tags/" + d["tag"], paginate=True)
+            for r in page if r["ref"] == "refs/tags/" + d["tag"]]
+    require(all(r["object"]["type"] == "commit" and r["object"]["sha"] == p["sourceCommit"]
+                for r in refs), "input draft tag/source mismatch")
+    assets = [a for page in gh(base + "/releases/" + str(d["releaseId"]) + "/assets?per_page=100",
+                              paginate=True) for a in page]
+    require(len(assets) == len(d["parts"]) and {a["name"] for a in assets} == {v["name"] for v in d["parts"]},
+            "input draft inventory mismatch")
+    # Download counters and timestamps are observations, not archive identity.
+    by_name = {a["name"]: {k: a[k] for k in ("id", "name", "size", "state")} for a in assets}
+    require(len({a["id"] for a in assets}) == len(assets), "duplicate input asset identity")
+    for part in d["parts"]:
+        a = by_name[part["name"]]
+        require(type(a["id"]) is int and a["id"] > 0 and a["state"] == "uploaded"
+                and a["size"] == part["bytes"], "input asset identity/size mismatch")
+    return by_name
+
+
+def download_archive(p, path):
+    base = "repos/" + p["repository"]
+    if "inputDraft" not in p:
+        gh(base + "/actions/artifacts/" + str(p["artifactId"]) + "/zip", download=path)
+        require(file_hash(path) == p["artifactSha256"], "downloaded ZIP checksum mismatch")
+        return
+    validate_input_draft(p)
+    assets = input_release(p)
+    with path.open("xb") as archive:
+        for part in p["inputDraft"]["parts"]:
+            temporary = path.with_name(part["name"])
+            gh(base + "/releases/assets/" + str(assets[part["name"]]["id"]), download=temporary)
+            require(temporary.stat().st_size == part["bytes"] and file_hash(temporary) == part["sha256"],
+                    "input part checksum/length mismatch")
+            with temporary.open("rb") as source:
+                shutil.copyfileobj(source, archive, 1024**2)
+            temporary.unlink()
+    require(path.stat().st_size == p["inputDraft"]["archiveBytes"]
+            and file_hash(path) == p["inputDraft"]["archiveSha256"], "input ZIP checksum/length mismatch")
+    require(input_release(p) == assets, "input draft changed during download")
 
 
 def archive_metadata(p, archive):
@@ -162,12 +246,12 @@ def prepare(p, out):
     validate_remote(p)
     with tempfile.TemporaryDirectory(dir=os.environ.get("RUNNER_TEMP")) as temporary:
         path = Path(temporary) / "build.zip"
-        gh("repos/" + p["repository"] + "/actions/artifacts/" + str(p["artifactId"]) + "/zip", download=path)
-        require(file_hash(path) == p["artifactSha256"], "downloaded ZIP checksum mismatch")
+        download_archive(p, path)
         with zipfile.ZipFile(path) as archive:
             metadata = archive_metadata(p, archive)
             bind_metadata(p, metadata)
-            validate_lock(metadata["componentLock"], production=True)
+            validate_lock(metadata["componentLock"], production=True,
+                          source_previews=publisher_policy()["sourcePreviews"])
             inputs = {}
             for role, argument in (("buildReceipt", "build_receipt"), ("bootReceipt", "boot_receipt"), ("kernel", "kernel"), ("initrd", "initrd")):
                 destination = Path(temporary) / role

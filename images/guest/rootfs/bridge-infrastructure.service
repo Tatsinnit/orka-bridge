@@ -9,6 +9,7 @@ ExecStartPre=/usr/lib/bridge/check-state
 ExecStart=/usr/bin/python3 /opt/bridge/guest/lifecycle.py bootstrap --lock /opt/bridge/bundle/inputs.json --state /var/lib/bridge
 RemainAfterExit=yes
 TimeoutStartSec=900
+StandardError=journal+console
 UMask=0077
 LimitCORE=0
 

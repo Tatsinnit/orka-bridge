@@ -5,7 +5,7 @@ use std::{fs, path::Path, sync::Arc};
 const AGENT: &str = "web-reader.agent.md";
 const TESTS: &str = "web-reader.agent.test.md";
 fn root(home: &Path) -> std::path::PathBuf {
-    home.join("Orka/agents/web-reader")
+    home.join("Orka").join("agents").join("web-reader")
 }
 fn git(root: &Path, args: &[&str]) -> Vec<u8> {
     let output = std::process::Command::new("git")
@@ -35,10 +35,61 @@ fn committed(root: &Path, name: &str) -> Vec<u8> {
     blob.content().to_vec()
 }
 #[test]
+fn prepare_example_sets_only_the_closed_model_line_and_commits_it() {
+    for model in ["gpt-5.6-terra", "gpt-4.1", "claude-sonnet-5-5"] {
+        let home = tempfile::tempdir().unwrap();
+        let folder = AgentFolder::new(Some(home.path().into()));
+        let original = include_str!("../example-agent/web-reader.agent.md");
+        let pair = folder.prepare_example_model(model).unwrap();
+        assert_eq!(
+            pair.agent,
+            original.replace("model: gpt-5.6-terra\n", &format!("model: {model}\n"))
+        );
+        assert!(pair.agent.contains(&format!("model: {model}\n")));
+        assert_eq!(
+            pair.tests,
+            include_str!("../example-agent/web-reader.agent.test.md")
+        );
+        assert_eq!(committed(&root(home.path()), AGENT), pair.agent.as_bytes());
+        assert_eq!(folder.capture().unwrap().id(), pair.source);
+    }
+    let home = tempfile::tempdir().unwrap();
+    let folder = AgentFolder::new(Some(home.path().into()));
+    assert!(folder.prepare_example_model("arbitrary-model").is_err());
+    assert!(!root(home.path()).exists());
+}
+#[test]
+fn preparation_preserves_edited_pairs_and_an_already_prepared_model() {
+    for leaf in [AGENT, TESTS] {
+        let home = tempfile::tempdir().unwrap();
+        let folder = AgentFolder::new(Some(home.path().into()));
+        let before = folder.open().unwrap();
+        let file = root(home.path()).join(leaf);
+        fs::write(
+            &file,
+            format!("{}\nEdited.\n", fs::read_to_string(&file).unwrap()),
+        )
+        .unwrap();
+        let edited = folder.open().unwrap();
+        let prepared = folder.prepare_example_model("gpt-4.1").unwrap();
+        assert_eq!(prepared.agent, edited.agent);
+        assert_eq!(prepared.tests, edited.tests);
+        assert_ne!(prepared.source, before.source);
+    }
+    let home = tempfile::tempdir().unwrap();
+    let folder = AgentFolder::new(Some(home.path().into()));
+    let prepared = folder.prepare_example_model("gpt-4.1").unwrap();
+    let switched = folder.prepare_example_model("claude-sonnet-5-5").unwrap();
+    assert_eq!(switched.source, prepared.source);
+    assert_eq!(switched.agent, prepared.agent);
+}
+#[test]
 fn initializes_without_vm_and_reopens_exact_drafts_with_committed_bytes() {
     let home = tempfile::tempdir().unwrap();
     let folder = AgentFolder::new(Some(home.path().into()));
     let pair = folder.open().unwrap();
+    assert_eq!(pair.path.as_deref(), root(home.path()).join(AGENT).to_str());
+    assert_eq!(folder.save(pair.agent.clone()).unwrap().path, pair.path);
     assert!(pair.agent.contains("web_fetch"));
     assert!(pair.tests.contains("toolCalled"));
     let (path, doc) = folder.source().unwrap();
@@ -346,6 +397,10 @@ fn redirected_ancestors_source_and_git_never_write_outside() {
         };
         symlink(&target, &link).unwrap();
         assert!(folder.save("no".into()).is_err(), "{redirected}");
+        assert!(
+            folder.prepare_example_model("gpt-4.1").is_err(),
+            "{redirected}"
+        );
         if !is_dir {
             assert_eq!(fs::read(target).unwrap(), b"outside");
         } else {
@@ -364,6 +419,7 @@ fn hardlinked_source_and_head_cannot_modify_outside_files() {
         let before = fs::read(path.join(name)).unwrap();
         fs::hard_link(path.join(name), &outside).unwrap();
         assert!(folder.save("no".into()).is_err());
+        assert!(folder.prepare_example_model("gpt-4.1").is_err());
         assert_eq!(fs::read(outside).unwrap(), before);
     }
 }

@@ -19,8 +19,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Test shared-cluster RBAC validator
-        run: python3 -m unittest scripts/test_validate_shared_cluster_rbac.py -v
+      - name: Test shared-cluster fixtures and RBAC validator
+        run: python3 -m unittest scripts/test_validate_shared_cluster_rbac.py scripts/test_cluster_card_fixture.py -v
 
   frontend:
     runs-on: ubuntu-latest
@@ -49,10 +49,72 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Cold debug/release checks must not consume the desktop walk's budget.
+          - os: windows-2022
+            artifact: windows-debug-checks
+            suite: debug-checks
+            rust-cache: app-windows-2022-debug-rust-1.98.1
+          - os: windows-2022
+            artifact: windows-release-checks
+            suite: release-checks
+            rust-cache: app-windows-2022-release-rust-1.98.1
           - os: windows-2022
             artifact: windows-x64
+            suite: bundle
+            rust-cache: app-windows-2022-bundle-rust-1.98.1
+          # Keep cold Mac debug/helper checks separate from release checks too.
           - os: macos-15
-            artifact: macos-arm64
+            artifact: macos-arm64-debug-checks
+            suite: debug-checks
+            rust-cache: app-macos-15-debug-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-release-checks
+            suite: release-checks
+            rust-cache: app-macos-15-release-rust-1.98.1
+          # Lifecycle setup must not consume the longer model walk's budget.
+          - os: macos-15
+            artifact: macos-arm64-lifecycle-fixtures-light
+            suite: lifecycle-fixtures
+            theme: light
+            capture: native-lifecycle
+            rust-cache: app-macos-15-lifecycle-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-lifecycle-fixtures-dark
+            suite: lifecycle-fixtures
+            theme: dark
+            capture: native-lifecycle
+            rust-cache: app-macos-15-lifecycle-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-model-fixtures-light
+            suite: model-fixtures
+            theme: light
+            capture: native-model
+            rust-cache: app-macos-15-model-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-model-fixtures-dark
+            suite: model-fixtures
+            theme: dark
+            capture: native-model
+            rust-cache: app-macos-15-model-fixtures-rust-1.98.1
+            rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
+            rust-cache-restore: app-macos-15-bundle-rust-1.98.1
+          # Each GUI theme has its own existing 30m job budget.
+          - os: macos-15
+            artifact: macos-arm64-light
+            suite: bundle
+            theme: light
+            rust-cache: app-macos-15-bundle-rust-1.98.1
+          - os: macos-15
+            artifact: macos-arm64-dark
+            suite: bundle
+            theme: dark
+            rust-cache: app-macos-15-bundle-rust-1.98.1
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     defaults:
@@ -73,37 +135,62 @@ jobs:
         with:
           toolchain: '1.98.1'
           components: rustfmt, clippy
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: rust-cache
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             app/src-tauri/target
-          key: app-${{ matrix.os }}-rust-1.98.1-${{ hashFiles('app/src-tauri/Cargo.lock') }}
+          key: ${{ matrix.rust-cache }}-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
+          restore-keys: |
+            ${{ matrix.rust-cache }}-
+            ${{ matrix.rust-cache-legacy || matrix.rust-cache }}-
+            ${{ matrix.rust-cache-restore || matrix.rust-cache }}-
+            app-${{ matrix.os }}-rust-1.98.1-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
+            app-${{ matrix.os }}-rust-1.98.1-
       - run: npm ci
       - run: npm run build
       - name: Clean Intel Mac shell resource check
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
         run: |
           test ! -e src-tauri/gen/apple-helper/BridgeVM
           rustup target add x86_64-apple-darwin --toolchain 1.98.1
           cargo +1.98.1 check --manifest-path src-tauri/Cargo.toml --locked --target x86_64-apple-darwin --features custom-protocol
       - name: Apple helper build and tests
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
         run: |
           bash ../scripts/build-vm-helper-macos.sh
           bash ../scripts/test-vm-helper-macos.sh
-          cargo +1.98.1 test --manifest-path ../runtime/Cargo.toml --locked -p bridge-runtime-protocol --test runtime_core --test windows_backend
-      - name: Rust checks
+          cargo +1.98.1 test --manifest-path ../runtime/Cargo.toml --locked -p bridge-runtime-protocol --test runtime_core --test windows_backend --test agents
+      - name: Mac deferred termination (no VM or host logout)
+        if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
+        run: cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --test native_termination --features custom-protocol
+      - name: Debug Rust checks
+        if: matrix.suite == 'debug-checks'
         run: |
           cargo +1.98.1 fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --test engine
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --lib --test dev_image_profile
+          cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --bin orka-bridge --features custom-protocol
           cargo +1.98.1 clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Release Rust checks
+        if: matrix.suite == 'release-checks'
+        run: |
           cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
           cargo +1.98.1 clippy --release --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
+      # Keep successful compilation/tests even if the later desktop walk fails.
+      - name: Preserve verified Rust cache
+        if: (matrix.suite == 'debug-checks' || matrix.suite == 'release-checks') && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Windows executable
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.suite == 'bundle'
         run: |
           npm run tauri -- build --no-bundle -- --locked
           mkdir -p windows-artifact/licenses
@@ -111,13 +198,116 @@ jobs:
           cp public/licenses/*.txt windows-artifact/licenses/
           for notice in public/licenses/*.txt; do cmp "$notice" "windows-artifact/licenses/${notice##*/}"; done
           # Embedded frontend, but debug-only local-image integration remains enabled.
-          npm run tauri -- build --debug --no-bundle -- --locked
+          npm run tauri -- build --debug --features custom-protocol --no-bundle -- --locked
           mkdir -p windows-artifact/development/licenses
           cp src-tauri/target/debug/orka-bridge.exe windows-artifact/development/
           cp public/licenses/*.txt windows-artifact/development/licenses/
           for notice in public/licenses/*.txt; do cmp "$notice" "windows-artifact/development/licenses/${notice##*/}"; done
+      - name: Windows integrated debug lifecycle walk (no VM)
+        if: runner.os == 'Windows' && matrix.suite == 'bundle'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          & ../scripts/test-native-lifecycle-windows.ps1
+          $env:BRIDGE_DEV_IMAGE_DIR = Join-Path $env:RUNNER_TEMP "lifecycle-empty-$([Guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory $env:BRIDGE_DEV_IMAGE_DIR | Out-Null
+          # Must precede any fixture walk: use the fresh hosted-CI known-folder profile.
+          New-Item -ItemType Directory -Force windows-artifact/native-lifecycle | Out-Null
+          git rev-parse HEAD | Set-Content windows-artifact/native-lifecycle/head.txt
+          & ../scripts/native-lifecycle-windows.ps1 -Executable src-tauri/target/debug/orka-bridge.exe -Output windows-artifact/native-lifecycle
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Windows native recovery renderer fixtures (no VM or credentials)
+        if: runner.os == 'Windows' && matrix.suite == 'bundle'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $env:BRIDGE_DEV_IMAGE_DIR = Join-Path $env:RUNNER_TEMP "recovery-empty-$([Guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory $env:BRIDGE_DEV_IMAGE_DIR | Out-Null
+          node ../scripts/test-native-recovery-scopes.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node ../scripts/native-recovery-windows.mjs src-tauri/target/debug/orka-bridge.exe windows-artifact/native-recovery core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Windows Chat agent and cluster renderer fixtures (no VM or credentials)
+        if: runner.os == 'Windows' && matrix.suite == 'bundle'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $env:BRIDGE_DEV_IMAGE_DIR = Join-Path $env:RUNNER_TEMP "ui-empty-$([Guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory $env:BRIDGE_DEV_IMAGE_DIR | Out-Null
+          node ../scripts/native-recovery-windows.mjs src-tauri/target/debug/orka-bridge.exe windows-artifact/native-chat-agent-clusters chat-agent-clusters
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      # Restored targets do not include generated helper resources. Warm debug
+      # dependencies outside the lifecycle walk's six-minute desktop deadline.
+      - name: Prepare Mac lifecycle build
+        if: runner.os == 'macOS' && matrix.suite == 'lifecycle-fixtures'
+        run: |
+          bash ../scripts/build-vm-helper-macos.sh
+          cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
+      - name: Prepare Mac model build
+        if: runner.os == 'macOS' && matrix.suite == 'model-fixtures'
+        run: |
+          bash ../scripts/build-vm-helper-macos.sh
+          cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --example model_walk
+      - name: Mac integrated debug lifecycle walk (no VM)
+        if: runner.os == 'macOS' && matrix.suite == 'lifecycle-fixtures'
+        timeout-minutes: 6
+        run: |
+          npm run tauri -- build --debug --features custom-protocol --bundles app --no-sign --no-binary-patching --config '{"identifier":"ai.orka.bridge.lifecycle"}' -- --locked
+          bundle="$PWD/src-tauri/target/debug/bundle/macos/Bridge.app"
+          test "$(lipo -archs "$bundle/Contents/MacOS/orka-bridge")" = arm64
+          export BRIDGE_DEV_IMAGE_DIR
+          BRIDGE_DEV_IMAGE_DIR="$(mktemp -d "$RUNNER_TEMP/lifecycle-empty.XXXXXX")"
+          # Isolate native and WebKit preferences from the later release first-run walk.
+          test ! -e "$HOME/Library/Application Support/ai.orka.bridge.lifecycle"
+          prior_dark="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
+          prior_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
+          prior_auto="$(defaults read -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true)"
+          restore_lifecycle_theme() {
+            local status=0
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $prior_dark" || status=$?
+            if [[ -n "$prior_style" ]]; then defaults write -g AppleInterfaceStyle -string "$prior_style" || status=$?
+            else defaults delete -g AppleInterfaceStyle 2>/dev/null || true; fi
+            if [[ -n "$prior_auto" ]]; then defaults write -g AppleInterfaceStyleSwitchesAutomatically -bool "$prior_auto" || status=$?
+            else defaults delete -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true; fi
+            return "$status"
+          }
+          trap restore_lifecycle_theme EXIT
+          mkdir -p native-lifecycle
+          git rev-parse HEAD > native-lifecycle/head.txt
+          theme="${{ matrix.theme }}"
+          if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
+          osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
+          test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
+          swift ../scripts/native-lifecycle-macos.swift "native-lifecycle/$theme" "$bundle" "$theme"
+      - name: Mac native model renderer fixtures (no VM or credentials)
+        if: runner.os == 'macOS' && matrix.suite == 'model-fixtures'
+        run: |
+          prior_dark="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
+          prior_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
+          prior_auto="$(defaults read -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true)"
+          prior="$(defaults read -g AppleKeyboardUIMode 2>/dev/null || true)"
+          restore_model_theme() {
+            local status=0
+            if [[ -n "$prior" ]]; then defaults write -g AppleKeyboardUIMode -int "$prior" || status=$?
+            else defaults delete -g AppleKeyboardUIMode 2>/dev/null || true; fi
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $prior_dark" || status=$?
+            if [[ -n "$prior_style" ]]; then defaults write -g AppleInterfaceStyle -string "$prior_style" || status=$?
+            else defaults delete -g AppleInterfaceStyle 2>/dev/null || true; fi
+            if [[ -n "$prior_auto" ]]; then defaults write -g AppleInterfaceStyleSwitchesAutomatically -bool "$prior_auto" || status=$?
+            else defaults delete -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true; fi
+            return "$status"
+          }
+          trap restore_model_theme EXIT
+          defaults write -g AppleKeyboardUIMode -int 3
+          mkdir -p native-model
+          git rev-parse HEAD > native-model/head.txt
+          theme="${{ matrix.theme }}"
+          if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
+          osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
+          test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
+          swift ../scripts/native-model-macos.swift "native-model/$theme" "$PWD/src-tauri/target/debug/examples/model_walk" "$theme"
       - name: Mac app bundle and native walk
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.suite == 'bundle'
         run: |
           npm run tauri -- build --bundles app --no-sign --no-binary-patching -- --locked
           bundle=src-tauri/target/release/bundle/macos/Bridge.app
@@ -131,7 +321,7 @@ jobs:
           bash ../scripts/check-vm-helper-bundle-macos.sh smoke-app/Bridge.app
           cmp "$bundle/Contents/MacOS/orka-bridge" smoke-app/Bridge.app/Contents/MacOS/orka-bridge
           for notice in public/licenses/*.txt; do cmp "$notice" "smoke-app/Bridge.app/Contents/Resources/licenses/${notice##*/}"; done
-          # Test both system themes and keyboard navigation; restore runner preferences.
+          # The matrix covers both themes and keyboard navigation; restore preferences.
           prior_dark="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
           prior_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
           prior_auto="$(defaults read -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true)"
@@ -150,28 +340,57 @@ jobs:
             fi
             return "$status"
           }
-          trap restore_preferences EXIT
+          python3 ../scripts/cluster-card-fixture.py "$RUNNER_TEMP/cluster-card-kubeconfig.json" &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid"; restore_preferences' EXIT
+          for _ in {1..50}; do test -s "$RUNNER_TEMP/cluster-card-kubeconfig.json" && break; sleep 0.1; done
+          test -s "$RUNNER_TEMP/cluster-card-kubeconfig.json"
+          export BRIDGE_WALK_KUBECONFIG="$RUNNER_TEMP/cluster-card-kubeconfig.json"
           defaults write -g AppleKeyboardUIMode -int 3
-          for theme in light dark; do
-            if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
-            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
-            test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
-            swift ../scripts/native-smoke.swift "native-walk/$theme" "$PWD/smoke-app/Bridge.app" "$theme"
-          done
+          theme="${{ matrix.theme }}"
+          if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
+          osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
+          test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
+          swift ../scripts/native-smoke.swift "native-walk/$theme" "$PWD/smoke-app/Bridge.app" "$theme"
+      - name: Preserve native bundle cache
+        if: (matrix.suite == 'bundle' || matrix.suite == 'lifecycle-fixtures' || matrix.suite == 'model-fixtures') && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Preserve compiled dependencies after a failed native check
+        if: failure() && matrix.suite != 'lifecycle-fixtures' && matrix.suite != 'model-fixtures' && steps.rust-cache.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: runner.os == 'Windows'
+        if: always() && runner.os == 'Windows' && matrix.suite == 'bundle'
         with:
           name: bridge-${{ matrix.artifact }}
           path: app/windows-artifact/
           retention-days: 3
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always() && runner.os == 'macOS'
+        if: always() && runner.os == 'macOS' && matrix.suite == 'bundle'
         with:
           name: bridge-${{ matrix.artifact }}
           path: |
             app/bridge-macos-arm64.tar.gz
             app/native-walk/
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'macOS' && (matrix.suite == 'lifecycle-fixtures' || matrix.suite == 'model-fixtures')
+        with:
+          name: bridge-${{ matrix.artifact }}
+          path: app/${{ matrix.capture }}/
           retention-days: 3
           if-no-files-found: error
 

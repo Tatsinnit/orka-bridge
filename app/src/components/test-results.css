@@ -1,0 +1,19 @@
+/* A static absolute position below the scrollport would grow the outer page. */
+.test-announcement { top: 0; left: 0; }
+.test-progress { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding-block: var(--space-2); }
+.test-progress small { margin-left: auto; }
+.test-result { border-top: 1px solid var(--color-border); padding-block: var(--space-2); }
+.test-result:first-child { border-top: 0; }
+.test-result > summary > .disclosure-label { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: var(--space-2); flex: 1; color: var(--color-text); }
+.test-result > summary > .disclosure-label > span { grid-column: 2; font: var(--type-body); }
+.test-result > summary > .disclosure-label code { overflow-wrap: anywhere; }
+.test-answer { padding: var(--space-4) 0 0 var(--space-4); }
+.test-answer .reading { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 70ch; color: inherit; margin: var(--space-2) 0 var(--space-4); }
+.test-answer h5 { margin: 0; }
+.test-answer .card-details { margin-top: var(--space-3); padding-top: var(--space-3); }
+.test-reason, .test-answer li { overflow-wrap: anywhere; max-width: 70ch; }
+.test-results.result-stale { color: var(--color-text-secondary); }
+@media (min-width: 650px) {
+  .test-result > summary > .disclosure-label { grid-template-columns: 16px minmax(0, 1fr) auto; }
+  .test-result > summary > .disclosure-label > span { grid-column: 3; }
+}

@@ -13,7 +13,7 @@ MODEL_ROLES = ("vekil", "model-launcher")
 # The selected kmx copilot-v1 profile consumes these platform manifests with Never.
 # Its launcher is independent of the session-loader image in the core manifest.
 MODEL_IMAGES = {
-    "782a6cacb5b8c31e52ff2e2392d74e5a14832bea": {
+    "503b3ffcbdcc0a966e3b6de6235a8a98077b989e": {
         "vekil": {
             "repository": "ghcr.io/sozercan/vekil",
             "amd64": "sha256:b885b08ca26abb6362fee830cc683c255ec740da28ffcb48b711232ffebf2040",
@@ -160,7 +160,7 @@ def validate_source_offline(lock, manifest=None):
                 and manifest['kmx']['revision'] == selected['kmxSourceCommit'], 'source offline profile or kmx revision differs')
 
 
-def validate_lock(lock: dict, *, production: bool) -> None:
+def validate_lock(lock: dict, *, production: bool, source_previews=None) -> None:
     shape(lock, ("schemaVersion", "architecture", "sourceCommit", "orka", "components", "packages", "tools", "nodeLocalRef", "kmxProfileSha256"))
     require(lock["schemaVersion"] in ("bridge-guest-inputs/v1", "bridge-guest-inputs/v2"), "unsupported input schema")
     roles = ROLES if lock["schemaVersion"] == "bridge-guest-inputs/v1" else ROLES | {"model-launcher"}
@@ -173,7 +173,7 @@ def validate_lock(lock: dict, *, production: bool) -> None:
     profile = lock["kmxProfileSha256"]
     require(profile is None or matches(profile, HEX), "invalid kmx profile checksum")
     if orka["mode"] == "source":
-        require(not production, "production requires an Orka release including #833")
+        require(not production or source_previews is not None, "production requires an Orka release including #833")
         require(lock["sourceCommit"] == orka["identity"] == VERSIONS["orkaSource"], "source identity mismatch")
     else:
         require(orka["mode"] == "release" and isinstance(orka["identity"], str), "unsupported Orka mode")
@@ -209,6 +209,11 @@ def validate_lock(lock: dict, *, production: bool) -> None:
     bases = [p for p in lock["packages"] if p["name"] == "debian-base"]
     require(len(bases) == 1 and bases[0]["version"] == VERSIONS["debianBase"], "Debian base version mismatch")
     if orka["mode"] == "source" and "kmx-offline-manifest" in tools:
+        validate_source_offline(lock)
+    if orka["mode"] == "source" and production:
+        require((source_previews or {}).get(orka["identity"], {}).get(lock["architecture"]) == input_identity(lock),
+                "source preview input identity not approved")
+        # Preview publication is narrower than source development, not release admission.
         validate_source_offline(lock)
     if orka["mode"] == "release":
         require(approved.get(lock["architecture"]) == input_identity(lock), "release profile input identity mismatch")

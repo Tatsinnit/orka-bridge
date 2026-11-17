@@ -115,8 +115,18 @@ async fn changed_engineering_receipt_or_payload_cannot_select_an_image() {
 
 #[tokio::test]
 async fn engineering_binding_does_not_restore_release_compatibility_or_creation() {
+    for platform in PLATFORMS {
+        check_retained_engineering_binding(platform).await;
+    }
+}
+
+async fn check_retained_engineering_binding(platform: DevImagePlatform) {
     use crate::runtime::{image_install::open_installed_image, image_types::ImageError};
-    let f = boot_fixture(DevImagePlatform::WindowsAmd64);
+    let f = boot_fixture(platform);
+    let image_target = match platform {
+        DevImagePlatform::MacOsArm64 => ImageTarget::MacosArm64,
+        DevImagePlatform::WindowsAmd64 => ImageTarget::WindowsAmd64,
+    };
     let source = verify(&f.root(), &f.pins).unwrap();
     let (_sender, closed) = watch::channel(false);
     let prepared = prepare_development_image(&source, closed.clone()).await.unwrap();
@@ -127,23 +137,37 @@ async fn engineering_binding_does_not_restore_release_compatibility_or_creation(
     owner.try_lock().unwrap();
     let id = bridge_runtime_protocol::Uuid::new_v4();
     let target = InstallationImageTarget::from_owned_installation(
-        &root, &owner, id, ImageTarget::WindowsAmd64, DevImagePlatform::WindowsAmd64.state_compatibility_id(), true,
+        &root, &owner, id, image_target, platform.state_compatibility_id(), true,
     );
     prepared.materialize(&target, closed.clone(), |_| {}).await.unwrap();
     let release = InstallationImageTarget::from_owned_installation(
-        &root, &owner, id, ImageTarget::WindowsAmd64, "release-fixture-v1", false,
+        &root, &owner, id, image_target, "release-fixture-v1", false,
     );
     assert!(matches!(open_installed_image(&release), Err(ImageError::RetainedImage)));
     let no_creation = InstallationImageTarget::from_owned_installation(
-        &root, &owner, id, ImageTarget::WindowsAmd64, DevImagePlatform::WindowsAmd64.state_compatibility_id(), false,
+        &root, &owner, id, image_target, platform.state_compatibility_id(), false,
     );
     open_installed_image(&no_creation).unwrap();
     let old = InstallationImageTarget::from_owned_installation(
-        &root, &owner, id, ImageTarget::WindowsAmd64, "engineering-398a6aad", false,
+        &root, &owner, id, image_target, "engineering-d471f5eb", false,
     );
     let binding = fs::read(path.join("image-binding.json")).unwrap();
     assert!(matches!(open_installed_image(&old), Err(ImageError::RetainedImage)));
     assert_eq!(fs::read(path.join("image-binding.json")).unwrap(), binding);
+    // Refused old bindings retain their bytes, including their compatibility id.
+    let previous_platform_id = match platform {
+        DevImagePlatform::MacOsArm64 => "engineering-d86ebac3",
+        DevImagePlatform::WindowsAmd64 => "engineering-d86ebac3",
+    };
+    for compatibility in ["engineering-d471f5eb", "engineering-10d23420", previous_platform_id] {
+        let mut previous: serde_json::Value = serde_json::from_slice(&binding).unwrap();
+        previous["identity"]["stateCompatibilityId"] = compatibility.into();
+        let previous = serde_json::to_vec(&previous).unwrap();
+        fs::write(path.join("image-binding.json"), &previous).unwrap();
+        assert!(matches!(open_installed_image(&target), Err(ImageError::RetainedImage)));
+        assert_eq!(fs::read(path.join("image-binding.json")).unwrap(), previous);
+    }
+    fs::write(path.join("image-binding.json"), binding).unwrap();
     let prepared = prepare_development_image(&source, closed.clone()).await.unwrap();
     assert!(matches!(prepared.materialize(&no_creation, closed.clone(), |_| {}).await, Err(ImageError::RetainedImage)));
     let (_sender, cancelled) = watch::channel(true);
@@ -179,7 +203,7 @@ async fn frozen_windows_source_materializes_actual_pinned_bytes() {
     );
     let installed = prepared.materialize(&target, closed, |_| {}).await.unwrap();
     installed.revalidate(&target).unwrap();
-    assert_eq!(installed.initial_os_bytes(), 3617259520);
-    assert_eq!(installed.initial_os_sha256(), "8da9276d472353b831468bca3a60ef1be77c03b189e15617623121c3e8479fd2");
+    assert_eq!(installed.initial_os_bytes(), 3765960704);
+    assert_eq!(installed.initial_os_sha256(), "226cfa6e3f7ffc3cde467a3c8e9498aeb1db2aeac68e60c3f27e8f086528850c");
     assert_eq!(installed.kernel_release(), "6.1.0-54-cloud-amd64");
 }

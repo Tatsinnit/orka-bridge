@@ -279,9 +279,27 @@ fn read_until(
     end: Instant,
 ) -> Result<(), HelperError> {
     while !bytes.is_empty() {
-        stream
-            .set_read_timeout(Some(remaining(end)?))
-            .map_err(io_error)?;
+        // Darwin can reject socket options after the peer closes even when a
+        // complete reply is buffered. This control channel has one reader, so
+        // readiness also bounds the following read without touching its options.
+        let mut descriptor = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let timeout = remaining(end)?.as_millis().clamp(1, i32::MAX as u128) as i32;
+        // SAFETY: the stream owns this descriptor throughout poll and read.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(io_error(error));
+        }
+        if ready == 0 {
+            continue;
+        }
         match stream.read(bytes) {
             Ok(0) => return Err(HelperError::Io(io::ErrorKind::UnexpectedEof)),
             Ok(n) => {

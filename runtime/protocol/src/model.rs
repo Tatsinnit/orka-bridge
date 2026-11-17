@@ -1,12 +1,35 @@
-use crate::{CredentialState, Uuid};
+use crate::{CredentialState, Uuid, CREDENTIAL_PROFILE, MODEL_API_KEY_PROFILE};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<ModelVendor>,
     pub provider: String,
     pub model: String,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelVendor {
+    Openai,
+    Anthropic,
+}
+impl ModelVendor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+        }
+    }
+}
 impl ModelSelection {
+    pub fn credential_profile(&self) -> u16 {
+        if self.vendor.is_some() {
+            MODEL_API_KEY_PROFILE
+        } else {
+            CREDENTIAL_PROFILE
+        }
+    }
     pub fn valid(&self) -> bool {
         let p = self.provider.as_bytes();
         !p.is_empty()
@@ -63,6 +86,9 @@ pub enum ModelErrorCode {
     Unsupported,
     ConfirmationRequired,
     CredentialUnavailable,
+    CredentialRejected,
+    ProviderUnreachable,
+    ModelUnavailable,
     PermissionDenied,
     DependencyUnavailable,
     ExecutionUnknown,
@@ -83,6 +109,12 @@ pub enum ModelStderr {
     ConfirmationRequired,
     #[serde(rename = "A required credential is unavailable.")]
     CredentialUnavailable,
+    #[serde(rename = "The model company rejected the credential.")]
+    CredentialRejected,
+    #[serde(rename = "The workspace could not reach the model company.")]
+    ProviderUnreachable,
+    #[serde(rename = "The selected model is not advertised for this credential.")]
+    ModelUnavailable,
     #[serde(rename = "The operation was not permitted.")]
     PermissionDenied,
     #[serde(rename = "A required dependency is unavailable.")]
@@ -113,11 +145,17 @@ pub struct ModelDiagnostic {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelState {
+    /// Absence on older images means the retained-cleanup opcode is unsupported.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retained_cleanup: bool,
     pub phase: ModelPhase,
     pub connection: Option<ModelConnection>,
     pub credential: CredentialState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<ModelDiagnostic>,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 impl ModelState {
     pub(crate) fn valid(&self) -> bool {
@@ -130,7 +168,12 @@ impl ModelState {
             })
             && match self.phase {
                 ModelPhase::Idle => self.connection.is_none(),
-                ModelPhase::Ready => self.connection.is_some() && self.credential.installed,
+                ModelPhase::Ready => {
+                    self.credential.installed
+                        && self.connection.as_ref().is_some_and(|c| {
+                            c.selection.credential_profile() == self.credential.profile
+                        })
+                }
                 ModelPhase::Unknown => true,
             }
     }

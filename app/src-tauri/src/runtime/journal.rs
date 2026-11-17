@@ -38,13 +38,25 @@ pub struct InstallationRecord {
     pub phase: StatePhase,
     pub boot_nonce: Option<Uuid>,
 }
+pub(crate) struct JournalCustody(pub Option<Journal>);
 pub struct Journal {
     root: PathBuf,
-    _lock: Arc<File>,
+    _lock: OwnerLock,
     image_root: Dir,
     state: File,
     record: InstallationRecord,
     creation_live: bool,
+}
+pub(crate) struct OwnerLock(Arc<File>);
+impl Drop for OwnerLock {
+    fn drop(&mut self) {
+        // The lock belongs to the open file description, which any concurrent
+        // spawn shares from fork until exec. Release it now unless a backend
+        // still retains the ownership capability.
+        if let Some(file) = Arc::get_mut(&mut self.0) {
+            let _ = file.unlock();
+        }
+    }
 }
 fn lock(root: &Path) -> Result<File, RuntimeError> {
     let mut options = OpenOptions::new();
@@ -87,6 +99,15 @@ fn regular(path: &Path) -> Result<(), RuntimeError> {
     Ok(())
 }
 impl Journal {
+    /// Storage recovery may retain an incomplete installation, but receives no
+    /// Journal, image target, boot capability or fresh formatting authority.
+    #[allow(dead_code)]
+    pub(crate) fn recovery_owner(root: &Path) -> Result<OwnerLock, RuntimeError> {
+        regular(&root.join("owner.lock"))?;
+        let owner = OwnerLock(Arc::new(lock(root)?));
+        super::image_cache::not_reparse(&owner.0)?;
+        Ok(owner)
+    }
     pub fn create(
         root: &Path,
         backend: BackendKind,
@@ -106,7 +127,7 @@ impl Journal {
         #[cfg(unix)]
         File::open(root.parent().ok_or(RuntimeError::RetainedState)?)?.sync_all()?;
         let root = fs::canonicalize(&root)?;
-        let owner = lock(&root)?;
+        let owner = OwnerLock(Arc::new(lock(&root)?));
         let image_root = Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
         let state = OpenOptions::new()
             .create_new(true)
@@ -132,7 +153,7 @@ impl Journal {
         };
         let journal = Self {
             root,
-            _lock: Arc::new(owner),
+            _lock: owner,
             image_root,
             state,
             record,
@@ -141,16 +162,33 @@ impl Journal {
         journal.persist(&journal.record)?;
         Ok(journal)
     }
+    /// Inspect a retained image during interrupted state preparation. The
+    /// internal Journal is never returned, and has no live creation authority.
+    #[allow(dead_code)]
+    pub(crate) fn inspect_recovery_image(
+        root: &Path,
+        compatibility: &str,
+    ) -> Result<InstalledImageSet, RuntimeError> {
+        let journal = Self::open_for_inspection(root, true)?;
+        Ok(super::image_install::inspect_installed_image(
+            &journal.image_target(compatibility)?,
+        )?)
+    }
     pub fn open(root: &Path) -> Result<Self, RuntimeError> {
+        Self::open_for_inspection(root, false)
+    }
+    fn open_for_inspection(root: &Path, retention_only: bool) -> Result<Self, RuntimeError> {
         let metadata = fs::symlink_metadata(root)?;
         if !metadata.file_type().is_dir() {
             return Err(RuntimeError::RetainedState);
         }
         let root = fs::canonicalize(root)?;
-        let owner = lock(&root)?;
+        let owner = OwnerLock(Arc::new(lock(&root)?));
         let image_root = Dir::open_ambient_dir(&root, cap_std::ambient_authority())?;
-        // An interrupted record write needs explicit recovery, not guessed replay.
-        if root.join("record.next").exists() {
+        // Ordinary reopen must not guess an interrupted update. Retention-only
+        // inspection validates the committed record and preserves staged bytes;
+        // the inspection API cannot replay them or return Journal/boot authority.
+        if root.join("record.next").exists() && !retention_only {
             return Err(RuntimeError::RetainedState);
         }
         regular(&root.join("record.json"))?;
@@ -169,7 +207,7 @@ impl Journal {
             || record.machine_id.is_empty()
             || record.machine_id.len() > 4096
             || record.mac[0] & 3 != 2
-            || record.phase == StatePhase::Preparing
+            || (record.phase == StatePhase::Preparing && !retention_only)
             || (record.phase == StatePhase::Consumed && record.boot_nonce.is_none())
         {
             return Err(RuntimeError::RetainedState);
@@ -181,7 +219,7 @@ impl Journal {
             .open(root.join("state.disk"))?;
         let journal = Self {
             root,
-            _lock: Arc::new(owner),
+            _lock: owner,
             image_root,
             state,
             record,
@@ -205,7 +243,7 @@ impl Journal {
         };
         Ok(InstallationImageTarget::from_owned_installation(
             &self.image_root,
-            &self._lock,
+            &self._lock.0,
             self.record.installation_id,
             target,
             compatibility,
@@ -219,6 +257,11 @@ impl Journal {
     }
     pub fn record(&self) -> &InstallationRecord {
         &self.record
+    }
+    #[allow(dead_code)] // Portable journal-only harnesses omit the upgrade owner.
+    pub(crate) fn owner_allocated_bytes(&self) -> Result<u64, RuntimeError> {
+        // Windows deliberately denies reopening this file while custody is held.
+        Ok(super::image_install::allocation(&self._lock.0)?)
     }
     fn verify_root(&self) -> Result<(), RuntimeError> {
         // State hardlinks do not prove that our pathname still names this directory.
@@ -249,7 +292,7 @@ impl Journal {
             installation_id: self.record.installation_id,
             generation: self.record.generation,
             boot_nonce: nonce,
-            ownership: self._lock.clone(),
+            ownership: self._lock.0.clone(),
             image,
             root: self.root.clone(),
             state_path: self.root.join("state.disk"),
@@ -259,7 +302,7 @@ impl Journal {
             mac: self.record.mac,
         }
     }
-    pub(super) fn require_fresh_creation(&self) -> Result<(), RuntimeError> {
+    pub(crate) fn require_fresh_creation(&self) -> Result<(), RuntimeError> {
         if !self.creation_live {
             return Err(RuntimeError::RetainedState);
         }

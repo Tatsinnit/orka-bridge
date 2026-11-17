@@ -96,6 +96,24 @@ pub trait RunTransport: Send + Sync {
     fn close(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }
+    /// Default fails closed; only native control transports opt in.
+    fn cancel_task<'a>(
+        &'a self,
+        _name: &'a str,
+        _uid: &'a str,
+        _deadline: Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async { Err(ErrorKind::Unsupported) })
+    }
+    /// Only the remote native transport opts into UID/generation-fenced replacement.
+    fn update_agent<'a>(
+        &'a self,
+        _name: &'a str,
+        _body: &'a Value,
+        _deadline: Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async { Err(ErrorKind::Unsupported) })
+    }
     fn request<'a>(
         &'a self,
         path: &'a str,
@@ -103,6 +121,22 @@ pub trait RunTransport: Send + Sync {
         body: Option<&'a Value>,
         deadline: Instant,
     ) -> RunFuture<'a>;
+    /// Local guest proof only; remote transports have no worker-pod authority.
+    fn run_worker<'a>(
+        &'a self,
+        _name: &'a str,
+        _uid: &'a str,
+        _deadline: Instant,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<bridge_runtime_protocol::RunWorkerReply, ErrorKind>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(ErrorKind::Configuration) })
+    }
     fn deadline(&self) -> Instant {
         Instant::now() + self.limits().operation_timeout
     }
@@ -194,6 +228,7 @@ impl Http {
             match response.status().as_u16() {
                 401 => return Err(ErrorKind::Authentication),
                 403 => return Err(ErrorKind::Permission),
+                404 if body.is_none() => return Err(ErrorKind::NotFound),
                 status if status != if body.is_some() { 201 } else { 200 } => {
                     return Err(ErrorKind::Response)
                 }

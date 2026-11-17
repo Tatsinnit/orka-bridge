@@ -78,6 +78,9 @@ impl AppleBackend {
 fn helper_error(error: HelperError) -> RuntimeError {
     match error {
         HelperError::Busy => RuntimeError::Busy,
+        HelperError::ExitUnobserved => {
+            RuntimeError::StopUnconfirmed("Apple helper exit unobserved".into())
+        }
         HelperError::Io(kind) => RuntimeError::Io(kind.into()),
         _ => RuntimeError::RetainedState,
     }

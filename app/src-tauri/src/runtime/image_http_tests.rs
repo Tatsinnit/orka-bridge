@@ -132,12 +132,17 @@ impl Server {
                         .nth(1)
                         .unwrap()
                         .to_owned();
-                    let response = server_routes
+                    let mut response = server_routes
                         .lock()
                         .unwrap()
                         .get(&path)
                         .cloned()
                         .unwrap_or_else(|| response.clone());
+                    // This fixture serves one request per connection. Advertise
+                    // that before replying so native clients cannot pool a
+                    // connection that is already being closed.
+                    let end = response.windows(4).position(|b| b == b"\r\n\r\n").unwrap();
+                    response.splice(end..end, b"\r\nConnection: close".iter().copied());
                     let _ = tls.write_all(&response).await;
                     let _ = tls.shutdown().await;
                 }
@@ -213,9 +218,7 @@ async fn receive(client: &ImageHttpClient, length: u64) -> Result<Vec<u8>, Image
 }
 #[tokio::test]
 async fn memory_ca_proves_native_trust_and_hostname_validation() {
-    let server =
-        Server::start(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntiny")
-            .await;
+    let server = Server::start(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntiny").await;
     assert_eq!(
         receive(&server.client(true, "image.invalid"), 4)
             .await

@@ -12,17 +12,24 @@ pub struct WindowsSession {
 }
 impl WindowsSession {
     pub fn start(mut worker: RuntimeWorker, host_utc: u64) -> Result<Self, RuntimeError> {
-        worker.start()?;
-        let lease = worker
-            .lease()
-            .ok_or(RuntimeError::Unavailable)?
-            .handle
-            .get::<Lease>()
-            .ok_or(RuntimeError::Unavailable)?
-            .clone();
-        let owner = lease.owner()?;
-        let channel = lease.guest()?;
-        let client = handshake::establish(&mut worker, Box::new(channel), host_utc)?;
+        let result = (|| {
+            worker.start()?;
+            let lease = worker
+                .lease()
+                .ok_or(RuntimeError::Unavailable)?
+                .handle
+                .get::<Lease>()
+                .ok_or(RuntimeError::Unavailable)?
+                .clone();
+            let owner = lease.owner()?;
+            let channel = lease.guest()?;
+            let client = handshake::establish(&mut worker, Box::new(channel), host_utc)?;
+            Ok((lease, owner, client))
+        })();
+        let (lease, owner, client) = match result {
+            Ok(ready) => ready,
+            Err(error) => return Err(worker.startup_failed(error)),
+        };
         Ok(Self {
             worker,
             client: Some(client),

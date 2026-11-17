@@ -4,14 +4,10 @@ use http::{header, HeaderValue, Request};
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, client::conn::http1};
 use hyper_util::rt::TokioIo;
-use k8s_openapi::{
-    api::core::v1::{Pod, Service},
-    apimachinery::pkg::util::intstr::IntOrString,
-};
-use kube::{
-    api::{ListParams, Portforwarder},
-    Api, Client, ResourceExt,
-};
+use k8s_openapi::api::core::v1::Pod;
+use kube::{api::Portforwarder, Api, Client};
+#[path = "peer.rs"]
+mod peer;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -42,28 +38,73 @@ impl OrkaRead for PodOrkaRead {
     ) -> Pin<Box<dyn Future<Output = Result<Value, AccessOutcome>> + Send + 'a>> {
         Box::pin(async move {
             let deadline = Instant::now() + REQUEST_TIMEOUT;
+            Check::OrkaConnection.begin();
             let connection = Connection::open(creator, binding, deadline)
                 .await
-                .map_err(access_error)?;
-            let path = match resource {
-                OrkaResource::WhoAmI => "auth/whoami",
-                OrkaResource::Agents => "agents",
-                OrkaResource::Providers => "providers",
-                OrkaResource::Tools => "tools",
-            };
+                .map_err(|e| orka_error(Check::OrkaConnection, e))?;
+            resource.check().begin();
             let result = connection
-                .request(path, namespace, bearer, &[bearer], after, None, deadline)
+                .request(
+                    path(resource),
+                    namespace,
+                    bearer,
+                    &[bearer],
+                    after,
+                    None,
+                    deadline,
+                    resource == OrkaResource::AgentInventory,
+                )
                 .await;
             connection.close().await;
-            result.map_err(access_error)
+            result.map_err(|e| orka_error(resource.check(), e))
         })
     }
 }
-fn access_error(error: ErrorKind) -> AccessOutcome {
-    match error {
-        ErrorKind::Authentication | ErrorKind::Permission => AccessOutcome::Denied,
-        _ => AccessOutcome::Unavailable,
+fn path(resource: OrkaResource) -> &'static str {
+    match resource {
+        OrkaResource::WhoAmI => "auth/whoami",
+        OrkaResource::Agents | OrkaResource::AgentInventory => "agents",
+        OrkaResource::Providers => "providers",
+        OrkaResource::Tools => "tools",
     }
+}
+/// Send's rechecks reuse the attempt's opened stream (same binding); its owner closes it.
+impl OrkaRead for OrkaStreamTransport {
+    fn get<'a>(
+        &'a self,
+        _: &'a Client,
+        _: &'a TargetBinding,
+        bearer: &'a str,
+        resource: OrkaResource,
+        namespace: &'a str,
+        after: Option<&'a str>,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, AccessOutcome>> + Send + 'a>> {
+        Box::pin(async move {
+            let deadline = Instant::now() + REQUEST_TIMEOUT;
+            self.connection
+                .request(
+                    path(resource),
+                    namespace,
+                    bearer,
+                    &[bearer],
+                    after,
+                    None,
+                    deadline,
+                    resource == OrkaResource::AgentInventory,
+                )
+                .await
+                .map_err(|e| orka_error(resource.check(), e))
+        })
+    }
+}
+/// Orka's own status codes; never relabelled as a Kubernetes permission check.
+fn orka_error(check: Check, error: ErrorKind) -> AccessOutcome {
+    check.fail(match error {
+        ErrorKind::Authentication => CheckResult::AuthenticationRejected,
+        ErrorKind::Permission => CheckResult::PermissionDenied,
+        ErrorKind::Identity => CheckResult::IdentityRejected,
+        _ => CheckResult::Unknown,
+    })
 }
 
 /// One opened Pod stream for the attempt. Never reconnect, reselect or retry a write.
@@ -76,6 +117,8 @@ pub struct OrkaStreamTransport {
     current: ClusterClient,
     creator: Client,
     binding: TargetBinding,
+    read_only: bool,
+    cancel_only: bool,
 }
 impl OrkaStreamTransport {
     pub fn peer(&self) -> &ForwardPeer {
@@ -94,6 +137,31 @@ impl RemoteAccess {
             .iter()
             .find(|p| p.id == provider)
             .ok_or(ClusterError::Unavailable)?;
+        self.open_transport(current, provider.name.clone(), false)
+            .await
+    }
+    /// Historical observation needs no current Provider and never permits a POST.
+    pub(crate) async fn read_transport(
+        &self,
+        current: &ClusterClient,
+    ) -> Result<OrkaStreamTransport, ClusterError> {
+        self.open_transport(current, String::new(), true).await
+    }
+    /// Independent control lease: GETs and exact-UID cancellation, never creates.
+    pub(crate) async fn cancel_transport(
+        &self,
+        current: &ClusterClient,
+    ) -> Result<OrkaStreamTransport, ClusterError> {
+        let mut transport = self.open_transport(current, String::new(), true).await?;
+        transport.cancel_only = true;
+        Ok(transport)
+    }
+    async fn open_transport(
+        &self,
+        current: &ClusterClient,
+        provider: String,
+        read_only: bool,
+    ) -> Result<OrkaStreamTransport, ClusterError> {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         timeout_at(deadline, current.revalidate(self))
             .await
@@ -102,12 +170,15 @@ impl RemoteAccess {
             .await
             .map_err(|e| match e {
                 ErrorKind::Authentication | ErrorKind::Permission => ClusterError::Denied,
+                ErrorKind::Identity => ClusterError::DestinationMismatch,
                 _ => ClusterError::Unavailable,
             })?;
         Ok(OrkaStreamTransport {
             connection,
             namespace: self.binding.watched_namespace.clone(),
-            provider: provider.name.clone(),
+            provider,
+            read_only,
+            cancel_only: false,
             bearer: self.bearer.clone(),
             creator_bearer: self.creator_bearer.clone(),
             current: current.clone(),
@@ -129,6 +200,61 @@ impl RunTransport for OrkaStreamTransport {
     fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(self.connection.close())
     }
+    fn cancel_task<'a>(&'a self, name: &'a str, uid: &'a str, deadline: Instant) -> RunFuture<'a> {
+        Box::pin(async move {
+            if !self.cancel_only || !crate::engine::run::valid_cancel_identity(name, uid) {
+                return Err(ErrorKind::Configuration);
+            }
+            let deadline = deadline.min(Instant::now() + REQUEST_TIMEOUT);
+            let validation = timeout_at(
+                deadline,
+                self.current
+                    .revalidate_binding(&self.binding, &self.creator),
+            )
+            .await;
+            if !matches!(validation, Ok(Ok(()))) {
+                self.connection.close().await;
+                return Err(match validation {
+                    Ok(Err(ClusterError::Denied)) => ErrorKind::Permission,
+                    _ => ErrorKind::Identity,
+                });
+            }
+            self.connection
+                .request(
+                    &format!("tasks/{name}/cancel"),
+                    &self.namespace,
+                    &self.bearer,
+                    &[&self.bearer, &self.creator_bearer],
+                    None,
+                    Some(&serde_json::json!({"uid":uid})),
+                    deadline,
+                    false,
+                )
+                .await
+        })
+    }
+    fn update_agent<'a>(
+        &'a self,
+        name: &'a str,
+        body: &'a Value,
+        deadline: Instant,
+    ) -> RunFuture<'a> {
+        Box::pin(async move {
+            if self.read_only
+                || !crate::engine::run::valid_cancel_identity(
+                    name,
+                    body["expectedUID"].as_str().unwrap_or(""),
+                )
+                || body["expectedGeneration"].as_u64().is_none_or(|g| g == 0)
+                || !body["spec"].is_object()
+            {
+                return Err(ErrorKind::Configuration);
+            }
+            // request() revalidates the frozen destination immediately before this PUT.
+            self.request(&format!("agents/{name}/spec"), None, Some(body), deadline)
+                .await
+        })
+    }
     fn request<'a>(
         &'a self,
         path: &'a str,
@@ -139,6 +265,9 @@ impl RunTransport for OrkaStreamTransport {
         Box::pin(async move {
             let deadline = deadline.min(Instant::now() + REQUEST_TIMEOUT);
             if body.is_some() {
+                if self.read_only {
+                    return Err(ErrorKind::Configuration);
+                }
                 let validation = timeout_at(
                     deadline,
                     self.current
@@ -163,6 +292,7 @@ impl RunTransport for OrkaStreamTransport {
                     after.as_deref(),
                     body,
                     deadline,
+                    false,
                 )
                 .await
         })
@@ -213,9 +343,11 @@ impl Connection {
         deadline: Instant,
     ) -> Result<Self, ErrorKind> {
         timeout_at(deadline, async {
-            let peer = select_peer(creator, binding).await?;
-            // Kubernetes forwards by name without a UID precondition; peer UID
-            // is discovery metadata, not authenticated stream attestation.
+            let selected = peer::select(creator, binding).await?;
+            peer::validate(creator, binding, &selected).await?;
+            let peer = &selected.peer;
+            // Kubernetes forwards by name without a UID precondition. These
+            // bracketing checks bound races; metadata is not stream attestation.
             let forward = Api::<Pod>::namespaced(creator.clone(), &peer.pod_namespace)
                 .portforward(&peer.pod_name, &[peer.port])
                 .await
@@ -224,6 +356,9 @@ impl Connection {
                 forward: Some(forward),
                 http: None,
             };
+            // Own the forward before the post-upgrade API awaits: rejection,
+            // deadline and cancellation must all abort its driver, without HTTP.
+            peer::validate(creator, binding, &selected).await?;
             let forward = drivers.forward.as_mut().unwrap();
             let stream = forward.take_stream(peer.port).ok_or(ErrorKind::Transport)?;
             let error = forward.take_error(peer.port).ok_or(ErrorKind::Transport)?;
@@ -235,7 +370,7 @@ impl Connection {
                 tokio::select! { _ = connection => {}, _ = error => {} }
             }));
             Ok(Self {
-                peer,
+                peer: selected.peer,
                 sender: AsyncMutex::new(Some(sender)),
                 drivers: Mutex::new(drivers),
                 closing: AsyncMutex::new(None),
@@ -270,6 +405,7 @@ impl Connection {
         after: Option<&str>,
         body: Option<&Value>,
         deadline: Instant,
+        inventory: bool,
     ) -> Result<Value, ErrorKind> {
         let deadline = deadline.min(Instant::now() + REQUEST_TIMEOUT);
         let mut fully_read = false;
@@ -282,8 +418,8 @@ impl Connection {
             url.set_path(&format!("/api/v1/{path}"));
             url.query_pairs_mut().append_pair("namespace", namespace);
             if path == "agents" && body.is_none() {
-                // This is an access probe, not an inventory of full Agent specs.
-                url.query_pairs_mut().append_pair("limit", "1");
+                url.query_pairs_mut()
+                    .append_pair("limit", if inventory { "10" } else { "1" });
             }
             if let Some(after) = after {
                 let key = if path.ends_with("/events") {
@@ -291,16 +427,24 @@ impl Connection {
                 } else {
                     "continue"
                 };
-                url.query_pairs_mut()
-                    .append_pair(key, after)
-                    .append_pair("limit", "1000");
+                url.query_pairs_mut().append_pair(key, after);
+                if path != "agents" {
+                    url.query_pairs_mut().append_pair("limit", "1000");
+                }
             }
             let uri = format!("{}?{}", url.path(), url.query().unwrap());
             let mut authorization = HeaderValue::from_str(&format!("Bearer {bearer}"))
                 .map_err(|_| ErrorKind::Configuration)?;
             authorization.set_sensitive(true);
+            let update = body.is_some() && path.starts_with("agents/") && path.ends_with("/spec");
             let request = Request::builder()
-                .method(if body.is_some() { "POST" } else { "GET" })
+                .method(if update {
+                    "PUT"
+                } else if body.is_some() {
+                    "POST"
+                } else {
+                    "GET"
+                })
                 .uri(uri)
                 .header(header::HOST, "orka")
                 .header(header::AUTHORIZATION, authorization)
@@ -321,9 +465,10 @@ impl Connection {
                 .await
                 .map_err(|_| ErrorKind::Transport)?;
             let status = response.status().as_u16();
+            let cancel = body.is_some() && path.ends_with("/cancel");
             match status {
-                401 => return Err(ErrorKind::Authentication),
-                403 => return Err(ErrorKind::Permission),
+                401 if !cancel => return Err(ErrorKind::Authentication),
+                403 if !cancel => return Err(ErrorKind::Permission),
                 _ => {}
             }
             if response
@@ -347,10 +492,32 @@ impl Connection {
                 }
             }
             fully_read = true;
-            if status != if body.is_some() { 201 } else { 200 } {
+            match status {
+                401 => return Err(ErrorKind::Authentication),
+                403 => return Err(ErrorKind::Permission),
+                400 if body.is_some() => return Err(ErrorKind::Invalid),
+                404 => return Err(ErrorKind::NotFound),
+                405 if body.is_some() => return Err(ErrorKind::Unsupported),
+                409 if body.is_some() => return Err(ErrorKind::Conflict),
+                _ => (),
+            }
+            if status
+                != if body.is_some() && !cancel && !update {
+                    201
+                } else {
+                    200
+                }
+            {
                 return Err(ErrorKind::Response);
             }
-            let value = serde_json::from_slice(&bytes).map_err(|_| ErrorKind::Response)?;
+            let mut value: Value =
+                serde_json::from_slice(&bytes).map_err(|_| ErrorKind::Response)?;
+            // Cancel acknowledgements may include caller identity. Never retain or export it.
+            if cancel {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("message");
+                }
+            }
             if known.iter().any(|b| super::client::echoed(&value, b)) {
                 return Err(ErrorKind::Response);
             }
@@ -360,7 +527,19 @@ impl Connection {
         .unwrap_or(Err(ErrorKind::Deadline));
         // Missing optional evidence or a rejected, fully consumed JSON reply
         // must not poison a healthy lease. Never reuse an incomplete response.
-        if result.is_err() && !(fully_read && result == Err(ErrorKind::Response)) {
+        if result.is_err()
+            && !(fully_read
+                && matches!(
+                    result,
+                    Err(ErrorKind::Response
+                        | ErrorKind::Invalid
+                        | ErrorKind::NotFound
+                        | ErrorKind::Conflict
+                        | ErrorKind::Unsupported
+                        | ErrorKind::Permission
+                        | ErrorKind::Authentication)
+                ))
+        {
             self.close().await;
         }
         result
@@ -372,87 +551,6 @@ fn kube_error(error: kube::Error) -> ErrorKind {
         kube::Error::Api(e) if e.code == 403 => ErrorKind::Permission,
         _ => ErrorKind::Transport,
     }
-}
-async fn select_peer(creator: &Client, binding: &TargetBinding) -> Result<ForwardPeer, ErrorKind> {
-    let services = Api::<Service>::namespaced(creator.clone(), &binding.service_namespace)
-        .list(&ListParams::default())
-        .await
-        .map_err(kube_error)?;
-    let service = services
-        .iter()
-        .find(|s| {
-            s.name_any() == binding.service_name && s.uid().as_deref() == Some(&binding.service_uid)
-        })
-        .ok_or(ErrorKind::Identity)?;
-    let spec = service.spec.as_ref().ok_or(ErrorKind::Response)?;
-    let selector = spec
-        .selector
-        .as_ref()
-        .filter(|s| !s.is_empty())
-        .ok_or(ErrorKind::Response)?;
-    let port = spec
-        .ports
-        .as_ref()
-        .and_then(|ports| ports.iter().find(|p| p.name.as_deref() == Some("api")))
-        .ok_or(ErrorKind::Response)?;
-    let labels = selector
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let pods = Api::<Pod>::namespaced(creator.clone(), &binding.service_namespace)
-        .list(&ListParams::default().labels(&labels))
-        .await
-        .map_err(kube_error)?;
-    for pod in pods {
-        if pod.metadata.deletion_timestamp.is_some()
-            || !selector
-                .iter()
-                .all(|(k, v)| pod.metadata.labels.as_ref().and_then(|l| l.get(k)) == Some(v))
-        {
-            continue;
-        }
-        if !pod.status.as_ref().is_some_and(|s| {
-            s.phase.as_deref() == Some("Running")
-                && s.conditions
-                    .as_ref()
-                    .is_some_and(|c| c.iter().any(|c| c.type_ == "Ready" && c.status == "True"))
-        }) {
-            continue;
-        }
-        let number = match &port.target_port {
-            Some(IntOrString::Int(n)) => Some(*n),
-            None => Some(port.port),
-            Some(IntOrString::String(name)) => pod
-                .spec
-                .as_ref()
-                .and_then(|s| {
-                    s.containers
-                        .iter()
-                        .flat_map(|c| c.ports.iter().flatten())
-                        .find(|p| {
-                            p.name.as_ref() == Some(name)
-                                && p.protocol.as_deref().is_none_or(|p| p == "TCP")
-                        })
-                })
-                .map(|p| p.container_port),
-        };
-        let Some(port) = number
-            .and_then(|n| u16::try_from(n).ok())
-            .filter(|p| *p > 0)
-        else {
-            continue;
-        };
-        if let (Some(uid), Some(name)) = (pod.uid(), pod.metadata.name) {
-            return Ok(ForwardPeer {
-                pod_name: name,
-                pod_namespace: binding.service_namespace.clone(),
-                pod_uid: uid,
-                port,
-            });
-        }
-    }
-    Err(ErrorKind::Transport)
 }
 
 #[cfg(test)]
@@ -501,6 +599,7 @@ mod tests {
             None,
             None,
             Instant::now() + Duration::from_secs(2),
+            false,
         ));
         std::future::poll_fn(|cx| {
             assert!(next.as_mut().poll(cx).is_pending());

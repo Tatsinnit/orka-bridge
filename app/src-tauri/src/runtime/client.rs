@@ -14,6 +14,7 @@ pub struct VmClient {
     channel: Option<BufReader<Box<dyn GuestChannel>>>,
     nonce: Uuid,
     next: u64,
+    run_cleanup: bool,
 }
 fn invalid() -> io::Error {
     io::Error::from(io::ErrorKind::InvalidData)
@@ -27,7 +28,41 @@ impl VmClient {
             channel: Some(BufReader::new(channel)),
             nonce,
             next: 3,
+            run_cleanup: false,
         })
+    }
+    /// Capabilities come from the validated serving hello, never a probe that
+    /// could poison an older strict guest's sole channel.
+    pub fn established_with_hello(
+        channel: Box<dyn GuestChannel>,
+        nonce: Uuid,
+        hello: &StageHello,
+    ) -> io::Result<Self> {
+        validate_hello(hello, Stage::Serve, nonce).map_err(|_| invalid())?;
+        let mut client = Self::established(channel, nonce)?;
+        client.run_cleanup = hello.run_cleanup;
+        Ok(client)
+    }
+    pub fn cleanup_run_agent(&mut self, uid: &str) -> io::Result<CleanupRunReply> {
+        if !self.run_cleanup {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        let action = EngineActionWire::CleanupRunAgent { uid: uid.into() };
+        validate_action(&action).map_err(|_| invalid())?;
+        let operation = Uuid::new_v4();
+        match self.call(RequestBody::Execute {
+            operation,
+            action,
+            snapshot: None,
+        })? {
+            ResultBody::Operation { operation: id, .. } if id == operation => {}
+            _ => return Err(invalid()),
+        }
+        let result = self.result(operation)?;
+        if result.exit != 0 {
+            return Err(invalid());
+        }
+        serde_json::from_slice(&result.stdout).map_err(|_| invalid())
     }
     fn call(&mut self, body: RequestBody) -> io::Result<ResultBody> {
         let id = self.next;
@@ -108,6 +143,11 @@ impl VmClient {
         }
         Ok(state)
     }
+    pub fn disconnect_retained_model(&mut self, connection: &ModelConnection) -> io::Result<()> {
+        self.ready_call(RequestBody::ModelDisconnectRetained {
+            connection: connection.clone(),
+        })
+    }
     pub fn disconnect_model(&mut self, connection: &ModelConnection) -> io::Result<ModelState> {
         let state = self.model_call(RequestBody::ModelDisconnect {
             connection: connection.id,
@@ -178,15 +218,32 @@ impl VmClient {
         token: &CredentialPayload,
         expected: Option<Uuid>,
     ) -> io::Result<CredentialState> {
+        self.deliver_credential_for_profile(CREDENTIAL_PROFILE, token, expected)
+    }
+    /// A cleared endpoint can change profile; the publication ACK must match the request.
+    pub fn deliver_credential_for_profile(
+        &mut self,
+        profile: u16,
+        token: &CredentialPayload,
+        expected: Option<Uuid>,
+    ) -> io::Result<CredentialState> {
+        if !valid_credential_profile(profile) {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         let before = self.credential_status()?;
         if before.generation != expected || before.installed {
             return Err(invalid());
         }
         let state = self.credential_call(RequestBody::CredentialPublish {
+            profile,
             expected_generation: expected,
             token: token.clone(),
         })?;
-        if !state.installed || state.generation.is_none() || state.generation == expected {
+        if state.profile != profile
+            || !state.installed
+            || state.generation.is_none()
+            || state.generation == expected
+        {
             self.channel = None;
             return Err(invalid());
         }
@@ -291,6 +348,73 @@ impl VmClient {
             return Err(invalid());
         }
         serde_json::from_slice(&result.stdout).map_err(|_| invalid())
+    }
+    /// Fixed local Run worker proof; all names and UIDs come from native receipts.
+    pub fn run_worker(&mut self, name: &str, uid: &str) -> io::Result<RunWorkerReply> {
+        if !valid_run_worker(name, uid) {
+            return Err(invalid());
+        }
+        let operation = Uuid::new_v4();
+        match self.call(RequestBody::Execute {
+            operation,
+            action: EngineActionWire::RunWorker {
+                name: name.into(),
+                uid: uid.into(),
+            },
+            snapshot: None,
+        })? {
+            ResultBody::Operation { operation: id, .. } if id == operation => {}
+            _ => return Err(invalid()),
+        }
+        let result = self.result(operation)?;
+        if result.exit != 0 {
+            return Err(invalid());
+        }
+        serde_json::from_slice(&result.stdout).map_err(|_| invalid())
+    }
+    /// Native Chat only. Preserve DELETE/404 status for explicit reconciliation.
+    pub fn chat_request(&mut self, request: ChatRequest) -> io::Result<OrkaReply> {
+        if request.validate().is_err() || self.channel.is_none() {
+            return Err(invalid());
+        }
+        let operation = Uuid::new_v4();
+        match self.call(RequestBody::Execute {
+            operation,
+            action: EngineActionWire::OrkaChat { request },
+            snapshot: None,
+        })? {
+            ResultBody::Operation { operation: id, .. } if id == operation => {}
+            ResultBody::Error { .. } => return Err(io::ErrorKind::Unsupported.into()),
+            _ => return Err(invalid()),
+        }
+        let result = self.result(operation)?;
+        if result.exit != 0 {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        serde_json::from_slice(&result.stdout).map_err(|_| invalid())
+    }
+    /// Trusted native catalog only; no renderer-owned request or target.
+    pub fn workspace_catalog(&mut self) -> io::Result<WorkspaceCatalog> {
+        let operation = Uuid::new_v4();
+        match self.call(RequestBody::Execute {
+            operation,
+            action: EngineActionWire::WorkspaceCatalog {},
+            snapshot: None,
+        })? {
+            ResultBody::Operation { operation: id, .. } if id == operation => {}
+            ResultBody::Error { .. } => return Err(io::ErrorKind::Unsupported.into()),
+            _ => return Err(invalid()),
+        }
+        let result = self.result(operation)?;
+        if result.exit != 0 {
+            return Err(invalid());
+        }
+        let catalog: WorkspaceCatalog =
+            serde_json::from_slice(&result.stdout).map_err(|_| invalid())?;
+        if !catalog.valid() {
+            return Err(invalid());
+        }
+        Ok(catalog)
     }
     pub fn status(&mut self, operation: Uuid) -> io::Result<OperationInfo> {
         let unknown = || OperationInfo {

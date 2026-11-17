@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -47,10 +48,28 @@ WORKLOADS = (('kube-system', 'coredns'), ('orka-system', 'orka-api-controller'),
 ORKA_READYZ = '/api/v1/namespaces/orka-system/services/http:orka-api:api/proxy/readyz'
 
 
+def refusal(stderr):
+    """Bounded kmx context and closing lines, without terminal escapes or its confirmation box."""
+    if len(stderr) > 64 * 1024:
+        stderr = stderr[:48 * 1024] + b'\n... stderr omitted ...\n' + stderr[-16 * 1024:]
+    text = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', stderr.decode(errors='replace'))
+    lines = [''.join(c for c in line if c.isprintable()).strip() for line in text.splitlines()]
+    lines = [line for line in lines if line and line[0] not in '\u2502\u256d\u2570\u250c\u2514\u2500']
+    joined = ' | '.join(lines)
+    if len(lines) <= 43 and len(joined) <= 8192:
+        return joined
+    # A kind/kubeadm stack can bury the cause far above kmx's closing summary.
+    return ' | '.join(lines[:40])[:6144] + ' | ... | ' + ' | '.join(lines[-3:])[-2039:]
+
+
 def execute(argv, *, env=None, stdin=None, timeout=600):
     with open(stdin, 'rb') if stdin is not None else open(os.devnull, 'rb') as stream:
         result = subprocess.run(argv, env=env, stdin=stream, capture_output=True, timeout=timeout, check=False)
-    require(result.returncode == 0, 'command failed: ' + Path(argv[0]).name)
+    if result.returncode != 0:
+        name = Path(argv[0]).name
+        # kmx states why it refused; other children's raw output stays out of the journal.
+        reason = refusal(result.stderr) if name == 'kmx' else ''
+        raise ValueError('command failed: ' + name + (': ' + reason if reason else ''))
     require(len(result.stdout) <= 1024 * 1024, 'command output exceeds bound')
     return result.stdout.decode()
 

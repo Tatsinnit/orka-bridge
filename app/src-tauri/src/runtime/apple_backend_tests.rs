@@ -133,10 +133,12 @@ fn state_resize_preserves_journal_inode_and_rejects_symlink_or_wrong_size() {
     j.set_phase(StatePhase::Preparing).unwrap();
     j.finish_preparation().unwrap();
     let image = spec.image.clone();
-    drop(j);
+    // Match RuntimeWorker cleanup: release derived ownership capabilities before
+    // the Journal, whose final-owner drop explicitly unlocks across fork/exec.
     drop(backend);
     drop(spec);
     drop(wrong);
+    drop(j);
     let mut reopened = Journal::open(&t.path().join("install")).unwrap();
     assert!(
         reopened.begin_boot(image).is_err(),

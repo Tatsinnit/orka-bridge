@@ -76,6 +76,7 @@ fn negotiated_delivery_and_clear_have_only_metadata_acknowledgements() {
         reply(&mut io, &r, state(None, false));
         let r = receive(&mut io);
         let RequestBody::CredentialPublish {
+            profile: CREDENTIAL_PROFILE,
             token,
             expected_generation,
         } = &r.body
@@ -106,6 +107,132 @@ fn negotiated_delivery_and_clear_have_only_metadata_acknowledgements() {
     );
     peer.join().unwrap();
 }
+#[test]
+fn profiles_can_switch_from_pristine_copilot_to_key_and_back_after_clear() {
+    let (a, b) = UnixStream::pair().unwrap();
+    let key_generation = Uuid::new_v4();
+    let cleared = Uuid::new_v4();
+    let copilot_generation = Uuid::new_v4();
+    let peer = std::thread::spawn(move || {
+        let mut io = BufReader::new(b);
+        for (requested, before_profile, before, after) in [
+            (2, 1, None, key_generation),
+            (1, 2, Some(cleared), copilot_generation),
+        ] {
+            let r = receive(&mut io);
+            assert!(matches!(r.body, RequestBody::CredentialStatus {}));
+            reply(
+                &mut io,
+                &r,
+                ResultBody::CredentialState(CredentialState {
+                    profile: before_profile,
+                    generation: before,
+                    installed: false,
+                }),
+            );
+            let r = receive(&mut io);
+            let RequestBody::CredentialPublish {
+                profile,
+                expected_generation,
+                token,
+            } = &r.body
+            else {
+                panic!("expected publication")
+            };
+            assert_eq!((*profile, *expected_generation), (requested, before));
+            assert!(token.as_bytes() == b"synthetic-private-marker");
+            reply(
+                &mut io,
+                &r,
+                ResultBody::CredentialState(CredentialState {
+                    profile: requested,
+                    generation: Some(after),
+                    installed: true,
+                }),
+            );
+            if requested == 2 {
+                let r = receive(&mut io);
+                assert!(matches!(r.body, RequestBody::CredentialStatus {}));
+                reply(
+                    &mut io,
+                    &r,
+                    ResultBody::CredentialState(CredentialState {
+                        profile: 2,
+                        generation: Some(after),
+                        installed: true,
+                    }),
+                );
+                let r = receive(&mut io);
+                assert!(
+                    matches!(r.body, RequestBody::CredentialClear { expected_generation } if expected_generation == after)
+                );
+                reply(
+                    &mut io,
+                    &r,
+                    ResultBody::CredentialState(CredentialState {
+                        profile: 2,
+                        generation: Some(cleared),
+                        installed: false,
+                    }),
+                );
+            }
+        }
+    });
+    let mut client = client::VmClient::established(Box::new(a), Uuid::new_v4()).unwrap();
+    let secret = CredentialPayload::new(b"synthetic-private-marker").unwrap();
+    assert_eq!(
+        client
+            .deliver_credential_for_profile(2, &secret, None)
+            .unwrap()
+            .generation,
+        Some(key_generation)
+    );
+    assert_eq!(
+        client
+            .clear_credential_file(key_generation)
+            .unwrap()
+            .generation,
+        Some(cleared)
+    );
+    assert_eq!(
+        client
+            .deliver_credential(&secret, Some(cleared))
+            .unwrap()
+            .generation,
+        Some(copilot_generation)
+    );
+    peer.join().unwrap();
+}
+
+#[test]
+fn delivery_rejects_an_ack_for_the_wrong_profile_and_poisoned_channel_cannot_replay() {
+    let (a, b) = UnixStream::pair().unwrap();
+    let peer = std::thread::spawn(move || {
+        let mut io = BufReader::new(b);
+        let r = receive(&mut io);
+        reply(&mut io, &r, state(None, false));
+        let r = receive(&mut io);
+        assert!(matches!(
+            r.body,
+            RequestBody::CredentialPublish { profile: 1, .. }
+        ));
+        reply(
+            &mut io,
+            &r,
+            ResultBody::CredentialState(CredentialState {
+                profile: 2,
+                generation: Some(Uuid::new_v4()),
+                installed: true,
+            }),
+        );
+    });
+    let mut client = client::VmClient::established(Box::new(a), Uuid::new_v4()).unwrap();
+    let secret = CredentialPayload::new(b"synthetic-private-marker").unwrap();
+    assert!(client.deliver_credential(&secret, None).is_err());
+    assert!(client.credential_status().is_err());
+    peer.join().unwrap();
+}
+
 #[test]
 fn unavailable_peer_gets_no_token_and_lost_ack_is_never_replayed() {
     for unavailable in [true, false] {

@@ -10,6 +10,7 @@ fn hello(stage: Stage, accepted: Option<Uuid>, guest: u128) -> Frame {
         stage,
         guest_nonce: nonce(guest),
         accepted_boot_nonce: accepted,
+        run_cleanup: false,
     })
 }
 fn parse(decoder: &mut Decoder, bytes: &[u8]) -> Result<Option<Frame>, ProtocolError> {

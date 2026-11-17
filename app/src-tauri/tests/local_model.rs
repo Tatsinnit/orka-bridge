@@ -100,9 +100,8 @@ async fn client_callback_is_once_native_and_closed_admission_never_calls_it() {
     assert!(vm.with_client(|_, _| panic!("closed")).await.is_err());
     assert_eq!(p.calls.load(Ordering::SeqCst), 1);
 }
-#[cfg(target_os = "macos")]
 #[tokio::test]
-async fn pinned_mac_model_refusal_keeps_the_session_channel_untouched() {
+async fn paired_image_model_support_is_visible_without_probing_the_guest() {
     let p = Arc::new(Probe::default());
     let vm = LocalVm::new(Arc::new(Factory(p.clone(), Uuid::new_v4())));
     ready(&vm).await;
@@ -111,8 +110,19 @@ async fn pinned_mac_model_refusal_keeps_the_session_channel_untouched() {
         root.path().to_owned(),
     )));
     setup.select_local().unwrap();
-    let error = serde_json::to_value(vm.connect_model(setup).await.unwrap_err()).unwrap();
-    assert_eq!(error["kind"], "modelGuest");
+    let snapshot = bridge_engine::local_vm::setup_status(setup, &vm)
+        .await
+        .unwrap();
+    let snapshot = serde_json::to_value(snapshot).unwrap();
+    let supported = cfg!(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(windows, target_arch = "x86_64")
+    ));
+    assert_eq!(snapshot["modelSupported"], supported);
+    assert_eq!(
+        snapshot["model"],
+        if supported { "available" } else { "locked" }
+    );
     assert_eq!(p.calls.load(Ordering::SeqCst), 0);
     assert_eq!(vm.status(), LocalVmStatus::Ready);
     assert!(!root.path().join("setup-v1/model-v1").exists());

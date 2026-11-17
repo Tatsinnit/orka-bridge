@@ -10,7 +10,7 @@ fn native_window_uses_local_assets_and_fits_a_laptop() {
     assert_eq!(window.title, "Bridge");
     assert!(matches!(&window.url, WebviewUrl::App(path) if path.to_str() == Some("index.html")));
     assert!(window.decorations && window.resizable && !window.fullscreen);
-    assert_eq!(window.min_width, Some(960.0));
+    assert_eq!(window.min_width, Some(540.0));
     assert_eq!(window.min_height, Some(640.0));
     assert!(window.width >= 960.0 && window.height >= 640.0);
     assert!(!config.app.with_global_tauri);
@@ -46,13 +46,16 @@ fn release_context_embeds_fonts_and_all_license_notices() {
         "licenses/shell-MIT.txt",
         "licenses/Orka-MIT.txt",
         "licenses/Tauri-API-MIT.txt",
-        "licenses/Geist-OFL.txt",
-        "licenses/Geist-Mono-OFL.txt",
+        "licenses/Inter-OFL.txt",
+        "licenses/JetBrains-Mono-OFL.txt",
         "licenses/git2-MIT.txt",
         "licenses/libgit2-COPYING.txt",
         "licenses/libz-sys-MIT.txt",
         "licenses/zlib-LICENSE.txt",
         "licenses/sha1-MIT.txt",
+        "licenses/tauri-plugin-dialog-MIT.txt",
+        "licenses/tauri-plugin-fs-MIT.txt",
+        "licenses/rfd-MIT.txt",
     ] {
         assert!(!assets
             .get(&name.into())
@@ -60,7 +63,7 @@ fn release_context_embeds_fonts_and_all_license_notices() {
             .is_empty());
     }
     let names: Vec<_> = assets.iter().map(|(name, _)| name.into_owned()).collect();
-    for font in ["geist-latin-", "geist-mono-latin-"] {
+    for font in ["inter-latin-", "jetbrains-mono-latin-"] {
         assert!(names
             .iter()
             .any(|name| name.contains(font) && name.ends_with(".woff2")));
@@ -73,10 +76,50 @@ fn agent_commands_are_granted_only_to_local_main_window() {
     let mut context: tauri::Context<tauri::Wry> = tauri::generate_context!();
     let authority = context.runtime_authority_mut();
     for command in [
+        "workspace_catalog",
+        "overview_files",
+        "overview_agents",
+        "overview_places",
+        "cluster_places",
+        "cluster_reconnect",
+        "cluster_select",
+        "cluster_forget",
+        "cluster_contexts",
+        "cluster_discover",
+        "cluster_use",
+        "cluster_reload",
+        "send_preflight",
+        "send_start",
+        "send_status",
+        "send_history",
+        "send_history_details",
+        "send_history_remove",
+        "send_history_check",
+        "send_history_cancel",
+        "send_agent_focus",
+        "send_agent_check",
+        "send_cancel",
+        "send_stop",
+        "agent_run",
+        "agent_run_status",
+        "agent_chat_status",
+        "agent_chat_send",
+        "agent_chat_reconnect",
+        "agent_chat_stop",
+        "agent_chat_new",
+        "agents_list",
+        "agent_selected",
+        "agent_create",
+        "agent_select",
+        "agent_creation_root",
+        "agent_pick_repo",
         "agent_open",
         "agent_save",
+        "agent_reveal",
         "setup_cancel_local",
         "setup_change_local",
+        "setup_reset_model",
+        "setup_open_help",
     ] {
         assert!(authority
             .resolve_access(command, "main", "main", &Origin::Local)
@@ -93,6 +136,19 @@ fn agent_commands_are_granted_only_to_local_main_window() {
                     url: "https://example.com".parse().unwrap()
                 }
             )
+            .is_none());
+    }
+    for command in [
+        "agent_chat",
+        "agent_chat_request",
+        "agent_chat_delete",
+        "plugin:dialog|open",
+        "plugin:dialog|save",
+        "plugin:fs|read_file",
+        "plugin:fs|write_file",
+    ] {
+        assert!(authority
+            .resolve_access(command, "main", "main", &Origin::Local)
             .is_none());
     }
 }

@@ -14,8 +14,7 @@
 Building an agent for Orka today starts with setting up a cluster, installing Orka, connecting a model, and learning
 the YAML. Bridge handles that setup so you can focus on the agent itself.
 
-Bridge is a planned desktop app. This repository currently contains the design and implementation issues, with the
-app being built incrementally through pull requests.
+Invited to the local preview? Start with the [tester guide](docs/preview.md).
 
 ## The first hour
 

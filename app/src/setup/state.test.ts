@@ -44,6 +44,19 @@ test.each([false, true])('model availability requires the selected running sessi
     expect((await setupStatus()).ok).toBe(false);
   }
 });
+test.each([true, false])('preserves native model support %j on reads and selection', async modelSupported => {
+  vi.stubGlobal('isTauri', true);
+  const value = { selected: 'localVm', localVm: 'installing', model: 'locked', modelSupported };
+  mockIPC(() => value);
+  expect(await setupStatus()).toEqual({ ok: true, status: value });
+  expect(await selectLocal()).toEqual({ ok: true, status: value });
+});
+test.each(['true', 1, null, {}])('rejects malformed native model support %j', async modelSupported => {
+  vi.stubGlobal('isTauri', true);
+  mockIPC(() => ({ ...snapshot, selected: 'localVm', modelSupported }));
+  expect((await setupStatus()).ok).toBe(false);
+  expect((await selectLocal()).ok).toBe(false);
+});
 test('no-argument selection requires an acknowledgement of that selection', async () => {
   vi.stubGlobal('isTauri', true);
   const ipc = vi.fn(() => snapshot); mockIPC(ipc);
@@ -60,6 +73,15 @@ test.each([{ phase: 'materializing', bytes: -1, totalBytes: 20, elapsedMs: 1, re
   vi.stubGlobal('isTauri', true); mockIPC(() => ({ ...snapshot, workspaceProgress }));
   expect((await setupStatus()).ok).toBe(false);
 });
+test.each(['workspaceUpdateRequired', 'workspaceVersionUnsupported'])('preserves finite binding refusal %s only on a failed workspace', async cause => {
+  vi.stubGlobal('isTauri', true);
+  const value = { selected: 'localVm', localVm: 'failed', model: 'locked', workspaceFailure: { cause, operation: 'verify', codes: [] } };
+  mockIPC(() => value);
+  expect(await setupStatus()).toEqual({ ok: true, status: value });
+  mockIPC(() => ({ ...value, localVm: 'ready', model: 'available' }));
+  expect((await setupStatus()).ok).toBe(false);
+});
+
 test('IPC errors cannot leak rejected messages or claim availability', async () => {
   vi.stubGlobal('isTauri', true); mockIPC(() => Promise.reject('SECRET_MARKER'));
   expect(await setupStatus()).toEqual({ ok: false, message: 'The setup choice could not be read or saved.' });

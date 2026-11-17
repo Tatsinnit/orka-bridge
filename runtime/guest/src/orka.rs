@@ -11,7 +11,16 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "catalog.rs"]
+mod catalog;
+#[path = "run_cleanup.rs"]
+mod run_cleanup;
+#[path = "run_worker.rs"]
+mod run_worker;
+
 const IDENTITY: &str = "bridge-native-run";
+const CHAT_IDENTITY: &str = "bridge-native-chat";
+const CLEANUP_IDENTITY: &str = "bridge-native-run-cleanup";
 const OWNER: &str = "bridge-guest";
 /// Renew well before the ten-minute expiry so no request is sent with a stale token.
 const RENEW_AFTER: Duration = Duration::from_secs(8 * 60);
@@ -22,10 +31,43 @@ const REQUEST_BUDGET: Duration = Duration::from_secs(90);
 fn failed() -> io::Error {
     io::Error::other("orka transport unavailable")
 }
-fn manifests() -> [(&'static str, Value); 3] {
-    let metadata = json!({"name":IDENTITY,"namespace":ORKA_NAMESPACE,
+fn manifests(identity: &str) -> [(&'static str, Value); 3] {
+    let metadata = json!({"name":identity,"namespace":ORKA_NAMESPACE,
         "labels":{"app.kubernetes.io/managed-by":OWNER}});
     let rbac = "rbac.authorization.k8s.io";
+    let mut rules = if identity == CLEANUP_IDENTITY {
+        vec![
+            json!({"apiGroups":["core.orka.ai"],"resources":["agents"],"verbs":["get","list","delete"]}),
+            json!({"apiGroups":["core.orka.ai"],"resources":["tasks"],"verbs":["get","list"]}),
+            json!({"apiGroups":[""],"resources":["pods"],"verbs":["list"]}),
+        ]
+    } else if identity == CHAT_IDENTITY {
+        // RBAC grants Task deletion namespace-wide. ChatRequest validation and
+        // the physical-only channel restrict its use to generated Chat Tasks.
+        vec![
+            json!({"apiGroups":["core.orka.ai"],"resources":["agents"],"verbs":["create","get"]}),
+            json!({"apiGroups":["core.orka.ai"],"resources":["tasks"],"verbs":["create","get","delete"]}),
+            json!({"apiGroups":["core.orka.ai"],"resources":["sessions"],"verbs":["get"]}),
+        ]
+    } else {
+        vec![
+            json!({"apiGroups":["core.orka.ai"],"resources":["agents","tasks"],"verbs":["create","get"]}),
+        ]
+    };
+    if identity != CLEANUP_IDENTITY {
+        rules.push(
+            json!({"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]}),
+        );
+    }
+    if identity == IDENTITY {
+        rules.push(json!({"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]}));
+        // Namespace-wide permissions; only validated Run names are reachable
+        // through the physical host channel. Pod data stays inside the guest.
+        rules.push(
+            json!({"apiGroups":["core.orka.ai"],"resources":["tasks/cancel"],"verbs":["update"]}),
+        );
+        rules.push(json!({"apiGroups":[""],"resources":["pods"],"verbs":["list"]}));
+    }
     [
         (
             "serviceaccount",
@@ -34,22 +76,20 @@ fn manifests() -> [(&'static str, Value); 3] {
         ),
         (
             "role.rbac.authorization.k8s.io",
-            json!({"apiVersion":format!("{rbac}/v1"),"kind":"Role","metadata":metadata,"rules":[
-            {"apiGroups":["core.orka.ai"],"resources":["agents","tasks"],"verbs":["create","get"]},
-            {"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]}]}),
+            json!({"apiVersion":format!("{rbac}/v1"),"kind":"Role","metadata":metadata,"rules":rules}),
         ),
         (
             "rolebinding.rbac.authorization.k8s.io",
             json!({"apiVersion":format!("{rbac}/v1"),"kind":"RoleBinding","metadata":metadata,
-            "roleRef":{"apiGroup":rbac,"kind":"Role","name":IDENTITY},
-            "subjects":[{"kind":"ServiceAccount","name":IDENTITY,"namespace":ORKA_NAMESPACE}]}),
+            "roleRef":{"apiGroup":rbac,"kind":"Role","name":identity},
+            "subjects":[{"kind":"ServiceAccount","name":identity,"namespace":ORKA_NAMESPACE}]}),
         ),
     ]
 }
 /// Exactly our owned object: every non-metadata manifest field matches and no secrets.
 fn owned(found: &Value, expected: &Value) -> bool {
     let m = &found["metadata"];
-    m["name"] == IDENTITY
+    m["name"] == expected["metadata"]["name"]
         && m["namespace"] == ORKA_NAMESPACE
         && m["labels"]["app.kubernetes.io/managed-by"] == OWNER
         && found["secrets"].as_array().is_none_or(Vec::is_empty)
@@ -91,6 +131,7 @@ impl Drop for Forward {
 pub struct Orka {
     kubectl: PathBuf,
     context: String,
+    identity: &'static str,
     rbac: bool,
     token: Option<Token>,
     previous_token: Option<String>,
@@ -101,9 +142,40 @@ impl Orka {
     pub fn new(installation: Uuid) -> Self {
         Self::with_kubectl(installation, "/usr/local/bin/kubectl".into())
     }
+    pub fn new_chat(installation: Uuid) -> Self {
+        Self {
+            identity: CHAT_IDENTITY,
+            ..Self::new(installation)
+        }
+    }
+    pub fn execute_chat(&mut self, request: &ChatRequest) -> io::Result<EngineResult> {
+        if self.identity != CHAT_IDENTITY {
+            return Err(failed());
+        }
+        request.validate().map_err(|_| failed())?;
+        let method = match request.method {
+            ChatMethod::Get => reqwest::Method::GET,
+            ChatMethod::Post => reqwest::Method::POST,
+            ChatMethod::Delete => reqwest::Method::DELETE,
+        };
+        let reply = self.http(
+            method,
+            &request.path,
+            request.after,
+            request.body.as_ref(),
+            None,
+            Instant::now() + REQUEST_BUDGET,
+        )?;
+        Ok(EngineResult {
+            exit: 0,
+            stdout: serde_json::to_vec(&reply)?,
+            has_diagnostics: false,
+        })
+    }
     fn with_kubectl(installation: Uuid, kubectl: PathBuf) -> Self {
         Self {
             kubectl,
+            identity: IDENTITY,
             context: format!("--context=kind-bridge-{}", installation.simple()),
             rbac: false,
             token: None,
@@ -168,9 +240,16 @@ impl Orka {
     }
     /// Reuse only exact owned objects; create missing ones; never overwrite.
     fn identity(&mut self, deadline: Instant) -> io::Result<()> {
-        for (kind, expected) in manifests() {
+        for (kind, expected) in manifests(self.identity) {
             let found = self.run(
-                &["get", kind, IDENTITY, "--ignore-not-found", "-o", "json"],
+                &[
+                    "get",
+                    kind,
+                    self.identity,
+                    "--ignore-not-found",
+                    "-o",
+                    "json",
+                ],
                 None,
                 deadline,
             )?;
@@ -194,7 +273,7 @@ impl Orka {
     }
     fn renew(&mut self, deadline: Instant) -> io::Result<()> {
         let bytes = self.run(
-            &["create", "token", IDENTITY, "--duration=10m"],
+            &["create", "token", self.identity, "--duration=10m"],
             None,
             deadline,
         )?;
@@ -268,7 +347,37 @@ impl Orka {
         request: &OrkaRequest,
         deadline: Instant,
     ) -> io::Result<EngineResult> {
+        if self.identity != IDENTITY {
+            return Err(failed());
+        }
         let post = request.validate().map_err(|_| failed())?;
+        let reply = self.http(
+            if post {
+                reqwest::Method::POST
+            } else {
+                reqwest::Method::GET
+            },
+            &request.path,
+            request.after,
+            request.body.as_ref(),
+            None,
+            deadline,
+        )?;
+        Ok(EngineResult {
+            exit: 0,
+            stdout: serde_json::to_vec(&reply)?,
+            has_diagnostics: false,
+        })
+    }
+    fn http(
+        &mut self,
+        method: reqwest::Method,
+        path: &str,
+        after: Option<u64>,
+        body: Option<&Value>,
+        continuation: Option<&str>,
+        deadline: Instant,
+    ) -> io::Result<OrkaReply> {
         if !self.rbac {
             self.identity(deadline)?;
         }
@@ -306,19 +415,24 @@ impl Orka {
         };
         let mut url = format!(
             "http://127.0.0.1:{}/api/v1/{}?namespace={ORKA_NAMESPACE}",
-            forward.port, request.path
+            forward.port, path
         );
-        if let Some(after) = request.after {
+        if let Some(cursor) = continuation {
+            let mut parsed = reqwest::Url::parse(&url).map_err(|_| failed())?;
+            parsed
+                .query_pairs_mut()
+                .append_pair("limit", "100")
+                .append_pair("continue", cursor);
+            url = parsed.into();
+        }
+        if let Some(after) = after {
             url.push_str(&format!("&after={after}&limit=1000"));
         }
-        let mut http = (if post {
-            client.post(url)
-        } else {
-            client.get(url)
-        })
-        .bearer_auth(&token.value)
-        .header("Accept-Encoding", "identity");
-        if let Some(body) = &request.body {
+        let mut http = client
+            .request(method, url)
+            .bearer_auth(&token.value)
+            .header("Accept-Encoding", "identity");
+        if let Some(body) = body {
             http = http
                 .header("Content-Type", "application/json")
                 .body(serde_json::to_vec(body)?);
@@ -341,7 +455,8 @@ impl Orka {
             return Err(failed());
         }
         let body = serde_json::from_slice(&raw).unwrap_or(Value::Null);
-        let stdout = serde_json::to_vec(&OrkaReply { status, body })?;
+        let reply = OrkaReply { status, body };
+        let stdout = serde_json::to_vec(&reply)?;
         if stdout.len() > MAX_FILE
             || std::iter::once(token.value.as_str())
                 .chain(self.previous_token.as_deref())
@@ -353,17 +468,16 @@ impl Orka {
         {
             return Err(failed());
         }
-        Ok(EngineResult {
-            exit: 0,
-            stdout,
-            has_diagnostics: false,
-        })
+        Ok(reply)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("orka_chat_tests.rs");
+    include!("orka_run_worker_tests.rs");
+    include!("orka_cleanup_tests.rs");
     use serde_json::{json, Value};
     use std::{
         collections::VecDeque,
@@ -439,6 +553,24 @@ mod tests {
             .into_bytes(),
         )
     }
+    fn write_kubectl(path: &Path, script: &str) {
+        // A parallel spawn can inherit even O_CLOEXEC writers until it execs.
+        // Keep the writer out of this process, and wait for it to close before use.
+        let mut writer = Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\"", "kubectl-fixture"])
+            .arg(path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(script.as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
     /// A fake kubectl recording argv; existing objects live in `<kind>.json`.
     fn kube(port: u16) -> (tempfile::TempDir, Orka) {
         let dir = tempfile::tempdir().unwrap();
@@ -448,7 +580,7 @@ mod tests {
 D={d}
 printf '%s\n' "$*" >> $D/log
 case "$3" in
-get) cat $D/$4.json 2>/dev/null || true ;;
+get) if [ "$4" = "--raw" ]; then cat $D/models.json; else cat $D/$4.json 2>/dev/null || true; fi ;;
 create)
   if [ "$4" = token ]; then
     echo x >> $D/tokens
@@ -466,8 +598,7 @@ esac
 "#
         );
         let path = dir.path().join("kubectl");
-        fs::write(&path, script).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        write_kubectl(&path, &script);
         let orka = Orka::with_kubectl(installation(), path);
         (dir, orka)
     }
@@ -536,6 +667,27 @@ esac
     }
 
     #[test]
+    fn kubectl_fixtures_execute_during_parallel_publication() {
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..16 {
+                        let (dir, orka) = kube(1);
+                        let output = orka
+                            .run(&["version"], None, Instant::now() + COMMAND_TIMEOUT)
+                            .expect("published fixture must be executable, even while peers spawn");
+                        assert!(output.is_empty());
+                        assert_eq!(
+                            log(dir.path()),
+                            [format!("{CTX} --namespace=orka-system version")]
+                        );
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
     fn first_call_creates_exact_owned_identity_then_reuses_session() {
         let s = server(vec![
             http("200 OK", r#"{"kind":"Task"}"#),
@@ -564,7 +716,10 @@ esac
                 json!({"apiVersion":"v1","kind":"ServiceAccount","metadata":meta,"automountServiceAccountToken":false}),
                 json!({"apiVersion":"rbac.authorization.k8s.io/v1","kind":"Role","metadata":meta,"rules":[
                     {"apiGroups":["core.orka.ai"],"resources":["agents","tasks"],"verbs":["create","get"]},
-                    {"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]}]}),
+                    {"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]},
+                    {"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]},
+                    {"apiGroups":["core.orka.ai"],"resources":["tasks/cancel"],"verbs":["update"]},
+                    {"apiGroups":[""],"resources":["pods"],"verbs":["list"]}]}),
                 json!({"apiVersion":"rbac.authorization.k8s.io/v1","kind":"RoleBinding","metadata":meta,
                     "roleRef":{"apiGroup":"rbac.authorization.k8s.io","kind":"Role","name":"bridge-native-run"},
                     "subjects":[{"kind":"ServiceAccount","name":"bridge-native-run","namespace":"orka-system"}]}),
@@ -613,7 +768,7 @@ esac
     fn existing_matching_identity_is_reused_and_mismatch_is_refused_not_overwritten() {
         let s = server(vec![http("200 OK", "{}")]);
         let (dir, mut orka) = kube(s.port);
-        let manifests = manifests();
+        let manifests = manifests(IDENTITY);
         for (kind, value) in &manifests {
             let mut value = value.clone();
             value["metadata"]["uid"] = json!("server-added");
@@ -626,6 +781,14 @@ esac
         assert!(!dir.path().join("created").exists());
 
         let mismatches = [
+            // An old Run Role is not upgraded in place, even for an ordinary read.
+            (
+                1,
+                json!({"rules":[
+                {"apiGroups":["core.orka.ai"],"resources":["agents","tasks"],"verbs":["create","get"]},
+                {"apiGroups":["core.orka.ai"],"resources":["tools","providers"],"verbs":["get"]},
+                {"apiGroups":["core.orka.ai"],"resources":["tools"],"verbs":["list"]}]}),
+            ),
             (0, json!({"secrets":[{"name":"x"}]})),
             (0, json!({"automountServiceAccountToken":true})),
             (
@@ -712,11 +875,10 @@ esac
         let s = server(vec![http("201 Created", "{}")]);
         let (dir, mut orka) = kube(s.port);
         let script = fs::read_to_string(&orka.kubectl).unwrap();
-        fs::write(
+        write_kubectl(
             &orka.kubectl,
-            script.replace("#!/bin/sh\n", "#!/bin/sh\nsleep 0.04\n"),
-        )
-        .unwrap();
+            &script.replace("#!/bin/sh\n", "#!/bin/sh\nsleep 0.04\n"),
+        );
         let deadline = Instant::now() + Duration::from_millis(70);
         assert!(orka.execute_until(&create(), deadline).is_err());
         assert!(
@@ -778,6 +940,8 @@ esac
         let runner = crate::engine::GuestRunner {
             kmx: crate::engine::Kmx,
             orka,
+            chat: Orka::new_chat(installation()),
+            catalog_provider: None,
         };
         let mut ops = crate::engine::Operations::new(root.path().join("ops"), runner).unwrap();
         let action = |request| EngineActionWire::Orka { request };
@@ -828,6 +992,8 @@ esac
         let runner = crate::engine::GuestRunner {
             kmx: crate::engine::Kmx,
             orka,
+            chat: Orka::new_chat(installation()),
+            catalog_provider: None,
         };
         let mut ops = crate::engine::Operations::new(root.path().join("ops"), runner).unwrap();
         for _ in 0..2 {
@@ -864,6 +1030,97 @@ esac
         out
     }
 
+    #[test]
+    fn catalog_uses_fixed_model_service_and_encoded_tool_pages() {
+        let s = server(vec![
+            http(
+                "200 OK",
+                r#"{"items":[{"builtin":true,"name":"web_fetch","description":"Fetch"}],"metadata":{"continue":"a+/="}}"#,
+            ),
+            http(
+                "200 OK",
+                r#"{"items":[{"builtin":false,"name":"custom","description":"Custom","url":"private"}],"metadata":{}}"#,
+            ),
+        ]);
+        let (dir, mut orka) = kube(s.port);
+        fs::write(
+            dir.path().join("models.json"),
+            r#"{"data":[{"id":"m"}],"token":"synthetic-private"}"#,
+        )
+        .unwrap();
+        let c = orka.catalog("copilot", None);
+        assert!(c.valid());
+        assert!(matches!(c.models, CatalogSection::Ready { .. }));
+        assert!(matches!(c.tools, CatalogSection::Ready { .. }));
+        let seen = s.seen.lock().unwrap();
+        assert!(seen[0].starts_with("GET /api/v1/tools?namespace=orka-system&limit=100&continue= "));
+        assert!(seen[1]
+            .starts_with("GET /api/v1/tools?namespace=orka-system&limit=100&continue=a%2B%2F%3D "));
+        assert!(log(dir.path()).iter().any(|l| l == &format!("{CTX} --namespace=orka-system get --raw /api/v1/namespaces/orka-system/services/http:copilot-vekil:1337/proxy/v1/models")));
+        let bytes = serde_json::to_string(&c).unwrap();
+        assert!(!bytes.contains("private") && !bytes.contains("url"));
+    }
+    #[test]
+    fn catalog_applies_first_page_limit_only_to_the_owned_anthropic_vendor() {
+        for (vendor, provider, suffix) in [
+            (None, "copilot", ""),
+            (Some(ModelVendor::Openai), "openai", ""),
+            (Some(ModelVendor::Anthropic), "my-model", "?limit=1000"),
+        ] {
+            let s = server(vec![http("200 OK", r#"{"items":[],"metadata":{}}"#)]);
+            let (dir, mut orka) = kube(s.port);
+            fs::write(dir.path().join("models.json"), r#"{"data":[]}"#).unwrap();
+            let catalog = orka.catalog(provider, vendor);
+            assert_eq!(catalog.models, CatalogSection::Ready { items: Vec::new() });
+            assert!(log(dir.path()).iter().any(|line| line == &format!(
+                "{CTX} --namespace=orka-system get --raw /api/v1/namespaces/orka-system/services/http:{provider}-vekil:1337/proxy/v1/models{suffix}"
+            )));
+        }
+    }
+    #[test]
+    fn catalog_failures_are_independent_and_share_one_budget() {
+        let s = server(vec![http(
+            "403 Forbidden",
+            r#"{"message":"synthetic-private"}"#,
+        )]);
+        let (dir, mut orka) = kube(s.port);
+        fs::write(dir.path().join("models.json"), r#"{"data":[]}"#).unwrap();
+        let c = orka.catalog("copilot", None);
+        assert_eq!(c.models, CatalogSection::Ready { items: Vec::new() });
+        assert_eq!(c.tools, CatalogSection::Unavailable {});
+        let before = log(dir.path());
+        let c = orka.catalog_until("copilot", None, Instant::now());
+        assert_eq!(c.models, CatalogSection::Unavailable {});
+        assert_eq!(c.tools, CatalogSection::Unavailable {});
+        assert_eq!(log(dir.path()), before);
+    }
+    #[test]
+    fn catalog_bearer_echo_is_withheld_before_result_persistence() {
+        let s = server(vec![http(
+            "200 OK",
+            r#"{"items":[{"builtin":false,"name":"custom","description":"{AUTH}"}],"metadata":{}}"#,
+        )]);
+        let (dir, orka) = kube(s.port);
+        fs::write(dir.path().join("models.json"), r#"{"data":[]}"#).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let runner = crate::engine::GuestRunner {
+            kmx: crate::engine::Kmx,
+            orka,
+            chat: Orka::new_chat(installation()),
+            catalog_provider: Some(("copilot".into(), None)),
+        };
+        let mut ops = crate::engine::Operations::new(root.path().join("ops"), runner).unwrap();
+        let staging = crate::staging::Staging::new(root.path().join("staging")).unwrap();
+        let id = Uuid::new_v4();
+        ops.execute(id, EngineActionWire::WorkspaceCatalog {}, None, &staging)
+            .unwrap();
+        let c: WorkspaceCatalog = serde_json::from_slice(&ops.read(id, 0).unwrap()).unwrap();
+        assert_eq!(c.tools, CatalogSection::Unavailable {});
+        assert!(ops.runner().catalog_provider.is_none());
+        for path in walk(root.path()) {
+            assert!(!String::from_utf8_lossy(&fs::read(path).unwrap()).contains("synthetic-bearer"));
+        }
+    }
     #[test]
     fn dead_forward_fails_without_replay_and_drop_reaps_the_whole_group() {
         let s = server(vec![http("200 OK", "{}"), http("200 OK", "{}")]);

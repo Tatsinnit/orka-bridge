@@ -118,7 +118,26 @@ fn persist(git: &Dir, odb: &Odb<'_>, id: Oid) -> io::Result<()> {
     sync(&prefix)?;
     sync(&objects)
 }
-pub(super) fn commit(root: &Dir, pair: &AgentPair) -> io::Result<()> {
+pub(super) fn inspect(root: &Dir) -> io::Result<()> {
+    let git = validate(root)?;
+    let head = read(&git, "HEAD", 128)?;
+    if !head.is_empty() {
+        let id = Oid::from_str(std::str::from_utf8(&head).map_err(|_| invalid())?.trim())
+            .map_err(git_error)?;
+        let odb = Odb::new().map_err(git_error)?;
+        odb.add_new_mempack_backend(1000).map_err(git_error)?;
+        load(&git, &odb, id)?;
+        let repo = Repository::from_odb(odb).map_err(git_error)?;
+        repo.find_commit(id).map_err(git_error)?;
+    }
+    Ok(())
+}
+pub(super) fn commit(
+    root: &Dir,
+    pair: &AgentPair,
+    agent_name: &str,
+    tests_name: &str,
+) -> io::Result<()> {
     let git = validate(root)?;
     let head = read(&git, "HEAD", 128)?;
     let odb = Odb::new().map_err(git_error)?;
@@ -137,15 +156,25 @@ pub(super) fn commit(root: &Dir, pair: &AgentPair) -> io::Result<()> {
     let agent = repo.blob(pair.agent.as_bytes()).map_err(git_error)?;
     let tests = repo.blob(pair.tests.as_bytes()).map_err(git_error)?;
     let mut builder = repo.treebuilder(None).map_err(git_error)?;
-    builder.insert(AGENT, agent, 0o100644).map_err(git_error)?;
-    builder.insert(TESTS, tests, 0o100644).map_err(git_error)?;
+    builder
+        .insert(agent_name, agent, 0o100644)
+        .map_err(git_error)?;
+    builder
+        .insert(tests_name, tests, 0o100644)
+        .map_err(git_error)?;
     let tree_id = builder.write().map_err(git_error)?;
     let parent = parent_id
         .map(|id| repo.find_commit(id))
         .transpose()
         .map_err(git_error)?;
     if parent.as_ref().is_some_and(|p| p.tree_id() == tree_id) {
-        return index(&git, &pair.agent, agent, &pair.tests, tests);
+        return index(
+            &git,
+            [
+                (agent_name, &pair.agent, agent),
+                (tests_name, &pair.tests, tests),
+            ],
+        );
     }
     let tree = repo.find_tree(tree_id).map_err(git_error)?;
     let identity = Signature::now("Bridge", "bridge@orka.ai").map_err(git_error)?;
@@ -163,19 +192,26 @@ pub(super) fn commit(root: &Dir, pair: &AgentPair) -> io::Result<()> {
     for id in [agent, tests, tree_id, commit] {
         persist(&git, &odb, id)?;
     }
-    index(&git, &pair.agent, agent, &pair.tests, tests)?;
+    index(
+        &git,
+        [
+            (agent_name, &pair.agent, agent),
+            (tests_name, &pair.tests, tests),
+        ],
+    )?;
     // Publish only after all referenced objects are flushed. A failed publish is retryable.
     replace(&git, "HEAD", format!("{commit}\n").as_bytes())
 }
 
 // Fixed two-entry index v2. Stat fields are deliberately unknown: Git must hash
 // working bytes, rather than trust stale metadata. No user index/filter is read.
-fn index(git: &Dir, agent: &str, agent_id: Oid, tests: &str, tests_id: Oid) -> io::Result<()> {
+fn index(git: &Dir, mut entries: [(&str, &str, Oid); 2]) -> io::Result<()> {
     use sha1::{Digest, Sha1};
     let mut bytes = b"DIRC".to_vec();
     bytes.extend_from_slice(&2u32.to_be_bytes());
     bytes.extend_from_slice(&2u32.to_be_bytes());
-    for (name, data, id) in [(AGENT, agent, agent_id), (TESTS, tests, tests_id)] {
+    entries.sort_by_key(|entry| entry.0);
+    for (name, data, id) in entries {
         let start = bytes.len();
         let mut stat = [0u8; 40];
         stat[24..28].copy_from_slice(&0o100644u32.to_be_bytes());

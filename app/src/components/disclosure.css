@@ -1,0 +1,8 @@
+.disclosure > summary { display: flex; align-items: center; gap: var(--space-2); cursor: pointer; list-style: none; font: var(--type-body); font-weight: 500; color: var(--color-text-secondary); }
+.disclosure > summary::-webkit-details-marker { display: none; }
+.disclosure > summary:hover { color: var(--color-text); }
+.disclosure-chevron { width: 16px; height: 16px; flex: none; }
+.disclosure[open] > summary > .disclosure-chevron { transform: rotate(90deg); }
+.disclosure-label { min-width: 0; overflow-wrap: anywhere; }
+.disclosure-hint { color: var(--color-text-tertiary); }
+.disclosure > summary + * { margin-top: var(--space-3); }

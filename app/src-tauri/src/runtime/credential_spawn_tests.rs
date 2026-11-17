@@ -21,8 +21,17 @@ async fn actual_gh_spawn_cannot_inherit_a_private_descriptor_setup_window() {
         future::Future,
         task::{Context, Poll, Waker},
     };
+    for account in [false, true] {
     let (window, _directory, path) = descriptor_fixture::descriptor_window();
-    let mut capture = Box::pin(run_capture(&path, Duration::from_secs(2)));
+    // Exercise each spawn directly: the account read must not consume the held
+    // descriptor window and leave the token spawn untested after its release.
+    let mut capture = Box::pin(async {
+        if account {
+            read_account(&path, Duration::from_secs(2)).await.ok_or(CaptureError::Failed)
+        } else {
+            read_token(&path, Duration::from_secs(2)).await.map(|token| String::from_utf8(token.as_bytes().to_vec()).unwrap())
+        }
+    });
     assert!(matches!(
         capture
             .as_mut()
@@ -30,5 +39,6 @@ async fn actual_gh_spawn_cannot_inherit_a_private_descriptor_setup_window() {
         Poll::Pending
     ));
     drop(window);
-    assert_eq!(capture.await.unwrap().as_bytes(), b"FIXTURE_ONLY_clean");
+    assert_eq!(capture.await.unwrap(), if account { "fixture-login" } else { "FIXTURE_ONLY_clean" });
+    }
 }

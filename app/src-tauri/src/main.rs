@@ -1,14 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use bridge_engine::agent_folder::{AgentFolder, AgentPair};
+use bridge_engine::agent_folder::{AgentFolder, AgentPair, DocumentId};
+use bridge_engine::agents::Agents;
+use bridge_engine::chat::{ChatError, ChatOwner, ChatSnapshot};
 use bridge_engine::engine::{types::*, EngineState};
-use bridge_engine::local_vm::{self, ExamplePair, LocalVm, LocalVmStatus};
+use bridge_engine::local_vm::{self, LocalVm, LocalVmStatus};
+use bridge_engine::send::{SendOwner, SendStatus};
 use bridge_engine::setup::{SetupError, SetupSnapshot, SetupStore};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use bridge_engine::shutdown::TerminalShutdown;
+use std::sync::Arc;
 use tauri::Manager;
+
+mod lifecycle;
 
 #[tauri::command]
 async fn engine_call(
@@ -50,69 +53,681 @@ fn setup_requirements() -> Option<bridge_engine::setup::SetupRequirements> {
     bridge_engine::setup::setup_requirements()
 }
 #[tauri::command]
-fn setup_example() -> ExamplePair {
-    local_vm::example()
+async fn setup_preflight(
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<Option<bridge_engine::setup::preflight::Preflight>, &'static str> {
+    if vm.status() == LocalVmStatus::NotIntegrated
+        || bridge_engine::setup::setup_requirements().is_none()
+    {
+        return Ok(None);
+    }
+    tauri::async_runtime::spawn_blocking(bridge_engine::setup::preflight::observe)
+        .await
+        .map_err(|_| "Computer requirements could not be read.")
+}
+#[tauri::command]
+async fn setup_open_help(topic: bridge_engine::setup::help::HelpTopic) -> Result<(), &'static str> {
+    tauri::async_runtime::spawn_blocking(move || bridge_engine::setup::help::open_help(topic))
+        .await
+        .map_err(|_| "Could not open setup help.")?
+}
+#[tauri::command]
+async fn setup_example(
+    prepare: Option<bool>,
+    setup: tauri::State<'_, Arc<SetupStore>>,
+    agents: tauri::State<'_, Arc<Agents>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<serde_json::Value, &'static str> {
+    if prepare == Some(true) {
+        let folder = document_folder(agents.inner().clone(), DocumentId::SAMPLE).await?;
+        let (agent, tests) = vm.prepare_example(setup.inner().clone(), folder).await?;
+        return Ok(serde_json::json!({"agent":agent, "tests":tests}));
+    }
+    Ok(serde_json::to_value(local_vm::example()).expect("fixed example serializes"))
+}
+
+async fn document_folder(
+    agents: Arc<Agents>,
+    id: DocumentId,
+) -> Result<Arc<AgentFolder>, &'static str> {
+    tauri::async_runtime::spawn_blocking(move || agents.get(id))
+        .await
+        .map_err(|_| "The agent is unavailable.")?
+}
+#[tauri::command]
+async fn overview_files(
+    state: tauri::State<'_, Arc<Agents>>,
+    run: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
+) -> Result<bridge_engine::overview::SavedFiles, &'static str> {
+    let agents = state.inner().clone();
+    let run = run.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        bridge_engine::overview::saved_files_with_history(&agents, &run)
+    })
+    .await
+    .map_err(|_| "Could not read saved files.")
+}
+#[tauri::command]
+async fn overview_agents(
+    vm: tauri::State<'_, Arc<LocalVm>>,
+    run: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
+) -> Result<bridge_engine::overview::LiveAgents, &'static str> {
+    Ok(bridge_engine::overview::live_agents(vm.inner().clone(), run.inner().clone()).await)
+}
+#[tauri::command]
+async fn overview_places(
+    session: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+    send: tauri::State<'_, Arc<SendOwner>>,
+    key: Option<String>,
+) -> Result<bridge_engine::overview_places::Places, &'static str> {
+    let places = match key {
+        Some(key) => {
+            session.overview_one(&key).await;
+            session.places().places
+        }
+        None => session.overview().await,
+    };
+    let send = send.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || send.overview(places))
+        .await
+        .map_err(|_| "Overview history unavailable")
+}
+#[tauri::command]
+async fn agents_list(
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<Vec<bridge_engine::agents::AgentEntry>, &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.list())
+        .await
+        .map_err(|_| "The agents are unavailable.")?
+}
+#[tauri::command]
+async fn agent_selected(state: tauri::State<'_, Arc<Agents>>) -> Result<DocumentId, &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.selected())
+        .await
+        .map_err(|_| "The agents are unavailable.")?
+}
+#[tauri::command]
+async fn agent_create(
+    name: String,
+    model: Option<String>,
+    repo_selection: Option<bridge_runtime_protocol::Uuid>,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<DocumentId, &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        agents.create_with_repo(&name, model.as_deref(), repo_selection)
+    })
+    .await
+    .map_err(|_| "The agent could not be created. Existing files have been kept.")?
+}
+#[derive(Default)]
+struct RepoPicker(Arc<tokio::sync::Mutex<()>>);
+
+#[tauri::command]
+async fn agent_pick_repo(
+    window: tauri::WebviewWindow,
+    picker: tauri::State<'_, RepoPicker>,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<Option<bridge_engine::agents::RepoSelection>, &'static str> {
+    use tauri_plugin_dialog::DialogExt;
+    if window.label() != "main" {
+        return Err("The repo picker is unavailable.");
+    }
+    let admission = picker
+        .0
+        .clone()
+        .try_lock_owned()
+        .map_err(|_| "The repo picker is already open.")?;
+    let (send, receive) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_title("Choose your repo")
+        .pick_folder(move |path| {
+            // Keep admission with the actual dialog even if its IPC future is dropped.
+            let _ = send.send((path, admission));
+        });
+    let (path, _admission) = receive
+        .await
+        .map_err(|_| "The repo picker is unavailable. Try again.")?;
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let path = path
+        .into_path()
+        .map_err(|_| "Choose a local Git working checkout.")?;
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.bind_repo(&path).map(Some))
+        .await
+        .map_err(|_| "The repo could not be selected. Try again.")?
 }
 
 #[tauri::command]
-async fn agent_open(state: tauri::State<'_, Arc<AgentFolder>>) -> Result<AgentPair, &'static str> {
-    let folder = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || folder.open())
+async fn agent_select(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<(), &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.select(document_id))
+        .await
+        .map_err(|_| "The agent selection could not be saved.")?
+}
+#[tauri::command]
+fn agent_creation_root(state: tauri::State<'_, Arc<Agents>>) -> Option<String> {
+    state.creation_root()
+}
+#[tauri::command]
+async fn agent_open(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<AgentPair, &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || agents.get(document_id)?.open())
         .await
         .map_err(|_| "The local agent folder is unavailable.")?
 }
 #[tauri::command]
 async fn agent_save(
+    document_id: DocumentId,
     content: String,
-    state: tauri::State<'_, Arc<AgentFolder>>,
+    expected_source: Option<bridge_runtime_protocol::SnapshotId>,
+    state: tauri::State<'_, Arc<Agents>>,
 ) -> Result<AgentPair, &'static str> {
-    let folder = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || folder.save(content))
-        .await
-        .map_err(|_| "The local agent folder is unavailable.")?
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        agents
+            .get(document_id)?
+            .save_with_source(content, expected_source)
+    })
+    .await
+    .map_err(|_| "The local agent folder is unavailable.")?
 }
 
+#[tauri::command]
+async fn agent_reveal(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<Agents>>,
+) -> Result<(), &'static str> {
+    let agents = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        bridge_engine::agent_reveal::reveal(&agents, document_id)
+    })
+    .await
+    .map_err(|_| "Could not show the agent folder.")?
+}
+
+#[tauri::command]
+async fn workspace_catalog(
+    state: tauri::State<'_, Arc<SetupStore>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::catalog::CatalogReply, bridge_engine::catalog::CatalogError> {
+    vm.workspace_catalog(Arc::clone(state.inner())).await
+}
+#[tauri::command]
+async fn cluster_catalog(
+    target_id: String,
+    provider_id: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::catalog::CatalogReply, &'static str> {
+    state.catalog(&target_id, &provider_id).await
+}
 #[derive(serde::Serialize)]
 struct ModelReply {
     ready: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection: Option<ConnectionInfo>,
+}
+#[derive(serde::Serialize)]
+struct ConnectionInfo {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor: Option<bridge_runtime_protocol::ModelVendor>,
+    model: String,
+    /// Verified GitHub login of a saved Copilot sign-in; omitted when unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
+}
+impl From<bridge_engine::setup::ModelSetupState> for ModelReply {
+    fn from(state: bridge_engine::setup::ModelSetupState) -> Self {
+        let account = state.account;
+        Self {
+            ready: state.ready,
+            connection: state
+                .connection
+                .filter(|_| state.ready)
+                .map(|c| ConnectionInfo {
+                    kind: if c.selection.vendor.is_some() {
+                        "key"
+                    } else {
+                        "copilot"
+                    },
+                    vendor: c.selection.vendor,
+                    account: account.filter(|_| c.selection.vendor.is_none()),
+                    model: c.selection.model,
+                }),
+        }
+    }
 }
 #[tauri::command]
 async fn setup_connect_model(
+    vendor: Option<bridge_runtime_protocol::ModelVendor>,
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
 ) -> Result<ModelReply, SetupError> {
-    let model = vm.connect_model(Arc::clone(state.inner())).await?;
-    Ok(ModelReply { ready: model.ready })
+    let model = if let Some(vendor) = vendor {
+        vm.connect_saved_key_model(Arc::clone(state.inner()), vendor)
+            .await?
+    } else {
+        vm.connect_model(Arc::clone(state.inner())).await?
+    };
+    Ok(model.into())
 }
 
 #[tauri::command]
-fn setup_run_status(
+async fn setup_connect_key(
+    vendor: bridge_runtime_protocol::ModelVendor,
+    key: String,
+    state: tauri::State<'_, Arc<SetupStore>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ModelReply, SetupError> {
+    // Never log arguments; key custody moves straight to the native owned worker.
+    Ok(vm
+        .connect_key_model(Arc::clone(state.inner()), vendor, key)
+        .await?
+        .into())
+}
+
+#[tauri::command]
+async fn setup_reset_model(
+    state: tauri::State<'_, Arc<SetupStore>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ModelReply, SetupError> {
+    Ok(vm.reset_model(Arc::clone(state.inner())).await?.into())
+}
+
+#[tauri::command]
+async fn setup_remove_model(
+    state: tauri::State<'_, Arc<SetupStore>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ModelReply, SetupError> {
+    let model = vm.remove_model(Arc::clone(state.inner())).await?;
+    Ok(model.into())
+}
+
+#[tauri::command]
+fn agent_run_status(
+    document_id: DocumentId,
     state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
 ) -> bridge_engine::example_run::RunSnapshot {
-    state.status(vm.inner())
+    state.status_document(vm.inner(), document_id)
 }
 #[tauri::command]
-fn setup_run_example(
+fn agent_run_cancel(
+    document_id: DocumentId,
     state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
 ) -> bridge_engine::example_run::RunSnapshot {
-    state.inner().start(vm.inner().clone())
+    state.cancel(vm.inner().clone(), document_id)
+}
+#[tauri::command]
+fn agent_run_check_cancellation(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> bridge_engine::example_run::RunSnapshot {
+    state.check_cancellation(vm.inner().clone(), document_id)
+}
+#[tauri::command]
+async fn agent_run(
+    document_id: DocumentId,
+    bundled_example: Option<bool>,
+    attempt_id: Option<bridge_runtime_protocol::Uuid>,
+    setup: tauri::State<'_, Arc<SetupStore>>,
+    agents: tauri::State<'_, Arc<Agents>>,
+    state: tauri::State<'_, Arc<bridge_engine::example_run::ExampleRun>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::example_run::RunSnapshot, &'static str> {
+    if bundled_example == Some(true) {
+        if !vm.model_connected() {
+            return Err("Connect the AI before running the first agent.");
+        }
+        let setup = setup.inner().clone();
+        let model = tauri::async_runtime::spawn_blocking(move || {
+            let binding = setup
+                .model_binding_status()
+                .map_err(|_| "The AI connection is unavailable.")?;
+            if binding.unknown {
+                return Err("The AI connection is unavailable.");
+            }
+            binding
+                .connection
+                .map(|c| c.selection.model)
+                .ok_or("The AI connection is unavailable.")
+        })
+        .await
+        .map_err(|_| "The AI connection is unavailable.")??;
+        return state.start_first_test_with_model(
+            vm.inner().clone(),
+            document_id,
+            model,
+            attempt_id,
+        );
+    }
+    let folder = document_folder(agents.inner().clone(), document_id).await?;
+    Ok(state.start_document(vm.inner().clone(), folder))
+}
+
+#[tauri::command]
+fn agent_chat_status(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+) -> ChatSnapshot {
+    state.status(document_id)
+}
+#[tauri::command]
+async fn agent_chat_send(
+    document_id: DocumentId,
+    message: String,
+    agents: tauri::State<'_, Arc<Agents>>,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ChatSnapshot, ChatError> {
+    let folder = document_folder(agents.inner().clone(), document_id)
+        .await
+        .map_err(|_| ChatError::Source)?;
+    state.send(vm.inner().clone(), folder, message)
+}
+#[tauri::command]
+fn agent_chat_reconnect(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ChatSnapshot, ChatError> {
+    state.reconnect(vm.inner().clone(), document_id)
+}
+#[tauri::command]
+fn agent_chat_stop(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<ChatSnapshot, ChatError> {
+    state.stop(vm.inner().clone(), document_id)
+}
+#[tauri::command]
+fn agent_chat_new(
+    document_id: DocumentId,
+    state: tauri::State<'_, Arc<ChatOwner>>,
+) -> Result<ChatSnapshot, ChatError> {
+    state.new_conversation(document_id)
+}
+
+#[tauri::command]
+fn cluster_places(
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> bridge_engine::clusters::commands::ClusterPlaceSnapshot {
+    state.places()
+}
+#[tauri::command]
+async fn cluster_contexts(
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<Vec<bridge_engine::clusters::ContextView>, bridge_engine::clusters::ClusterFailure> {
+    state.contexts().await
+}
+#[tauri::command]
+async fn cluster_reload(
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<Vec<bridge_engine::clusters::ContextView>, bridge_engine::clusters::ClusterFailure> {
+    state.reload().await
+}
+#[tauri::command]
+async fn cluster_discover(
+    context_id: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<Vec<bridge_engine::clusters::TargetView>, bridge_engine::clusters::ClusterFailure> {
+    state.discover(&context_id).await
+}
+#[tauri::command]
+async fn cluster_reconnect(
+    key: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::TargetView, bridge_engine::clusters::ClusterFailure> {
+    state.reconnect(&key).await
+}
+#[tauri::command]
+async fn cluster_select(
+    key: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<
+    bridge_engine::clusters::commands::SelectedCluster,
+    bridge_engine::clusters::ClusterFailure,
+> {
+    state.select(&key).await
+}
+#[tauri::command]
+async fn cluster_forget(
+    key: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<(), &'static str> {
+    state.forget(&key).await
+}
+#[tauri::command]
+async fn cluster_service_accounts(
+    target_id: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::ServiceAccountsView, bridge_engine::clusters::ClusterFailure> {
+    state.service_accounts(&target_id).await
+}
+#[tauri::command]
+async fn cluster_service_account_preview(
+    target_id: String,
+    sa_name: String,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::ServiceAccountPreview, bridge_engine::clusters::ClusterFailure>
+{
+    state.service_account_preview(&target_id, &sa_name).await
+}
+#[tauri::command]
+async fn cluster_use(
+    target_id: String,
+    sa_name: Option<String>,
+    state: tauri::State<'_, bridge_engine::clusters::commands::ClusterSession>,
+) -> Result<bridge_engine::clusters::commands::AccessView, &'static str> {
+    Ok(state.use_target(&target_id, sa_name).await)
+}
+
+#[tauri::command]
+async fn send_preflight(
+    document_id: DocumentId,
+    target_id: String,
+    provider_id: String,
+    agents: tauri::State<'_, Arc<Agents>>,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send::SendCheck, &'static str> {
+    let folder = document_folder(agents.inner().clone(), document_id).await?;
+    Ok(state
+        .preflight_document(folder, &target_id, &provider_id)
+        .await)
+}
+#[tauri::command]
+async fn send_start(
+    document_id: DocumentId,
+    target_id: String,
+    provider_id: String,
+    expected_source: bridge_runtime_protocol::SnapshotId,
+    separate_agent: Option<bool>,
+    agents: tauri::State<'_, Arc<Agents>>,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<SendStatus, &'static str> {
+    let folder = document_folder(agents.inner().clone(), document_id).await?;
+    Ok(state
+        .start_document_separate(
+            folder,
+            &target_id,
+            &provider_id,
+            expected_source,
+            separate_agent.unwrap_or(false),
+        )
+        .await)
+}
+#[tauri::command]
+fn send_status(document_id: DocumentId, state: tauri::State<'_, Arc<SendOwner>>) -> SendStatus {
+    state.status_document(document_id)
+}
+#[tauri::command]
+async fn send_history(
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<Vec<bridge_engine::send_summary::AttemptSummary>, &'static str> {
+    let owner = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || owner.history())
+        .await
+        .map_err(|_| "Saved Send summaries could not be read.")?
+        .map_err(|_| {
+            "Saved Send summaries could not be read. They are unavailable, not passing results."
+        })
+}
+#[tauri::command]
+async fn send_history_details(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    let owner = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || owner.history_details(&send_id))
+        .await
+        .map_err(|_| "storage")?
+}
+#[tauri::command]
+async fn send_history_remove(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    state.history_remove(&send_id).await
+}
+#[tauri::command]
+async fn send_history_check(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    state.inner().history_check(&send_id).await
+}
+#[tauri::command]
+async fn send_agent_focus(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send::AgentFocus, &'static str> {
+    let owner = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || owner.agent_focus(&send_id))
+        .await
+        .map_err(|_| "storage")?
+}
+#[tauri::command]
+async fn send_agent_check(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send::AgentCheck, &'static str> {
+    state.inner().agent_check(&send_id).await
+}
+#[tauri::command]
+fn send_cancel(
+    document_id: DocumentId,
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<SendStatus, &'static str> {
+    state.cancel_document(document_id, &send_id)
+}
+#[tauri::command]
+async fn send_history_cancel(
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<bridge_engine::send_summary::DetailView, &'static str> {
+    state.inner().history_cancel(&send_id).await
+}
+#[tauri::command]
+async fn send_stop(
+    document_id: DocumentId,
+    send_id: String,
+    state: tauri::State<'_, Arc<SendOwner>>,
+) -> Result<SendStatus, &'static str> {
+    state.stop_document(document_id, &send_id).await
 }
 
 fn main() {
-    let closing = AtomicBool::new(false);
-    let completed = Arc::new(AtomicBool::new(false));
+    // Distinguish a native WebView startup stall from a frontend/navigation failure in debug walks.
+    #[cfg(debug_assertions)]
+    eprintln!("bridge-startup: main");
+    let shutdown = Arc::new(TerminalShutdown::default());
     tauri::Builder::default()
-        .setup(|app| {
+        .on_page_load(|_, load| {
+            if cfg!(debug_assertions) {
+                eprintln!("bridge-startup: page {:?}", load.event());
+            }
+        })
+        .manage(shutdown.clone())
+        .manage(RepoPicker::default())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            lifecycle::show(app)
+        }))
+        .setup(move |app| {
+            #[cfg(debug_assertions)]
+            eprintln!("bridge-startup: setup");
             let store = Arc::new(SetupStore::new(app.path().app_data_dir().ok()));
-            let vm = local_vm::configured(app.path().resource_dir().ok(), app.path().app_local_data_dir().ok());
-            app.manage(if vm.status() == LocalVmStatus::NotIntegrated { EngineState::configured() }
-                else { EngineState::with_transport(vm.clone()) });
-            app.manage(store.clone()); app.manage(vm.clone());
-            let folder = Arc::new(AgentFolder::new(app.path().home_dir().ok()));
-            app.manage(folder.clone());
-            app.manage(bridge_engine::example_run::ExampleRun::new(tauri::async_runtime::handle().inner().clone(), bridge_engine::local_vm::MODEL_IMAGE_AVAILABLE, folder));
+            let recovery = match (app.path().app_data_dir(), app.path().app_local_data_dir()) {
+                (Ok(data), Ok(local)) => {
+                    bridge_engine::workspace_upgrade::recover_startup(&data, &local)
+                }
+                _ => Err(bridge_engine::runtime::types::RuntimeError::Unavailable),
+            };
+            let vm = if recovery.is_ok() {
+                local_vm::configured(
+                    app.path().resource_dir().ok(),
+                    app.path().app_local_data_dir().ok(),
+                )
+            } else {
+                LocalVm::recovery_blocked()
+            };
+            #[cfg(debug_assertions)]
+            eprintln!("bridge-startup: local VM configured");
+            app.manage(if vm.status() == LocalVmStatus::NotIntegrated {
+                EngineState::configured()
+            } else {
+                EngineState::with_transport(vm.clone())
+            });
+            app.manage(store.clone());
+            app.manage(vm.clone());
+            app.manage(ChatOwner::new(
+                tauri::async_runtime::handle().inner().clone(),
+            ));
+            let session = bridge_engine::clusters::commands::ClusterSession::with_storage(
+                app.path().app_local_data_dir().ok(),
+            );
+            app.manage(session.clone());
+            let agents = Agents::new(app.path().home_dir().ok(), app.path().app_data_dir().ok());
+            let folder = agents.sample();
+            app.manage(Arc::new(agents));
+            app.manage(SendOwner::with_history_root(
+                folder.clone(),
+                session,
+                app.path().app_local_data_dir().ok(),
+            ));
+            app.manage(bridge_engine::example_run::ExampleRun::with_history_root(
+                tauri::async_runtime::handle().inner().clone(),
+                bridge_engine::local_vm::MODEL_IMAGE_AVAILABLE,
+                folder,
+                app.path().app_local_data_dir().ok(),
+            ));
+            #[cfg(debug_assertions)]
+            eprintln!("bridge-startup: installing lifecycle");
+            lifecycle::install(
+                app.handle(),
+                shutdown.clone(),
+                vm.status() != LocalVmStatus::NotIntegrated,
+            )?;
+            #[cfg(debug_assertions)]
+            eprintln!("bridge-startup: ready");
             tauri::async_runtime::spawn(async move {
                 if local_vm::resume_selected(store, &vm).await.is_err() {
                     eprintln!("The saved setup choice could not be read.");
@@ -120,26 +735,99 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![engine_call, setup_status, setup_select_local, setup_cancel_local, setup_change_local, setup_requirements, setup_example, setup_connect_model, setup_run_status, setup_run_example, agent_open, agent_save])
+        .invoke_handler(tauri::generate_handler![
+            engine_call,
+            setup_status,
+            setup_select_local,
+            setup_cancel_local,
+            setup_change_local,
+            setup_requirements,
+            setup_preflight,
+            setup_open_help,
+            setup_example,
+            setup_connect_model,
+            setup_connect_key,
+            setup_remove_model,
+            setup_reset_model,
+            agent_run_status,
+            agent_run,
+            agent_run_cancel,
+            agent_run_check_cancellation,
+            agent_chat_status,
+            agent_chat_send,
+            agent_chat_reconnect,
+            agent_chat_stop,
+            agent_chat_new,
+            agents_list,
+            overview_files,
+            overview_agents,
+            overview_places,
+            agent_selected,
+            agent_create,
+            agent_pick_repo,
+            agent_select,
+            agent_creation_root,
+            agent_open,
+            agent_save,
+            agent_reveal,
+            workspace_catalog,
+            cluster_catalog,
+            cluster_places,
+            cluster_reconnect,
+            cluster_select,
+            cluster_forget,
+            cluster_contexts,
+            cluster_reload,
+            cluster_discover,
+            cluster_service_accounts,
+            cluster_service_account_preview,
+            cluster_use,
+            send_preflight,
+            send_start,
+            send_status,
+            send_history,
+            send_history_details,
+            send_history_remove,
+            send_history_check,
+            send_history_cancel,
+            send_agent_focus,
+            send_agent_check,
+            send_cancel,
+            send_stop
+        ])
         .build(tauri::generate_context!())
         .expect("error while building Bridge")
-        .run(move |app, event| {
-            if completed.load(Ordering::SeqCst) { return; }
+        .run(|app, event| {
+            if app.state::<Arc<TerminalShutdown>>().completed() {
+                return;
+            }
             let requested = match event {
-                tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::CloseRequested { api, .. }, .. } if label == "main" => { api.prevent_close(); true }
-                tauri::RunEvent::ExitRequested { api, .. } => { api.prevent_exit(); true }
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::CloseRequested { api, .. },
+                    ..
+                } if label == "main" => {
+                    api.prevent_close();
+                    if app.state::<lifecycle::HideOnClose>().0 {
+                        lifecycle::hide(app);
+                        return;
+                    }
+                    true
+                }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    lifecycle::show(app);
+                    false
+                }
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    api.prevent_exit();
+                    true
+                }
                 _ => false,
             };
-            if !requested || closing.swap(true, Ordering::SeqCst) { return; }
-            let vm = app.state::<Arc<LocalVm>>().inner().clone();
-            vm.request_close(); // Native event thread: bar late Ready before scheduling async work.
-            app.state::<EngineState>().shutdown();
-            let handle = app.clone(); let completed = completed.clone();
-            tauri::async_runtime::spawn(async move {
-                let clean = vm.shutdown().await.is_ok();
-                if !clean { eprintln!("Local VM startup or shutdown did not finish successfully; cleanup was not reported as clean."); }
-                completed.store(true, Ordering::SeqCst);
-                handle.exit(if clean { 0 } else { 1 });
-            });
+            if !requested {
+                return;
+            }
+            lifecycle::stop(app);
         });
 }

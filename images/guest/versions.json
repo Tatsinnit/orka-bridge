@@ -10,13 +10,13 @@
   },
   "kind": "v0.33.0",
   "kubernetes": "v1.35.0",
-  "orkaSource": "7916cd1c8c083ade6b10df6ba408f854d930190c",
+  "orkaSource": "3cb1f0df36705af9ff81cb8b4e8a0f8d36ee6eea",
   "sourceOfflineProfile": {
-    "profile": "orka-7916cd1c-native/v1",
-    "profileSha256": "6ab8213cae9f1d58fe59f34b2402f93ed951752269decdf750fc2a170bddf223",
-    "kmxSourceCommit": "782a6cacb5b8c31e52ff2e2392d74e5a14832bea",
-    "chartSha256": "19c50cff36855b8792b4777c89c598cf33ea70180e677e1a4758fc0211f069ed",
-    "artifactsSha256": "db1dae048af33841a295fdebb55c85d3a122242feade043f85a9e886938d1b3e"
+    "profile": "orka-3cb1f0df-native/v1",
+    "profileSha256": "20647cab1e653394fe7466608a08dd816f05d1a44bc8a8598fa478f7e20fc8f5",
+    "kmxSourceCommit": "503b3ffcbdcc0a966e3b6de6235a8a98077b989e",
+    "chartSha256": "11cc020b923dd5bc810a6f3b97f236a6e3123ce8ad80791d912c0af760abcca8",
+    "artifactsSha256": "6f620c97411465b1f1559b57f6d279313894dcf0006ae25f8121e35afbb66080"
   },
   "productionDependency": "Orka release including #833",
   "releaseProfiles": {}

@@ -103,6 +103,44 @@ extracting the portable ZIP. Preserve the corresponding-source ZIP and notices.
 These temporary CI artifacts are not release assets; retention does not change
 `publicationReady: false` or establish native guest qualification.
 
+## Portable app assembly
+
+`runtime-inputs.json` pins the separate runtime/source archives, producer run,
+seven-asset unpublished input draft and the app's runtime-manifest identity.
+The input-only draft is never an app candidate and must never be published.
+Acquisition verifies the exact draft target/inventory, successful producer run,
+asset-ID readback and every reviewed hash. Uploaded `SHA256SUMS` is not authority.
+A transfer failure stops visibly; there are no automatic retries or clobbers.
+
+With existing operator GitHub CLI access, from the repository root:
+
+```sh
+python runtime/windows/delivery.py fetch --out NEW_INPUT_DIRECTORY
+python runtime/windows/delivery.py check --inputs NEW_INPUT_DIRECTORY
+python runtime/windows/delivery.py assemble --inputs NEW_INPUT_DIRECTORY --executable app/src-tauri/target/release/orka-bridge.exe --licenses app/public/licenses --release-tag APP_RELEASE_TAG --out NEW_DELIVERY_DIRECTORY
+```
+
+Assembly reruns the external-lock verifier and checks the compiled native pin.
+`bridge-windows-x64.zip` contains the executable, app notices, `QEMU-SOURCE.txt`
+and the complete unchanged runtime at `native/qemu`. Source is **not** inside
+that app ZIP. The unchanged `bridge-windows-runtime-source.zip` is a separate
+output: attach it to the same eventual app release. The source notice names its
+hash and future published URL; draft walkers use that draft's asset list.
+No source fetch happens at app startup. Keep all runtime notices intact.
+
+The Image assets workflow has a separate, main-only explicit-dispatch path:
+set `windows_candidate_tag` to the future app tag. The image profile is unused
+on this path, and the image publisher jobs do not run. Only the trusted QEMU
+input-fetch job has new `contents:write` permission (GitHub requires push access
+to read drafts); it only reads inputs, verifies bytes and transfers a one-day
+job artifact. The Windows build job has read-only permissions, rechecks all
+inputs independently and uploads only the two delivery ZIPs. Its
+`inspect-delivery.ps1` uses Windows-native extraction, verifies the full runtime
+inventory and inspects QEMU with a Windows-only PATH. It does not boot a VM.
+Ordinary PR CI uses fixtures, not a gigabyte input transfer. This packaging path
+does not create a release/tag, activate app image pins or establish a native VM
+walk; candidate publication and those walks are separate operations.
+
 ## Verify an output independently
 
 ```sh

@@ -66,8 +66,8 @@ pub fn create_verified<T>(
     if let Err(cleanup) = reap(&child) {
         // Quarantine capabilities when observed stop failed, just like RuntimeWorker.
         std::mem::forget(child);
-        return Err(io::Error::other(format!(
-            "{failure}; owned child stop unconfirmed: {cleanup}"
+        return Err(io::Error::other(crate::runtime::types::UnconfirmedStop(
+            format!("{failure}; owned child stop unconfirmed: {cleanup}"),
         )));
     }
     Err(failure)
@@ -1013,6 +1013,7 @@ mod native {
         #[test]
         fn retained_members_prove_stop_after_all_members_exit_naturally() {
             let job = kill_on_close_job();
+            let port = completion_port(&job);
             let mut leader = blocked_member(&job);
             let mut member = blocked_member(&job);
             let retained = std::sync::Mutex::new(MemberRegistry::default());
@@ -1028,6 +1029,10 @@ mod native {
             member.stdin.take().unwrap().write_all(b"\r\n").unwrap();
             assert!(leader.wait().unwrap().success());
             assert!(member.wait().unwrap().success());
+            // Process exit handles can signal before Job accounting drains.
+            // This is the empty-Job success case; incomplete PID accounting
+            // during rundown must still fail closed and retain ownership.
+            observe_empty_job(&job, &port);
             let observed = AtomicBool::new(false);
             stop_job(
                 job.0,

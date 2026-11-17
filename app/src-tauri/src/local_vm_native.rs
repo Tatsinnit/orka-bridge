@@ -1,37 +1,49 @@
 use super::*;
+
+// Exact guest versions of paired cancel-capable guest/Orka images. The image
+// pin update adds its qualified buildSourceCommit; existing images lack cancel.
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+fn run_cancel_guest(build: &str) -> bool {
+    const BUILDS: &[&str] = &[];
+    BUILDS.contains(&build)
+}
+#[cfg(any(
+    test,
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+#[path = "local_vm_image.rs"]
+pub(crate) mod image;
 #[cfg(test)]
 use crate::runtime::types::BackendKind;
-#[cfg(any(all(debug_assertions, windows), test))]
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 use crate::runtime::windows::inputs::{verify_windows_runtime, FilePin};
 #[cfg(any(
-    all(
-        debug_assertions,
-        any(windows, all(target_os = "macos", target_arch = "aarch64"))
-    ),
-    test
+    test,
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 use crate::runtime::{
-    image_install::{open_installed_image, InstalledImageSet},
-    journal::Journal,
+    image_install::InstalledImageSet,
+    journal::{Journal, JournalCustody},
 };
-#[cfg(any(all(debug_assertions, windows), test))]
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 use std::io::Read;
 use std::path::PathBuf;
 #[cfg(any(
-    all(
-        debug_assertions,
-        any(windows, all(target_os = "macos", target_arch = "aarch64"))
-    ),
-    test
+    test,
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 use std::{fs, path::Path};
 
 #[cfg(any(
-    all(
-        debug_assertions,
-        any(windows, all(target_os = "macos", target_arch = "aarch64"))
-    ),
-    test
+    test,
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 async fn blocking_start(
     work: impl FnOnce(tokio::runtime::Handle) -> Result<Box<dyn LocalSession>, RuntimeError>
@@ -47,9 +59,9 @@ async fn blocking_start(
 }
 
 #[cfg(any(
-    all(debug_assertions, windows),
-    all(debug_assertions, target_os = "macos", target_arch = "aarch64"),
-    test
+    test,
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 fn wait_for_infrastructure(
     mut session: Box<dyn LocalSession>,
@@ -79,11 +91,10 @@ fn wait_for_infrastructure(
             }
             InfrastructureService::Starting => {}
             _ => {
-                return Err(std::io::Error::other(format!(
+                return Err(RuntimeError::Infrastructure(format!(
                     "Orka infrastructure failed (phase: {:?}, service: {:?})",
                     state.phase, state.service
-                ))
-                .into())
+                )))
             }
         }
         // Time only schedules the next observation; it never grants readiness.
@@ -98,26 +109,29 @@ fn wait_for_infrastructure(
         Ok(()) => Ok(session),
         Err(error) => {
             if let Err(cleanup) = session.stop() {
-                return Err(std::io::Error::other(format!(
+                // Keep the entire session, not just its error, until process exit.
+                std::mem::forget(session);
+                return Err(RuntimeError::StopUnconfirmed(format!(
                     "Orka infrastructure startup failed: {}; stopping the VM failed: {}",
                     failure_reason(&error),
                     failure_reason(&cleanup)
-                ))
-                .into());
+                )));
             }
             Err(error)
         }
     }
 }
 
-#[cfg(any(all(debug_assertions, windows), test))]
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 fn retain_start_failure(
     root: &Path,
     stage: &str,
     error: RuntimeError,
     stderr: std::io::Result<Vec<u8>>,
+    operation: WorkspaceOperation,
 ) -> RuntimeError {
     use std::io::Write;
+    let unconfirmed = matches!(error, RuntimeError::StopUnconfirmed(_));
     let reason = failure_reason(&error);
     let (stderr, capture_error) = match stderr {
         Ok(bytes) => (bytes, None),
@@ -171,22 +185,53 @@ fn retain_start_failure(
         Ok(()) => message.push_str(&format!(". Details: {}", directory.display())),
         Err(error) => message.push_str(&format!(". Could not save diagnostics: {error}")),
     }
-    std::io::Error::other(message).into()
+    if unconfirmed {
+        RuntimeError::StopUnconfirmed(message)
+    } else {
+        // Keep the original typed error; only the display text is private.
+        RuntimeError::Startup(Box::new(crate::runtime::types::StartupFailure {
+            error,
+            operation,
+            diagnostic: message,
+        }))
+    }
 }
 
-/// Release has no approved image catalog; native development uses the existing
-/// verified source override or its own committed installation, never renderer paths.
+/// Native selection is Rust-owned; only debug builds may select development paths.
 pub fn configured(resources: Option<PathBuf>, data: Option<PathBuf>) -> Arc<LocalVm> {
-    #[cfg(all(
-        debug_assertions,
-        any(windows, all(target_os = "macos", target_arch = "aarch64"))
+    #[cfg(any(
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
     ))]
     if let (Some(resources), Some(data)) = (&resources, &data) {
         let root = data.join("local-vm-v1");
-        if std::env::var_os("BRIDGE_DEV_IMAGE_DIR").is_some() || root.exists() {
+        #[cfg(windows)]
+        let target = crate::runtime::image_types::ImageTarget::WindowsAmd64;
+        #[cfg(target_os = "macos")]
+        let target = crate::runtime::image_types::ImageTarget::MacosArm64;
+        let release = image::shipping_image(target).and_then(|profile| {
+            image::native_host_target(target)
+                .ok()
+                .map(|host| (profile, host))
+        });
+        #[cfg(debug_assertions)]
+        let development = (
+            std::env::var_os("BRIDGE_DEV_IMAGE_DIR").is_some(),
+            root.exists(),
+        );
+        #[cfg(not(debug_assertions))]
+        let development = (false, false);
+        if let Some(source) = image::select_source(
+            cfg!(debug_assertions),
+            development.0,
+            development.1,
+            release,
+        ) {
             return LocalVm::new(Arc::new(NativeFactory {
                 resources: resources.clone(),
                 root,
+                cache: data.join("image-cache-v1"),
+                source,
                 pending: Arc::new(Mutex::new(JournalCustody(None))),
             }));
         }
@@ -194,7 +239,7 @@ pub fn configured(resources: Option<PathBuf>, data: Option<PathBuf>) -> Arc<Loca
     let _ = (resources, data);
     LocalVm::unavailable()
 }
-#[cfg(any(all(debug_assertions, windows), test))]
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 fn runtime_manifest_pin() -> FilePin {
     FilePin {
         name: "provenance/runtime-manifest.json".into(),
@@ -202,7 +247,7 @@ fn runtime_manifest_pin() -> FilePin {
         sha256: "a1dead19c0d1dcef558008e556cd9bd4a8c5082daf4ecea6f531d03173748385".into(),
     }
 }
-#[cfg(any(all(debug_assertions, windows), test))]
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
 fn read_runtime_manifest(root: &Path, pin: &FilePin) -> Result<Vec<FilePin>, RuntimeError> {
     use sha2::{Digest, Sha256};
     #[derive(serde::Deserialize)]
@@ -251,49 +296,39 @@ fn read_runtime_manifest(root: &Path, pin: &FilePin) -> Result<Vec<FilePin>, Run
     Ok(pins)
 }
 #[cfg(any(
-    all(
-        debug_assertions,
-        any(windows, all(target_os = "macos", target_arch = "aarch64"))
-    ),
-    test
+    test,
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 fn reopen(
     root: &Path,
-    compatibility: &str,
+    source: &mut image::ImageSource,
 ) -> Result<Option<(Journal, Arc<InstalledImageSet>)>, RuntimeError> {
     match fs::symlink_metadata(root) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
         Ok(_) => {
             let journal = Journal::open(root)?;
-            let image = open_installed_image(&journal.image_target(compatibility)?)?;
-            Ok(Some((journal, Arc::new(image))))
+            let image = image::open_selected(source, &journal)?;
+            Ok(Some((journal, image)))
         }
     }
 }
-#[cfg(all(
-    debug_assertions,
-    any(windows, all(target_os = "macos", target_arch = "aarch64"))
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 struct NativeFactory {
     resources: PathBuf,
     root: PathBuf,
+    cache: PathBuf,
+    source: image::ImageSource,
     pending: Arc<Mutex<JournalCustody>>,
 }
 #[cfg(any(
     test,
-    all(
-        debug_assertions,
-        any(windows, all(target_os = "macos", target_arch = "aarch64"))
-    )
-))]
-struct JournalCustody(Option<Journal>);
-#[cfg(any(
-    test,
-    all(
-        debug_assertions,
-        any(windows, all(target_os = "macos", target_arch = "aarch64"))
-    )
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl JournalCustody {
     fn take_for_launch(&mut self, closed: &watch::Receiver<bool>) -> Result<Journal, RuntimeError> {
@@ -304,143 +339,132 @@ impl JournalCustody {
         self.0.take().ok_or(RuntimeError::Unavailable)
     }
 }
-#[cfg(all(
-    debug_assertions,
-    any(windows, all(target_os = "macos", target_arch = "aarch64"))
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl LocalFactory for NativeFactory {
+    fn release_stopped(&self) -> Result<(), RuntimeError> {
+        self.pending
+            .lock()
+            .map_err(|_| RuntimeError::Unavailable)?
+            .0
+            .take();
+        Ok(())
+    }
     fn launch(
         &self,
         closed: watch::Receiver<bool>,
         progress: Arc<dyn Fn(LocalProgress) + Send + Sync>,
     ) -> StartFuture<'_> {
-        let (resources, root, pending) = (
+        let (resources, root, pending, source, cache) = (
             self.resources.clone(),
             self.root.clone(),
             self.pending.clone(),
+            self.source.clone(),
+            self.cache.clone(),
         );
         Box::pin(blocking_start(move |runtime| {
-            use crate::{
-                dev_image,
-                runtime::{self, types::BackendKind},
-            };
+            use crate::runtime::{self, types::BackendKind};
             if *closed.borrow() {
                 return Err(RuntimeError::Closed);
             }
-            #[cfg(windows)]
-            let inputs = {
-                runtime::windows::launch::control_path(
-                    &root,
-                    bridge_runtime_protocol::Uuid::nil(),
-                )?;
-                let path = resources.join("native/qemu");
-                Arc::new(verify_windows_runtime(
-                    &read_runtime_manifest(&path, &runtime_manifest_pin())?,
-                    path,
-                )?)
-            };
-            use runtime::image_types::ImageProgress;
-            progress(LocalProgress::Image(ImageProgress::Verifying));
-            // This factory, not a reopened record, retains the original installation owner.
-            let mut custody = pending.lock().map_err(|_| RuntimeError::Unavailable)?;
-            let existing = if let Some(journal) = &custody.0 {
-                match open_installed_image(
-                    &journal.image_target(dev_image::STATE_COMPATIBILITY_ID)?,
-                ) {
-                    Ok(image) => Some(Arc::new(image)),
-                    Err(runtime::image_types::ImageError::RetainedImage) => None,
-                    Err(error) => return Err(error.into()),
-                }
-            } else {
-                match reopen(&root, dev_image::STATE_COMPATIBILITY_ID)? {
-                    Some((journal, image)) => {
-                        custody.0 = Some(journal);
-                        Some(image)
-                    }
-                    None => None,
-                }
-            };
-            let installed = match existing {
-                Some(image) => image,
-                None => {
-                    let image = dev_image::from_environment_cancellable(&closed)
-                        .map_err(|_| {
-                            if *closed.borrow() {
-                                RuntimeError::Closed
-                            } else {
-                                RuntimeError::Unavailable
-                            }
-                        })?
-                        .ok_or(RuntimeError::Unavailable)?;
-                    let prepared = runtime.block_on(
-                        runtime::setup_adapter::prepare_development_image(&image, closed.clone()),
-                    )?;
-                    if *closed.borrow() {
-                        return Err(RuntimeError::Closed);
-                    }
-                    if custody.0.is_none() {
-                        #[cfg(windows)]
-                        let (backend, identity) = (BackendKind::Qemu, b"pc-q35-11.0".to_vec());
-                        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        let (backend, identity) = (
-                            BackendKind::Apple,
-                            runtime::apple_input::machine_identifier(&resources)?,
-                        );
-                        if *closed.borrow() {
-                            return Err(RuntimeError::Closed);
-                        }
-                        fs::create_dir_all(root.parent().ok_or(RuntimeError::Unavailable)?)?;
-                        custody.0 = Some(Journal::create(&root, backend, identity)?);
-                    }
-                    progress(LocalProgress::Status(LocalVmStatus::Installing));
-                    let journal = custody.0.as_ref().ok_or(RuntimeError::Unavailable)?;
-                    let image = runtime.block_on(prepared.materialize(
-                        &journal.image_target(dev_image::STATE_COMPATIBILITY_ID)?,
+            crate::setup::preflight::before_image_work(
+                crate::setup::preflight::observe_native(),
+                || {
+                    #[cfg(windows)]
+                    let inputs = {
+                        runtime::windows::launch::control_path(
+                            &root,
+                            bridge_runtime_protocol::Uuid::nil(),
+                        )?;
+                        let path = resources.join("native/qemu");
+                        Arc::new(verify_windows_runtime(
+                            &read_runtime_manifest(&path, &runtime_manifest_pin())?,
+                            path,
+                        )?)
+                    };
+                    crate::workspace_upgrade::admit(&root)?;
+                    // The factory retains the original owner through preparation retries.
+                    let mut custody = pending.lock().map_err(|_| RuntimeError::Unavailable)?;
+                    let installed = image::prepare_installation(
+                        &source,
+                        &root,
+                        &cache,
+                        &mut custody,
                         closed.clone(),
-                        |event| progress(LocalProgress::Image(event)),
-                    ))?;
-                    Arc::new(image)
-                }
-            };
-            progress(LocalProgress::Status(LocalVmStatus::Starting));
-            let utc = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| RuntimeError::Unavailable)?
-                .as_secs();
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            let installation = installed.installation_id();
-            let journal = custody.take_for_launch(&closed)?;
-            #[cfg(windows)]
-            let native = start_windows_session(inputs, journal, installed, &root, utc)?;
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            let session =
-                runtime::apple_session::AppleVmSession::launch(resources, journal, installed, utc)?;
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            let native = NativeSession(session, installation);
-            wait_for_infrastructure(Box::new(native), closed, runtime)
+                        |event| progress(event),
+                        || {
+                            #[cfg(windows)]
+                            let (backend, identity) = (BackendKind::Qemu, b"pc-q35-11.0".to_vec());
+                            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                            let (backend, identity) = (
+                                BackendKind::Apple,
+                                runtime::apple_input::machine_identifier(&resources)?,
+                            );
+                            if *closed.borrow() {
+                                return Err(RuntimeError::Closed);
+                            }
+                            fs::create_dir_all(root.parent().ok_or(RuntimeError::Unavailable)?)?;
+                            Journal::create(&root, backend, identity)
+                        },
+                        &runtime,
+                    )?;
+                    progress(LocalProgress::Status(LocalVmStatus::Starting));
+                    let utc = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|_| RuntimeError::Unavailable)?
+                        .as_secs();
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let installation = installed.installation_id();
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let cancel_supported =
+                        run_cancel_guest(&installed.identity().build_source_commit);
+                    let journal = custody.take_for_launch(&closed)?;
+                    drop(custody); // A stopped worker returns the original owner through this slot.
+                    #[cfg(windows)]
+                    let native =
+                        start_windows_session(inputs, journal, installed, &root, utc, pending)?;
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let session = runtime::apple_session::AppleVmSession::launch_retaining(
+                        resources, journal, installed, utc, pending,
+                    )?;
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let native = NativeSession(session, installation, cancel_supported);
+                    wait_for_infrastructure(Box::new(native), closed, runtime)
+                },
+            )?
         }))
     }
 }
-#[cfg(all(debug_assertions, windows))]
+#[cfg(all(windows, target_arch = "x86_64"))]
 fn start_windows_session(
     inputs: Arc<crate::runtime::windows::inputs::VerifiedWindowsInputs>,
     journal: Journal,
     image: Arc<InstalledImageSet>,
     root: &Path,
     utc: u64,
+    custody: Arc<Mutex<JournalCustody>>,
 ) -> Result<NativeSession, RuntimeError> {
     // Keep the verified private root non-replaceable even if failed startup or
     // shutdown releases its worker before diagnostics are written.
     let diagnostic_root = crate::runtime::windows::security::private_af_directory(root)?;
     let installation = image.installation_id();
+    let cancel_supported = run_cancel_guest(&image.identity().build_source_commit);
     let backend = crate::runtime::windows::backend::WindowsBackend::new(inputs);
     let failure = backend.failure_diagnostics();
-    let result = crate::runtime::RuntimeWorker::new(Box::new(backend), journal, image)
-        .and_then(|worker| crate::runtime::windows::session::WindowsSession::start(worker, utc));
+    let result =
+        crate::runtime::RuntimeWorker::new(Box::new(backend), journal, image).and_then(|worker| {
+            crate::runtime::windows::session::WindowsSession::start(
+                worker.retain_journal(custody),
+                utc,
+            )
+        });
     match result {
         Ok(session) => Ok(NativeSession {
             session,
             installation,
+            cancel_supported,
             root: root.to_owned(),
             _diagnostic_root: diagnostic_root,
         }),
@@ -449,26 +473,39 @@ fn start_windows_session(
             failure.stage(),
             error,
             failure.stderr(),
+            failure.operation(),
         )),
     }
 }
-#[cfg(all(debug_assertions, windows))]
+#[cfg(all(windows, target_arch = "x86_64"))]
 struct NativeSession {
     session: crate::runtime::windows::session::WindowsSession,
     installation: bridge_runtime_protocol::Uuid,
+    cancel_supported: bool,
     root: PathBuf,
     _diagnostic_root: fs::File,
 }
-#[cfg(all(debug_assertions, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 struct NativeSession(
     crate::runtime::apple_session::AppleVmSession,
     bridge_runtime_protocol::Uuid,
+    bool,
 );
-#[cfg(all(
-    debug_assertions,
-    any(windows, all(target_os = "macos", target_arch = "aarch64"))
+#[cfg(any(
+    all(windows, target_arch = "x86_64"),
+    all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl LocalSession for NativeSession {
+    fn run_cancel_supported(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.cancel_supported
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            self.2
+        }
+    }
     fn with_client(
         &mut self,
         work: &mut dyn FnMut(
@@ -532,7 +569,13 @@ impl LocalSession for NativeSession {
                     .diagnostics()
                     .map(|diagnostics| diagnostics.stderr)
                     .map_err(|error| std::io::Error::other(error.to_string()));
-                retain_start_failure(&self.root, "Shut down guest", error, stderr)
+                retain_start_failure(
+                    &self.root,
+                    "Shut down guest",
+                    error,
+                    stderr,
+                    WorkspaceOperation::Stop,
+                )
             })
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
