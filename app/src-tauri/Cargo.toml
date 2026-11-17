@@ -59,6 +59,7 @@ rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }
 tokio = { version = "=1.54.1", features = ["time", "net", "test-util"] }
+toml = "=1.1.8"
 
 [[test]]
 name = "native_termination"

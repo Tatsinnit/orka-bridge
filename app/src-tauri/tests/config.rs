@@ -1,5 +1,15 @@
 use tauri::utils::config::{Updater, WebviewUrl};
 
+include!("../app_commands.rs");
+
+macro_rules! command_names {
+    ($($command:ident),* $(,)?) => {
+        &[$(stringify!($command)),*]
+    };
+}
+
+const APP_COMMANDS: &[&str] = with_app_commands!(command_names);
+
 #[test]
 fn native_window_uses_local_assets_and_fits_a_laptop() {
     let config: tauri::Config = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
@@ -70,57 +80,55 @@ fn release_context_embeds_fonts_and_all_license_notices() {
     }
 }
 
+fn allowed_commands(permission: &str, identifier: &str) -> Vec<String> {
+    let file: tauri::utils::acl::manifest::PermissionFile =
+        toml::from_str(permission).expect("permission must be valid TOML");
+    let permission = file
+        .permission
+        .into_iter()
+        .find(|permission| permission.identifier == identifier)
+        .unwrap_or_else(|| panic!("permission {identifier} is missing"));
+    assert!(
+        permission.commands.deny.is_empty(),
+        "app permission must not mix allowed and denied commands"
+    );
+    assert!(
+        !permission.commands.allow.is_empty(),
+        "permission has no allowed commands"
+    );
+    permission.commands.allow
+}
+
 #[test]
-fn agent_commands_are_granted_only_to_local_main_window() {
+fn app_commands_are_granted_only_to_local_main_window() {
     use tauri::ipc::Origin;
     let mut context: tauri::Context<tauri::Wry> = tauri::generate_context!();
     let authority = context.runtime_authority_mut();
-    for command in [
-        "workspace_catalog",
-        "overview_files",
-        "overview_agents",
-        "overview_places",
-        "cluster_places",
-        "cluster_reconnect",
-        "cluster_select",
-        "cluster_forget",
-        "cluster_contexts",
-        "cluster_discover",
-        "cluster_use",
-        "cluster_reload",
-        "send_preflight",
-        "send_start",
-        "send_status",
-        "send_history",
-        "send_history_details",
-        "send_history_remove",
-        "send_history_check",
-        "send_history_cancel",
-        "send_agent_focus",
-        "send_agent_check",
-        "send_cancel",
-        "send_stop",
-        "agent_run",
-        "agent_run_status",
-        "agent_chat_status",
-        "agent_chat_send",
-        "agent_chat_reconnect",
-        "agent_chat_stop",
-        "agent_chat_new",
-        "agents_list",
-        "agent_selected",
-        "agent_create",
-        "agent_select",
-        "agent_creation_root",
-        "agent_pick_repo",
-        "agent_open",
-        "agent_save",
-        "agent_reveal",
-        "setup_cancel_local",
-        "setup_change_local",
-        "setup_reset_model",
-        "setup_open_help",
-    ] {
+    let mut commands = allowed_commands(include_str!("../permissions/engine.toml"), "engine");
+    commands.extend(allowed_commands(
+        include_str!("../permissions/setup.toml"),
+        "setup",
+    ));
+    let command_count = commands.len();
+    commands.sort_unstable();
+    commands.dedup();
+    assert_eq!(commands.len(), command_count, "command grant is duplicated");
+
+    let mut app_commands = APP_COMMANDS.to_vec();
+    let app_command_count = app_commands.len();
+    app_commands.sort_unstable();
+    app_commands.dedup();
+    assert_eq!(
+        app_commands.len(),
+        app_command_count,
+        "app command is duplicated"
+    );
+    assert_eq!(
+        commands, app_commands,
+        "command grants must match app commands"
+    );
+
+    for command in app_commands {
         assert!(authority
             .resolve_access(command, "main", "main", &Origin::Local)
             .is_some());

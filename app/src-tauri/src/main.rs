@@ -11,6 +11,14 @@ use bridge_engine::shutdown::TerminalShutdown;
 use std::sync::Arc;
 use tauri::Manager;
 
+include!("../app_commands.rs");
+
+macro_rules! app_handler {
+    ($($command:ident),* $(,)?) => {
+        tauri::generate_handler![$($command),*]
+    };
+}
+
 mod lifecycle;
 
 #[tauri::command]
@@ -735,66 +743,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            engine_call,
-            setup_status,
-            setup_select_local,
-            setup_cancel_local,
-            setup_change_local,
-            setup_requirements,
-            setup_preflight,
-            setup_open_help,
-            setup_example,
-            setup_connect_model,
-            setup_connect_key,
-            setup_remove_model,
-            setup_reset_model,
-            agent_run_status,
-            agent_run,
-            agent_run_cancel,
-            agent_run_check_cancellation,
-            agent_chat_status,
-            agent_chat_send,
-            agent_chat_reconnect,
-            agent_chat_stop,
-            agent_chat_new,
-            agents_list,
-            overview_files,
-            overview_agents,
-            overview_places,
-            agent_selected,
-            agent_create,
-            agent_pick_repo,
-            agent_select,
-            agent_creation_root,
-            agent_open,
-            agent_save,
-            agent_reveal,
-            workspace_catalog,
-            cluster_catalog,
-            cluster_places,
-            cluster_reconnect,
-            cluster_select,
-            cluster_forget,
-            cluster_contexts,
-            cluster_reload,
-            cluster_discover,
-            cluster_service_accounts,
-            cluster_service_account_preview,
-            cluster_use,
-            send_preflight,
-            send_start,
-            send_status,
-            send_history,
-            send_history_details,
-            send_history_remove,
-            send_history_check,
-            send_history_cancel,
-            send_agent_focus,
-            send_agent_check,
-            send_cancel,
-            send_stop
-        ])
+        .invoke_handler(with_app_commands!(app_handler))
         .build(tauri::generate_context!())
         .expect("error while building Bridge")
         .run(|app, event| {
