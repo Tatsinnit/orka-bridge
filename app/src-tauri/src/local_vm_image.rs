@@ -212,6 +212,35 @@ impl ImageSource {
             Self::Pinned { profile, .. } => &profile.state_compatibility_id,
         }
     }
+    /// Conservative space before cache verification: factory cache plus fresh
+    /// private files and state, using the authenticated manifest, not pin limits.
+    pub(crate) fn additional_space_bound(&self) -> Result<u64, ImageError> {
+        let (profile, host) = match self {
+            Self::Pinned { profile, host } => (profile, host),
+            #[cfg(debug_assertions)]
+            Self::Development => return Err(ImageError::WorkspaceVersionUnsupported),
+        };
+        let image = profile.validate_host(host)?;
+        let boot = image
+            .assets()
+            .iter()
+            .filter(|asset| {
+                !matches!(
+                    asset.role(),
+                    crate::runtime::image_types::ImageAssetRole::Chunk(_)
+                )
+            })
+            .try_fold(0u64, |n, asset| {
+                n.checked_add(asset.bytes()).ok_or(ImageError::NoSpace)
+            })?;
+        image
+            .disk_bytes()
+            .checked_mul(2)
+            .and_then(|n| boot.checked_mul(2).and_then(|boot| n.checked_add(boot)))
+            .and_then(|n| n.checked_add(image.compressed_bytes()))
+            .and_then(|n| n.checked_add(bridge_runtime_protocol::STATE_BYTES))
+            .ok_or(ImageError::NoSpace)
+    }
     pub fn validate(
         &self,
         identity: &ImageIdentity,

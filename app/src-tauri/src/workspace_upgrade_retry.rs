@@ -128,11 +128,6 @@ impl WorkspaceUpgrade {
         point("retry-recorded")?;
         Ok(())
     }
-    #[cfg(any(
-        test,
-        all(windows, target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
     pub(crate) fn retry(
         &mut self,
         transaction: Uuid,
@@ -142,6 +137,7 @@ impl WorkspaceUpgrade {
         runtime: &tokio::runtime::Handle,
     ) -> Result<UpgradeStatus, RuntimeError> {
         let cache = self.local.join("image-cache-v1");
+        let progress = self.progress.clone();
         self.retry_with(
             transaction,
             source,
@@ -165,7 +161,11 @@ impl WorkspaceUpgrade {
                         &cache,
                         &client,
                         closed.clone(),
-                        |_| {},
+                        move |event| {
+                            if let Some(progress) = &progress {
+                                progress(event);
+                            }
+                        },
                     ))?,
                 )
             },
@@ -173,11 +173,6 @@ impl WorkspaceUpgrade {
             available_space,
         )
     }
-    #[cfg(any(
-        test,
-        all(windows, target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
     #[allow(clippy::too_many_arguments)] // Explicit native authority and acquisition/cancellation boundaries.
     pub(super) fn retry_with(
         &mut self,
@@ -304,10 +299,15 @@ impl WorkspaceUpgrade {
         intent.phase = Phase::DestinationCreated;
         self.persist(&intent)?;
         point("destination-recorded")?;
+        let progress = self.progress.clone();
         let image = runtime.block_on(prepared.materialize(
             &destination.image_target(source.compatibility())?,
             closed.clone(),
-            |_| {},
+            move |event| {
+                if let Some(progress) = &progress {
+                    progress(event);
+                }
+            },
         ))?;
         destination.validate_image(&image)?;
         intent.destination_binding_sha256 = Some(binding_hash(&root)?);

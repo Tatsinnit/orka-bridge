@@ -706,13 +706,15 @@ fn main() {
                 }
                 _ => Err(bridge_engine::runtime::types::RuntimeError::Unavailable),
             };
+            let vm = local_vm::configured(
+                app.path().resource_dir().ok(),
+                app.path().app_data_dir().ok(),
+                app.path().app_local_data_dir().ok(),
+            );
             let vm = if recovery.is_ok() {
-                local_vm::configured(
-                    app.path().resource_dir().ok(),
-                    app.path().app_local_data_dir().ok(),
-                )
+                vm
             } else {
-                LocalVm::recovery_blocked()
+                vm.for_recovery()
             };
             #[cfg(debug_assertions)]
             startup_marker("local VM configured");

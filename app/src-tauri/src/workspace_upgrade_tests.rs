@@ -9,12 +9,16 @@ mod fixture {
 }
 #[path = "workspace_upgrade_credential_tests.rs"]
 mod credentials;
+#[path = "local_vm_upgrade_tests.rs"]
+mod facade;
 #[path = "workspace_upgrade_crash_tests.rs"]
 mod process;
 #[path = "workspace_upgrade_restore_tests.rs"]
 mod restore;
 #[path = "workspace_upgrade_retry_tests.rs"]
 mod retry;
+#[path = "workspace_upgrade_ui_tests.rs"]
+mod ui;
 struct Scene {
     _temp: tempfile::TempDir,
     data: PathBuf,
@@ -167,7 +171,7 @@ fn ui_activation_restart_can_restore_the_identified_transaction() {
         scene.local.clone(),
         transaction,
     ));
-    assert_eq!(result.unwrap(), UpgradeStatus::Restored);
+    assert_eq!(result.unwrap().state, "restored");
     assert_eq!(
         WorkspaceUpgrade::open(&scene.data, &scene.local)
             .unwrap()
@@ -251,7 +255,7 @@ fn every_switch_boundary_retains_exact_source_and_never_grants_reopen_authority(
                 assert_eq!(directory_identity(&root).unwrap(), before);
             } else {
                 assert_ne!(status, UpgradeStatus::None);
-                assert!(admit(&root).is_err());
+                assert!(admit(&s.data, &root).is_err());
                 let intent = owner.read_intent().unwrap().unwrap();
                 let retained = s.local.join(&intent.retained);
                 let a = if retained.exists() {
@@ -558,4 +562,80 @@ fn owner_excludes_second_switch_and_never_overwrites_previous_retention() {
         s.source_id
     );
     assert!(s.replace(None).is_err());
+}
+#[test]
+fn ordinary_admission_matches_status_blocking_everything_except_none_and_consumed() {
+    // None: nothing has ever happened; ordinary launch and startup resume proceed.
+    let s = Scene::new(ImageTarget::WindowsAmd64);
+    let root = s.local.join("local-vm-v1");
+    assert_eq!(
+        WorkspaceUpgrade::open(&s.data, &s.local)
+            .unwrap()
+            .recover()
+            .unwrap(),
+        UpgradeStatus::None
+    );
+    assert!(admit(&s.data, &root).is_ok());
+    assert!(!recover_startup(&s.data, &s.local).unwrap());
+
+    // Mid-switch (SourceSelected): A is unmodified, but ordinary resume still
+    // defers to an explicit retry or restore, never a silent plain reopen.
+    let mut s = Scene::new(ImageTarget::WindowsAmd64);
+    let root = s.local.join("local-vm-v1");
+    assert!(s.replace(Some("intent")).is_err());
+    assert_eq!(
+        WorkspaceUpgrade::open(&s.data, &s.local)
+            .unwrap()
+            .recover()
+            .unwrap(),
+        UpgradeStatus::SourceSelected
+    );
+    assert!(admit(&s.data, &root).is_err());
+    assert!(recover_startup(&s.data, &s.local).is_err());
+
+    // Incomplete: B was prepared but never booted by this app; still blocked.
+    let mut s = Scene::new(ImageTarget::WindowsAmd64);
+    let root = s.local.join("local-vm-v1");
+    s.replace(None).unwrap();
+    assert_eq!(
+        WorkspaceUpgrade::open(&s.data, &s.local)
+            .unwrap()
+            .recover()
+            .unwrap(),
+        UpgradeStatus::Incomplete
+    );
+    assert!(admit(&s.data, &root).is_err());
+    assert!(recover_startup(&s.data, &s.local).is_err());
+
+    // Consumed: B already booted under this app; ordinary relaunch proceeds, and
+    // recover_startup reports this process has observed a replacement.
+    restore::consumed_destination(&s);
+    assert_eq!(
+        WorkspaceUpgrade::open(&s.data, &s.local)
+            .unwrap()
+            .recover()
+            .unwrap(),
+        UpgradeStatus::Consumed
+    );
+    assert!(admit(&s.data, &root).is_ok());
+    assert!(recover_startup(&s.data, &s.local).unwrap());
+
+    // Restored: A is canonical again after an explicit restore. Its binding is
+    // the old app's, so ordinary admission and startup resume stay blocked;
+    // only the matching older app may boot it.
+    let transaction = WorkspaceUpgrade::open(&s.data, &s.local)
+        .unwrap()
+        .read_intent()
+        .unwrap()
+        .unwrap()
+        .transaction;
+    assert_eq!(
+        WorkspaceUpgrade::open(&s.data, &s.local)
+            .unwrap()
+            .restore(transaction)
+            .unwrap(),
+        UpgradeStatus::Restored
+    );
+    assert!(admit(&s.data, &root).is_err());
+    assert!(recover_startup(&s.data, &s.local).is_err());
 }

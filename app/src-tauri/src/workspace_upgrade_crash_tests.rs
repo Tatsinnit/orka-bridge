@@ -408,7 +408,7 @@ fn process_death_at_each_boundary_releases_ownership_without_adopting_unknown_st
                 installation(&local.join(format!("retained-new-{}", intent.transaction))).unwrap(),
                 intent.destination
             );
-            assert!(admit(&local.join("local-vm-v1")).is_err());
+            assert!(admit(&data, &local.join("local-vm-v1")).is_err());
             continue;
         }
         if point == "acquired" {
@@ -440,6 +440,6 @@ fn process_death_at_each_boundary_releases_ownership_without_adopting_unknown_st
         } else {
             assert_ne!(owner.recover().unwrap(), UpgradeStatus::None);
         }
-        assert!(admit(&local.join("local-vm-v1")).is_err());
+        assert!(admit(&data, &local.join("local-vm-v1")).is_err());
     }
 }

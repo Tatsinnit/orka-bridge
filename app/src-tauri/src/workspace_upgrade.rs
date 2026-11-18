@@ -10,11 +10,6 @@ use crate::runtime::{
     types::RuntimeError,
 };
 use crate::setup::SetupStore;
-#[cfg(any(
-    test,
-    all(windows, target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
 use crate::{local_vm::native::image::ImageSource, runtime::image_install::PreparedImage};
 use bridge_runtime_protocol::Uuid;
 use cap_std::fs::Dir;
@@ -102,6 +97,128 @@ pub(crate) enum UpgradeStatus {
     Restored,
     Conflict,
 }
+/// The only shape the renderer ever sees: no secret, slot, path or raw intent
+/// bytes. Every field is native-selected; the renderer supplies no source,
+/// image URL or restore target, only an opaque `transaction` echoed back.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeStatusDto {
+    pub state: &'static str,
+    pub transaction: Option<Uuid>,
+    pub created_at: Option<u64>,
+    pub source_releases: Vec<String>,
+    pub target_release: Option<String>,
+    pub retained_allocated_bytes: Option<u64>,
+    pub additional_bytes: Option<u64>,
+    pub credential: &'static str,
+    pub busy: bool,
+    pub error: Option<&'static str>,
+    pub repeated: bool,
+    pub can_replace: bool,
+    pub can_restore: bool,
+}
+impl UpgradeStatusDto {
+    pub(crate) fn none() -> Self {
+        Self {
+            state: "none",
+            transaction: None,
+            created_at: None,
+            source_releases: vec![],
+            target_release: None,
+            retained_allocated_bytes: None,
+            additional_bytes: None,
+            credential: "absent",
+            busy: false,
+            error: None,
+            repeated: false,
+            can_replace: false,
+            can_restore: false,
+        }
+    }
+    pub(crate) fn conflict(error: Option<&'static str>) -> Self {
+        Self {
+            state: "conflict",
+            error,
+            ..Self::none()
+        }
+    }
+}
+pub(crate) fn classify_error(error: &RuntimeError) -> Option<&'static str> {
+    Some(match error {
+        RuntimeError::Closed => return None,
+        RuntimeError::Busy | RuntimeError::Image(ImageError::Busy) => "inUse",
+        RuntimeError::StopUnconfirmed(_) => "stopUnconfirmed",
+        RuntimeError::Io(e) if e.kind() == std::io::ErrorKind::StorageFull => "noSpace",
+        RuntimeError::Image(ImageError::NoSpace) => "noSpace",
+        RuntimeError::Image(ImageError::Integrity) => "integrity",
+        RuntimeError::Image(
+            ImageError::WorkspaceUpdateRequired | ImageError::WorkspaceVersionUnsupported,
+        ) => "unsupported",
+        RuntimeError::Image(ImageError::Network(_)) => "network",
+        RuntimeError::Image(ImageError::Cancelled) => return None,
+        RuntimeError::RetainedState => "unknown",
+        _ => "unknown",
+    })
+}
+/// No transaction yet, and no upgrade store needs to exist to answer this:
+/// only the canonical installation directory is inspected, read-only.
+fn eligible_status(
+    data: &Path,
+    local: &Path,
+    source: Option<&ImageSource>,
+) -> Result<UpgradeStatusDto, RuntimeError> {
+    let Some(source) = source else {
+        return Ok(UpgradeStatusDto::none());
+    };
+    let root = local.join("local-vm-v1");
+    if !root.try_exists()? {
+        return Ok(UpgradeStatusDto::none());
+    }
+    let journal = match Journal::open(&root) {
+        Ok(journal) => journal,
+        Err(RuntimeError::Busy) => return Err(RuntimeError::Busy),
+        Err(_) => return Ok(UpgradeStatusDto::none()),
+    };
+    let (_source_binding, source_releases, _target_binding, target_release) =
+        match source.upgrade_eligibility(&journal) {
+            Ok(eligibility) => eligibility,
+            Err(_) => return Ok(UpgradeStatusDto::none()),
+        };
+    let retained_allocated_bytes = allocated(&root, Some(&journal), true)?;
+    let metadata = SetupStore::new(Some(data.to_owned()))
+        .snapshot_for_upgrade(journal.record().installation_id)
+        .map_err(|_| RuntimeError::RetainedState)?;
+    let credential =
+        saved_credential_label(metadata.model.as_deref(), journal.record().installation_id)?;
+    Ok(UpgradeStatusDto {
+        state: "eligible",
+        source_releases,
+        target_release: Some(target_release),
+        retained_allocated_bytes: Some(retained_allocated_bytes),
+        additional_bytes: Some(source.additional_space_bound()?),
+        credential,
+        can_replace: true,
+        ..UpgradeStatusDto::none()
+    })
+}
+fn saved_credential_label(
+    model: Option<&[u8]>,
+    installation: Uuid,
+) -> Result<&'static str, RuntimeError> {
+    if model.is_none() {
+        return Ok("absent");
+    }
+    Ok(
+        if SetupStore::transferred_model(model, installation)
+            .map_err(|_| RuntimeError::RetainedState)?
+            .is_some()
+        {
+            "eligible"
+        } else {
+            "attention"
+        },
+    )
+}
 pub(crate) struct WorkspaceUpgrade {
     data: PathBuf,
     local: PathBuf,
@@ -109,6 +226,8 @@ pub(crate) struct WorkspaceUpgrade {
     _owner: File,
     owner_process: u32,
     live_destination: Option<Journal>,
+    progress:
+        Option<std::sync::Arc<dyn Fn(crate::runtime::image_types::ImageProgress) + Send + Sync>>,
 }
 impl Drop for WorkspaceUpgrade {
     fn drop(&mut self) {
@@ -257,6 +376,12 @@ fn cancelled(closed: &watch::Receiver<bool>) -> Result<(), RuntimeError> {
     }
 }
 impl WorkspaceUpgrade {
+    pub(crate) fn set_progress(
+        &mut self,
+        progress: std::sync::Arc<dyn Fn(crate::runtime::image_types::ImageProgress) + Send + Sync>,
+    ) {
+        self.progress = Some(progress);
+    }
     pub(crate) fn open(data: &Path, local: &Path) -> Result<Self, RuntimeError> {
         Self::open_with_sync(data, local, image_cache::fs::sync)
     }
@@ -284,6 +409,7 @@ impl WorkspaceUpgrade {
             _owner: owner,
             owner_process: std::process::id(),
             live_destination: None,
+            progress: None,
         })
     }
     fn read_intent(&self) -> Result<Option<Intent>, RuntimeError> {
@@ -511,12 +637,7 @@ impl WorkspaceUpgrade {
             ("model-v1", Some(model)),
             ("model-account-v1", intent.account.clone()),
         ];
-        for (name, bytes) in &expected {
-            let current = read_bytes(&self.data.join("setup-v1").join(name), 16384)?;
-            if current.is_some() && current != *bytes {
-                return Err(RuntimeError::RetainedState);
-            }
-        }
+        self.check_transfer_metadata(&expected)?;
         if matches!(intent.credential, CredentialDisposition::Transferred) {
             return Ok(true);
         }
@@ -587,9 +708,154 @@ impl WorkspaceUpgrade {
     pub(crate) fn inspect(&self) -> Result<UpgradeStatus, RuntimeError> {
         self.recover()
     }
+    fn credential_label(&self, intent: &Intent) -> Result<&'static str, RuntimeError> {
+        if matches!(intent.credential, CredentialDisposition::Removed) {
+            return Ok("removed");
+        }
+        if let Some(slot) = self.slot(intent)? {
+            if self.slot_removed(slot)? {
+                return Ok("removed");
+            }
+        }
+        Ok(match intent.credential {
+            CredentialDisposition::Absent => "absent",
+            CredentialDisposition::Reserved | CredentialDisposition::Transferring => {
+                return saved_credential_label(intent.model.as_deref(), intent.source.installation)
+            }
+            CredentialDisposition::Transferred => "transferred",
+            CredentialDisposition::Removed => unreachable!(),
+        })
+    }
+    fn check_transfer_metadata(
+        &self,
+        expected: &[(&str, Option<Vec<u8>>)],
+    ) -> Result<(), RuntimeError> {
+        for (name, bytes) in expected {
+            let current = read_bytes(&self.data.join("setup-v1").join(name), 16384)?;
+            if current.is_some() && current != *bytes {
+                return Err(RuntimeError::RetainedState);
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn validate_transfer(&self, transaction: Uuid) -> Result<(), RuntimeError> {
+        let intent = self
+            .read_intent()?
+            .filter(|intent| intent.transaction == transaction)
+            .ok_or(RuntimeError::RetainedState)?;
+        if let Some(slot) = self.slot(&intent)? {
+            // Both pending and completed removal deny transfer before quiescence.
+            if self.slot_outcome(slot)?.is_some() {
+                return Err(RuntimeError::RetainedState);
+            }
+        }
+        if self.credential_label(&intent)? != "eligible" {
+            return Err(RuntimeError::RetainedState);
+        }
+        let destination = intent
+            .destination
+            .as_ref()
+            .ok_or(RuntimeError::RetainedState)?;
+        let model =
+            SetupStore::transferred_model(intent.model.as_deref(), destination.installation)
+                .map_err(|_| RuntimeError::RetainedState)?;
+        self.check_transfer_metadata(&[
+            ("model-v1", model),
+            ("model-account-v1", intent.account.clone()),
+        ])
+    }
+    /// The renderer never supplies a slot; derive the exact one this
+    /// transaction may remove. Prefers the live/current slot, falling back to
+    /// a still-unresolved archived (retry/restore) reference.
+    pub(crate) fn resolve_removal_slot(&self, transaction: Uuid) -> Result<Uuid, RuntimeError> {
+        let intent = self
+            .read_intent()?
+            .filter(|intent| intent.transaction == transaction)
+            .ok_or(RuntimeError::RetainedState)?;
+        if let Some(slot) = self.slot(&intent)? {
+            if !self.slot_removed(slot)? {
+                return Ok(slot);
+            }
+        }
+        for slot in self.archived_slots(&intent)? {
+            if !self.slot_removed(slot)? {
+                return Ok(slot);
+            }
+        }
+        Err(RuntimeError::RetainedState)
+    }
+    /// Nonsecret projection for the renderer. Never fails on the happy path:
+    /// an unreadable/inconsistent transaction becomes `conflict`, not an error
+    /// the caller must separately translate.
+    pub(crate) fn status_dto(&self, source: Option<&ImageSource>) -> UpgradeStatusDto {
+        match self.status_dto_fallible(source) {
+            Ok(dto) => dto,
+            Err(error) => UpgradeStatusDto::conflict(classify_error(&error)),
+        }
+    }
+    fn status_dto_fallible(
+        &self,
+        source: Option<&ImageSource>,
+    ) -> Result<UpgradeStatusDto, RuntimeError> {
+        self.reconcile_removed()?;
+        let Some(intent) = self.read_intent()? else {
+            return self.eligible_dto(source);
+        };
+        let status = self.recover()?;
+        let state = match status {
+            UpgradeStatus::None => "none",
+            UpgradeStatus::SourceSelected => "sourceSelected",
+            UpgradeStatus::SourceRetained => "sourceRetained",
+            UpgradeStatus::Fresh => "fresh",
+            UpgradeStatus::Incomplete => "incomplete",
+            UpgradeStatus::Consumed => "consumed",
+            UpgradeStatus::Restoring => "restoring",
+            UpgradeStatus::Restored => "restored",
+            UpgradeStatus::Conflict => "conflict",
+        };
+        Ok(UpgradeStatusDto {
+            state,
+            transaction: Some(intent.transaction),
+            created_at: Some(intent.created_at),
+            source_releases: intent.source_releases.clone(),
+            target_release: Some(intent.target_release.clone()),
+            retained_allocated_bytes: Some(intent.retained_allocated_bytes),
+            additional_bytes: Some(intent.additional_bytes),
+            credential: self.credential_label(&intent)?,
+            busy: false,
+            error: None,
+            repeated: status == UpgradeStatus::Restored || !intent.incomplete.is_empty(),
+            can_replace: matches!(
+                status,
+                UpgradeStatus::Restored
+                    | UpgradeStatus::SourceSelected
+                    | UpgradeStatus::SourceRetained
+                    | UpgradeStatus::Incomplete
+            ),
+            can_restore: matches!(
+                status,
+                UpgradeStatus::SourceSelected
+                    | UpgradeStatus::SourceRetained
+                    | UpgradeStatus::Incomplete
+                    | UpgradeStatus::Fresh
+                    | UpgradeStatus::Consumed
+                    | UpgradeStatus::Restoring
+            ),
+        })
+    }
+    /// No transaction yet. Offer replace only when the native-selected target
+    /// recognizes the canonical installation as a trusted, qualified
+    /// predecessor; current/newer/unknown/corrupt bindings stay `none` here,
+    /// same as ordinary launch, never surfaced as an upgrade opportunity.
+    fn eligible_dto(&self, source: Option<&ImageSource>) -> Result<UpgradeStatusDto, RuntimeError> {
+        eligible_status(&self.data, &self.local, source)
+    }
     /// Reconcile identities, not the last phase label. No recovery path synthesizes
     /// creation authority or moves an unexpected canonical directory out of the way.
     pub(crate) fn recover(&self) -> Result<UpgradeStatus, RuntimeError> {
+        self.recover_with_live(self.live_destination.as_ref())
+    }
+    fn recover_with_live(&self, live: Option<&Journal>) -> Result<UpgradeStatus, RuntimeError> {
         self.reconcile_removed()?;
         let Some(intent) = self.read_intent()? else {
             return Ok(UpgradeStatus::None);
@@ -668,10 +934,34 @@ impl WorkspaceUpgrade {
             }
             (None, Some(a)) if a == &intent.source => Ok(UpgradeStatus::SourceRetained),
             (Some(b), Some(a)) if a == &intent.source && Some(b) == intent.destination.as_ref() => {
-                if self.live_destination.is_some() {
+                let root = self.local.join("local-vm-v1");
+                if let Some(journal) = live {
+                    if journal.record().installation_id != b.installation
+                        || journal.record().state_identity != b.state
+                    {
+                        return Err(RuntimeError::RetainedState);
+                    }
+                    journal.verify_state()?;
+                    if binding_hash(&root)?
+                        != *intent
+                            .destination_binding_sha256
+                            .as_ref()
+                            .ok_or(RuntimeError::RetainedState)?
+                    {
+                        return Err(RuntimeError::RetainedState);
+                    }
+                    let image = crate::runtime::image_install::inspect_installed_image(
+                        &journal.image_target(&intent.target_binding.state_compatibility_id)?,
+                    )?;
+                    if image.identity() != &intent.target_binding {
+                        return Err(RuntimeError::RetainedState);
+                    }
+                    if journal.record().phase == StatePhase::Consumed {
+                        return Ok(UpgradeStatus::Consumed);
+                    }
+                    journal.require_fresh_creation()?;
                     return Ok(UpgradeStatus::Fresh);
                 }
-                let root = self.local.join("local-vm-v1");
                 let phase = read_record(&root)?.phase;
                 if let Some(hash) = &intent.destination_binding_sha256 {
                     verify_destination_binding(&root, &intent.target_binding, hash)?;
@@ -687,11 +977,6 @@ impl WorkspaceUpgrade {
             _ => Err(RuntimeError::RetainedState),
         }
     }
-    #[cfg(any(
-        test,
-        all(windows, target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
     pub(crate) fn replace(
         &mut self,
         source: &ImageSource,
@@ -700,6 +985,7 @@ impl WorkspaceUpgrade {
         runtime: &tokio::runtime::Handle,
     ) -> Result<UpgradeStatus, RuntimeError> {
         let cache_path = self.local.join("image-cache-v1");
+        let progress = self.progress.clone();
         self.replace_with(
             source,
             machine_id,
@@ -722,7 +1008,11 @@ impl WorkspaceUpgrade {
                         &cache,
                         &client,
                         closed.clone(),
-                        |_| {},
+                        move |event| {
+                            if let Some(progress) = &progress {
+                                progress(event);
+                            }
+                        },
                     ))?,
                 )
             },
@@ -730,11 +1020,6 @@ impl WorkspaceUpgrade {
             available_space,
         )
     }
-    #[cfg(any(
-        test,
-        all(windows, target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
     #[allow(clippy::too_many_arguments)] // Explicit native authority and acquisition/cancellation boundaries.
     fn replace_with(
         &mut self,
@@ -870,10 +1155,15 @@ impl WorkspaceUpgrade {
         intent.phase = Phase::DestinationCreated;
         self.persist(&intent)?;
         point("destination-recorded")?;
+        let progress = self.progress.clone();
         let image = runtime.block_on(prepared.materialize(
             &destination.image_target(source.compatibility())?,
             closed.clone(),
-            |_| {},
+            move |event| {
+                if let Some(progress) = &progress {
+                    progress(event);
+                }
+            },
         ))?;
         destination.validate_image(&image)?;
         intent.destination_binding_sha256 = Some(binding_hash(&root)?);
@@ -1122,34 +1412,144 @@ impl WorkspaceUpgrade {
         self.live_destination.take()
     }
 }
-/// Ordinary launch remains unavailable for *any* transaction until the
-/// association/deletion guards are implemented. No transaction preserves existing startup exactly.
-pub(crate) fn admit(root: &Path) -> Result<(), RuntimeError> {
-    let local = root.parent().ok_or(RuntimeError::RetainedState)?;
-    let path = local.join(STORE);
-    match fs::symlink_metadata(&path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.into()),
-        Ok(_) => {
-            directory_identity(&path)?;
-            if read_bytes(&path.join("intent.json"), 128 * 1024)?.is_some()
-                || path.join("intent.next").try_exists()?
-            {
-                Err(RuntimeError::RetainedState)
-            } else {
-                Ok(())
-            }
-        }
-    }
+/// Only a reconciled `None` (never replaced) or `Consumed` (B already booted
+/// under this app) destination may proceed through ordinary launch. Every
+/// other status needs an explicit upgrade action (retry/restore) first, and a
+/// restored A is never admitted here even though its directory looks normal.
+fn ordinary_launch_permitted(status: &UpgradeStatus) -> bool {
+    matches!(status, UpgradeStatus::None | UpgradeStatus::Consumed)
 }
-/// Runs before ordinary VM configuration and model mismatch processing.
-pub fn recover_startup(data: &Path, local: &Path) -> Result<(), RuntimeError> {
+/// Denial-only admission before touching VM custody; mutation paths still
+/// acquire and validate the transaction again after confirmed shutdown.
+pub(crate) fn validate_transaction(
+    data: &Path,
+    local: &Path,
+    transaction: Uuid,
+) -> Result<UpgradeStatus, RuntimeError> {
+    if transaction.is_nil() || !local.join(STORE).try_exists()? {
+        return Err(RuntimeError::RetainedState);
+    }
+    let owner = WorkspaceUpgrade::open(data, local)?;
+    let intent = owner
+        .read_intent()?
+        .filter(|intent| intent.transaction == transaction)
+        .ok_or(RuntimeError::RetainedState)?;
+    if intent.phase == Phase::Restored {
+        return Ok(UpgradeStatus::Restored);
+    }
+    if intent.phase == Phase::Restoring {
+        return Ok(UpgradeStatus::Restoring);
+    }
+    let canonical = installation(&local.join("local-vm-v1"))?;
+    if let Some(selected) = canonical {
+        if Some(&selected) == intent.destination.as_ref() {
+            return Ok(
+                if read_record(&local.join("local-vm-v1"))?.phase == StatePhase::Consumed {
+                    UpgradeStatus::Consumed
+                } else {
+                    UpgradeStatus::Incomplete
+                },
+            );
+        }
+        if selected == intent.source {
+            return Ok(UpgradeStatus::SourceSelected);
+        }
+        return Err(RuntimeError::RetainedState);
+    }
+    Ok(UpgradeStatus::SourceRetained)
+}
+pub(crate) fn validate_new_replacement(data: &Path, local: &Path) -> Result<(), RuntimeError> {
     if !local.join(STORE).try_exists()? {
         return Ok(());
     }
     let owner = WorkspaceUpgrade::open(data, local)?;
-    owner.recover()?;
-    admit(&local.join("local-vm-v1"))
+    if owner
+        .read_intent()?
+        .is_none_or(|intent| intent.phase == Phase::Restored)
+    {
+        Ok(())
+    } else {
+        Err(RuntimeError::RetainedState)
+    }
+}
+/// Read-only status for the renderer. Never creates the upgrade store as a
+/// side effect of polling: the overwhelmingly common "never replaced" case
+/// takes the same fast, non-mutating path as ordinary admission.
+pub(crate) fn upgrade_status(
+    data: &Path,
+    local: &Path,
+    source: Option<&ImageSource>,
+) -> UpgradeStatusDto {
+    match local.join(STORE).try_exists() {
+        Ok(false) => match eligible_status(data, local, source) {
+            Ok(dto) => dto,
+            Err(RuntimeError::Busy) => UpgradeStatusDto {
+                busy: true,
+                ..UpgradeStatusDto::none()
+            },
+            Err(error) => UpgradeStatusDto::conflict(classify_error(&error)),
+        },
+        Ok(true) => match WorkspaceUpgrade::open(data, local) {
+            Ok(owner) => owner.status_dto(source),
+            Err(RuntimeError::Busy) => UpgradeStatusDto {
+                busy: true,
+                ..UpgradeStatusDto::none()
+            },
+            Err(error) => UpgradeStatusDto::conflict(classify_error(&error)),
+        },
+        Err(error) => UpgradeStatusDto::conflict(classify_error(&RuntimeError::Io(error))),
+    }
+}
+/// Status-aware gate, called on every ordinary VM launch attempt, not only at
+/// process startup. `data` is D (app-data); `root` is L's canonical installation.
+pub(crate) fn admit_prepared(
+    data: &Path,
+    root: &Path,
+    journal: &Journal,
+) -> Result<(), RuntimeError> {
+    let selected = installation(root)?.ok_or(RuntimeError::RetainedState)?;
+    if selected.installation != journal.record().installation_id
+        || selected.state != journal.record().state_identity
+    {
+        return Err(RuntimeError::RetainedState);
+    }
+    journal.verify_state()?;
+    let local = root.parent().ok_or(RuntimeError::RetainedState)?;
+    if !local.join(STORE).try_exists()? {
+        return Ok(());
+    }
+    let owner = WorkspaceUpgrade::open(data, local)?;
+    match owner.recover_with_live(Some(journal))? {
+        UpgradeStatus::None | UpgradeStatus::Fresh | UpgradeStatus::Consumed => Ok(()),
+        _ => Err(RuntimeError::RetainedState),
+    }
+}
+pub(crate) fn admit(data: &Path, root: &Path) -> Result<(), RuntimeError> {
+    let local = root.parent().ok_or(RuntimeError::RetainedState)?;
+    if !local.join(STORE).try_exists()? {
+        return Ok(());
+    }
+    let owner = WorkspaceUpgrade::open(data, local)?;
+    if ordinary_launch_permitted(&owner.recover()?) {
+        Ok(())
+    } else {
+        Err(RuntimeError::RetainedState)
+    }
+}
+/// Runs before ordinary VM configuration and model mismatch processing.
+/// Returns whether any upgrade transaction was ever observed this reconcile,
+/// so callers can permanently suppress automatic first-test replay even when
+/// a later separate status poll fails.
+pub fn recover_startup(data: &Path, local: &Path) -> Result<bool, RuntimeError> {
+    if !local.join(STORE).try_exists()? {
+        return Ok(false);
+    }
+    let owner = WorkspaceUpgrade::open(data, local)?;
+    let status = owner.recover()?;
+    if !ordinary_launch_permitted(&status) {
+        return Err(RuntimeError::RetainedState);
+    }
+    Ok(status != UpgradeStatus::None)
 }
 #[cfg(test)]
 #[path = "workspace_upgrade_tests.rs"]
