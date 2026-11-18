@@ -253,30 +253,110 @@ async fn history_blocked_reader_times_out_releases_gate_and_keeps_shared_limit()
 
 #[test]
 fn history_blocked_live_reader_stop_does_not_hold_runtime_shutdown() {
+    use std::{io::Write, sync::atomic::AtomicU64, time::Instant};
+
+    const PHASES: [&str; 23] = [
+        "before_spawn",
+        "worker_entered",
+        "runtime_build_begin",
+        "runtime_built",
+        "setup_begin",
+        "setup_done",
+        "hook_installed",
+        "start_begin",
+        "start_done",
+        "reader_wait_begin",
+        "reader_entered",
+        "stop_begin",
+        "stop_done",
+        "assertions_done",
+        "owner_shutdown_begin",
+        "owner_shutdown_done",
+        "session_shutdown_begin",
+        "session_shutdown_done",
+        "async_locals_drop_begin",
+        "block_on_returned",
+        "runtime_drop_begin",
+        "runtime_drop_done",
+        "completion_sending",
+    ];
+    let origin = Instant::now();
+    let marks: Arc<[AtomicU64; PHASES.len()]> =
+        Arc::new(std::array::from_fn(|_| AtomicU64::new(u64::MAX)));
+    let worker_marks = Arc::clone(&marks);
     let (release, blocked) = std::sync::mpsc::channel();
     let (closed, closing) = std::sync::mpsc::channel();
+    marks[0].store(origin.elapsed().as_micros() as u64, Ordering::Release);
     let worker = std::thread::spawn(move || {
+        // Keep output and locks out of the measured worker path.
+        let phase = |index: usize| {
+            worker_marks[index].store(origin.elapsed().as_micros() as u64, Ordering::Release);
+        };
+        phase(1);
+        phase(2);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
+        phase(3);
         runtime.block_on(async {
+            phase(4);
             let s = setup().await;
+            phase(5);
             let mut entered = block_next_read(&s, blocked);
+            phase(6);
+            phase(7);
             let started = s.start().await;
+            phase(8);
+            phase(9);
             reader_started(&mut entered).await;
+            phase(10);
+            phase(11);
             let stopped = tokio::time::timeout(Duration::from_secs(1), s.owner.stop(&id(&started)))
                 .await
                 .expect("Stop must not wait for the filesystem read");
+            phase(12);
             assert_eq!(serde_json::to_value(stopped).unwrap()["stage"], "stopped");
             assert_eq!(s.api.wire.posts(), 0);
+            phase(13);
+            phase(14);
             s.owner.shutdown().await;
+            phase(15);
+            phase(16);
             s.session.shutdown().await;
+            phase(17);
+            phase(18);
         });
+        phase(19);
+        phase(20);
         drop(runtime);
+        phase(21);
+        phase(22);
         closed.send(()).unwrap();
     });
+    let wait_begin_us = origin.elapsed().as_micros();
     let result = closing.recv_timeout(Duration::from_secs(5));
+    let receive_end_us = origin.elapsed().as_micros();
+    // Freeze the verdict and sample before releasing the reader or risking a hung join.
+    // Worker progress can continue during this snapshot; it is not the exact deadline state.
+    let snapshot = marks
+        .iter()
+        .map(|mark| mark.load(Ordering::Acquire))
+        .collect::<Vec<_>>();
+    let snapshot_end_us = origin.elapsed().as_micros();
+    let phases = PHASES
+        .iter()
+        .zip(snapshot)
+        .filter(|(_, micros)| *micros != u64::MAX)
+        .map(|(name, micros)| format!("{name}={micros}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let summary = format!(
+        "reader-shutdown-timing-v1 os={} receive={result:?} wait_begin_us={wait_begin_us} receive_end_us={receive_end_us} snapshot_end_us={snapshot_end_us} phases_us=[{phases}]\n",
+        std::env::consts::OS,
+    );
+    // Direct stderr bypasses libtest's PASS print capture. I/O must not change the verdict.
+    let _ = std::io::stderr().lock().write_all(summary.as_bytes());
     // Always release the read before asserting/joining, even on RED or a worker panic.
     drop(release);
     let joined = worker.join();
