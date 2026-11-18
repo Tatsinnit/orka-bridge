@@ -35,13 +35,36 @@ impl VmBackend for Backend {
         unreachable!()
     }
 }
-struct Session(RuntimeWorker, Arc<std::sync::atomic::AtomicUsize>);
+// Own this inside block_on so unwinding releases blocking workers before Runtime::drop.
+struct ReleaseOnDrop(std::sync::mpsc::Sender<()>);
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+impl std::ops::Deref for ReleaseOnDrop {
+    type Target = std::sync::mpsc::Sender<()>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+type StopBarrier = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+struct Session(
+    RuntimeWorker,
+    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<Mutex<Option<StopBarrier>>>,
+);
 impl LocalSession for Session {
     fn execute(&mut self, _: EngineRequest) -> TransportFuture<'_> {
         panic!("upgrade must never send Connect/Test/Chat")
     }
     fn stop(&mut self) -> Result<(), RuntimeError> {
         self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let gate = self.2.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            entered.send(()).unwrap();
+            release.recv().unwrap();
+        }
         self.0.stop()
     }
 }
@@ -56,6 +79,15 @@ struct DestinationFactory {
     launched: Mutex<Vec<Uuid>>,
     stops: Arc<std::sync::atomic::AtomicUsize>,
     releases: std::sync::atomic::AtomicUsize,
+    adoption_error: Mutex<Option<RuntimeError>>,
+    stop_gate: Arc<Mutex<Option<StopBarrier>>>,
+    release_failure: std::sync::atomic::AtomicBool,
+    launch_gate: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
 }
 impl LocalFactory for DestinationFactory {
     fn adopt_destination(&self, journal: Journal) -> Result<(), RuntimeError> {
@@ -63,12 +95,21 @@ impl LocalFactory for DestinationFactory {
             entered.send(()).unwrap();
             release.lock().unwrap().recv().unwrap();
         }
+        if let Some(error) = self.adoption_error.lock().unwrap().take() {
+            return Err(error);
+        }
         *self.destination.lock().unwrap() = Some(journal);
         Ok(())
     }
     fn release_stopped(&self) -> Result<(), RuntimeError> {
         self.releases
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self
+            .release_failure
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RuntimeError::Unavailable);
+        }
         self.destination.lock().unwrap().take();
         Ok(())
     }
@@ -80,6 +121,11 @@ impl LocalFactory for DestinationFactory {
         // Exercise the same live-journal admission used by NativeFactory. No
         // platform VM or guest messages (Connect/Test/Chat) are involved.
         Box::pin(async {
+            let gate = self.launch_gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.await.unwrap();
+            }
             let journal = match self.destination.lock().unwrap().take() {
                 Some(journal) => {
                     admit_prepared(&self.data, &self.root, &journal)?;
@@ -120,7 +166,10 @@ impl LocalFactory for DestinationFactory {
                 }
             );
             self.launched.lock().unwrap().push(installation);
-            Ok(Box::new(Session(worker, self.stops.clone())) as Box<dyn LocalSession>)
+            Ok(
+                Box::new(Session(worker, self.stops.clone(), self.stop_gate.clone()))
+                    as Box<dyn LocalSession>,
+            )
         })
     }
 }
@@ -139,8 +188,18 @@ fn facade(
         launched: Mutex::new(Vec::new()),
         stops: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         releases: std::sync::atomic::AtomicUsize::new(0),
+        adoption_error: Mutex::new(None),
+        stop_gate: Arc::new(Mutex::new(None)),
+        release_failure: std::sync::atomic::AtomicBool::new(false),
+        launch_gate: Mutex::new(None),
     });
     (LocalVm::new(factory.clone()), factory)
+}
+fn completed(reply: UpgradeActionReply) -> UpgradeStatusDto {
+    match reply {
+        UpgradeActionReply::Completed { status } => status,
+        UpgradeActionReply::Cancelled { .. } => panic!("expected completion, not cancellation"),
+    }
 }
 fn target(scene: &Scene) -> UpgradeTarget {
     UpgradeTarget {
@@ -165,6 +224,445 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+fn forward_task(
+    scene: &Scene,
+    vm: &Arc<LocalVm>,
+    transaction: Option<Uuid>,
+) -> tokio::task::JoinHandle<Result<UpgradeActionReply, RuntimeError>> {
+    let (vm, data, local, target) = (
+        vm.clone(),
+        scene.data.clone(),
+        scene.local.clone(),
+        target(scene),
+    );
+    tokio::spawn(async move {
+        match transaction {
+            Some(id) => vm.retry_workspace(data, local, target, id).await,
+            None => vm.replace_workspace(data, local, target).await,
+        }
+    })
+}
+fn retry_transaction(scene: &mut Scene, retry: bool) -> Option<Uuid> {
+    if !retry {
+        return None;
+    }
+    scene.replace(Some("intent")).unwrap_err();
+    Some(
+        WorkspaceUpgrade::open(&scene.data, &scene.local)
+            .unwrap()
+            .read_intent()
+            .unwrap()
+            .unwrap()
+            .transaction,
+    )
+}
+
+#[test]
+fn facade_busy_restore_transfer_remove_and_quarantine_have_no_cancel_authority() {
+    for action in ["restore", "transfer", "remove"] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        runtime().block_on(async {
+            let dto = completed(forward_task(&scene, &vm, None).await.unwrap().unwrap());
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while vm.status() != LocalVmStatus::Ready {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let (entered, entered_rx) = std::sync::mpsc::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let release = ReleaseOnDrop(release);
+            *factory.stop_gate.lock().unwrap() = Some((entered, release_rx));
+            // Fail custody release after stop, before any credential-store access.
+            factory
+                .release_failure
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let (owner, data, local) = (vm.clone(), scene.data.clone(), scene.local.clone());
+            let work = tokio::spawn(async move {
+                match action {
+                    "restore" => {
+                        owner
+                            .restore_workspace(data, local, dto.transaction.unwrap())
+                            .await
+                    }
+                    "transfer" => {
+                        owner
+                            .transfer_workspace_credential(data, local, dto.transaction.unwrap())
+                            .await
+                    }
+                    "remove" => {
+                        owner
+                            .remove_workspace_credential(data, local, dto.transaction.unwrap())
+                            .await
+                    }
+                    _ => unreachable!(),
+                }
+            });
+            tokio::task::spawn_blocking(move || {
+                entered_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            let status = vm
+                .upgrade_status(scene.data.clone(), scene.local.clone())
+                .await;
+            let mut cancel = Box::pin(vm.cancel_workspace_upgrade());
+            let observed = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(std::future::Future::poll(cancel.as_mut(), cx))
+            })
+            .await;
+            release.send(()).unwrap();
+            let work_result = work.await.unwrap();
+            if observed.is_pending() {
+                let _ = cancel.await;
+            }
+            assert!(work_result.is_err());
+            assert!(status.busy);
+            assert!(!status.can_cancel);
+            assert!(matches!(
+                observed,
+                std::task::Poll::Ready(Ok(UpgradeCancelOutcome::NotCancellable))
+            ));
+            let quarantined = vm
+                .upgrade_status(scene.data.clone(), scene.local.clone())
+                .await;
+            assert_eq!(quarantined.error, Some("stopUnconfirmed"));
+            assert!(!quarantined.can_cancel);
+            assert_eq!(factory.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+            vm.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn facade_adoption_failures_are_not_user_cancellation() {
+    for retry in [false, true] {
+        for closed in [false, true] {
+            let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+            let transaction = retry_transaction(&mut scene, retry);
+            seed_cache(&mut scene);
+            let (entered, entered_rx) = std::sync::mpsc::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            let (vm, factory) = facade(&scene, Some((entered, Mutex::new(release_rx))));
+            *factory.adoption_error.lock().unwrap() = Some(if closed {
+                RuntimeError::Closed
+            } else {
+                RuntimeError::Io(std::io::Error::other("adoption I/O failure"))
+            });
+            runtime().block_on(async {
+                let release = ReleaseOnDrop(release);
+                let worker = forward_task(&scene, &vm, transaction);
+                tokio::task::spawn_blocking(move || {
+                    entered_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap()
+                })
+                .await
+                .unwrap();
+                let can_cancel = vm
+                    .upgrade_status(scene.data.clone(), scene.local.clone())
+                    .await
+                    .can_cancel;
+                let mut cancel = Box::pin(vm.cancel_workspace_upgrade());
+                let observed = std::future::poll_fn(|cx| {
+                    std::task::Poll::Ready(std::future::Future::poll(cancel.as_mut(), cx))
+                })
+                .await;
+                release.send(()).unwrap();
+                let result = worker.await.unwrap();
+                if observed.is_pending() {
+                    let _ = cancel.await;
+                }
+                assert!(can_cancel);
+                assert!(matches!(
+                    observed,
+                    std::task::Poll::Ready(Ok(UpgradeCancelOutcome::Requested))
+                ));
+                if closed {
+                    assert!(matches!(result, Err(RuntimeError::Closed)));
+                } else {
+                    assert!(matches!(result, Err(RuntimeError::Io(_))));
+                }
+                assert!(factory.launched.lock().unwrap().is_empty());
+                assert!(
+                    !vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                        .await
+                        .can_cancel
+                );
+                vm.shutdown().await.unwrap();
+            });
+        }
+    }
+}
+
+#[test]
+fn facade_terminal_close_dominates_user_cancel_in_either_order() {
+    use std::future::Future;
+    for retry in [false, true] {
+        for user_first in [false, true] {
+            let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+            let transaction = retry_transaction(&mut scene, retry);
+            seed_cache(&mut scene);
+            let (vm, factory) = facade(&scene, None);
+            runtime().block_on(async {
+                let forward = async {
+                    match transaction {
+                        Some(id) => {
+                            vm.retry_workspace(
+                                scene.data.clone(),
+                                scene.local.clone(),
+                                target(&scene),
+                                id,
+                            )
+                            .await
+                        }
+                        None => {
+                            vm.replace_workspace(
+                                scene.data.clone(),
+                                scene.local.clone(),
+                                target(&scene),
+                            )
+                            .await
+                        }
+                    }
+                };
+                tokio::pin!(forward);
+                std::future::poll_fn(|cx| {
+                    assert!(forward.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                if user_first {
+                    assert_eq!(
+                        vm.cancel_workspace_upgrade().await.unwrap(),
+                        UpgradeCancelOutcome::Requested
+                    );
+                }
+                vm.request_close();
+                assert_eq!(
+                    vm.cancel_workspace_upgrade().await.unwrap(),
+                    UpgradeCancelOutcome::NotCancellable
+                );
+                assert!(matches!(forward.await, Err(RuntimeError::Closed)));
+                assert!(
+                    !vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                        .await
+                        .can_cancel
+                );
+                assert!(factory.launched.lock().unwrap().is_empty());
+                vm.shutdown().await.unwrap();
+            });
+        }
+    }
+}
+
+#[test]
+fn facade_cancel_marked_startup_joins_late_session_without_releasing_creator() {
+    use std::future::Future;
+    for retry in [false, true] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        let transaction = retry_transaction(&mut scene, retry);
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *factory.launch_gate.lock().unwrap() = Some((entered, release_rx));
+        runtime().block_on(async {
+            let reply_status = completed(
+                forward_task(&scene, &vm, transaction)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+            assert!(
+                reply_status.can_cancel,
+                "the admitted marked startup is cancellable"
+            );
+            entered_rx.await.unwrap();
+            assert_eq!(vm.status(), LocalVmStatus::Preparing);
+            assert!(
+                vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                    .await
+                    .can_cancel
+            );
+            let cancel = vm.cancel_workspace_upgrade();
+            tokio::pin!(cancel);
+            std::future::poll_fn(|cx| {
+                assert!(cancel.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert_eq!(vm.status(), LocalVmStatus::Closing);
+            assert!(
+                !vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                    .await
+                    .can_cancel
+            );
+            release.send(()).unwrap();
+            assert_eq!(cancel.await.unwrap(), UpgradeCancelOutcome::Completed);
+            assert_eq!(vm.status(), LocalVmStatus::Cancelled);
+            assert_eq!(factory.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            // An ordinary restart must not inherit upgrade cancellation authority.
+            let (entered, entered_rx) = tokio::sync::oneshot::channel();
+            let (release, release_rx) = tokio::sync::oneshot::channel();
+            *factory.launch_gate.lock().unwrap() = Some((entered, release_rx));
+            vm.start();
+            entered_rx.await.unwrap();
+            assert!(
+                !vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                    .await
+                    .can_cancel
+            );
+            assert_eq!(
+                vm.cancel_workspace_upgrade().await.unwrap(),
+                UpgradeCancelOutcome::NotCancellable
+            );
+            assert_eq!(vm.status(), LocalVmStatus::Preparing);
+            release.send(()).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while vm.status() != LocalVmStatus::Ready {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(factory.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+            vm.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn facade_retirement_observer_still_has_forward_cancel_authority() {
+    use std::future::Future;
+    for retry in [false, true] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        let transaction = retry_transaction(&mut scene, retry);
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        let weak = Arc::downgrade(&vm);
+        vm.on_workspace_replaced(Arc::new(move || {
+            let vm = weak.upgrade().unwrap();
+            let mut cancel = Box::pin(vm.cancel_workspace_upgrade());
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(matches!(
+                cancel.as_mut().poll(&mut cx),
+                std::task::Poll::Ready(Ok(UpgradeCancelOutcome::Requested))
+            ));
+        }));
+        runtime().block_on(async {
+            assert!(matches!(
+                forward_task(&scene, &vm, transaction).await.unwrap(),
+                Ok(UpgradeActionReply::Cancelled { .. })
+            ));
+            assert!(factory.launched.lock().unwrap().is_empty());
+            factory
+                .destination
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .require_fresh_creation()
+                .unwrap();
+            vm.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn facade_upgrade_reply_serialization_is_per_action_not_status_acknowledgement() {
+    for (outcome, value) in [
+        (UpgradeCancelOutcome::Requested, "requested"),
+        (UpgradeCancelOutcome::Completed, "completed"),
+        (UpgradeCancelOutcome::NotCancellable, "notCancellable"),
+    ] {
+        assert_eq!(serde_json::to_value(outcome).unwrap(), value);
+    }
+    let dto = UpgradeStatusDto::none();
+    assert!(!dto.can_cancel);
+    for (reply, outcome) in [
+        (
+            UpgradeActionReply::Completed {
+                status: dto.clone(),
+            },
+            "completed",
+        ),
+        (UpgradeActionReply::Cancelled { status: dto }, "cancelled"),
+    ] {
+        let value = serde_json::to_value(reply).unwrap();
+        assert_eq!(value["outcome"], outcome);
+        assert_eq!(value["status"]["canCancel"], false);
+        assert!(value["status"].get("outcome").is_none());
+    }
+}
+
+#[test]
+fn facade_late_upgrade_cancel_cannot_stop_ready_destination() {
+    for retry in [false, true] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        let transaction = if retry {
+            scene.replace(Some("intent")).unwrap_err();
+            Some(
+                WorkspaceUpgrade::open(&scene.data, &scene.local)
+                    .unwrap()
+                    .read_intent()
+                    .unwrap()
+                    .unwrap()
+                    .transaction,
+            )
+        } else {
+            None
+        };
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        runtime().block_on(async {
+            match transaction {
+                Some(id) => {
+                    vm.retry_workspace(scene.data.clone(), scene.local.clone(), target(&scene), id)
+                        .await
+                }
+                None => {
+                    vm.replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
+                        .await
+                }
+            }
+            .unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while vm.status() != LocalVmStatus::Ready {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                !vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                    .await
+                    .can_cancel
+            );
+            assert_eq!(
+                vm.cancel_workspace_upgrade().await.unwrap(),
+                UpgradeCancelOutcome::NotCancellable
+            );
+            assert_eq!(
+                vm.status(),
+                LocalVmStatus::Ready,
+                "late Cancel stopped Ready; retry={retry}"
+            );
+            assert_eq!(factory.stops.load(std::sync::atomic::Ordering::SeqCst), 0);
+            vm.shutdown().await.unwrap();
+        });
+    }
+}
+
 #[test]
 fn facade_replace_hands_live_creation_authority_to_launch_and_reports_fresh() {
     let mut scene = Scene::new(ImageTarget::WindowsAmd64);
@@ -175,6 +673,7 @@ fn facade_replace_hands_live_creation_authority_to_launch_and_reports_fresh() {
             .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
             .await
             .unwrap();
+        let dto = completed(dto);
         assert_eq!(dto.state, "fresh");
         assert!(!dto.busy);
         assert!(vm.workspace_replaced());
@@ -254,12 +753,11 @@ fn facade_dropped_forward_waiter_never_releases_lifecycle_before_work_finishes()
             .await
             .unwrap();
             worker.abort();
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            assert!(worker.await.unwrap_err().is_cancelled());
             vm.start();
             let held_status = vm.status();
             let launched_early = !factory.launched.lock().unwrap().is_empty();
             release.send(()).unwrap();
-            let _ = worker.await;
             let _ = tokio::time::timeout(std::time::Duration::from_secs(1), async {
                 while retired.load(std::sync::atomic::Ordering::SeqCst) == 0 {
                     tokio::task::yield_now().await;
@@ -286,6 +784,7 @@ fn facade_dropped_forward_waiter_never_releases_lifecycle_before_work_finishes()
 
 #[test]
 fn facade_shutdown_joins_forward_handoff_before_returning() {
+    use std::future::Future;
     for retry in [false, true] {
         let mut scene = Scene::new(ImageTarget::WindowsAmd64);
         let transaction = if retry {
@@ -332,16 +831,16 @@ fn facade_shutdown_joins_forward_handoff_before_returning() {
             })
             .await
             .unwrap();
-            let shutdown = {
-                let vm = vm.clone();
-                tokio::spawn(async move { vm.shutdown().await })
-            };
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-            let finished_early = shutdown.is_finished();
+            let shutdown = vm.shutdown();
+            tokio::pin!(shutdown);
+            let finished_early = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(shutdown.as_mut().poll(cx).is_ready())
+            })
+            .await;
             // Always unblock the owned fileworker before assertions or joins.
             release.send(()).unwrap();
-            worker.await.unwrap().unwrap();
-            shutdown.await.unwrap().unwrap();
+            assert!(matches!(worker.await.unwrap(), Err(RuntimeError::Closed)));
+            shutdown.await.unwrap();
             vm.start();
             tokio::task::yield_now().await;
             assert!(!finished_early, "shutdown detached handoff; retry={retry}");
@@ -366,6 +865,7 @@ fn facade_rejects_foreign_nil_and_replayed_transactions_without_mutating_identit
                 .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
                 .await
                 .unwrap();
+            let dto = completed(dto);
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 while vm.status() != LocalVmStatus::Ready {
                     tokio::task::yield_now().await;
@@ -456,6 +956,7 @@ fn facade_explicit_retry_from_blocked_startup_boots_only_new_b() {
             )
             .await
             .unwrap();
+        let dto = completed(dto);
         assert_eq!(dto.state, "fresh");
         assert!(
             Arc::ptr_eq(&configured, &vm),
@@ -521,6 +1022,7 @@ fn facade_cold_consumed_restart_seeds_transaction_before_ordinary_startup() {
             .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
             .await
             .unwrap();
+        let before = completed(before);
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while vm.status() != LocalVmStatus::Ready {
                 tokio::task::yield_now().await;
@@ -604,6 +1106,7 @@ fn facade_restore_stops_current_b_and_restores_a_without_starting_it() {
             .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
             .await
             .unwrap();
+        let dto = completed(dto);
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while vm.status() != LocalVmStatus::Ready {
                 tokio::task::yield_now().await;
@@ -694,6 +1197,7 @@ fn facade_completed_removal_ack_refuses_replay_before_stopping_b() {
             .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
             .await
             .unwrap();
+        let dto = completed(dto);
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
             while vm.status() != LocalVmStatus::Ready {
                 tokio::task::yield_now().await;
@@ -738,6 +1242,7 @@ fn facade_transfer_rejects_removal_outcomes_before_stopping_b() {
                 .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
                 .await
                 .unwrap();
+            let dto = completed(dto);
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 while vm.status() != LocalVmStatus::Ready {
                     tokio::task::yield_now().await;
@@ -828,8 +1333,8 @@ fn facade_cancel_local_before_forward_worker_runs_keeps_a() {
             vm.shutdown().await.unwrap();
             assert!(cancel.is_ok(), "retry={retry}");
             assert!(
-                result.is_err(),
-                "acknowledged cancel was lost; retry={retry}"
+                matches!(result, Ok(UpgradeActionReply::Cancelled { .. })),
+                "acknowledged cancel must be a typed cancellation; retry={retry}"
             );
             assert_eq!(
                 read_record(&scene.local.join("local-vm-v1"))
@@ -891,11 +1396,13 @@ fn facade_cancel_local_during_forward_handoff_retains_b_without_launching() {
             // Release before any assertion, even if cancellation failed.
             release.send(()).unwrap();
             let result = forward.await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             vm.shutdown().await.unwrap();
             assert!(entered.is_ok());
             assert!(cancel.is_ok(), "retry={retry}");
-            assert!(result.is_ok(), "handoff must finish; retry={retry}");
+            assert!(
+                matches!(result, Ok(UpgradeActionReply::Cancelled { .. })),
+                "handoff must report cancellation; retry={retry}"
+            );
             assert!(
                 factory.launched.lock().unwrap().is_empty(),
                 "launch after acknowledged cancel; retry={retry}"
@@ -924,6 +1431,7 @@ fn facade_transfer_rejects_conflicting_current_metadata_before_stopping_b() {
                 .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
                 .await
                 .unwrap();
+            let dto = completed(dto);
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 while vm.status() != LocalVmStatus::Ready {
                     tokio::task::yield_now().await;

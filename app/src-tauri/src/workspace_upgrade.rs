@@ -116,6 +116,20 @@ pub struct UpgradeStatusDto {
     pub repeated: bool,
     pub can_replace: bool,
     pub can_restore: bool,
+    pub can_cancel: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpgradeCancelOutcome {
+    Requested,
+    Completed,
+    NotCancellable,
+}
+#[derive(Debug, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum UpgradeActionReply {
+    Completed { status: UpgradeStatusDto },
+    Cancelled { status: UpgradeStatusDto },
 }
 impl UpgradeStatusDto {
     pub(crate) fn none() -> Self {
@@ -133,6 +147,7 @@ impl UpgradeStatusDto {
             repeated: false,
             can_replace: false,
             can_restore: false,
+            can_cancel: false,
         }
     }
     pub(crate) fn conflict(error: Option<&'static str>) -> Self {
@@ -841,6 +856,7 @@ impl WorkspaceUpgrade {
                     | UpgradeStatus::Consumed
                     | UpgradeStatus::Restoring
             ),
+            can_cancel: false,
         })
     }
     /// No transaction yet. Offer replace only when the native-selected target

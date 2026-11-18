@@ -1921,7 +1921,7 @@ mod release_image_tests {
         assert_eq!(factory.releases.load(Ordering::SeqCst), 0);
         assert_eq!(vm.status(), LocalVmStatus::Cancelled);
         assert!(!vm.workspace_replaced());
-        assert!(vm.upgrade_cancel.lock().unwrap().is_none());
+        assert!(vm.inner.state.lock().unwrap().upgrade_cancel.is_none());
         assert!(!local.join("workspace-upgrades-v1").exists());
         assert_eq!(fs::read(root.join("record.json")).unwrap(), record);
         assert_eq!(fs::read(root.join("image-binding.json")).unwrap(), binding);
