@@ -173,7 +173,7 @@ func capture(_ name: String, menu: Bool = false) throws {
     try VNImageRequestHandler(url: URL(fileURLWithPath: file)).perform([request])
     let seen = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
     if menu {
-        check(seen.contains("Open Bridge") && seen.contains("Stop the local cluster and quit"), "Native menu not drawn in screenshot: \(seen)")
+        check(seen.contains("Open Bridge") && seen.contains("Quit Bridge"), "Native menu not drawn in screenshot: \(seen)")
     } else {
         check(seen.contains("web-reader.agent.md"), "Reopened window lost File editor view: \(seen)")
         // Render the PNG's profile into sRGB bytes; NSColor calibration changed the sampled values.
@@ -216,7 +216,7 @@ func menu(_ root: AXUIElement) -> [AXUIElement] {
     // Click the real item at its native bounds, as in the existing OCR walk.
     click(item)
     let open = find(root, "menu-open") { attribute($0, "AXTitle") as? String == "Open Bridge" }
-    let stop = find(root, "menu-stop") { attribute($0, "AXTitle") as? String == "Stop the local cluster and quit" }
+    let stop = find(root, "menu-stop") { attribute($0, "AXTitle") as? String == "Quit Bridge" }
     check(attribute(open, "AXEnabled") as? Bool == true && attribute(stop, "AXEnabled") as? Bool == true, "Native menu commands disabled")
     return [open, stop]
 }
@@ -292,36 +292,17 @@ func closeMain() {
     press(close as! AXUIElement)
 }
 let noticeMarker = data.appendingPathComponent("close-notice-seen-v1")
-let needsNotice = !FileManager.default.fileExists(atPath: noticeMarker.path)
-func noticeVisible() -> Bool { shownStrings(root).contains("Bridge is still running") }
-closeMain()
-if needsNotice {
-    wait("First Close did not explain background running") { noticeVisible() }
-    check(!FileManager.default.fileExists(atPath: noticeMarker.path), "Close notice marked seen before acknowledgement")
-    try command("/usr/sbin/screencapture", ["-x", "\(output)/first-close-notice.png"])
-    let noticeText = shownStrings(root).joined(separator: " ")
-    check(noticeText.contains("menu bar") && noticeText.contains("Stop the local cluster and quit"), "Close notice lost reopen/Quit guidance")
-    press(find(root, "close-notice-ok") { pressable($0, "OK") })
-}
-wait("Native Close did not hide") { windowInfo() == nil }
-check(FileManager.default.fileExists(atPath: noticeMarker.path) && !noticeVisible(), "Acknowledged notice was not remembered/dismissed")
-check(!app!.isTerminated, "Close quit instead of hiding")
+let priorNoticeMarker = try? Data(contentsOf: noticeMarker)
+// This driver never starts a native VM. Keep reopen/retention coverage through
+// minimization; idle Close is terminal and must not manufacture a Ready notice.
 let commands = menu(root)
-try capture("menu-hidden", menu: true)
+try capture("menu-visible", menu: true)
 press(commands[0])
-wait("Open Bridge did not reopen/focus") { windowInfo() != nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
 retained(); try capture("reopened-menu")
-closeMain()
-wait("Close before Dock activation did not hide") { windowInfo() == nil }
-check(!noticeVisible(), "Second Close repeated the information dialog")
-try command("/usr/bin/open", [bundle]) // LaunchServices delivers Dock-style Reopen.
+check(AXUIElementSetAttributeValue(main, "AXMinimized" as CFString, kCFBooleanTrue) == .success, "Cannot minimize for Dock activation")
+try command("/usr/bin/open", [bundle])
 wait("Dock activation did not reopen/focus") { windowInfo() != nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
 retained(); try capture("reopened-dock")
-closeMain()
-wait("Close before second launch did not hide") { windowInfo() == nil }
-try command("\(bundle)/Contents/MacOS/orka-bridge", [])
-wait("Second launch did not show/focus hidden window") { windowInfo() != nil && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid }
-retained(); try capture("reopened-second-launch-hidden")
 check(AXUIElementSetAttributeValue(main, "AXMinimized" as CFString, kCFBooleanTrue) == .success, "Cannot minimize main window")
 wait("Window did not minimize") { attribute(main, "AXMinimized") as? Bool == true }
 try command("\(bundle)/Contents/MacOS/orka-bridge", [])
@@ -331,14 +312,21 @@ check(NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
 let stop = menu(root)[1]
 try capture("menu-stop", menu: true)
 press(stop)
-wait("Stop the local cluster and quit did not exit") { app!.isTerminated }
+wait("Quit Bridge did not exit") { app!.isTerminated }
 // A separate launch proves standard AppKit Quit, not a synthetic terminate selector.
 let quitRoot = try launch()
 guard let appMenu = attribute(quitRoot, "AXMenuBar") else { fatalError("Missing native application menu bar") }
 press(find(appMenu as! AXUIElement, "application-menu") { attribute($0, "AXRole") as? String == "AXMenuBarItem" && attribute($0, "AXTitle") as? String == "Bridge" })
 press(find(quitRoot, "menu-quit") { attribute($0, "AXTitle") as? String == "Quit Bridge" })
 wait("Standard Quit did not exit") { app!.isTerminated }
+// Separate idle launch: no saved local workspace exists, so native Close must exit.
+let idleRoot = try launch()
+main = find(idleRoot, "idle-window") { attribute($0, "AXRole") as? String == "AXWindow" }
+closeMain()
+wait("Idle Close did not exit") { app!.isTerminated }
+check((try? Data(contentsOf: noticeMarker)) == priorNoticeMarker, "Idle Close changed the running-workspace notice marker")
+try "idle-close-exited: no native Ready producer; no background notice claimed.\n".write(toFile: "\(output)/idle-close-exited.txt", atomically: true, encoding: .utf8)
 check(!FileManager.default.fileExists(atPath: selected) && !FileManager.default.fileExists(atPath: data.appendingPathComponent("local-vm-v1").path), "Saved local selection or VM data appeared")
-let evidence = "PASS \(theme): native first-Close notice/acknowledgement when unseen, profile marker and second Close without dialog, Close/hide, tray menu/Open, same PID \(pid)/window \(originalID), File view and edited text retained, Dock activation, hidden/minimized second launches, menu stop, standard Quit. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof.\n"
+let evidence = "PASS \(theme): idle-close-exited without notice/marker change; native menu/Open, same PID \(pid)/window \(originalID), File view and edited text retained, Dock activation, minimized second launch, menu Quit Bridge, standard Quit. Integrated debug shell only; empty image source, no VM/Ready/background-close/notice/provider/cluster/session logout proof.\n"
 try evidence.write(toFile: "\(output)/evidence.txt", atomically: true, encoding: .utf8)
 print(evidence)

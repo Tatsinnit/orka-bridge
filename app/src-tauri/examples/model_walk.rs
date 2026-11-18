@@ -169,8 +169,7 @@ impl ChatFixture {
     }
 }
 
-// Returning-workspace transitions are action-owned; the existing selector only
-// settles an in-flight transition (or injects an unreadable status).
+// Synthetic renderer state only. Explicit capture scenes do not start a native VM.
 #[cfg(all(target_os = "macos", feature = "custom-protocol"))]
 struct WorkspaceFixture {
     selected: bool,
@@ -518,6 +517,36 @@ fn main() {
                         }
                     }
                     let mut state = workspace.lock().unwrap();
+                    if command == "setup_status" {
+                        let scene = match phase.as_deref() {
+                            Some("workspace-scene-ready") => Some("ready"),
+                            Some("workspace-scene-starting") => Some("starting"),
+                            Some("workspace-scene-failed" | "workspace-scene-stopped-unexpectedly" | "workspace-scene-stop-failed") => Some("failed"),
+                            Some("workspace-scene-closed") => Some("closed"),
+                            _ => None,
+                        };
+                        if let Some(scene) = scene {
+                            let reload = !state.returning;
+                            state.selected = true;
+                            state.phase = scene;
+                            state.returning = true;
+                            state.stop_failed = phase.as_deref() == Some("workspace-scene-stop-failed");
+                            if reload {
+                                // Retire setup presentation once, then observe the saved selection
+                                // on a fresh renderer, just as a returning fixture session would.
+                                invoke.message.webview()
+                                    .eval("localStorage.setItem('bridge.firstTest.v1', 'attempted'); location.reload();")
+                                    .expect("fixture returning renderer reload");
+                            }
+                            let mut status = state.status();
+                            if phase.as_deref() == Some("workspace-scene-stopped-unexpectedly") {
+                                status["workspaceFailure"] = json!({"operation":"start", "cause":"unknown", "codes":[]});
+                                status["localVmError"] = json!("Synthetic workspace stopped unexpectedly.");
+                            }
+                            invoke.resolver.resolve(status);
+                            return true;
+                        }
+                    }
                     if command == "setup_status" && phase.as_deref() == Some("workspace-reset-ready") {
                         // Explicit fixture-only reset between independent terminal captures.
                         // Never rearm the first test or exercise a real restart here.

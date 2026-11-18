@@ -11,8 +11,8 @@ export type ModelState = 'idle' | 'queued' | 'connecting' | 'removing' | 'resett
 // `enabled` is native permission to touch credentials. `queueable` only permits remembering the
 // creator's choice while the workspace is still arriving. `away` means another place was chosen.
 // Each increase of changeRequest explicitly asks to change the AI provider.
-export default function Model({ enabled, queueable = false, paused = false, away = false, primary = true, changeRequest = 0, recoveryTarget, choiceTarget, inline = false, onPlaceCard = false, onState, onSettled, onConnectRequest }: {
-  choiceTarget?: HTMLElement | null; inline?: boolean;
+export default function Model({ title = 'Connect the AI', enabled, queueable = false, paused = false, away = false, primary = true, changeRequest = 0, recoveryTarget, choiceTarget, inline = false, onPlaceCard = false, onState, onSettled, onConnectRequest }: {
+  title?: string; choiceTarget?: HTMLElement | null; inline?: boolean;
   enabled: boolean; queueable?: boolean; paused?: boolean; away?: boolean; primary?: boolean; changeRequest?: number; recoveryTarget?: HTMLElement | null; onPlaceCard?: boolean; onState?: (state: ModelState) => void; onSettled?: () => void; onConnectRequest?: () => void;
 }) {
   // In-memory consent only. It never carries a credential and is consumed once.
@@ -234,7 +234,7 @@ export default function Model({ enabled, queueable = false, paused = false, away
   const compact = inline && !portaled;
   const content = <section ref={root} className={portaled || compact ? 'setup-model' : 'card setup-model'} aria-labelledby="model-title" aria-busy={!!busy} onFocusCapture={() => { focusWithin.current = true; }} onBlurCapture={event => { if (event.relatedTarget) focusWithin.current = !!root.current?.contains(event.relatedTarget); }} onKeyDown={event => { if (event.key === 'Escape' && !busy && (changing || confirmRemoval || compact && expanded)) { event.stopPropagation(); closeChange(); } }}>
     <div className={compact ? 'model-inline-head' : 'steps-head'}>
-      <h2 id="model-title" ref={heading} tabIndex={-1} className={compact ? 'sr-only' : undefined}>{removalFailed ? `Couldn't remove the saved ${keyMode ? 'key' : 'sign-in'}` : 'Connect the AI'}</h2>
+      <h2 id="model-title" ref={heading} tabIndex={-1} className={compact ? 'sr-only' : undefined}>{removalFailed ? `Couldn't remove the saved ${keyMode ? 'key' : 'sign-in'}` : title}</h2>
       {compact && <span role="status" aria-atomic="true">{keyMode ? 'Your own API key' : 'GitHub Copilot'}{queued ? ', connects when the workspace is ready' : ', connect at step 3'}</span>}
       {ready && <div ref={status} role="status" tabIndex={-1} className="model-state"><StatusPill state="passed">Connected</StatusPill></div>}
       {compact && <Button ref={changeButton} type="button" kind="quiet" disabled={paused || !!busy} aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>Change</Button>}

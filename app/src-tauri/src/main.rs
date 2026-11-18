@@ -14,6 +14,11 @@ use tauri::Manager;
 mod lifecycle;
 
 #[tauri::command]
+fn quit_bridge(app: tauri::AppHandle) {
+    lifecycle::stop(&app);
+}
+
+#[tauri::command]
 async fn engine_call(
     request: EngineRequest,
     state: tauri::State<'_, EngineState>,
@@ -767,6 +772,7 @@ fn main() {
             setup_status,
             setup_select_local,
             setup_cancel_local,
+            quit_bridge,
             setup_change_local,
             setup_requirements,
             setup_preflight,

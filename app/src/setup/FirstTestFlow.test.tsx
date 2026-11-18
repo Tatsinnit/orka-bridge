@@ -1,6 +1,6 @@
 import { openLocalSetup } from './test-navigation';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import App from '../App';
@@ -11,15 +11,15 @@ const other = '12345678-1234-1234-1234-123456789abc';
 const idle = { documentId: sample, busy: null, state: 'idle', canRun: true, modelConnected: true, report: null, acknowledged: [], pending: null, error: null };
 function native(holdSave = false, lostReplies = false) {
   vi.stubGlobal('isTauri', true);
-  let selected = false; let running = false; let finished = false; let stopped = false;
+  let selected = false; let running = false; let finished = false; let stopped = false; let workspaceFailed = false;
   let attemptId: unknown;
   let unreadable = false; let unreadableFiles = false; let verdict = 'passed'; let saved = pair; let modelUnavailable = false;
-  const status = () => ({ selected: selected ? 'localVm' : null, localVm: stopped ? 'cancelled' : selected ? 'ready' : 'idle', model: selected && !stopped ? 'available' : 'locked' });
+  const status = () => ({ selected: selected ? 'localVm' : null, localVm: workspaceFailed ? 'failed' : stopped ? 'cancelled' : selected ? 'ready' : 'idle', model: selected && !stopped && !workspaceFailed ? 'available' : 'locked' });
   const ipc = vi.fn((command: string, payload?: unknown) => {
     const args = payload as Record<string, unknown> | undefined;
     if (command === 'setup_status') return status();
     if (command === 'setup_requirements') return null;
-    if (command === 'setup_select_local') { selected = true; stopped = false; if (lostReplies) throw Error('Lost selection reply'); return status(); }
+    if (command === 'setup_select_local') { selected = true; stopped = false; workspaceFailed = false; if (lostReplies) throw Error('Lost selection reply'); return status(); }
     if (command === 'setup_cancel_local') { stopped = true; running = false; return status(); }
     if (command === 'setup_change_local') { selected = false; return status(); }
     if (command === 'setup_example') return { agent: pair.agent, tests: pair.tests };
@@ -27,6 +27,7 @@ function native(holdSave = false, lostReplies = false) {
     if (command === 'setup_remove_model') return { ready: false };
     if (command === 'workspace_catalog') return { defaultModel: 'file-model', models: { state: 'ready', items: [{ id: 'file-model' }] }, tools: { state: 'ready', items: [] } };
     if (command === 'agent_select') return null;
+    if (command === 'agents_list') return [{ id: sample, name: 'web-reader', path: '/agents/web-reader.agent.md', available: true }, { id: other, name: 'other', path: '/agents/other.agent.md', available: true }];
     if (command === 'agent_open') { if (unreadableFiles) throw Error('Lost file read'); return args?.documentId === other ? { ...pair, documentId: other, name: 'other', agent: '---\nname: other\n---\nOther instructions.' } : { ...saved, documentId: sample, name: 'web-reader' }; }
     if (command === 'agent_save') { if (holdSave) return new Promise(() => {}); saved = { ...pair, agent: String(args?.content), source: { ...pair.source, agent: 'c'.repeat(64) } }; return { ...saved, documentId: sample, name: 'web-reader' }; }
     if (command === 'agent_run') { attemptId = args?.attemptId; running = true; finished = false; if (lostReplies) throw Error('Lost run reply'); return { ...idle, ...(attemptId ? { attemptId } : {}), state: 'running', canRun: false, busy: { documentId: sample, name: 'web-reader' } }; }
@@ -41,7 +42,7 @@ function native(holdSave = false, lostReplies = false) {
     if (command === 'overview_agents') return { state: 'unavailable', installation: null, agents: [], observation: null, observedAt: null, runActive: false, reason: 'stopped' };
     throw Error('Unexpected command: ' + command);
   });
-  mockIPC(ipc); return { ipc, unavailable: () => { modelUnavailable = true; }, finish: () => { finished = true; }, loseWorkspace: () => { selected = false; }, loseRunStatus: () => { unreadable = true; }, restoreRunStatus: () => { unreadable = false; }, loseFileReads: () => { unreadableFiles = true; }, restoreFileReads: () => { unreadableFiles = false; }, editFiles: () => { saved = { ...pair, agent: pair.agent + ' External edit.', source: { ...pair.source, agent: 'd'.repeat(64) } }; }, failNext: () => { verdict = 'failed'; } };
+  mockIPC(ipc); return { ipc, failWorkspace: () => { workspaceFailed = true; }, unavailable: () => { modelUnavailable = true; }, finish: () => { finished = true; }, loseWorkspace: () => { selected = false; }, loseRunStatus: () => { unreadable = true; }, restoreRunStatus: () => { unreadable = false; }, loseFileReads: () => { unreadableFiles = true; }, restoreFileReads: () => { unreadableFiles = false; }, editFiles: () => { saved = { ...pair, agent: pair.agent + ' External edit.', source: { ...pair.source, agent: 'd'.repeat(64) } }; }, failNext: () => { verdict = 'failed'; } };
 }
 beforeEach(() => localStorage.setItem('bridge.welcomeSeen.v1', '1'));
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
@@ -86,16 +87,18 @@ test('opening Designer during the automatic first test defers catalog discovery 
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe('attempted');
 });
 
-test('Stop after the first-pass story retains the workspace without replaying the story or automatic run on restart', async () => {
-  const { ipc, finish } = native(); const user = await completeSetup();
+test('observed workspace failure and restart after the first-pass story never replays the story or automatic run', async () => {
+  const { ipc, finish, failWorkspace } = native(); const user = await completeSetup();
   await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1)); finish();
   await user.click(await screen.findByRole('button', { name: 'Open web-reader' }));
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  await user.click(await screen.findByRole('button', { name: 'Stop the workspace' }));
-  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
-  await user.click(await screen.findByRole('button', { name: 'Start' }));
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  await openLocalSetup(user);
+  failWorkspace(); fireEvent.focus(window);
+  await user.click(await screen.findByRole('button', { name: 'Restart workspace' }));
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await screen.findByRole('button', { name: 'Change' });
+  expect(screen.queryByRole('button', { name: /Stop.*workspace|^Start$/ })).toBeNull();
   expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
   expect(screen.queryByRole('heading', { name: 'Your first agent passed its test' })).toBeNull();
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
@@ -189,7 +192,10 @@ test.each(['passed', 'failed', 'unreadable', 'edited'] as const)('Setup retains 
     await openLocalSetup(user);
   }
   if (state === 'passed' || state === 'failed') {
-    await user.click(card.getByRole('button', { name: 'See what it answered' }));
+    if (state === 'failed') {
+      await user.click(screen.getByRole('button', { name: 'Designer' }));
+      await user.selectOptions(screen.getByRole('combobox', { name: 'Agent' }), sample);
+    } else await user.click(card.getByRole('button', { name: 'See what it answered' }));
     await screen.findByRole('heading', { name: 'web-reader', level: 1 });
   }
 });
@@ -305,7 +311,7 @@ test('a requested document switch does not admit the pending test while the boun
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(0);
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe('pending');
   expect(screen.getByText('Run your first agent', { selector: 'li b' }).closest('li')?.querySelector('.status-stale')).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Stop the workspace' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /Stop.*workspace/ })).toBeNull();
   // A subsequently observed report ends the first-test step without turning unsaved edits into a pass.
   finish();
   await waitFor(() => expect(screen.queryByText('Setting up, step 4 of 4')).toBeNull(), { timeout: 2000 });

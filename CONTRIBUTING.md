@@ -98,7 +98,7 @@ still needs the [preview walks](docs/preview.md) before app publication.
 
 ## Reopen and remove the saved sign-in
 
-After **Stop the local cluster and quit**, reopen Bridge and use **Use GitHub sign-in**
+After **Quit Bridge**, reopen Bridge and use **Use GitHub sign-in**
 once the workspace is running. Bridge reuses its native-store copy without
 reading GitHub CLI again. A new VM boot first disconnects the prior owned model
 route. This requires an image built with the retained-connection cleanup handler;

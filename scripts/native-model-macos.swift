@@ -28,8 +28,8 @@ func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
         try rejects("invalid invocation \(bad)") { _ = try parseNativeModelArguments(bad) }
     }
     try manifest.validate()
-    try check(manifest.model.count == 198 && manifest.destinationsWorkspace.count == 47, "198/47 baseline")
-    for name in ["local-catalog-no-destination-wide", "local-stopped", "local-workspace-image-update-minimum", "local-workspace-image-unsupported-minimum"] {
+    try check(manifest.model.count == 198 && manifest.destinationsWorkspace.count == 45, "198/45 returning-workspace partition")
+    for name in ["local-catalog-no-destination-wide", "local-workspace-ready-wide", "local-workspace-stop-failed-details-minimum", "local-designer-waiting-chat-minimum", "local-workspace-image-update-minimum", "local-workspace-image-unsupported-minimum"] {
         try check(manifest.destinationsWorkspace.contains(name), "complete allocated journey includes \(name)")
     }
     for scope in NativeModelScope.allCases {
@@ -95,12 +95,12 @@ struct NativeModelCaptureManifest: Decodable {
         }
     }
     func validate() throws {
-        guard model.count == 198, destinationsWorkspace.count == 47,
+        guard model.count == 198, destinationsWorkspace.count == 45,
               Set(model).count == model.count,
               Set(destinationsWorkspace).count == destinationsWorkspace.count,
               Set(model).isDisjoint(with: Set(destinationsWorkspace)),
               !(model + destinationsWorkspace).contains("local-probe") else {
-            throw NativeModelHarnessError("Capture manifest must partition 245 unique named captures into 198 model and 47 destination/workspace names")
+            throw NativeModelHarnessError("Capture manifest must partition 243 unique named captures into 198 model and 45 destination/workspace names")
         }
     }
 }
@@ -456,7 +456,7 @@ localSize(1280, 800)
 scroll(4000)
 require(enabledButton("Remove sign-in") == nil, "Remove must be absent before the first sign-in attempt")
 click("Connect the AI", rows)
-rows = try capture("local-completed", ["This computer", "Workspace ready", "Stop the workspace", "Run your first agent"])
+rows = try capture("local-completed", ["This computer", "Workspace ready", "Run your first agent"])
 require(!rows.contains { ($0.topCandidates(1).first?.string ?? "").range(of: "[Ss]tep [0-9]+ of [45]", options: .regularExpression) != nil },
         "Completed local page must not keep a setup counter")
 // Connected now only exposes Change; it opens a panel before the existing removal confirmation.
@@ -519,7 +519,7 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
 localSize(1280, 800); scroll(4000)
 click("By cluster", [])
 click("Clusters", [])
-// Workspace Stop is exercised after the original baseline coverage below.
+// Returning workspace observations follow the original baseline coverage below.
 // Reuse the setup-progress selector and the existing Places entry to remount real
 // preflight for each bounded synthetic result. No native admission command runs.
 // This synthetic reset is a fresh choice, so acknowledge Welcome explicitly;
@@ -1608,112 +1608,61 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
 }
 try FileManager.default.removeItem(at: setupProgress)
 
-// Stop/restart uses real UI actions. The existing selector settles only pending
-// synthetic IPC; no VM, credentials or provider is accessed.
-localSize(1280, 800)
-scroll(4000)
-click("Clusters", [])
-// The first click returns from Designer; the second opens the Clusters list.
-click("Clusters", [])
-// The unavailable snapshot unmounted Model and retired its in-memory consent.
-// Open the local page, then reconnect only the synthetic AI before the existing Stop walk.
-waitForButton("Connect the AI"); click("Connect the AI", [])
-press("Connect the AI")
-_ = try seek("Connected", -100)
+// Explicit scenes use only the existing synthetic fixture's IPC owner.
 func workspacePhase(_ phase: String) throws {
     try phase.write(to: setupProgress, atomically: true, encoding: .utf8)
     Thread.sleep(forTimeInterval: 1.2)
 }
 func workspaceCapture(_ state: String, _ expected: [String]) throws {
     for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
-        localSize(width, height)
-        scroll(4000)
+        localSize(width, height); scroll(4000)
         _ = try capture("local-workspace-\(state)-\(size)", expected)
+        require(enabledButton("Stop the workspace") == nil && enabledButton("Start") == nil && enabledButton("Cancel") == nil, "Returning workspace must not expose Start/Stop/Cancel")
+        if ["failed", "stopped-unexpectedly", "stop-failed"].contains(state) {
+            require(!anyButton("Hide details"), "Diagnostics must start folded")
+            click("Show details", [])
+            _ = try capture("local-workspace-\(state)-details-\(size)", state == "stopped-unexpectedly" ? ["Synthetic workspace stopped unexpectedly.", "Hide details"] : ["Hide details"])
+            click("Hide details", [])
+        }
     }
-    localSize(1280, 800)
-    scroll(4000)
+    localSize(1280, 800); scroll(4000)
 }
-try workspacePhase("workspace-wait")
-click("Stop the workspace", [])
-try workspaceCapture("confirmation", ["Stop the workspace?", "Stop workspace", "Keep running"])
-click("Keep running", [])
-require(enabledButton("Stop the workspace") != nil, "Keep running must not stop the workspace")
-click("Stop the workspace", [])
-click("Stop workspace", [])
-try workspaceCapture("stopping", ["This computer", "Workspace", "Stopping"])
-require(enabledButton("Start") == nil, "Start must be disabled until stop acknowledgement")
-try workspacePhase("workspace-stopped")
-waitForButton("Start")
-try workspaceCapture("stopped", ["This computer", "Workspace", "Stopped", "Start"])
-_ = try capture("local-stopped", ["This computer", "Stopped", "Start"])
-require(!nativeElements().contains { attribute($0, "AXRole") as? String == "AXRadioButton" }, "Stop must not return to first-run choices")
-click("Start", [])
-waitForButton("Cancel")
-try workspaceCapture("starting", ["This computer", "Starting", "0:18 so far", "Cancel"])
-try workspacePhase("workspace-wait")
-click("Cancel", [])
-try workspacePhase("workspace-stopped")
-waitForButton("Start")
-try workspaceCapture("cancelled", ["This computer", "Stopped", "Start"])
-click("Start", [])
-try workspacePhase("workspace-failed")
-waitForButton("Try again")
-try workspaceCapture("failed", ["This computer", "Couldn't start", "Try again"])
-try workspacePhase("workspace-wait")
-click("Try again", [])
-try workspacePhase("workspace-running")
-waitForButton("Stop")
-try workspaceCapture("running", ["This computer", "Running", "Stop"])
-try workspacePhase("workspace-wait")
-click("Stop", [])
-click("Stop workspace", [])
-try workspacePhase("workspace-stopped")
-waitForButton("Start")
-try workspacePhase("workspace-unavailable")
-try workspaceCapture("unavailable", ["This computer", "Status unavailable"])
-require(enabledButton("Start") == nil, "Unreadable status must not authorize Start")
-try workspacePhase("workspace-stopped")
-waitForButton("Start")
-click("Start", [])
-try workspacePhase("workspace-running")
-waitForButton("Stop")
-try workspacePhase("workspace-wait")
-click("Stop", [])
-click("Stop workspace", [])
-try workspacePhase("workspace-closed")
-try workspaceCapture("closed", ["This computer", "Stopped", "Quit Bridge and reopen it"])
-require(enabledButton("Start") == nil, "Terminal closed state must not offer an inert Start")
-// Closed and failed are terminal: reset only the bounded fixture selector for
-// independent Stop failures, rather than duplicating the full restart walk.
-try workspacePhase("workspace-reset-ready")
-waitForButton("Stop")
-try workspacePhase("workspace-wait")
-click("Stop", [])
-click("Stop workspace", [])
-try workspacePhase("workspace-stop-failed")
-try workspaceCapture("stop-failed", ["This computer", "Couldn't stop", "Try again"])
-require(enabledButton("Try again") == nil, "Unconfirmed Stop must not authorize Try again")
-require(enabledButton("Start") == nil, "Unconfirmed Stop must not authorize Start")
-
-try workspacePhase("workspace-reset-ready")
-waitForButton("Stop")
-try workspacePhase("workspace-wait")
-click("Stop", [])
-click("Stop workspace", [])
-try workspacePhase("workspace-stop-lost-reply")
-try workspaceCapture("stop-lost-reply", ["This computer", "Status unavailable", "Workspace status is unavailable"])
-require(enabledButton("Stop") == nil && enabledButton("Start") == nil, "Lost Stop reply must pause workspace actions")
-try workspacePhase("workspace-stopped")
-waitForButton("Start")
-try workspaceCapture("stop-reply-recovered", ["This computer", "Stopped", "Start"])
-
-// Typed binding refusals use the existing recovery card, never an upgrade action.
+// First scene reloads once with selected localVm plus the attempted marker.
+try workspacePhase("workspace-scene-ready")
+waitForButton("Manage"); click("Manage", [])
+try workspaceCapture("ready", ["This computer", "Ready", "Agents", "Files"])
+require(nativeHeadingExists("AI"), "Returning Model must be headed AI")
+click("What's inside", [])
+_ = try capture("local-workspace-inside", ["4 GB of memory"])
+click("What's inside", [])
+try workspacePhase("workspace-scene-starting")
+try workspaceCapture("starting-after-quit-synthetic", ["This computer", "Starting", "0:18 so far"])
+click("Designer", [])
+for (view, label) in [("Agent", "tests"), ("Chat", "chat")] {
+    localSize(1280, 800); scroll(4000)
+    click(view, [])
+    for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+        localSize(width, height); scroll(view == "Chat" ? -12000 : 4000)
+        _ = try seek("Waiting for the workspace to start.", -100)
+        _ = try capture("local-designer-waiting-\(label)-\(size)", ["Waiting for the workspace to start."])
+    }
+}
+click("Clusters", [])
+try workspacePhase("workspace-scene-failed")
+try workspaceCapture("failed", ["This computer", "Couldn't start", "Restart workspace"])
+try workspacePhase("workspace-scene-stopped-unexpectedly")
+try workspaceCapture("stopped-unexpectedly", ["This computer", "Your workspace didn't start.", "Restart workspace"])
+try workspacePhase("workspace-scene-stop-failed")
+try workspaceCapture("stop-failed", ["This computer", "The workspace didn't stop.", "Quit Bridge"])
+require(enabledButton("Restart workspace") == nil, "Unconfirmed Stop must not authorize restart")
+try workspacePhase("workspace-scene-closed")
+try workspaceCapture("closed", ["This computer", "Stopped", "Quit Bridge"])
 for (phase, summary) in [("image-update", "This version of Bridge needs a new workspace."), ("image-unsupported", "This workspace uses different cluster files.")] {
     try workspacePhase(phase)
-    try workspaceCapture(phase, [summary, "Open the matching Bridge version."])
-    require(enabledButton("Try again") == nil && !anyButton("Set up new workspace"), "Image refusal must not retry or replace the workspace")
-    require(!nativeTextExists("The cluster download couldn't be verified."), "Version mismatch is not download corruption")
+    try workspaceCapture(phase, [summary, "Restart workspace"])
+    require(enabledButton("Restart workspace") == nil && !anyButton("Set up new workspace"), "Image refusal must not retry or replace the workspace")
 }
+try "Renderer-only synthetic state captures, not VM lifecycle proof. Native Ready close notice, menu-bar dot and real quit/reopen startup remain unverified.\n".write(toFile: "\(output)/workspace-capture-gaps.txt", atomically: true, encoding: .utf8)
 }
 
 try coverage.finish()

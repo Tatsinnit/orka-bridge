@@ -334,8 +334,8 @@ test('model acknowledgment and observed check counts survive navigation', async 
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   expect(await within(screen.getByRole('contentinfo')).findByText('Workspace ready')).toBeTruthy();
-  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is running on this computer.');
-  expect(document.querySelector('.host-chip')?.textContent).toBe('This computer: The workspace is running on this computer.');
+  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is ready on this computer.');
+  expect(document.querySelector('.host-chip')?.textContent).toBe('This computer: The workspace is ready on this computer.');
   expect(document.querySelector('.host-chip .live-dot')?.className).toContain('ready');
   await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
   expect(await within(screen.getByRole('contentinfo')).findByText('1 of 2 passed')).toBeTruthy();
@@ -369,37 +369,25 @@ test.each(['cancelling', 'cancelled', 'beforeStart', 'unconfirmed'] as const)('a
   expect(within(screen.getByRole('contentinfo')).queryByText(/tests passing|\d+ of \d+ passed/i)).toBeNull();
 });
 
-test('Stop from cancellation shares Setup busy/status and leaves a restarted cluster usable', async () => {
+test('unconfirmed run cancellation offers native Quit Bridge without another workspace admission', async () => {
   vi.stubGlobal('isTauri', true);
   const documentId = '9b2b93c4-375c-4815-9717-39852a96e411';
-  let status = { selected: 'localVm' as string | null, localVm: 'ready', model: 'locked' };
-  let finish!: (value: unknown) => void;
   const ipc = vi.fn(command => {
-    if (command === 'setup_status') return status;
-    if (command === 'setup_cancel_local') return new Promise(resolve => { finish = resolve; });
-    if (command === 'setup_select_local') { status = { selected: 'localVm', localVm: 'ready', model: 'locked' }; return status; }
+    if (command === 'setup_status') return { selected: 'localVm', localVm: 'ready', model: 'locked' };
+    if (command === 'quit_bridge') return Promise.reject(Error('Quit unavailable'));
     if (command === 'agent_open') return { documentId, name: 'reader', agent: '---\nname: reader\n---\nRead.', tests: 'Check' };
     if (command === 'agent_run_status') return { documentId, busy: null, state: 'complete', canRun: true, cancellation: 'unconfirmed', canRetryCancellation: false, canCheckCancellation: false, report: { verdict: 'unknown', cases: [] }, acknowledged: [], pending: null, error: 'session' };
     return { kind: 'version', version: 'v0.4.2', hasDiagnostics: false };
   }); mockIPC(ipc);
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Read its instructions' }));
-  await user.click(await screen.findByRole('button', { name: 'Stop the workspace' }));
-  expect(screen.getByRole('button', { name: 'Clusters' }).getAttribute('aria-current')).toBe('page');
-  expect(within(screen.getByRole('contentinfo')).getByText('Stopping the workspace. Your agents and files are kept.')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Stop the workspace' })?.hasAttribute('disabled')).not.toBe(false);
+  await user.click(await screen.findByRole('button', { name: 'Quit Bridge' }));
+  expect(await screen.findByText("Couldn't quit Bridge. Use Quit Bridge from its menu.")).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Designer' }).getAttribute('aria-current')).toBe('page');
+  expect(screen.queryByRole('button', { name: 'Stop the workspace' })).toBeNull();
   expect(localStorage.getItem('bridge.firstTest.v1')).toBeNull();
-  status = { selected: 'localVm', localVm: 'cancelled', model: 'locked' };
-  await act(async () => finish(status));
-  await screen.findByRole('heading', { name: 'This computer', level: 1 });
-  expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
-  await user.click(screen.getByRole('button', { name: 'Start' }));
-  await user.click(screen.getByRole('button', { name: 'Designer' }));
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Run tests' }).hasAttribute('disabled')).toBe(false));
-  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_cancel_local')).toHaveLength(1);
-  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_select_local')).toHaveLength(1);
-  expect(ipc.mock.calls.some(([cmd]) => cmd === 'setup_change_local')).toBe(false);
-  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'agent_run')).toHaveLength(0);
+  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'quit_bridge')).toHaveLength(1);
+  expect(ipc.mock.calls.some(([cmd]) => ['setup_cancel_local', 'setup_select_local', 'setup_change_local', 'agent_run'].includes(cmd))).toBe(false);
 });
 
 test('a running check finishes in the footer after leaving Designer', async () => {

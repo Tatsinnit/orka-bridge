@@ -5,7 +5,7 @@ import Places from '../clusters/Places';
 import { Button } from '../components/Button';
 import { Disclosure } from '../components/Disclosure';
 import type { Place } from '../overview/api';
-import { armFirstTest, retireFirstTest } from './first-test';
+import { armFirstTest, firstTestAttempted, firstTestPending, retireFirstTest } from './first-test';
 import Model, { type ModelState } from './Model';
 import Preflight from './Preflight';
 import { canQueueModel, setupView } from './progress';
@@ -23,7 +23,7 @@ const pending = (state: LocalVmState) => ['preparing', 'installing', 'starting',
 const runtimeCopy = {
   notIntegrated: 'Workspace setup is not included in this build. Nothing will be downloaded or started.',
 };
-export type LocalClusterControl = { stop: () => void; showPlaces: () => void };
+export type LocalClusterControl = { showPlaces: () => void };
 export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onModelState, onWelcome, onExampleName, firstCheck, firstPass, modelUnavailable, firstTestResult, initialAutomatic, onCheckFirstTest, onStarting, onWorkspaceAction, onPlace, place, onLocalView, onWorkspaceMode, active = true }: {
   ref?: Ref<LocalClusterControl>;
   onOpenExample: () => void; onOpenAgent?: () => void; active?: boolean;
@@ -46,12 +46,9 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(true);
   const [sending, setSending] = useState(false);
-  const [pendingAction, setPendingAction] = useState<'start' | 'cancel' | 'change'>();
+  const [pendingAction, setPendingAction] = useState<'start' | 'cancel'>();
   const [workspace, setWorkspace] = useState(false);
-  const [confirmStop, setConfirmStop] = useState(false);
-  const stopTrigger = useRef<HTMLButtonElement>(null);
-  const confirmAction = useRef<HTMLButtonElement>(null);
-  useEffect(() => { if (confirmStop) confirmAction.current?.focus(); }, [confirmStop]);
+  const initialStatus = useRef(true);
   useEffect(() => { onWorkspaceMode?.(workspace); }, [workspace, onWorkspaceMode]);
   const mutation = useRef(false);
   const mounted = useRef(false);
@@ -136,7 +133,13 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
     const request = ++epoch.current;
     void setupStatus().then(result => {
       if (request !== epoch.current) return;
-      if (result.ok) { setStatus(result.status); setError(undefined); }
+      if (result.ok) {
+        if (initialStatus.current) {
+          // A saved choice also exists mid-setup. Only a retired first-test intent proves a returning session.
+          setWorkspace(result.status.selected === 'localVm' && result.status.localVm !== 'notIntegrated' && firstTestAttempted()); initialStatus.current = false;
+        }
+        setStatus(result.status); setError(undefined);
+      }
       else {
         // An unreadable observation pauses actions, not an already admitted connection.
         setError(result.message);
@@ -166,9 +169,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   function chooseComputer() { publishPlace({ kind: 'thisComputer' }); }
   function openExample() { if (firstPass) setPayoffDismissed(true); chooseComputer(); onOpenExample(); }
   function back() { focusChoice.current = true; setPanel('places'); }
-  function requestStop(button: HTMLButtonElement) { stopTrigger.current = button; setConfirmStop(true); }
-  function keepRunning() { setConfirmStop(false); stopTrigger.current?.focus(); }
-  function openLocal() { focusChoice.current = true; setLocation('local'); setPreflightBlocked(true); setPanel('local'); }
+  function openLocal() { focusChoice.current = true; if (status?.selected === 'localVm' && status.localVm !== 'notIntegrated' && firstCheck && !firstTestPending() && (!firstPass || payoffDismissed)) setWorkspace(true); setLocation('local'); setPreflightBlocked(true); setPanel('local'); }
   function removed(key: string, targetId: string | undefined, navigate: boolean) {
     const current = currentPlaceRef.current;
     if (targetId && current.kind === 'cluster' && current.target?.id === targetId) publishPlace({ kind: 'cluster' });
@@ -176,13 +177,12 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
     setSnapshot(value => value && { ...value, places: value.places.filter(p => p.key !== key), selectedKey: value.selectedKey === key ? null : value.selectedKey });
     if (navigate) back();
   }
-  async function chooseLocal(action: 'start' | 'cancel' | 'change' = 'start') {
+  async function chooseLocal(action: 'start' | 'cancel' = 'start') {
     if (mutation.current || !status || (action !== 'cancel' && busy)) return;
     if (action === 'start' && status.selected === 'localVm' && !['cancelled', 'closed', 'failed'].includes(status.localVm)) return;
     // Observation must not invalidate an explicit selection awaiting its reply.
     const firstStart = action === 'start' && status.selected !== 'localVm';
     if (firstStart) armFirstTest();
-    if (action === 'change') { retireFirstTest(); start(); setWorkspace(true); setConfirmStop(false); }
     clearTimeout(timer.current);
     ++epoch.current;
     mutation.current = true;
@@ -194,7 +194,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
     if (!mounted.current) return;
     onWorkspaceAction?.(false);
     setSending(false); setPendingAction(undefined);
-    if (result.ok) { focusChoice.current = true; setStatus(result.status); if (action === 'change') setPanel('local'); }
+    if (result.ok) { focusChoice.current = true; setStatus(result.status); }
     else { setError(result.message); }
     onStatus?.(result.ok ? result.status : undefined);
     const waiting = result.ok && pending(result.status.localVm);
@@ -204,7 +204,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   }
 
   const continueAction = <Button type="button" kind="primary" aria-describedby={location === 'local' && requirements ? 'preflight-reason' : undefined} disabled={busy || !status || !!error || (location === 'local' && status.localVm !== 'notIntegrated' && requirements !== null && preflightBlocked)} onClick={() => { if (location === 'cluster') chooseCluster(); else void chooseLocal(); }}>Continue</Button>;
-  useImperativeHandle(ref, () => ({ stop() { setPanel('local'); void chooseLocal('change'); }, showPlaces() { if (view !== 'places') back(); } }));
+  useImperativeHandle(ref, () => ({ showPlaces() { if (view !== 'places') back(); } }));
   const titleId = active ? 'page-title' : undefined;
   if (!status && !error) return <><h1 id={titleId}>Clusters</h1><p role="status">Checking the workspace…</p></>;
   if (welcome && status) return <Welcome titleId={titleId} onStart={start} onCluster={() => chooseCluster()} unavailable={status.localVm === 'notIntegrated' ? runtimeCopy.notIntegrated : undefined} />;
@@ -234,7 +234,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
     {showPayoff && firstPass && <FirstPass snapshot={firstPass} titleId={titleId} onOpen={openExample} />}
     <div hidden={view !== 'local' || !!showPayoff}>
       {cluster && <Button type="button" kind="secondary" onClick={chooseComputer}>Use this computer</Button>}
-      <div className={workspace ? 'returning-workspace-stack' : selected ? `setup workspace-setup-grid${status?.localVm === 'failed' || modelRecovery ? ' workspace-setup-failed' : ''}` : 'workspace-choice local-preflight'}>
+      <div className={workspace ? 'setup workspace-setup-grid' : selected ? `setup workspace-setup-grid${status?.localVm === 'failed' || modelRecovery ? ' workspace-setup-failed' : ''}` : 'workspace-choice local-preflight'}>
         {!selected && !workspace && <>
           <section className="card">
             <p className="workspace-choice-step muted">Step 1 of 4</p>
@@ -265,15 +265,12 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
           </section>
         </>}
         <div className="setup-column setup-main">
-        {confirmStop && <fieldset className="workspace-stop-confirm" aria-label="Stop the workspace?">
-          <legend>Stop the workspace?</legend><p>Any running tests or chats will end. Actions already taken are not undone. Your agents and files are kept.</p>
-          <div className="workspace-step-actions"><Button type="button" kind="secondary" ref={confirmAction} disabled={busy || !!error} onClick={() => { heading.current?.focus(); void chooseLocal('change'); }}>Stop workspace</Button><Button type="button" kind="quiet" onClick={keepRunning}>Keep running</Button></div>
-        </fieldset>}
-        {workspace && status && <Workspace status={status} busy={sending} stopping={sending && pendingAction !== 'start'} starting={sending && pendingAction === 'start'} error={error} model={modelState} onStart={() => { void chooseLocal(); }} onCancel={() => { void chooseLocal('cancel'); }} active={active && view === 'local'} onStop={requestStop} />}
-        {!workspace && selected && status && <SetupProgress modelChoiceRef={setStepChoice} modelUnavailable={modelUnavailable} onChooseProvider={() => setProviderChange(value => value + 1)} modelRecoveryRef={setStepRecovery} status={status} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={onCheckFirstTest} busy={sending} stopping={sending && pendingAction !== 'start'} error={error} modelState={modelMounted ? modelState : 'idle'} onCancel={() => { void chooseLocal('cancel'); }} onRestart={() => { void chooseLocal(); }} onCluster={() => chooseCluster()} onChange={requestStop} onOpenExample={openExample} />}
+        {workspace && status && <Workspace status={status} busy={sending} stopping={sending && pendingAction !== 'start'} starting={sending && pendingAction === 'start'} error={error} onStart={() => { void chooseLocal(); }} active={active && view === 'local'} />}
+        {!workspace && selected && status && <SetupProgress modelChoiceRef={setStepChoice} modelUnavailable={modelUnavailable} onChooseProvider={() => setProviderChange(value => value + 1)} modelRecoveryRef={setStepRecovery} status={status} firstCheck={firstCheck} firstTestResult={firstTestResult} initialAutomatic={initialAutomatic} onCheckFirstTest={onCheckFirstTest} busy={sending} stopping={sending && pendingAction !== 'start'} error={error} modelState={modelMounted ? modelState : 'idle'} onCancel={() => { void chooseLocal('cancel'); }} onRestart={() => { void chooseLocal(); }} onCluster={() => chooseCluster()} onOpenExample={openExample} />}
         </div>
         <div className="setup-column setup-side">
-        {status && modelMounted && <div className="setup-model-slot"><Model inline={canQueueModel(status)} choiceTarget={stepChoice} changeRequest={providerChange} onPlaceCard={view === 'places'} recoveryTarget={view === 'places' ? placeRecovery : stepRecovery} enabled={status.model === 'available'} queueable={canQueueModel(status)} paused={!!error || sending} away={cluster} primary={status.localVm === 'ready'} onConnectRequest={() => { chooseComputer(); if (view === 'places') setPanel('local'); }} onState={observeModel} onSettled={() => setCheck(value => value + 1)} /></div>}
+        {workspace && status?.localVm !== 'ready' && <section className="card"><h2>AI</h2><p className="muted">Waiting for the workspace to start.</p></section>}
+        {status && modelMounted && <div className="setup-model-slot" hidden={workspace && status.localVm !== 'ready'}><Model title={workspace ? 'AI' : undefined} inline={!workspace && canQueueModel(status)} choiceTarget={workspace ? null : stepChoice} changeRequest={providerChange} onPlaceCard={view === 'places'} recoveryTarget={view === 'places' ? placeRecovery : workspace ? null : stepRecovery} enabled={status.model === 'available'} queueable={canQueueModel(status)} paused={!!error || sending} away={cluster} primary={status.localVm === 'ready'} onConnectRequest={() => { chooseComputer(); if (view === 'places') setPanel('local'); }} onState={observeModel} onSettled={() => setCheck(value => value + 1)} /></div>}
         {!workspace && selected && status && status.localVm !== 'ready' && status.localVm !== 'failed' && <Meet onRead={openExample} onName={onExampleName} />}
         </div>
       </div>

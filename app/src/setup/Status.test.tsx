@@ -50,14 +50,13 @@ test('an unreadable poll preserves the last-known failed step without admitting 
   expect(list.querySelector('.status-running, .status-passed, [aria-current]')).toBeNull();
 });
 
-test('unfinished local row, shell and card agree; finished local page owns Stop and cluster navigation never stops', async () => {
+test('unfinished local row, shell and card agree; finished workspace and cluster navigation offer no normal Stop', async () => {
   vi.stubGlobal('isTauri', true);
-  let status: SetupStatus = ready;
+  const status: SetupStatus = ready;
   const ipc = vi.fn((command: string) => {
     if (command === 'setup_status') return status;
     if (command === 'setup_requirements') return null;
     if (command === 'setup_connect_model') return { ready: true };
-    if (command === 'setup_cancel_local') { status = { selected: 'localVm', localVm: 'cancelled', model: 'locked' }; return status; }
     if (command === 'cluster_places') return { selectedKey: null, places: [], persistenceState: 'complete' };
     if (command === 'cluster_contexts') return [];
     throw Error('Unexpected ' + command);
@@ -75,7 +74,7 @@ test('unfinished local row, shell and card agree; finished local page owns Stop 
   await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
   expect(await screen.findByRole('heading', { name: 'This computer', level: 1 })).toBeTruthy();
   expect(screen.queryByText(/Setting up, step 4 of 4/)).toBeNull();
-  expect(screen.getByRole('button', { name: 'Stop the workspace' }).className).toBe('button button-secondary');
+  expect(screen.queryByRole('button', { name: /Stop.*workspace/ })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(screen.getByRole('button', { name: 'Add a cluster' }));
   expect(await screen.findByRole('button', { name: 'kubectl context' })).toBeTruthy();
@@ -83,16 +82,9 @@ test('unfinished local row, shell and card agree; finished local page owns Stop 
   expect(screen.getByRole('contentinfo').textContent?.trim()).not.toBe('');
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   await user.click(within(screen.getByRole('region', { name: 'This computer' })).getByRole('button', { name: 'Manage' }));
-  await user.click(screen.getByRole('button', { name: 'Stop the workspace' }));
-  expect(ipc.mock.calls.some(([cmd]) => cmd === 'setup_cancel_local')).toBe(false);
-  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
   expect(await screen.findByRole('heading', { name: 'This computer', level: 1 })).toBeTruthy();
-  expect(screen.getByRole('button', { name: 'Start' }).hasAttribute('disabled')).toBe(false);
-  expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
-  expect(within(screen.getByRole('region', { name: 'Workspace' })).getByText('Stopped', { selector: '.pill' }).className).toContain('status-not-started');
-  expect(within(screen.getByRole('navigation')).getByText('This computer, stopped')).toBeTruthy();
-  expect(within(screen.getByRole('contentinfo')).getByText('Workspace stopped')).toBeTruthy();
-  expect(status.selected).toBe('localVm');
-  expect(ipc.mock.calls.filter(([cmd]) => cmd === 'setup_cancel_local')).toHaveLength(1);
-  expect(ipc.mock.calls.some(([cmd]) => cmd === 'setup_change_local')).toBe(false);
+  expect(screen.queryByRole('button', { name: /Stop.*workspace|^Start$|Continue/ })).toBeNull();
+  expect(within(screen.getByRole('region', { name: 'Workspace setup' })).getByText('Ready', { selector: '.pill' }).className).toContain('status-passed');
+  expect(within(screen.getByRole('contentinfo')).getByText('Workspace ready')).toBeTruthy();
+  expect(ipc.mock.calls.some(([cmd]) => ['setup_cancel_local', 'setup_change_local', 'setup_select_local'].includes(cmd))).toBe(false);
 });

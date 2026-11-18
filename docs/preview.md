@@ -105,13 +105,14 @@ describe these prompts.
 
 ## Stop and reopen
 
-Closing the window hides Bridge; the workspace keeps running. Use the tray or
-menu-bar icon's **Open Bridge**, or launch the app again, to reopen the window.
-Choose **Stop the local cluster and quit** from that icon's menu to stop it completely.
+When the workspace is running, closing the window hides Bridge and keeps it running.
+Use the tray or menu-bar icon's **Open Bridge**, or launch the app again, to reopen the window.
+When no workspace is running, closing the window quits Bridge.
+Choose **Quit Bridge** from that icon's menu to stop it completely.
 Wait for quitting to finish before moving or deleting files.
 
 Quitting keeps VM files and your saved sign-in. On reopening, Bridge reuses
-its workspace; **Use GitHub sign-in** reuses Bridge's saved copy.
+its workspace and starts it automatically; **Use GitHub sign-in** reuses Bridge's saved copy.
 
 ## Remove Bridge
 
@@ -120,7 +121,7 @@ its workspace; **Use GitHub sign-in** reuses Bridge's saved copy.
    stays signed in.** This stops the model connection and clears the VM and
    OS-store copies. If it fails, retry the same button. If it still fails,
    ask for help before deleting the VM or its metadata.
-2. Choose **Stop the local cluster and quit**; closing the window isn't enough.
+2. Choose **Quit Bridge**; closing a running workspace's window isn't enough.
 3. Delete the extracted Windows app folder, or move `Bridge.app` to Trash.
    Remove the downloaded archive too if you no longer need it.
 4. Open the following folder in File Explorer's address bar, or Finder's

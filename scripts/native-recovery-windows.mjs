@@ -259,6 +259,7 @@ try {
       const pair = ${JSON.stringify(samplePair)};
       let reads = 0;
       localStorage.setItem('bridge.welcomeSeen.v1', '1');
+      localStorage.removeItem('bridge.firstTest.v1');
       window.isTauri = true;
       window.__TAURI_INTERNALS__ = { invoke: async command => {
         if (command === 'setup_status' && ${JSON.stringify(!!failLater)} && reads++ > 0) throw Error('Fixture status unreadable');
@@ -340,7 +341,7 @@ try {
   }
   // Setup actions and the first test use the compiled app and synthetic IPC only.
   // first-test-passed, -unknown and -lost-reply each own one fresh automatic attempt after a page reload.
-  const actionFixtures = runCore ? ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-memory', 'local-preflight-mixed', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'local-stop-failed', 'local-stop-lost-reply', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-catalog-busy', 'designer-file', 'designer-reply-saved', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'] : [];
+  const actionFixtures = runCore ? ['welcome', 'places-empty', 'places-populated', 'local-preflight', 'local-preflight-missing', 'local-preflight-unknown', 'local-preflight-blocked', 'local-preflight-memory', 'local-preflight-mixed', 'local-preflight-cluster', 'ai-idle', 'ai-key', 'ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'local-stop-failed', 'local-stop-lost-reply', 'ai-removal-confirmation', 'ai-removal-retry', 'first-test-running', 'first-test-result', 'first-test-badges', 'first-test-passed', 'first-test-unknown', 'first-test-lost-reply', 'switch-place', 'designer', 'designer-loading', 'designer-open-error', 'designer-connected', 'designer-catalog-busy', 'designer-file', 'designer-reply-saved', 'designer-failed', 'designer-passed', 'designer-stale', 'designer-running', 'designer-remote', 'designer-waiting', 'local-cancel-running', 'local-cancel-cancelling', 'local-cancel-cancelled', 'local-cancel-unconfirmed', 'local-cancel-before-start'] : [];
   async function clickAction(label) {
     const action = `[...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(label)} && !button.disabled && button.getClientRects().length)`;
     await until(() => evaluate(`!!${action}`), label);
@@ -388,80 +389,74 @@ try {
     await writeFile(join(output, `${theme}-${size}-${name}-comparison.png`), Buffer.from(comparison, 'base64'));
   }
   if (runUi) actionFixtures.push('chat-empty', 'chat-pending', 'chat-running', 'chat-answer', 'chat-session-null', 'chat-session-answer', 'chat-two-versions', 'send-failed', 'send-unsupported', 'send-earlier-target', 'new-agent-form', 'new-agent-created', 'cluster-picker-open', 'cluster-checking', 'cluster-failure', 'cluster-connected', 'cluster-account-picker-open', 'cluster-account-allowed', 'cluster-account-forbidden', 'designer-no-destination');
+  function assertWorkspacePresentation(state, probe, size) {
+    const fail = reason => { throw Error(state + ': ' + reason + ': ' + JSON.stringify(probe)); };
+    if (probe.heading !== 'This computer' || probe.bar || probe.choices || probe.runs || probe.firstTest !== 'attempted' || !probe.grid) fail('invalid returning workspace');
+    if (!probe.text.includes('Agents') || !probe.text.includes('Files') || probe.detailsOpen) fail('facts or folded diagnostics missing');
+    if (probe.buttons.some(label => ['Start', 'Stop', 'Stop the workspace', 'Cancel'].includes(label))) fail('obsolete workspace action');
+    if (size === 'compact' && (probe.width !== 540 || probe.height !== 640)) fail('minimum viewport is not 540x640');
+    if (state === 'ready' && (probe.pill !== 'Ready' || probe.primary.length)) fail('Ready must have no primary action');
+    if (state === 'starting-after-quit-synthetic' && (!probe.text.includes('0:18 so far') || probe.primary.length)) fail('missing observed elapsed time or inert startup action');
+    if (state === 'stop-failed' && (!probe.text.includes("The workspace didn't stop.") || probe.primary.join('|') !== 'Quit Bridge')) fail('stop failure needs plain copy and primary Quit');
+    if (['failed', 'stopped-unexpectedly'].includes(state) && probe.primary.join('|') !== 'Restart workspace') fail('start failure needs primary Restart');
+  }
   async function captureWorkspace(theme, size, name) {
-    const card = '.returning-workspace';
-    const capture = async (state, word, action, disabled = false) => {
-      await until(() => evaluate(`document.querySelector('${card} .pill')?.textContent === ${JSON.stringify(word)}`), state);
+    const capture = async (state, phase, word) => {
+      await evaluate(`window.__bridgeSettleWorkspace(${JSON.stringify(phase)})`);
+      await until(() => evaluate(`document.querySelector('.returning-workspace .pill')?.textContent === ${JSON.stringify(word)}`), state);
+      // The pill can be shared by two failure states; wait for its recovery copy too.
+      if (state === 'stopped-unexpectedly') await until(() => evaluate(`document.querySelector('.returning-workspace')?.innerText.includes("Your workspace didn't start.")`), state + ' summary');
       const probe = await evaluate(`(() => {
-        const card = document.querySelector('${card}');
-        const button = [...card.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(action)});
-        return { heading: document.querySelector('h1').textContent, text: card.innerText, disabled: button?.disabled,
+        const card = document.querySelector('.returning-workspace');
+        return { heading: document.querySelector('h1').textContent, pill: card.querySelector('.pill').textContent,
+          text: card.innerText, buttons: [...card.querySelectorAll('button')].map(b => b.textContent.trim()),
+          primary: [...card.querySelectorAll('.button-primary')].map(b => b.textContent.trim()),
           firstTest: localStorage.getItem('bridge.firstTest.v1'), bar: !!card.querySelector('[role=progressbar]'),
           choices: !!document.querySelector('.local-preflight input[type=radio]'), runs: window.__bridgeRuns,
-          start: [...card.querySelectorAll('button')].some(b => b.textContent === 'Start'), width: innerWidth, height: innerHeight };
+          grid: !!card.closest('.workspace-setup-grid'), detailsOpen: !!card.querySelector('summary[aria-expanded="true"]'),
+          width: innerWidth, height: innerHeight };
       })()`);
-      if (probe.heading !== 'This computer' || probe.bar || probe.choices || probe.runs || probe.firstTest === 'pending' ||
-          (action ? probe.disabled !== disabled : probe.start)) throw Error(state + ': invalid returning workspace: ' + JSON.stringify(probe));
-      if (size === 'compact' && (probe.width !== 540 || probe.height !== 640)) throw Error('Workspace minimum viewport is not 540x640');
-      if (state === 'starting' && !probe.text.includes('0:18 so far')) throw Error('Missing native-observed elapsed time');
-      if (state === 'closed' && !probe.text.includes('Quit Bridge and reopen it')) throw Error('Closed workspace needs reopen remedy');
-      if (state === 'stop-lost-reply' && !probe.text.includes('Workspace status is unavailable. Check again before starting it.')) throw Error('Lost Stop reply needs generic status-unavailable guidance');
+      assertWorkspacePresentation(state, probe, size);
       await evaluate(`document.querySelector('main').scrollTop = 0`);
       await checkLayout(theme, size, 'local-workspace-' + state);
       const image = await call('Page.captureScreenshot', { format: 'png' });
       await writeFile(join(output, `${theme}-${size}-local-workspace-${state}.png`), Buffer.from(image.data, 'base64'));
-      if (state === 'stopped') await writeFile(join(output, `${theme}-${size}-local-stopped.png`), Buffer.from(image.data, 'base64'));
       await compareDesigner(image.data, theme, size, 'local-workspace-' + state, true);
+      if (['failed', 'stopped-unexpectedly', 'stop-failed'].includes(state)) {
+        await evaluate(`document.querySelector('.returning-workspace summary[aria-controls="returning-workspace-error"]').click()`);
+        await until(() => evaluate(`!!document.querySelector('#returning-workspace-error')`), 'expanded workspace diagnostics');
+        await checkLayout(theme, size, 'local-workspace-' + state + '-details');
+        const details = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-local-workspace-${state}-details.png`), Buffer.from(details.data, 'base64'));
+        await evaluate(`document.querySelector('.returning-workspace summary[aria-controls="returning-workspace-error"]').click()`);
+      }
     };
-    await clickAction('Stop the workspace');
-    await until(() => evaluate(`!!document.querySelector('[aria-label="Stop the workspace?"]')`), 'inline Stop confirmation');
-    if (await evaluate('window.__bridgeStops') !== 0) throw Error('Opening Stop confirmation stopped the workspace');
-    const confirmation = await call('Page.captureScreenshot', { format: 'png' });
-    await writeFile(join(output, `${theme}-${size}-local-workspace-confirmation.png`), Buffer.from(confirmation.data, 'base64'));
-    await compareDesigner(confirmation.data, theme, size, 'local-workspace-confirmation', true);
-    await clickAction('Keep running');
-    if (await evaluate('window.__bridgeStops') !== 0) throw Error('Keep running stopped the workspace');
-    await clickAction('Stop the workspace'); await clickAction('Stop workspace');
-    await capture('stopping', 'Stopping', 'Start', true);
     if (name === 'local-stop-failed') {
-      await evaluate(`window.__bridgeSettleWorkspace('stop-failed')`);
-      await capture('stop-failed', "Couldn't stop", 'Try again', true);
-      if (await evaluate('window.__bridgeStops') !== 1 || await evaluate('window.__bridgeLocalSelections') !== 0) throw Error('Stop failure must not restart or reselect');
-      return;
-    }
-    if (name === 'local-stop-lost-reply') {
-      await evaluate(`window.__bridgeSettleWorkspace('stop-lost-reply')`);
-      await capture('stop-lost-reply', 'Status unavailable', 'Stop', true);
+      await capture('stop-failed', 'stop-failed', "Couldn't stop");
+      await clickAction('Quit Bridge');
+      if (await evaluate('window.__bridgeQuits') !== 1) throw Error('Quit must invoke terminal native cleanup');
+    } else if (name === 'local-stop-lost-reply') {
+      await evaluate(`window.__bridgeWorkspaceUnreadable = true; window.dispatchEvent(new Event('focus'))`);
+      await until(() => evaluate(`document.querySelector('.returning-workspace .pill')?.textContent === 'Status unavailable'`), 'unavailable workspace');
+      const image = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(output, `${theme}-${size}-local-workspace-unavailable.png`), Buffer.from(image.data, 'base64'));
       await evaluate(`window.__bridgeWorkspaceUnreadable = false`);
-      await capture('stop-reply-recovered', 'Stopped', 'Start');
-      if (await evaluate('window.__bridgeStops') !== 1 || await evaluate('window.__bridgeLocalSelections') !== 0) throw Error('Lost Stop reply must recover by observation alone');
-      return;
+      await capture('ready', 'ready', 'Ready');
+    } else {
+      await capture('ready', 'ready', 'Ready');
+      await evaluate(`document.querySelector('.returning-workspace summary[aria-controls="returning-workspace-inside"]').click()`);
+      await until(() => evaluate(`document.querySelector('.returning-workspace').innerText.includes('4 GB of memory')`), 'memory guidance inside disclosure');
+      await evaluate(`document.querySelector('.returning-workspace summary[aria-controls="returning-workspace-inside"]').click()`);
+      // Synthetic renderer observation only: not proof of native VM startup after Quit.
+      await capture('starting-after-quit-synthetic', 'starting', 'Starting');
+      await capture('failed', 'failed', "Couldn't start");
+      await clickAction('Restart workspace');
+      await until(() => evaluate(`document.querySelector('.returning-workspace .pill')?.textContent === 'Starting'`), 'explicit restart');
+      await capture('ready', 'ready', 'Ready');
+      await capture('stopped-unexpectedly', 'stopped-unexpectedly', "Couldn't start");
+      await capture('closed', 'closed', 'Stopped');
     }
-    await evaluate(`window.__bridgeSettleWorkspace('cancelled')`);
-    await capture('stopped', 'Stopped', 'Start');
-    await clickAction('Start');
-    await capture('starting', 'Starting', 'Cancel');
-    await clickAction('Cancel');
-    await until(() => evaluate(`document.querySelector('${card} .pill')?.textContent === 'Stopping'`), 'restart cancellation');
-    await evaluate(`window.__bridgeSettleWorkspace('cancelled')`);
-    await capture('cancelled', 'Stopped', 'Start');
-    await clickAction('Start'); await evaluate(`window.__bridgeSettleWorkspace('failed')`);
-    await capture('failed', "Couldn't start", 'Try again');
-    await clickAction('Try again'); await evaluate(`window.__bridgeSettleWorkspace('ready')`);
-    await capture('running', 'Running', 'Stop');
-    await clickAction('Stop'); await clickAction('Stop workspace');
-    await evaluate(`window.__bridgeSettleWorkspace('cancelled')`);
-    await capture('stopped-again', 'Stopped', 'Start');
-    await evaluate(`window.__bridgeWorkspaceUnreadable = true; window.dispatchEvent(new Event('focus'))`);
-    await capture('unavailable', 'Status unavailable', 'Start', true);
-    await evaluate(`window.__bridgeWorkspaceUnreadable = false; window.dispatchEvent(new Event('focus'))`);
-    await capture('readable-again', 'Stopped', 'Start');
-    await clickAction('Start'); await evaluate(`window.__bridgeSettleWorkspace('ready')`);
-    await capture('running-again', 'Running', 'Stop');
-    await clickAction('Stop'); await clickAction('Stop workspace');
-    await evaluate(`window.__bridgeSettleWorkspace('closed')`);
-    await capture('closed', 'Stopped', null);
-    if (await evaluate('window.__bridgeStops') !== 4 || await evaluate('window.__bridgeLocalSelections') !== 4) throw Error('Workspace action sequence changed');
+    if (await evaluate('window.__bridgeStops') !== 0 || await evaluate('window.__bridgeLocalSelections') > 1) throw Error('Captures must not stop or repeatedly select a workspace');
   }
   function assertSendPresentation(name, probe, details) {
     const labels = name === 'send-unsupported' ? ['Check cluster status'] : [name === 'send-earlier-target' ? 'Send and run tests' : 'Run cluster tests again', 'See in Overview'];
@@ -577,30 +572,28 @@ try {
       window.__bridgeRuns = 0;
       const source = { agent: 'a'.repeat(64), tests: 'b'.repeat(64) };
       const workspace = ['local-stopped', 'local-stop-failed', 'local-stop-lost-reply'].includes(name);
-      let workspacePhase = 'ready';
+      let workspacePhase = name === 'designer-waiting' ? 'starting' : 'ready';
       let stopFailed = false;
-      let finishStop, rejectStop;
+      let stoppedUnexpectedly = false;
+      window.__bridgeQuits = 0;
       window.__bridgeWorkspaceUnreadable = false;
+      // Explicit synthetic observations, independent of removed workspace Stop controls.
       window.__bridgeSettleWorkspace = next => {
-        if (workspacePhase === 'closing' && ['cancelled', 'closed'].includes(next)) {
-          workspacePhase = next; finishStop(status()); finishStop = rejectStop = undefined;
-        } else if (workspacePhase === 'closing' && ['stop-failed', 'stop-lost-reply'].includes(next)) {
-          stopFailed = next === 'stop-failed';
-          workspacePhase = stopFailed ? 'failed' : 'cancelled';
-          window.__bridgeWorkspaceUnreadable = !stopFailed;
-          rejectStop(Error(stopFailed ? 'Synthetic Stop failed' : 'Synthetic Stop reply lost'));
-          finishStop = rejectStop = undefined;
-        } else if (workspacePhase === 'starting' && ['failed', 'ready'].includes(next)) workspacePhase = next;
-        else throw Error('Invalid synthetic workspace transition: ' + workspacePhase + ' -> ' + next);
+        if (!['ready', 'starting', 'failed', 'stopped-unexpectedly', 'stop-failed', 'closed'].includes(next)) throw Error('Invalid synthetic workspace state: ' + next);
+        stopFailed = next === 'stop-failed';
+        stoppedUnexpectedly = next === 'stopped-unexpectedly';
+        workspacePhase = stopFailed || stoppedUnexpectedly ? 'failed' : next;
+        window.dispatchEvent(new Event('focus'));
       };
       const status = () => {
         if (window.__bridgeWorkspaceUnreadable) throw Error('Synthetic workspace status unreadable');
         const localVm = selected ? workspacePhase : window.__bridgeStops || name === 'designer-no-destination' ? 'cancelled' : 'idle';
         return { selected: selected ? 'localVm' : null, localVm, model: localVm === 'ready' ? 'available' : 'locked', modelSupported: true,
+          localVmError: stoppedUnexpectedly ? 'Synthetic workspace stopped unexpectedly. ' + 'x'.repeat(512) : null,
           workspaceProgress: localVm === 'starting' ? { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 18000, remainingMs: null } : null,
           ...(localVm === 'failed' ? { workspaceFailure: stopFailed
             ? { operation: 'stop', cause: 'stopUnconfirmed', codes: [] }
-            : { operation: 'start', cause: 'permission', codes: [5] } } : {}) };
+            : { operation: 'start', cause: stoppedUnexpectedly ? 'unknown' : 'permission', codes: [5] } } : {}) };
       };
       const report = { verdict: 'failed', cases: [{ id: 'page-checksum', title: 'Copies the checksum from the page', question: 'What checksum does the page show?', phase: 'Succeeded', answer: 'No checksum was given.', completedTools: ['web_fetch'], assertions: [{ id: 'checksum', kind: 'contains', expected: 'fixture-checksum', verdict: 'failed' }], verdict: 'failed' }] };
       const snapshot = () => {
@@ -624,16 +617,18 @@ try {
       };
       if (name === 'welcome') localStorage.removeItem('bridge.welcomeSeen.v1');
       else localStorage.setItem('bridge.welcomeSeen.v1', '1');
-      localStorage.removeItem('bridge.firstTest.v1');
+      if (workspace || name === 'designer-waiting') localStorage.setItem('bridge.firstTest.v1', 'attempted');
+      else localStorage.removeItem('bridge.firstTest.v1');
       window.isTauri = true;
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         if (command === 'setup_status') return status();
+        if (command === 'quit_bridge') { window.__bridgeQuits++; return; }
         if (command === 'setup_select_local') { window.__bridgeLocalSelections++; selected = true; stopFailed = false; workspacePhase = workspace ? 'starting' : 'ready'; return status(); }
         if (command === 'setup_cancel_local') {
           window.__bridgeStops++; connected = false;
           if (!selected) throw Error('Stop must retain the selected workspace');
-          workspacePhase = workspace ? 'closing' : 'cancelled';
-          return workspace ? new Promise((resolve, reject) => { finishStop = resolve; rejectStop = reject; }) : status();
+          if (workspace) throw Error('Returning workspace has no Stop control');
+          workspacePhase = 'cancelled'; return status();
         }
         if (command === 'setup_change_local') {
           if (workspace || localCancel) throw Error('Stop must use setup_cancel_local');
@@ -771,15 +766,29 @@ try {
       document.getElementById('root').replaceWith(Object.assign(document.createElement('div'), { id: 'root' }));
     })()`);
     await evaluate(bundle);
-    // VM-ready offers Connect the AI, not Manage. This click only opens local detail.
-    if (first || preflight) await clickAction('Set up');
-    else if (!places) await clickAction('Connect the AI');
-    if (first) await clickAction('Continue');
-    if (first || ['ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'local-stopped', 'local-stop-failed', 'local-stop-lost-reply', 'ai-removal-confirmation', 'ai-removal-retry'].includes(name)) await clickAction('Connect the AI');
+    if (name === 'designer-waiting') {
+      await evaluate(`document.querySelector('button[aria-label="Designer"]').click()`);
+      for (const tab of ['Agent', 'Chat']) {
+        await clickAction(tab);
+        const panel = tab === 'Chat' ? '.chat-panel' : '.designer-tests';
+        await until(() => evaluate(`document.querySelector('${panel}')?.innerText.includes('Waiting for the workspace to start.')`), 'Designer waiting');
+        await evaluate(`document.querySelector('${panel}').scrollIntoView({ block: 'center' })`);
+        const image = await call('Page.captureScreenshot', { format: 'png' });
+        await writeFile(join(output, `${theme}-${size}-designer-waiting-${tab === 'Chat' ? 'chat' : 'tests'}.png`), Buffer.from(image.data, 'base64'));
+      }
+      if (await evaluate('window.__bridgeRuns || window.__bridgeStops')) throw Error('Waiting Designer must not run or stop workspace');
+      return;
+    }
     if (['local-stopped', 'local-stop-failed', 'local-stop-lost-reply'].includes(name)) {
+      await clickAction('Manage');
       await captureWorkspace(theme, size, name);
       return;
     }
+    // First setup VM-ready offers Connect the AI. This click only opens local detail.
+    if (first || preflight) await clickAction('Set up');
+    else if (!places) await clickAction('Connect the AI');
+    if (first) await clickAction('Continue');
+    if (first || ['ai-cli-missing', 'ai-connecting', 'ai-connected', 'ai-reset', 'local-completed', 'ai-removal-confirmation', 'ai-removal-retry'].includes(name)) await clickAction('Connect the AI');
     if (name.startsWith('ai-removal-')) {
       await clickAction('Change');
       await until(() => evaluate(`(() => {
@@ -990,7 +999,7 @@ try {
       if (state === 'running' && !probe.buttons.includes('Stop')) throw Error('Missing local Stop');
       if (state === 'cancelling' && probe.buttons.includes('Stop')) throw Error('Cancelling is a status, not a button');
       if (state === 'cancelled' && (probe.rows.join('|') !== 'finished-answer|unfinished-test' || !probe.text.includes('1 passed, 0 failed, 1 cancelled.'))) throw Error('Lost results/order/counts: ' + JSON.stringify(probe));
-      if (state === 'unconfirmed' && !['Retry cancellation', 'Check again', 'Stop the workspace'].every(b => probe.buttons.includes(b))) throw Error('Missing cancellation recovery');
+      if (state === 'unconfirmed' && !['Retry cancellation', 'Check again', 'Quit Bridge'].every(b => probe.buttons.includes(b))) throw Error('Missing cancellation recovery');
       if (state === 'before-start' && (!probe.text.includes('Cancelled before any test started.') || probe.rows.length)) throw Error('Incorrect before-start result');
       // Open the kept answer and capture the card in the real native WebView.
       if (state === 'cancelled') await evaluate(`document.querySelector('.example-run .test-result').open = true`);
@@ -1010,9 +1019,8 @@ try {
           await evaluate(`window.__bridgeCancellation = 'unconfirmed'`);
           await until(() => evaluate(`document.querySelector('.example-run .pill')?.textContent === 'Not confirmed'`), 'recovery back to unconfirmed');
         }
-        // Scope the click to Tests because Setup's hidden Stop stays mounted.
-        await evaluate(`[...document.querySelectorAll('.example-run button')].find(b => b.textContent === 'Stop the workspace').click()`);
-        await until(() => evaluate(`window.__bridgeStops === 1 && document.querySelector('button[aria-label="Clusters"]').getAttribute('aria-current') === 'page' && [...document.querySelectorAll('button')].some(b => b.textContent === 'Start' && b.getClientRects().length)`), 'explicit local Stop');
+        await evaluate(`[...document.querySelectorAll('.example-run button')].find(b => b.textContent === 'Quit Bridge').click()`);
+        if (await evaluate('window.__bridgeQuits') !== 1 || await evaluate('window.__bridgeStops') !== 0) throw Error('Unconfirmed Run escape must Quit Bridge, not stop workspace');
       }
       console.log(`Captured native WebView2 local cancellation fixture: ${theme}/${size}/${name}`);
       return;
@@ -1346,7 +1354,7 @@ try {
     }
     if (['ai-connected', 'local-completed'].includes(name)) {
       const complete = await evaluate(`({ heading: document.querySelector('h1').textContent, card: document.querySelector('.setup-progress .steps-head h2')?.textContent, pill: document.querySelector('.setup-progress .pill')?.textContent, rows: document.querySelectorAll('[aria-label="Setup steps"] > li').length, text: document.body.innerText, model: document.querySelector('.setup-model').innerText })`);
-      if (complete.heading !== readyCardTitle || complete.card !== 'Workspace' || complete.pill !== 'Ready' || /step \d+ of [45]/i.test(complete.text) || complete.rows !== 4 || !complete.text.includes('Stop the workspace') || complete.model.includes('GitHub CLI must be installed')) throw Error(`Completed local page is not collapsed: ${JSON.stringify(complete)}`);
+      if (complete.heading !== readyCardTitle || complete.card !== 'Workspace' || complete.pill !== 'Ready' || /step \d+ of [45]/i.test(complete.text) || complete.rows !== 4 || complete.text.includes('Stop the workspace') || complete.model.includes('GitHub CLI must be installed')) throw Error(`Completed local page is not collapsed: ${JSON.stringify(complete)}`);
       if (!complete.model.includes(fixtureAccount) || !complete.model.includes('gpt-5.6-terra')) throw Error(`Connected AI must show the verified account and fixed model: ${JSON.stringify(complete)}`);
     }
     if (name === 'ai-idle') {

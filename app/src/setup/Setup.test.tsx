@@ -124,10 +124,11 @@ test.each([null, 'attempted'])('a lost selection reply preserves durable intent 
   await screen.findByText('Your workspace is ready on this computer.', {}, { timeout: 2000 });
   view.unmount(); render(<Setup onOpenExample={vi.fn()} />);
   await openLocalSetup(user);
-  await screen.findByText('Your workspace is ready on this computer.');
+  if (previous === 'attempted') await screen.findByRole('region', { name: 'Workspace' });
+  else await screen.findByText('Your workspace is ready on this computer.');
   expect(localStorage.getItem('bridge.firstTest.v1')).toBe(previous ?? 'pending');
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
-  expect(ipc.mock.calls.every(([command]) => ['setup_status', 'setup_requirements', 'setup_example', 'setup_select_local', 'cluster_places', 'overview_files'].includes(command))).toBe(true);
+  expect(ipc.mock.calls.every(([command]) => ['setup_status', 'setup_requirements', 'setup_example', 'setup_select_local', 'cluster_places', 'overview_files', 'agents_list', 'agent_creation_root'].includes(command))).toBe(true);
 });
 
 test('browser preview never pretends that native persistence or integration works', async () => {

@@ -287,7 +287,7 @@ function Tray-Menu {
     [NativeWalk]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
     # Both providers require enabled, on-screen native items; MSAA yields real click points.
     $open = Wait-For 'Open Bridge menu item missing' { Find-PopupControl 'Open Bridge' }
-    $stop = Wait-For 'Stop the local cluster and quit menu item missing' { Find-PopupControl 'Stop the local cluster and quit' }
+    $stop = Wait-For 'Quit Bridge menu item missing' { Find-PopupControl 'Quit Bridge' }
     return @($open, $stop)
 }
 function Retained {
@@ -402,35 +402,13 @@ try {
             }
         } | Out-Null
         $noticeMarker = Join-Path $data 'close-notice-seen-v1'
-        $needsNotice = !(Test-Path $noticeMarker)
-        # SC_CLOSE follows the native titlebar Close route, unlike process termination.
-        [NativeWalk]::PostMessage($script:hwnd, 0x112, [IntPtr]0xf060, [IntPtr]::Zero) | Out-Null
-        if ($needsNotice) {
-            $notice = Wait-For 'First Close did not explain background running' { Find-Control $desktop 'Bridge is still running' $null }
-            if ($notice.Current.ProcessId -ne $script:app.Id) { throw 'Close notice belongs to another process' }
-            if (Test-Path $noticeMarker) { throw 'Close notice marked seen before acknowledgement' }
-            Capture 'first-close-notice' $true
-            $copy = (Get-UiNames $notice) -join ' '
-            if (!$copy.Contains('system tray') -or !$copy.Contains('Stop the local cluster and quit')) { throw 'Close notice lost reopen/Quit guidance' }
-            # TaskDialog exposes its OK action as a Pane on this runner. Keep the exact
-            # label scoped to the already verified same-process notice; Press uses its native clickable point.
-            Press (Wait-For 'Close notice OK missing' { Find-Control $notice 'OK' $null })
-        }
-        Wait-For 'Native Close did not hide' { ![NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
-        if (!(Test-Path $noticeMarker) -or (Find-Control $desktop 'Bridge is still running' $null)) { throw 'Acknowledged notice was not remembered/dismissed' }
-        if ($script:app.HasExited) { throw 'Close quit instead of hiding' }
+        $priorNoticeMarker = if (Test-Path $noticeMarker) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($noticeMarker)) } else { $null }
+        # No native VM is started in this driver. Exercise retention with the
+        # visible menu and minimization, not a fabricated running-workspace Close.
         $commands = Tray-Menu
-        Capture 'menu-hidden' $true
+        Capture 'menu-visible' $true
         Press $commands[0]
-        Wait-For 'Open Bridge did not reopen' { [NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
         Retained; Capture 'reopened-menu'
-        [NativeWalk]::PostMessage($script:hwnd, 0x112, [IntPtr]0xf060, [IntPtr]::Zero) | Out-Null
-        Wait-For 'Close before second launch did not hide' { ![NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
-        if (Find-Control $desktop 'Bridge is still running' $null) { throw 'Second Close repeated the information dialog' }
-        $second = Start-Process $Executable -NoNewWindow -PassThru
-        if (!$second.WaitForExit(15000) -or $second.ExitCode -ne 0) { throw 'Hidden-window second launch did not hand off and exit cleanly' }
-        Wait-For 'Second launch did not show hidden original window' { [NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
-        Retained; Capture 'reopened-second-launch-hidden'
         [NativeWalk]::ShowWindow($script:hwnd, 6) | Out-Null
         Wait-For 'Window did not minimize' { [NativeWalk]::IsIconic($script:hwnd) } | Out-Null
         $second = Start-Process $Executable -NoNewWindow -PassThru
@@ -529,10 +507,18 @@ assertions: []
         $commands = Tray-Menu
         Capture 'menu-stop' $true
         Press $commands[1]; Wait-Exit
+        # Idle Close is terminal: this launch has no saved selection or native Ready.
+        Start-Bridge
+        Wait-For 'Clusters button missing after idle relaunch' { Find-ReadyClusters } | Out-Null
+        [NativeWalk]::PostMessage($script:hwnd, 0x112, [IntPtr]0xf060, [IntPtr]::Zero) | Out-Null
+        Wait-Exit
+        $afterNoticeMarker = if (Test-Path $noticeMarker) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($noticeMarker)) } else { $null }
+        if ($afterNoticeMarker -cne $priorNoticeMarker) { throw 'Idle Close changed the running-workspace notice marker' }
+        'idle-close-exited: no native Ready producer; no background notice claimed.' | Set-Content (Join-Path $script:themeOutput 'idle-close-exited.txt')
         # File > Quit is exercised by the native menu/failed-stop subprocess test,
         # not by a duplicate GUI lookup through this runner's incomplete UIA tree.
         if ((Test-Path $selected) -or (Test-Path $vmData)) { throw 'Saved local selection or VM data appeared' }
-        "PASS $theme`: native own-repo chooser, selected path/copy, blank web-reader-named draft pair only (no nested Git/marker); native first-Close notice/acknowledgement when unseen, profile marker and second Close without dialog, Close/hide, tray menu/Open, same PID $script:originalPid/window $script:hwnd, File view/edited text retained, hidden/minimized second launches, menu stop. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof. OS popup theme is captured as drawn, not forced by product hooks." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
+        "PASS $theme`: native own-repo chooser, selected path/copy, blank draft pair only; idle-close-exited without notice/marker change; tray menu/Open, same PID/window, File view/edited text retained, minimized second launch, menu Quit Bridge. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/background-close/notice/provider/cluster/session logout proof. OS popup theme is captured as drawn." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
     }
 } catch {
     $failure = $_

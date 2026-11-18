@@ -20,6 +20,7 @@ fn main() {
             "workspace_catalog",
             "setup_select_local",
             "setup_cancel_local",
+            "quit_bridge",
             "setup_change_local",
             "setup_reset_model",
             "setup_example",

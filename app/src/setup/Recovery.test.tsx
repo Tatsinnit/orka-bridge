@@ -152,7 +152,7 @@ test('AI failure marks its setup step and every shell status without losing the 
   expect(screen.getByText("Couldn't start").closest('li')?.className).toBe('step-failed');
   expect(within(screen.getByRole('navigation')).getByText('Setting up, step 3 of 4')).toBeTruthy();
   expect(screen.getByRole('contentinfo').textContent).toContain('AI not connected');
-  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is running on this computer.');
+  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is ready on this computer.');
   expect(document.querySelector('.host-chip .live-dot')?.className).toContain('ready');
   expect(screen.getByRole('alert').textContent).toContain('Your workspace and agent files are kept');
 });

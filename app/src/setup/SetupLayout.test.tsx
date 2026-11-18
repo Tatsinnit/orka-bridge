@@ -146,7 +146,7 @@ test('Escape from recovery removal confirmation restores its action without a st
 });
 
 test.each(['unavailable', 'stopping'] as const)('a retained ready snapshot cannot paint Ready while %s', mode => {
-  render(<SetupProgress status={{ selected: 'localVm', localVm: 'ready', model: 'available' }} modelState="connected" busy={mode === 'stopping'} stopping={mode === 'stopping'} error={mode === 'unavailable' ? 'Observation unavailable' : undefined} onCancel={() => {}} onRestart={() => {}} onChange={() => {}} onOpenExample={() => {}} />);
+  render(<SetupProgress status={{ selected: 'localVm', localVm: 'ready', model: 'available' }} modelState="connected" busy={mode === 'stopping'} stopping={mode === 'stopping'} error={mode === 'unavailable' ? 'Observation unavailable' : undefined} onCancel={() => {}} onRestart={() => {}} onOpenExample={() => {}} />);
   const pill = document.querySelector('.steps-head .pill')!;
   expect(pill.classList.contains('status-passed')).toBe(false);
   expect(pill.textContent).toBe(mode === 'stopping' ? 'Stopping' : 'Status unavailable');

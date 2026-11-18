@@ -20,9 +20,9 @@ export const canQueueModel = (status: SetupStatus | undefined) =>
   status?.modelSupported === true && status.selected === 'localVm' && ['preparing', 'installing', 'starting'].includes(status.localVm);
 export function workspaceView(status: SetupStatus, { stopping = false, starting = false }: { stopping?: boolean; starting?: boolean } = {}): { word: string; detail: string; status: Status; tone: Tone } {
   if (stopping || status.localVm === 'closing') return { word: 'Stopping', detail: 'Stopping the workspace. Your agents and files are kept.', status: 'running', tone: 'busy' };
-  if (starting || ['preparing', 'installing', 'starting'].includes(status.localVm)) return { word: 'Starting', detail: 'Starting the workspace.', status: 'running', tone: 'busy' };
+  if (starting || status.selected === 'localVm' && status.localVm === 'idle' || ['preparing', 'installing', 'starting'].includes(status.localVm)) return { word: 'Starting', detail: 'Starting the workspace.', status: 'running', tone: 'busy' };
   if (status.localVm === 'failed') return { word: status.workspaceFailure?.operation === 'stop' ? "Couldn't stop" : "Couldn't start", detail: status.workspaceFailure?.operation === 'stop' ? 'The workspace may still be stopping. Quit Bridge and reopen it before trying again.' : "The workspace couldn't start. Your agents and files are kept.", status: 'failed', tone: 'bad' };
-  if (status.localVm === 'ready') return { word: 'Running', detail: 'The workspace is running on this computer.', status: 'passed', tone: 'ready' };
+  if (status.localVm === 'ready') return { word: 'Ready', detail: 'The workspace is ready on this computer.', status: 'passed', tone: 'ready' };
   return { word: 'Stopped', detail: 'The workspace is stopped. Your agents and their files are kept.', status: 'not-started', tone: 'wait' };
 }
 export function setupView(status: SetupStatus | undefined, { checking = false, stopping = false, starting = false, workspace = false, model = 'idle', check, initialAutomatic = false }: { checking?: boolean; stopping?: boolean; starting?: boolean; workspace?: boolean; model?: ModelState; check?: CheckStepState; initialAutomatic?: boolean } = {}): SetupView {

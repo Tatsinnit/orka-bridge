@@ -20,7 +20,7 @@ type Props = {
   status: SetupStatus; busy: boolean; stopping: boolean; error?: string; modelState?: ModelState; firstCheck?: CheckStepState;
   modelUnavailable?: boolean;
   firstTestResult?: { failed: number }; initialAutomatic?: boolean; onCheckFirstTest?: () => void; onChooseProvider?: () => void;
-  onCancel: () => void; onRestart: () => void; onCluster?: () => void; onChange: (button: HTMLButtonElement) => void; onOpenExample: () => void;
+  onCancel: () => void; onRestart: () => void; onCluster?: () => void; onOpenExample: () => void;
 };
 const rowClass: Record<Status, string> = { passed: 'step-done', failed: 'step-failed', running: 'step-current', 'needs-you': 'step-current', stale: 'step-waiting', 'not-started': 'step-waiting' };
 // Completed rows stay in place; only the active row opens its progress.
@@ -51,7 +51,7 @@ function stepRows({ status, stopping, error, modelState = 'idle', firstCheck, in
 }
 
 export function SetupProgress(props: Props) {
-  const { status, busy, stopping, error, onCancel, onRestart, onCluster, onChange, onOpenExample } = props;
+  const { status, busy, stopping, error, onCancel, onRestart, onCluster, onOpenExample } = props;
   const [details, setDetails] = useState(false);
   const { view, failed: failedStatus, paused, infra } = stepRows(props);
   const failed = failedStatus && !error;
@@ -103,7 +103,6 @@ export function SetupProgress(props: Props) {
         {props.firstTestResult && <Button type="button" kind={props.firstCheck === 'stale' || props.firstCheck === 'unknown' || props.firstCheck === 'running' ? 'secondary' : 'primary'} disabled={busy || !!error} onClick={onOpenExample}>See what it answered</Button>}
       </>}{!needsModel && <Button type="button" kind="secondary" disabled={busy || !!error} onClick={onOpenExample}>Read its instructions</Button>}</>}
     </div>}
-    {ready && !failed && <div className="workspace-management"><Button type="button" kind="secondary" disabled={busy || !!error} onClick={event => onChange(event.currentTarget)}>Stop the workspace</Button></div>}
   </section>;
 }
 
