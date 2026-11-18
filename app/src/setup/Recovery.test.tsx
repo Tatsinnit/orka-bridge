@@ -15,7 +15,7 @@ function native(failure?: WorkspaceFailure, raw = 'PRIVATE native diagnostic') {
   const ipc = vi.fn((command: string) => {
     if (command === 'setup_status') return status();
     if (command === 'setup_select_local') { localVm = 'starting'; return status(); }
-    if (command === 'setup_open_help') return null;
+    if (command === 'setup_open_help' || command === 'quit_bridge') return null;
     if (command === 'setup_connect_model') throw { kind: 'modelConnect' };
     if (command === 'setup_example') return { agent: '---\nname: web-reader\n---\nRead a page.', tests: 'A check.' };
     throw Error('Unsupported fake command');
@@ -105,6 +105,26 @@ test.each(['insufficientMemory', 'virtualizationDisabled', 'hypervisorUnavailabl
   await user.click(screen.getByRole('button', { name: 'Copy details for help' }));
   expect(copy.mock.calls[0][0]).toContain(`Category: ${preflightFailure}`);
   expect(copy.mock.calls[0][0]).not.toContain('SECRET');
+});
+
+test('first-time forced-stop recovery offers Quit without an unsafe retry', async () => {
+  const { ipc } = native({ cause: 'forcedStop', operation: 'stop', codes: [] });
+  const user = userEvent.setup(); render(<App />); await openLocalSetup();
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('Changes that had not reached disk may be lost.');
+  expect(within(alert).queryByRole('button', { name: 'Try again' })).toBeNull();
+  await user.dblClick(within(alert).getByRole('button', { name: 'Quit Bridge' }));
+  expect(ipc.mock.calls.filter(([command]) => command === 'quit_bridge')).toHaveLength(1);
+});
+
+test('forced-stop Quit failure is recoverable without exposing native text', async () => {
+  const ipc = vi.fn(() => Promise.reject(Error('PRIVATE quit failure'))); mockIPC(ipc);
+  const user = userEvent.setup();
+  render(<Recovery failure={{ cause: 'forcedStop', operation: 'stop', codes: [] }} disabled={false} onRetry={() => {}} />);
+  await user.click(screen.getByRole('button', { name: 'Quit Bridge' }));
+  expect(await screen.findByText("Couldn't quit Bridge. Use Quit Bridge from its menu.")).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Quit Bridge' }).matches(':disabled')).toBe(false);
+  expect(screen.queryByText(/PRIVATE/)).toBeNull();
 });
 
 test('typed unconfirmed stop cannot admit a second workspace', async () => {

@@ -5,19 +5,13 @@ pub mod dev_image;
 
 // Native desktop CI compiles these same sources in the application as well.
 extern crate self as bridge_engine;
-#[cfg(target_os = "macos")]
 #[path = "../../../app/src-tauri/src/engine/mod.rs"]
 pub mod engine;
-#[cfg(not(target_os = "macos"))]
-#[allow(dead_code)]
-pub mod engine {
-    pub mod types {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../app/src-tauri/src/engine/types.rs"
-        ));
-    }
-}
 #[path = "../../../app/src-tauri/src/runtime/mod.rs"]
 pub mod runtime;
+// The session has no SDK calls: exercise it with real Unix helper processes on
+// Linux too, without making it part of every integration target's runtime stub.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[path = "../../../app/src-tauri/src/runtime/apple_session.rs"]
+mod apple_session;
 include!("../../../app/src-tauri/tests/runtime_core.rs");

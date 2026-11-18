@@ -24,18 +24,23 @@ fn main() {
     loop {
         let mut frame = [0; 9];
         if control.read_exact(&mut frame).is_err() { return; }
-        assert!(matches!(frame[0], b'P' | b'R' | b'S'));
+        assert!(matches!(frame[0], b'G' | b'P' | b'R' | b'S'));
         assert_eq!(u64::from_le_bytes(frame[1..].try_into().unwrap()), expected);
         expected += 1;
         let operation = frame[0];
-        frame[0] = if a[1] == "error" { b'E' } else { b'K' };
-        if a[1] == "stale" { frame[1..].fill(0); }
+        if operation == b'S' && a[1] == "lost-stop-receipt" { return; }
+        frame[0] = if a[1] == "error" { b'E' }
+            else if a[1] == "unexpected-natural" || (operation == b'S' && a[1].starts_with("natural-")) { b'N' }
+            else { b'K' };
+        if a[1] == "stale" || (operation == b'S' && a[1] == "natural-stale") { frame[1..].fill(0); }
         if a[1] == "fragment" {
             for b in frame { if control.write_all(&[b]).is_err() { return; } std::thread::sleep(Duration::from_millis(15)); }
         } else if control.write_all(&frame).is_err() { return; }
+        if operation == b'G' && a[1] == "guest-stop" { return; }
+        if operation == b'G' && a[1] == "guest-error" { std::process::exit(7); }
         if operation == b'S' {
-            if a[1] == "hang-stop" { std::thread::sleep(Duration::from_secs(60)); }
-            if a[1] == "exit-bad" { std::process::exit(7); }
+            if a[1] == "hang-stop" || a[1] == "natural-hang" { std::thread::sleep(Duration::from_secs(60)); }
+            if a[1] == "exit-bad" || a[1] == "natural-exit-bad" { std::process::exit(7); }
             return;
         }
     }

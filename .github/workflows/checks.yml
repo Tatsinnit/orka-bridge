@@ -163,6 +163,29 @@ jobs:
           bash ../scripts/build-vm-helper-macos.sh
           bash ../scripts/test-vm-helper-macos.sh
           cargo +1.98.1 test --manifest-path ../runtime/Cargo.toml --locked -p bridge-runtime-protocol --test runtime_core --test windows_backend --test agents
+      - name: Build opt-in physical Mac shutdown driver (no VM)
+        if: runner.os == 'macOS' && matrix.suite == 'release-checks'
+        run: |
+          cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --test native_vm_shutdown --features custom-protocol --no-run --message-format=json > native-vm-build.jsonl
+          python3 - <<'PY'
+          import json, pathlib, shutil
+          rows = [json.loads(line) for line in pathlib.Path('native-vm-build.jsonl').read_text().splitlines()]
+          binary, = [r['executable'] for r in rows if r.get('reason') == 'compiler-artifact' and r.get('target', {}).get('name') == 'native_vm_shutdown' and r.get('executable')]
+          root = pathlib.Path('native-vm-driver')
+          (root / 'resources/native').mkdir(parents=True)
+          shutil.copy2(binary, root / 'native-vm-shutdown')
+          shutil.copy2('src-tauri/gen/apple-helper/BridgeVM', root / 'resources/native/BridgeVM')
+          PY
+          git rev-parse HEAD > native-vm-driver/head.txt
+          tar -czf native-vm-shutdown-driver.tar.gz.tmp -C native-vm-driver .
+          mv native-vm-shutdown-driver.tar.gz.tmp native-vm-shutdown-driver.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && runner.os == 'macOS' && matrix.suite == 'release-checks'
+        with:
+          name: mac-native-shutdown-driver
+          path: app/native-vm-shutdown-driver.tar.gz
+          retention-days: 3
+          if-no-files-found: error
       - name: Mac deferred termination (no VM or host logout)
         if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
         run: cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --test native_termination --features custom-protocol

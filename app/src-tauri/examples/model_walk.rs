@@ -502,6 +502,16 @@ fn main() {
                         return true;
                     }
                     if command == "setup_status" {
+                        if phase.as_deref() == Some("setup-forced-stop") {
+                            let mut state = workspace.lock().unwrap();
+                            if state.returning {
+                                state.returning = false;
+                                invoke.message.webview().eval("localStorage.removeItem('bridge.firstTest.v1'); location.reload();").expect("fixture first-run recovery reload");
+                            }
+                            invoke.resolver.resolve(json!({"selected":"localVm", "localVm":"failed", "model":"locked", "modelSupported":true,
+                                "workspaceFailure":{"operation":"stop", "cause":"forcedStop", "codes":[]}}));
+                            return true;
+                        }
                         let progress = match phase.as_deref() {
                             Some("designer-no-destination") => Some(json!({"selected":null, "localVm":"cancelled", "model":"locked", "modelSupported":true})),
                             Some("installing") => Some(json!({"selected":"localVm", "localVm":"installing", "model":"locked", "modelSupported":true,
@@ -522,7 +532,7 @@ fn main() {
                         let scene = match phase.as_deref() {
                             Some("workspace-scene-ready") => Some("ready"),
                             Some("workspace-scene-starting") => Some("starting"),
-                            Some("workspace-scene-failed" | "workspace-scene-stopped-unexpectedly" | "workspace-scene-stop-failed") => Some("failed"),
+                            Some("workspace-scene-failed" | "workspace-scene-stopped-unexpectedly" | "workspace-scene-stop-failed" | "workspace-scene-forced-stop") => Some("failed"),
                             Some("workspace-scene-closed") => Some("closed"),
                             _ => None,
                         };
@@ -531,7 +541,7 @@ fn main() {
                             state.selected = true;
                             state.phase = scene;
                             state.returning = true;
-                            state.stop_failed = phase.as_deref() == Some("workspace-scene-stop-failed");
+                            state.stop_failed = matches!(phase.as_deref(), Some("workspace-scene-stop-failed" | "workspace-scene-forced-stop"));
                             if reload {
                                 // Retire setup presentation once, then observe the saved selection
                                 // on a fresh renderer, just as a returning fixture session would.
@@ -540,6 +550,9 @@ fn main() {
                                     .expect("fixture returning renderer reload");
                             }
                             let mut status = state.status();
+                            if phase.as_deref() == Some("workspace-scene-forced-stop") {
+                                status["workspaceFailure"]["cause"] = json!("forcedStop");
+                            }
                             if phase.as_deref() == Some("workspace-scene-stopped-unexpectedly") {
                                 status["workspaceFailure"] = json!({"operation":"start", "cause":"unknown", "codes":[]});
                                 status["localVmError"] = json!("Synthetic workspace stopped unexpectedly.");

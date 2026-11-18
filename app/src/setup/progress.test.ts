@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { canQueueModel, infraProgress, setupView } from './progress';
+import { canQueueModel, infraProgress, setupView, workspaceView } from './progress';
 import type { CheckStepState } from './Steps';
 import type { SetupStatus, WorkspaceProgress } from './state';
 
@@ -62,6 +62,18 @@ test('model and workspace trouble keep their own words and tone', () => {
   expect(setupView(status('cancelled')).line).toBe('Setup paused');
   expect(setupView(status('closed')).line).toBe('Workspace stopped');
   expect(setupView(status('notIntegrated', { selected: null })).line).toBe('Workspace unavailable');
+});
+
+test.each([
+  { cause: 'forcedStop', word: 'Forcibly stopped', detail: 'The workspace was forcibly stopped without a clean shutdown. Changes that had not reached disk may be lost. Quit Bridge and reopen it before trying again.' },
+  { cause: 'stopUnconfirmed', word: "Couldn't stop", detail: 'The workspace may still be stopping. Quit Bridge and reopen it before trying again.' },
+] as const)('returning $cause projection distinguishes a forced stop from an unconfirmed stop', ({ cause, word, detail }) => {
+  const snapshot = status('failed', { workspaceFailure: { operation: 'stop', cause, codes: [] } });
+  expect(workspaceView(snapshot)).toEqual({ word, detail, status: 'failed', tone: 'bad' });
+  expect(setupView(snapshot, { workspace: true })).toMatchObject({
+    line: `Workspace ${word.toLowerCase()}`, tabLine: `This computer, ${word.toLowerCase()}`,
+    detail, status: 'failed', tone: 'bad', action: 'Manage',
+  });
 });
 
 test('only an unfinished local attempt can queue a model choice', () => {

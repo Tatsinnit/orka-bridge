@@ -35,7 +35,10 @@ final class BridgeVM {
     private var closing = false
     private var done = false
     private var writable = true
-    private var cleanStop = false
+    // Supervisor success includes an observed S; only G + natural stop proves
+    // guest-initiated termination. Rust records those outcomes separately.
+    private var supervisorSucceeded = false
+    private var expectingGuestStop = false
     private var cleanupAttempted = false
     private var buffer: [UInt8] = []
     private var expectedID: UInt64 = 1
@@ -77,11 +80,26 @@ final class BridgeVM {
             $0 | (UInt64($1.element) << ($1.offset * 8))
         }
         buffer.removeAll(keepingCapacity: true)
-        guard [UInt8(80),82,83].contains(opcode), id == expectedID,
+        guard [UInt8(71),80,82,83].contains(opcode), id == expectedID,
+              !expectingGuestStop || opcode == 83,
               let next = Self.successor(id) else { invalidate(); return }
         expectedID = next
-        if opcode == 83 {
-            closing = true; cleanStop = true; reply = (75, id); cleanup()
+        if opcode == 71 {
+            // A deferred delegate may follow the native terminal state. G must
+            // not reclassify that already-unsolicited exit as guest-requested.
+            guard driver.state != .stopped && driver.state != .failed else {
+                closing = true; reply = (69, id); cleanup(); return
+            }
+            // Arm before acknowledging: the guest may power off immediately
+            // after the host receives this preparation receipt.
+            expectingGuestStop = true
+            if !output(Self.frame(75, id)) { invalidate() }
+        } else if opcode == 83 {
+            // Native state can become stopped before its deferred didEnd and
+            // after Rust's last exit check. Preserve that natural-stop receipt
+            // only when G was armed; ordinary S retains its existing K reply.
+            let receipt: UInt8 = expectingGuestStop && driver.state == .stopped ? 78 : 75
+            closing = true; supervisorSucceeded = true; reply = (receipt, id); cleanup()
         } else if opcode == 80 && driver.canPause {
             let operation = Operation.pause(id)
             pending = operation
@@ -107,7 +125,7 @@ final class BridgeVM {
     }
 
     private func invalidate() {
-        closing = true; writable = false; cleanStop = false; reply = nil
+        closing = true; writable = false; supervisorSucceeded = false; reply = nil
         buffer.removeAll(keepingCapacity: true)
         cleanup()
     }
@@ -118,7 +136,7 @@ final class BridgeVM {
         pending = nil
         if operation == .stop {
             if !ok || driver.state != .stopped {
-                cleanStop = false
+                supervisorSucceeded = false
                 if let id = reply?.1 { reply = (69, id) }
             }
             finishIfTerminal()
@@ -150,7 +168,8 @@ final class BridgeVM {
         // callback or convert a successful requested stop into an unexpected one.
         if pending == .stop { return }
         if !closing {
-            closing = true; cleanStop = false
+            closing = true
+            supervisorSucceeded = expectingGuestStop && pending == nil && driver.state == .stopped
             switch pending {
             case .pause(let id), .resume(let id): reply = (69, id)
             default: break
@@ -169,7 +188,7 @@ final class BridgeVM {
         guard driver.canStop else {
             // A refused S stays failed even if a later independent event stops
             // the VM. Terminal observation permits disposal, not retroactive ACK.
-            cleanStop = false
+            supervisorSucceeded = false
             if let id = reply?.1 { reply = (69, id) }
             return
         }
@@ -181,20 +200,20 @@ final class BridgeVM {
         guard !done && pending == nil else { return }
         guard driver.state == .stopped || driver.state == .failed else { return }
         if driver.state == .failed {
-            cleanStop = false
+            supervisorSucceeded = false
             if let id = reply?.1 { reply = (69, id) }
         }
         done = true
         driver.didEnd = nil
         driver.dispose()
         do { try owner.close() } catch {
-            cleanStop = false
+            supervisorSucceeded = false
             if let id = reply?.1 { reply = (69, id) }
         }
         if writable, let (opcode, id) = reply {
-            if !output(Self.frame(opcode, id)) { cleanStop = false }
+            if !output(Self.frame(opcode, id)) { supervisorSucceeded = false }
         }
-        terminal(cleanStop)
+        terminal(supervisorSucceeded)
         retained = nil
     }
 

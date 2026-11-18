@@ -39,6 +39,7 @@ export default function Workspace({ status, busy, stopping, starting, error, act
   const closed = status.localVm === 'closed';
   const stopped = status.localVm === 'cancelled';
   const stopFailed = failed && status.workspaceFailure?.operation === 'stop';
+  const forcedStop = stopFailed && status.workspaceFailure?.cause === 'forcedStop';
   const recovery = status.preflightFailure ? preflightRecovery(status.preflightFailure) : workspaceRecovery(status.workspaceFailure);
   useEffect(() => {
     helpGeneration.current += 1;
@@ -55,7 +56,8 @@ export default function Workspace({ status, busy, stopping, starting, error, act
   return <section className="card returning-workspace" aria-label="Workspace">
     <div className="steps-head"><div className="workspace-title"><h2>Workspace</h2><StatusPill state={error ? 'needs-you' : view.status}>{error ? 'Status unavailable' : view.word}</StatusPill></div>
     </div>
-    <p role="status">{error ? 'Workspace status is unavailable. Check again before starting it.' : stopFailed ? "The workspace didn't stop." : failed ? recovery.summary : stopped ? 'The workspace stopped unexpectedly. Your agents and files are kept.' : view.detail}</p>
+    <p role="status">{error ? 'Workspace status is unavailable. Check again before starting it.' : stopFailed && !forcedStop ? "The workspace didn't stop." : failed ? recovery.summary : stopped ? 'The workspace stopped unexpectedly. Your agents and files are kept.' : view.detail}</p>
+    {forcedStop && <><p>{recovery.preservation}</p><p>{recovery.action}</p></>}
     {view.word === 'Starting' && clock && <p className="muted">{clock} so far</p>}
     {(stopFailed || closed) && <Button type="button" kind="primary" disabled={quitting} onClick={() => { void quit(); }}>Quit Bridge</Button>}
     {failed && !stopFailed && recovery.action && <p>{recovery.action.replaceAll('Try again', 'Restart workspace').replaceAll('copy the details for help', 'open Show details for help')}</p>}

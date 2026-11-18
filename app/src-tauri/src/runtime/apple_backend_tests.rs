@@ -58,7 +58,9 @@ impl VmBackend for OperationBudgets {
     }
     fn start(&mut self, spec: &LaunchSpec) -> Result<BackendHandle, RuntimeError> {
         let handle = self.0.start(spec)?;
-        super::super::apple::failure_fixture::shorten(self.0.owner.as_mut().unwrap());
+        super::super::apple::failure_fixture::shorten(
+            &mut self.0.owner.as_ref().unwrap().lock().unwrap(),
+        );
         Ok(handle)
     }
     fn stop(&mut self, handle: &BackendHandle) -> Result<(), RuntimeError> {
@@ -70,6 +72,31 @@ impl VmBackend for OperationBudgets {
     fn resume(&mut self, handle: &BackendHandle) -> Result<(), RuntimeError> {
         self.0.resume(handle)
     }
+}
+#[test]
+fn expired_close_origin_caps_unprepared_native_stop_too() {
+    let (_t, journal, image) = installation();
+    let resources = resource(PEER);
+    let mut worker = crate::runtime::RuntimeWorker::new(
+        Box::new(AppleBackend::new(resources.path().to_path_buf())),
+        journal,
+        image,
+    )
+    .unwrap();
+    worker.start().unwrap();
+    let slot = worker
+        .lease()
+        .unwrap()
+        .handle
+        .get::<AppleBackendHandle>()
+        .unwrap()
+        .guest
+        .clone();
+    slot.prepare_shutdown(Instant::now() - Duration::from_secs(12));
+    let started = Instant::now();
+    assert!(worker.stop().is_err());
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(worker.lease().is_some());
 }
 #[test]
 fn failed_operations_revoke_guest_and_retain_original_worker_lock() {

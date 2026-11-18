@@ -20,6 +20,7 @@ mod infrastructure_tests {
         drops: AtomicUsize,
         releases: AtomicUsize,
         fail_stop: bool,
+        forced_stop: bool,
         stop_barrier:
             std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
         version_refusal: bool,
@@ -93,7 +94,9 @@ mod infrastructure_tests {
                 entered.send(()).unwrap();
                 release.recv().unwrap();
             }
-            if self.0.fail_stop {
+            if self.0.forced_stop {
+                Err(RuntimeError::ShutdownForced)
+            } else if self.0.fail_stop {
                 Err(io::Error::other("stop detail").into())
             } else {
                 Ok(())
@@ -420,6 +423,260 @@ mod infrastructure_tests {
         );
         assert_eq!(dto.error, Some("stopUnconfirmed"));
         assert!(!dto.can_replace && !dto.can_restore);
+    }
+    #[tokio::test]
+    async fn forced_stop_during_upgrade_keeps_its_observed_outcome_and_blocks_retry() {
+        let probe = Arc::new(Probe {
+            forced_stop: true,
+            ..Probe::default()
+        });
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        ready(&probe, &vm).await;
+        assert!(vm.quiesce_for_upgrade().await.is_err());
+        assert_eq!(
+            vm.inner
+                .state
+                .lock()
+                .unwrap()
+                .workspace_failure
+                .as_ref()
+                .unwrap()
+                .cause,
+            WorkspaceCause::ForcedStop
+        );
+        let home = tempfile::tempdir().unwrap();
+        let dto = vm
+            .upgrade_status(home.path().join("data"), home.path().join("local"))
+            .await;
+        assert_eq!(dto.error, Some("forcedStop"));
+        assert!(!dto.busy && !dto.can_replace && !dto.can_restore);
+        let stale =
+            vm.publish_upgrade_status(0, crate::workspace_upgrade::UpgradeStatusDto::none());
+        assert_eq!(stale.error, Some("forcedStop"));
+        assert!(!stale.busy);
+        vm.start();
+        assert_eq!(vm.status(), LocalVmStatus::Failed);
+        assert_eq!(
+            probe.starts.load(Ordering::SeqCst),
+            1,
+            "restart stays gated"
+        );
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn contextual_forced_startup_error_blocks_native_restart() {
+        struct ForcedFactory(AtomicUsize);
+        impl LocalFactory for ForcedFactory {
+            fn launch(
+                &self,
+                _: watch::Receiver<bool>,
+                _: Arc<dyn Fn(LocalProgress) + Send + Sync>,
+            ) -> StartFuture<'_> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Err(RuntimeError::Startup(Box::new(
+                        crate::runtime::types::StartupFailure {
+                            error: RuntimeError::ShutdownForced,
+                            operation: WorkspaceOperation::Stop,
+                            diagnostic: "original handshake failed; native hard cleanup confirmed"
+                                .into(),
+                        },
+                    )))
+                })
+            }
+        }
+        let factory = Arc::new(ForcedFactory(AtomicUsize::new(0)));
+        let vm = LocalVm::new(factory.clone());
+        vm.start();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while vm.status() != LocalVmStatus::Failed {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            vm.inner
+                .state
+                .lock()
+                .unwrap()
+                .workspace_failure
+                .as_ref()
+                .unwrap()
+                .cause,
+            WorkspaceCause::ForcedStop
+        );
+        vm.start();
+        assert_eq!(
+            vm.status(),
+            LocalVmStatus::Failed,
+            "native restart bypassed forced-stop gate"
+        );
+        assert_eq!(factory.0.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn close_origin_is_stored_before_the_close_receiver_can_observe_true() {
+        let vm = LocalVm::unavailable();
+        let closed = vm.inner.state.lock().unwrap().cancelled.subscribe();
+        let held = vm.close_origin.lock().unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        let closing = vm.clone();
+        let publisher = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            closing.request_close();
+        });
+        ready.recv().unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        while !*closed.borrow() && std::time::Instant::now() < end {
+            std::thread::yield_now();
+        }
+        let published_without_origin = *closed.borrow();
+        drop(held);
+        publisher.join().unwrap();
+        assert!(!published_without_origin);
+        let first = *vm.close_origin.lock().unwrap();
+        assert!(first.is_some());
+        vm.request_close();
+        assert_eq!(*vm.close_origin.lock().unwrap(), first);
+    }
+    #[tokio::test]
+    async fn cancellation_records_close_origin_and_new_start_resets_the_epoch() {
+        let probe = Arc::new(Probe::default());
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        ready(&probe, &vm).await;
+        vm.cancel().await.unwrap();
+        assert!(vm.close_origin.lock().unwrap().is_some());
+        vm.start();
+        assert!(vm.close_origin.lock().unwrap().is_none());
+        assert!(!*vm.inner.state.lock().unwrap().cancelled.borrow());
+        phase(&vm, LocalVmStatus::Ready).await;
+        vm.shutdown().await.unwrap();
+        assert!(vm.close_origin.lock().unwrap().is_some());
+    }
+    #[test]
+    fn upgrade_quarantine_cannot_overwrite_a_concurrently_confirmed_forced_stop() {
+        let vm = LocalVm::unavailable();
+        let gate = std::sync::Barrier::new(3);
+        let mut overwritten = false;
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..2000 {
+                    gate.wait();
+                    vm.quarantine_upgrade();
+                    gate.wait();
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..2000 {
+                    gate.wait();
+                    vm.inner.fail(
+                        "forced".into(),
+                        &RuntimeError::ShutdownForced,
+                        WorkspaceOperation::Stop,
+                        true,
+                    );
+                    gate.wait();
+                }
+            });
+            for _ in 0..2000 {
+                vm.inner.state.lock().unwrap().workspace_failure = None;
+                gate.wait();
+                gate.wait();
+                overwritten |= vm
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .workspace_failure
+                    .as_ref()
+                    .unwrap()
+                    .cause
+                    != WorkspaceCause::ForcedStop;
+            }
+        });
+        assert!(!overwritten, "quarantine replaced a confirmed outcome");
+    }
+    #[tokio::test]
+    async fn late_forced_stop_reconciles_upgrade_quarantine_without_reopening_admission() {
+        let probe = Arc::new(Probe {
+            forced_stop: true,
+            ..Probe::default()
+        });
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        ready(&probe, &vm).await;
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *probe.stop_barrier.lock().unwrap() = Some((entered, release_rx));
+        let stopping = vm.clone();
+        let waiter = tokio::spawn(async move {
+            let _guard = stopping.quiesce_for_upgrade().await;
+        });
+        tokio::task::spawn_blocking(move || {
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        waiter.abort();
+        let _ = waiter.await; // Guard quarantines before stop completion.
+        assert_eq!(
+            vm.upgrade_cache.lock().unwrap().as_ref().unwrap().error,
+            Some("stopUnconfirmed")
+        );
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while vm.inner.state.lock().unwrap().stopped.is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let dto = vm
+            .upgrade_status(home.path().join("data"), home.path().join("local"))
+            .await;
+        assert_eq!(dto.error, Some("forcedStop"));
+        assert!(!dto.busy && !dto.can_replace && !dto.can_restore);
+        vm.start();
+        assert_eq!(vm.status(), LocalVmStatus::Failed);
+        assert_eq!(probe.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(probe.releases.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn infrastructure_failure_preserves_forced_stop_and_drops_confirmed_session() {
+        let probe = Arc::new(Probe {
+            state: AtomicU8::new(2),
+            forced_stop: true,
+            ..Probe::default()
+        });
+        let vm = LocalVm::new(Arc::new(Factory(probe.clone())));
+        vm.start();
+        phase(&vm, LocalVmStatus::Failed).await;
+        assert_eq!(
+            vm.inner
+                .state
+                .lock()
+                .unwrap()
+                .workspace_failure
+                .as_ref()
+                .unwrap()
+                .cause,
+            WorkspaceCause::ForcedStop
+        );
+        assert_eq!(
+            probe.drops.load(Ordering::SeqCst),
+            1,
+            "confirmed session leaked"
+        );
+        assert!(vm.inner.session.lock().await.is_none());
+        vm.start();
+        assert_eq!(vm.status(), LocalVmStatus::Failed);
+        assert_eq!(
+            probe.starts.load(Ordering::SeqCst),
+            1,
+            "unclean startup must stay gated"
+        );
     }
     #[tokio::test]
     async fn cancelled_quiescence_is_quarantined_without_an_endless_busy_projection() {
@@ -2054,7 +2311,10 @@ async fn native_factory_releases_retained_handles_before_identity_preserving_ren
     let identity = file_identity(&dir.into_std_file()).unwrap();
     fs::write(root.join("efi.vars"), b"stand-in firmware bytes").unwrap();
     let state = file_identity(&fs::File::open(root.join("state.disk")).unwrap()).unwrap();
+    let close_origin = Arc::new(Mutex::new(None));
     let factory = Arc::new(NativeFactory {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        close_origin: close_origin.clone(),
         resources: temp.path().into(),
         data: temp.path().into(),
         root: root.clone(),
@@ -2069,7 +2329,7 @@ async fn native_factory_releases_retained_handles_before_identity_preserving_ren
         },
         pending: Arc::new(Mutex::new(JournalCustody(Some(journal)))),
     });
-    let vm = LocalVm::new(factory);
+    let vm = LocalVm::make_with_close_origin(Some(factory), false, close_origin);
     vm.cancel().await.unwrap();
     // Stop alone retains the native factory's owner lock.
     assert!(matches!(Journal::open(&root), Err(RuntimeError::Busy)));

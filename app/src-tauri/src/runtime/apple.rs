@@ -11,6 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) const SHUTDOWN_FALLBACK: Duration = Duration::from_secs(10);
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum HelperError {
     Io(io::ErrorKind),
@@ -18,6 +20,12 @@ pub enum HelperError {
     Busy,
     Poisoned,
     ExitUnobserved,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppleStopOutcome {
+    GuestStopped,
+    ForcedStop,
+    HardStopped,
 }
 #[derive(Clone, Copy)]
 struct Budgets {
@@ -31,6 +39,13 @@ struct Session {
     control: Option<UnixStream>,
     next: u64,
     cleanup_attempted: bool,
+    budgets: Budgets,
+    stop_deadline: Option<Instant>,
+}
+impl Session {
+    fn cap_end(&self, end: Instant) -> Instant {
+        self.stop_deadline.map_or(end, |limit| limit.min(end))
+    }
 }
 /// One persistent owner per native backend. Never reconstruct it from a cached
 /// ownership Arc after failure: the same worker must retain its poison status.
@@ -41,6 +56,8 @@ pub struct AppleHelperOwner {
     session: Option<Session>,
     poisoned: bool,
     unobserved: bool,
+    graceful_end: Option<Instant>,
+    stop_outcome: Option<AppleStopOutcome>,
 }
 impl AppleHelperOwner {
     pub fn new(ownership: Arc<File>) -> Self {
@@ -55,6 +72,8 @@ impl AppleHelperOwner {
             session: None,
             poisoned: false,
             unobserved: false,
+            graceful_end: None,
+            stop_outcome: None,
         }
     }
     fn available(&self) -> Result<(), HelperError> {
@@ -73,6 +92,8 @@ impl AppleHelperOwner {
         if self.session.is_some() {
             return Err(HelperError::Busy);
         }
+        self.graceful_end = None;
+        self.stop_outcome = None;
         let (session, guest) = super::spawn_guard::run_blocking(|| -> io::Result<_> {
             // Darwin sets socket CLOEXEC after socketpair: all app spawns share
             // this guard until the temporary helper ends have been closed.
@@ -123,6 +144,8 @@ impl AppleHelperOwner {
                     control: Some(control),
                     next: 1,
                     cleanup_attempted: false,
+                    budgets: self.budgets,
+                    stop_deadline: None,
                 },
                 guest,
             ))
@@ -147,7 +170,7 @@ impl AppleHelperOwner {
             Err(error) => Err(self.fail(error)),
         }
     }
-    fn exchange(&mut self, opcode: u8, end: Instant) -> Result<(), HelperError> {
+    fn exchange(&mut self, opcode: u8, end: Instant) -> Result<u8, HelperError> {
         self.available()?;
         let session = self
             .session
@@ -166,10 +189,14 @@ impl AppleHelperOwner {
         )?;
         let mut reply = [0; 9];
         read_until(control, &mut reply, end)?;
-        if reply[0] != b'K' || reply[1..] != id.to_le_bytes() {
+        // N proves natural termination only for the S racing a prepared stop.
+        // Neither another operation nor an unprepared stop may claim it.
+        let valid_opcode =
+            reply[0] == b'K' || (reply[0] == b'N' && opcode == b'S' && self.graceful_end.is_some());
+        if !valid_opcode || reply[1..] != id.to_le_bytes() {
             return Err(HelperError::Protocol);
         }
-        Ok(())
+        Ok(reply[0])
     }
     fn operation(&mut self, opcode: u8) -> Result<(), HelperError> {
         self.available()?;
@@ -177,7 +204,7 @@ impl AppleHelperOwner {
             return Err(HelperError::Io(io::ErrorKind::NotConnected));
         }
         match self.exchange(opcode, Instant::now() + self.budgets.read) {
-            Ok(()) => Ok(()),
+            Ok(_) => Ok(()),
             Err(error) => Err(self.fail(error)),
         }
     }
@@ -187,24 +214,90 @@ impl AppleHelperOwner {
     pub fn resume(&mut self) -> Result<(), HelperError> {
         self.operation(b'R')
     }
-    /// A successful stop observes both the completed-operation ACK and child exit.
-    /// It is not a guest protocol shutdown ACK or an infrastructure-ready claim.
+    pub(crate) fn bound_stop(&mut self, end: Instant) {
+        if let Some(session) = self.session.as_mut() {
+            session.stop_deadline = Some(session.cap_end(end));
+        }
+    }
+    /// Arm expected natural termination before asking the guest to power off.
+    /// G is preparation only; its ACK never proves termination or a guest flush.
+    pub fn prepare_shutdown(&mut self, end: Instant) -> Result<(), HelperError> {
+        self.available()?;
+        if let Some(previous) = self.graceful_end {
+            let end = previous.min(end);
+            self.graceful_end = Some(end);
+            self.bound_stop(end + SHUTDOWN_FALLBACK);
+            return Ok(()); // Never renew a prepared budget or replay G.
+        }
+        self.graceful_end = Some(end);
+        self.bound_stop(end + SHUTDOWN_FALLBACK);
+        // Reserve fallback time inside AppKit's existing 30-second window.
+        // Unprepared startup-failure cleanup retains its original budgets.
+        if let Some(session) = self.session.as_mut() {
+            session.budgets.exit = session.budgets.exit.min(Duration::from_secs(5));
+            session.budgets.cleanup = session.budgets.cleanup.min(Duration::from_secs(2));
+        }
+        // Draining a cancelled guest call can consume all grace before the
+        // session mutex becomes available. Still arm native observation with
+        // a bounded preparation exchange; never renew the stored guest grace.
+        let now = Instant::now();
+        let preparation_end = if end <= now {
+            now + Duration::from_secs(1)
+        } else {
+            end
+        };
+        let preparation_end = self
+            .session
+            .as_ref()
+            .map_or(preparation_end, |s| s.cap_end(preparation_end));
+        match self.exchange(b'G', preparation_end) {
+            Ok(_) => Ok(()),
+            Err(error) => Err(self.fail(error)),
+        }
+    }
+    pub fn stop_outcome(&self) -> Option<AppleStopOutcome> {
+        self.stop_outcome
+    }
+    /// Prepared shutdown waits for natural native disposal and child exit first.
+    /// Only timeout sends S. K is forced; N proves native stop won the race.
+    /// Both receipts still require an observed successful helper exit.
     pub fn stop(&mut self) -> Result<(), HelperError> {
         self.available()?;
         if self.session.is_none() {
             return Ok(());
         }
-        let end = Instant::now() + self.budgets.exit;
-        let result = self.exchange(b'S', end).and_then(|()| {
+        if let Some(end) = self.graceful_end {
+            let end = self.session.as_ref().unwrap().cap_end(end);
+            match wait_until(&mut self.session.as_mut().unwrap().child, end) {
+                Ok(Some(status)) if status.success() => {
+                    self.session = None;
+                    self.stop_outcome = Some(AppleStopOutcome::GuestStopped);
+                    return Ok(());
+                }
+                Ok(Some(_)) => return Err(self.fail(HelperError::Io(io::ErrorKind::Other))),
+                Err(error) => return Err(self.fail(io_error(error))),
+                Ok(None) => {} // Grace exhausted; only now use hard stop.
+            }
+        }
+        let session = self.session.as_ref().unwrap();
+        let end = session.cap_end(Instant::now() + session.budgets.exit);
+        let result = self.exchange(b'S', end).and_then(|receipt| {
             match wait_until(&mut self.session.as_mut().unwrap().child, end).map_err(io_error)? {
-                Some(status) if status.success() => Ok(()),
+                Some(status) if status.success() => Ok(receipt),
                 Some(_) => Err(HelperError::Io(io::ErrorKind::Other)),
                 None => Err(HelperError::Io(io::ErrorKind::TimedOut)),
             }
         });
         match result {
-            Ok(()) => {
+            Ok(receipt) => {
                 self.session = None;
+                self.stop_outcome = Some(if receipt == b'N' {
+                    AppleStopOutcome::GuestStopped
+                } else if self.graceful_end.is_some() {
+                    AppleStopOutcome::ForcedStop
+                } else {
+                    AppleStopOutcome::HardStopped
+                });
                 Ok(())
             }
             Err(error) => Err(self.fail(error)),
@@ -236,14 +329,21 @@ impl AppleHelperOwner {
             unsafe {
                 libc::kill(session.child.id() as i32, libc::SIGTERM);
             }
-            if wait_until(&mut session.child, Instant::now() + self.budgets.cleanup)?.is_some() {
+            let end = session.cap_end(Instant::now() + session.budgets.cleanup);
+            if wait_until(&mut session.child, end)?.is_some() {
                 return Ok(true);
             }
             if session.child.try_wait()?.is_some() {
                 return Ok(true);
             }
             let _ = session.child.kill();
-            Ok(wait_until(&mut session.child, Instant::now() + self.budgets.cleanup)?.is_some())
+            // An explicitly absent cleanup budget keeps the killed child
+            // quarantined; do not turn it into a scheduling-dependent observation.
+            if session.budgets.cleanup.is_zero() {
+                return Ok(false);
+            }
+            let end = session.cap_end(Instant::now() + session.budgets.cleanup);
+            Ok(wait_until(&mut session.child, end)?.is_some())
         })()
         .unwrap_or(false);
         if observed {
@@ -328,15 +428,18 @@ fn write_until(mut stream: &UnixStream, mut bytes: &[u8], end: Instant) -> Resul
     Ok(())
 }
 fn wait_until(child: &mut Child, end: Instant) -> io::Result<Option<ExitStatus>> {
-    while Instant::now() < end {
+    loop {
+        // Even a late caller must observe an exited helper before sending S.
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
+        }
+        if Instant::now() >= end {
+            return Ok(None);
         }
         std::thread::sleep(
             Duration::from_millis(2).min(end.saturating_duration_since(Instant::now())),
         );
     }
-    Ok(None)
 }
 #[cfg(test)]
 pub mod failure_fixture {
@@ -345,5 +448,8 @@ pub mod failure_fixture {
     pub fn shorten(owner: &mut AppleHelperOwner) {
         owner.budgets.read = Duration::from_millis(100);
         owner.budgets.cleanup = Duration::ZERO;
+        if let Some(session) = owner.session.as_mut() {
+            session.budgets.cleanup = Duration::ZERO;
+        }
     }
 }

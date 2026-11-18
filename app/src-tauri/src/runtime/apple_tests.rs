@@ -215,6 +215,151 @@ fn assert_reaped(d: &tempfile::TempDir) {
 }
 
 #[test]
+fn repeated_preparation_can_shorten_but_never_renew_native_deadlines() {
+    let (_d, mut owner, cmd) = setup("good");
+    let _guest = owner.start(cmd, config()).unwrap();
+    let later = Instant::now() + Duration::from_secs(1);
+    owner.prepare_shutdown(later).unwrap();
+    let earlier = Instant::now() + Duration::from_millis(40);
+    owner.prepare_shutdown(earlier).unwrap();
+    owner.prepare_shutdown(later).unwrap();
+    assert_eq!(owner.graceful_end, Some(earlier));
+    assert_eq!(owner.session.as_ref().unwrap().stop_deadline, Some(earlier + SHUTDOWN_FALLBACK));
+    owner.stop().unwrap();
+}
+#[test]
+fn expired_total_stop_budget_does_not_grant_fresh_preparation_or_cleanup() {
+    let (_d, mut owner, cmd) = setup("good");
+    let _guest = owner.start(cmd, config()).unwrap();
+    let started = Instant::now();
+    assert!(owner.prepare_shutdown(started - Duration::from_secs(12)).is_err());
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(owner.stop_outcome(), None);
+    if let Some(session) = owner.session.as_mut() { let _ = session.child.wait(); }
+}
+#[test]
+fn prepared_shutdown_caps_do_not_leak_into_reused_owner() {
+    let (d, mut owner, cmd) = setup("normal");
+    let defaults = AppleHelperOwner::new(owner.ownership.clone()).budgets;
+    owner.budgets = defaults;
+    let _guest = owner.start(cmd, config()).unwrap();
+    owner.prepare_shutdown(Instant::now()).unwrap();
+    assert_eq!(owner.budgets.exit, Duration::from_secs(45));
+    assert_eq!(owner.budgets.cleanup, Duration::from_secs(10));
+    assert_eq!(owner.session.as_ref().unwrap().budgets.exit, Duration::from_secs(5));
+    assert_eq!(owner.session.as_ref().unwrap().budgets.cleanup, Duration::from_secs(2));
+    owner.stop().unwrap();
+    assert_eq!(owner.stop_outcome(), Some(AppleStopOutcome::ForcedStop));
+    let mut again = Command::new(fixture().join("helper"));
+    again.arg("normal").arg(d.path().join("pid"));
+    let _guest = owner.start(again, config()).unwrap();
+    assert!(owner.graceful_end.is_none());
+    assert!(owner.session.as_ref().unwrap().stop_deadline.is_none());
+    assert_eq!(owner.budgets.exit, Duration::from_secs(45));
+    assert_eq!(owner.budgets.cleanup, Duration::from_secs(10));
+    assert_eq!(owner.session.as_ref().unwrap().budgets.exit, Duration::from_secs(45));
+    assert_eq!(owner.session.as_ref().unwrap().budgets.cleanup, Duration::from_secs(10));
+    owner.stop().unwrap();
+    assert_eq!(owner.stop_outcome(), Some(AppleStopOutcome::HardStopped));
+    assert_reaped(&d);
+}
+
+#[test]
+fn prepared_s_accepts_natural_receipt_only_with_matching_id_and_observed_exit() {
+    for (mode, succeeds) in [
+        ("natural-receipt", true),
+        ("natural-stale", false),
+        ("natural-exit-bad", false),
+        ("natural-hang", false),
+        ("lost-stop-receipt", false),
+    ] {
+        let (d, mut owner, cmd) = setup(mode);
+        let _guest = owner.start(cmd, config()).unwrap();
+        owner.prepare_shutdown(Instant::now()).unwrap();
+        assert_eq!(owner.stop().is_ok(), succeeds, "{mode}");
+        assert_eq!(owner.stop_outcome(), succeeds.then_some(AppleStopOutcome::GuestStopped), "{mode}");
+        assert!(owner.session.is_none(), "{mode}");
+        assert_eq!(owner.poisoned, !succeeds, "{mode}");
+        assert_reaped(&d);
+    }
+}
+
+#[test]
+fn natural_receipt_is_invalid_for_unprepared_s_and_other_operations() {
+    for operation in *b"SGPR" {
+        let (d, mut owner, cmd) = setup("unexpected-natural");
+        let _guest = owner.start(cmd, config()).unwrap();
+        let result = match operation {
+            b'S' => owner.stop(),
+            b'G' => owner.prepare_shutdown(Instant::now()),
+            b'P' => owner.pause(),
+            _ => owner.resume(),
+        };
+        assert_eq!(result, Err(HelperError::Protocol), "opcode {operation}");
+        assert_eq!(owner.stop_outcome(), None);
+        assert!(owner.poisoned);
+        assert_reaped(&d);
+    }
+}
+
+#[test]
+fn expected_guest_stop_observes_exit_and_timeout_fallback_stays_distinct() {
+    for (mode, outcome) in [
+        ("guest-stop", AppleStopOutcome::GuestStopped),
+        ("normal", AppleStopOutcome::ForcedStop),
+    ] {
+        let (d, mut owner, cmd) = setup(mode);
+        let _guest = owner.start(cmd, config()).unwrap();
+        let end = Instant::now() + Duration::from_millis(80);
+        owner.prepare_shutdown(end).unwrap();
+        assert_eq!(owner.stop_outcome(), None, "G ACK is not termination");
+        owner.stop().unwrap();
+        assert_eq!(owner.stop_outcome(), Some(outcome));
+        if outcome == AppleStopOutcome::ForcedStop {
+            assert!(Instant::now() >= end, "hard stop before grace elapsed");
+        }
+        owner.stop().unwrap();
+        assert_eq!(owner.stop_outcome(), Some(outcome), "repeat changed outcome");
+        assert_reaped(&d);
+    }
+}
+#[test]
+fn prepared_shutdown_observes_exited_child_after_deadline() {
+    for mode in ["guest-stop", "guest-error"] {
+        let (d, mut owner, cmd) = setup(mode);
+        let _guest = owner.start(cmd, config()).unwrap();
+        owner.prepare_shutdown(Instant::now() + Duration::from_millis(80)).unwrap();
+        // Synchronize with real child exit, not a scheduling-dependent sleep.
+        // wait() retains its status in Child for the owner's next observation.
+        let status = owner.session.as_mut().unwrap().child.wait().unwrap();
+        owner.graceful_end = Some(Instant::now() - Duration::from_millis(1));
+        let result = owner.stop();
+        if mode == "guest-stop" {
+            assert!(status.success());
+            assert_eq!(result, Ok(()), "late stop sent S to an exited helper");
+            assert_eq!(owner.stop_outcome(), Some(AppleStopOutcome::GuestStopped));
+            assert!(!owner.poisoned);
+            owner.stop().unwrap();
+        } else {
+            assert!(!status.success());
+            assert_eq!(result, Err(HelperError::Io(io::ErrorKind::Other)));
+            assert_eq!(owner.stop_outcome(), None);
+            assert!(owner.poisoned);
+        }
+        assert!(owner.session.is_none());
+        assert_reaped(&d);
+    }
+}
+#[test]
+fn expected_guest_native_failure_never_becomes_clean_or_forced_success() {
+    let (d, mut owner, cmd) = setup("guest-error");
+    let _guest = owner.start(cmd, config()).unwrap();
+    owner.prepare_shutdown(Instant::now() + Duration::from_millis(80)).unwrap();
+    assert!(owner.stop().is_err());
+    assert_eq!(owner.stop_outcome(), None);
+    assert_reaped(&d);
+}
+#[test]
 fn closed_helper_control_preserves_buffered_reply_and_eof() {
     let (control, mut helper) = UnixStream::pair().unwrap();
     helper.write_all(b"BRVM\x01").unwrap();

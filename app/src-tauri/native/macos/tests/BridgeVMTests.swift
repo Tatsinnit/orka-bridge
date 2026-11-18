@@ -57,7 +57,7 @@ private final class Harness {
         driver.disposeCheck = { t.disposedWithOpenFD = fcntl(ownedFD, F_GETFD) >= 0 }
         core = BridgeVM(driver: driver, ownershipFD: fd, queue: queue, output: { bytes in
             t.writes.append(bytes)
-            if bytes.first == 75 { t.repliesWithClosedFD.append(fcntl(ownedFD, F_GETFD) == -1) }
+            if bytes.first == 75 || bytes.first == 78 { t.repliesWithClosedFD.append(fcntl(ownedFD, F_GETFD) == -1) }
             return t.outputWorks
         }, terminal: { status in
             check(fcntl(ownedFD, F_GETFD) == -1, "terminal before ownership closed")
@@ -115,6 +115,66 @@ private struct Tests {
             check(h.trace.terminal == [true], "only completed S is success")
             h.core.start(); h.core.receive(frame(80, 4))
             check(h.driver.calls.count == 5 && h.trace.terminal.count == 1, "terminal session restarted")
+        }
+        for prepared in [false, true] {
+            let h = Harness(q); h.running()
+            if prepared { h.core.receive(frame(71, 1)) }
+            // Native state wins after Rust's last exit check; didEnd is deferred.
+            h.driver.state = .stopped
+            let delayedEnd = h.driver.didEnd
+            let id: UInt64 = prepared ? 2 : 1
+            h.core.receive(frame(83, id))
+            check(h.trace.writes.last == frame(prepared ? 78 : 75, id), "S lost natural-stop classification")
+            check(h.driver.calls == ["start", "dispose"], "already-stopped S invoked destructive stop")
+            check(h.trace.disposedWithOpenFD, "S unlocked before disposal")
+            check(h.trace.repliesWithClosedFD.last == true, "S receipt before ownership close")
+            check(h.trace.terminal == [true], "already-stopped S failed")
+            let writes = h.trace.writes.count
+            delayedEnd?()
+            check(h.trace.writes.count == writes && h.trace.terminal == [true], "deferred end repeated terminal receipt")
+            check(h.driver.calls == ["start", "dispose"], "deferred end repeated disposal")
+        }
+        for terminalState in [MachineState.stopped, .failed] {
+            let h = Harness(q); h.running()
+            h.core.receive(frame(71, 1)) // G only arms guest-stop observation.
+            check(h.driver.calls == ["start"], "G must not hard-stop the VM")
+            check(h.trace.writes.last == frame(75, 1), "G preparation was not acknowledged")
+            check(fcntl(h.fd, F_GETFD) >= 0, "G released a running owner")
+            h.driver.ended(terminalState)
+            check(h.driver.calls == ["start", "dispose"], "natural guest stop used destructive stop")
+            check(h.trace.disposedWithOpenFD, "guest stop unlocked before disposal")
+            check(h.trace.terminal == [terminalState == .stopped], "expected guest stop classification")
+        }
+        for terminalState in [MachineState.stopped, .failed] {
+            let h = Harness(q); h.running()
+            // Native state changes before its deferred didEnd callback runs.
+            h.driver.state = terminalState
+            let delayedEnd = h.driver.didEnd
+            h.core.receive(frame(71, 1))
+            check(h.trace.writes.last == frame(69, 1), "terminal VM acknowledged G")
+            check(h.driver.calls == ["start", "dispose"], "terminal G used destructive stop or leaked")
+            check(h.trace.disposedWithOpenFD, "terminal G unlocked before disposal")
+            check(h.trace.terminal == [false], "terminal-before-G became clean guest poweroff")
+            let writes = h.trace.writes.count
+            delayedEnd?()
+            check(h.trace.terminal == [false] && h.trace.writes.count == writes, "deferred end changed rejected G")
+            check(h.driver.calls == ["start", "dispose"], "deferred end repeated disposal")
+        }
+        do {
+            let h = Harness(q); h.running(); h.driver.ended(.stopped)
+            check(h.trace.terminal == [false], "unsolicited stop became expected guest poweroff")
+        }
+        do {
+            let h = Harness(q); h.running(); h.core.receive(frame(71, 1))
+            h.core.receive(frame(83, 2))
+            check(h.driver.calls.last == "stop", "prepared timeout cannot invoke hard fallback")
+            h.driver.complete(.stopped)
+            check(h.trace.writes.last == frame(75, 2), "fallback S completion missing")
+        }
+        do {
+            let h = Harness(q); h.running(); h.core.receive(frame(71, 1))
+            h.core.peerClosed(); h.driver.complete(.stopped)
+            check(h.trace.terminal == [false], "parent EOF became clean guest poweroff")
         }
         for bytes in [frame(88,1), frame(80,0), frame(80,2), [UInt8](repeating: 0, count: 10)] {
             let h = Harness(q); h.running(); h.core.receive(bytes)
@@ -211,11 +271,11 @@ private struct Tests {
         do {
             var h: Harness? = Harness(q)
             let driver = h!.driver, fd = h!.fd
-            weak var core = h!.core
+            let core = { [weak core = h!.core] in core }
             h!.running(); h = nil
-            check(core != nil && fcntl(fd,F_GETFD) >= 0, "caller drop released a live VM owner")
+            check(core() != nil && fcntl(fd,F_GETFD) >= 0, "caller drop released a live VM owner")
             driver.ended(.failed)
-            check(core == nil && fcntl(fd,F_GETFD) == -1, "terminal owner leaked after disposal")
+            check(core() == nil && fcntl(fd,F_GETFD) == -1, "terminal owner leaked after disposal")
         }
         do {
             _ = try VirtualizationDriver(configuration: VZVirtualMachineConfiguration(), queue: q)

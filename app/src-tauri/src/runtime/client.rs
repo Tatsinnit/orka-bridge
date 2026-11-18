@@ -201,10 +201,9 @@ impl VmClient {
             }
         }
     }
-    // Lifecycle shutdown is routed by the native Windows session; other
-    // platform session adapters are not connected in this slice.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    pub(super) fn shutdown(&mut self) -> io::Result<()> {
+    // Lifecycle shutdown is routed by the owned native platform session.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    pub(crate) fn shutdown(&mut self) -> io::Result<()> {
         self.ready_call(RequestBody::Shutdown {})
     }
     fn ready_call(&mut self, body: RequestBody) -> io::Result<()> {

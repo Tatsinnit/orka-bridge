@@ -1,6 +1,6 @@
 //! Native-only Apple backend; not registered in Setup or Run.
 use super::{
-    apple::{AppleHelperOwner, HelperError},
+    apple::{AppleHelperOwner, HelperError, SHUTDOWN_FALLBACK},
     apple_channel::GuestSlot,
     apple_input::{configuration_file, helper_path},
     image_types::{ImageTarget, LaunchMode},
@@ -12,12 +12,12 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     process::Command,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 pub struct AppleBackend {
     resource_root: PathBuf,
-    owner: Option<AppleHelperOwner>,
+    owner: Option<Arc<Mutex<AppleHelperOwner>>>,
     ownership: Option<Arc<File>>,
     create_efi: bool,
     current: Option<AppleBackendHandle>,
@@ -26,6 +26,19 @@ pub struct AppleBackend {
 pub(crate) struct AppleBackendHandle {
     id: Uuid,
     pub(crate) guest: GuestSlot,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) owner: Arc<Mutex<AppleHelperOwner>>,
+}
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl AppleBackendHandle {
+    pub(crate) fn prepare_shutdown(&self, end: Instant) -> Result<(), RuntimeError> {
+        self.guest.prepare_shutdown(end);
+        self.owner
+            .lock()
+            .unwrap()
+            .prepare_shutdown(end)
+            .map_err(helper_error)
+    }
 }
 impl AppleBackend {
     pub fn new(resource_root: PathBuf) -> Self {
@@ -112,7 +125,9 @@ impl VmBackend for AppleBackend {
         }
         if self.owner.is_none() {
             self.ownership = Some(spec.ownership.clone());
-            self.owner = Some(AppleHelperOwner::new(spec.ownership.clone()));
+            self.owner = Some(Arc::new(Mutex::new(AppleHelperOwner::new(
+                spec.ownership.clone(),
+            ))));
         }
         // The one live preparation permission is consumed before ANY launch attempt.
         let create_efi = std::mem::take(&mut self.create_efi);
@@ -130,7 +145,9 @@ impl VmBackend for AppleBackend {
         let file = configuration_file(spec, create_efi)?;
         let socket = self
             .owner
-            .as_mut()
+            .as_ref()
+            .unwrap()
+            .lock()
             .unwrap()
             .start(Command::new(helper_path(&self.resource_root)?), file)
             .map_err(helper_error)?;
@@ -139,15 +156,30 @@ impl VmBackend for AppleBackend {
         self.current = Some(AppleBackendHandle {
             id,
             guest: guest.clone(),
+            owner: self.owner.as_ref().unwrap().clone(),
         });
-        Ok(BackendHandle::new(AppleBackendHandle { id, guest }))
+        Ok(BackendHandle::new(AppleBackendHandle {
+            id,
+            guest,
+            owner: self.owner.as_ref().unwrap().clone(),
+        }))
     }
     fn stop(&mut self, handle: &BackendHandle) -> Result<(), RuntimeError> {
         let guest = self.selected(handle)?.guest.clone();
         guest.seal();
-        let stopped = self.owner.as_mut().unwrap().stop().map_err(helper_error);
+        let end = guest
+            .shutdown_deadline()
+            .map(|grace| grace + SHUTDOWN_FALLBACK);
+        let stopped = {
+            let mut owner = self.owner.as_ref().unwrap().lock().unwrap();
+            if let Some(end) = end {
+                owner.bound_stop(end);
+            }
+            owner.stop().map_err(helper_error)
+        };
+        let revoke_end = Instant::now() + Duration::from_secs(10);
         let revoked = guest
-            .revoke(Instant::now() + Duration::from_secs(10))
+            .revoke(end.map_or(revoke_end, |end| end.min(revoke_end)))
             .map_err(RuntimeError::Io);
         if stopped.is_err() || revoked.is_err() {
             self.poisoned = true;
@@ -162,7 +194,15 @@ impl VmBackend for AppleBackend {
         if self.poisoned {
             return Err(RuntimeError::RetainedState);
         }
-        match self.owner.as_mut().unwrap().pause().map_err(helper_error) {
+        let result = self
+            .owner
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .pause()
+            .map_err(helper_error);
+        match result {
             Ok(()) => Ok(()),
             Err(error) => {
                 let _ = self.stop(handle); // Revoke even when poisoned cleanup cannot confirm exit.
@@ -175,7 +215,15 @@ impl VmBackend for AppleBackend {
         if self.poisoned {
             return Err(RuntimeError::RetainedState);
         }
-        match self.owner.as_mut().unwrap().resume().map_err(helper_error) {
+        let result = self
+            .owner
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .resume()
+            .map_err(helper_error);
+        match result {
             Ok(()) => Ok(()),
             Err(error) => {
                 let _ = self.stop(handle);

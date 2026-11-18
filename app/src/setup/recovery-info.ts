@@ -1,7 +1,7 @@
 export type HelpTopic = 'virtualization' | 'hypervisor' | 'workspace' | 'githubCliInstall' | 'githubSignIn' | 'openaiKey' | 'anthropicKey';
 export type RecoveryInfo = { summary: string; action: string; topic?: HelpTopic; stage: string; retryBlocked?: boolean; heading?: string; preservation?: string; category?: string };
 const operations = ['requirements', 'download', 'verify', 'prepare', 'start', 'services', 'stop'] as const;
-const causes = ['permission', 'noSpace', 'integrity', 'workspaceUpdateRequired', 'workspaceVersionUnsupported', 'inUse', 'network', 'preparation', 'guestConnection', 'services', 'stopUnconfirmed', 'unknown'] as const;
+const causes = ['permission', 'noSpace', 'integrity', 'workspaceUpdateRequired', 'workspaceVersionUnsupported', 'inUse', 'network', 'preparation', 'guestConnection', 'services', 'stopUnconfirmed', 'forcedStop', 'unknown'] as const;
 export type WorkspaceFailure = { operation: typeof operations[number]; cause: typeof causes[number]; codes: number[] };
 export const isOsCode = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
 export function isWorkspaceFailure(value: unknown): value is WorkspaceFailure {
@@ -36,6 +36,7 @@ export function workspaceRecovery(failure?: WorkspaceFailure): RecoveryInfo {
     case 'preparation': return { ...common, summary: "The workspace couldn't be prepared.", action: 'Press Try again. If it happens again, copy the details for help.' };
     case 'guestConnection': return { ...common, summary: "The workspace didn't finish starting.", action: 'Press Try again to restart it. If it happens again, copy the details for help.' };
     case 'services': return { ...common, summary: "The workspace's services couldn't start.", action: 'Press Try again to restart the workspace. If it happens again, copy the details for help.' };
+    case 'forcedStop': return { ...common, heading: 'The workspace was forcibly stopped', summary: 'The workspace was forcibly stopped without a clean shutdown.', action: 'Quit Bridge and reopen it before trying again.', preservation: 'Changes that had not reached disk may be lost.', topic: 'workspace', retryBlocked: true };
     case 'stopUnconfirmed': return { ...common, summary: "The workspace couldn't be stopped safely.", action: 'Quit Bridge and reopen it before trying again. The workspace may still be stopping.', topic: 'workspace', retryBlocked: true };
     default: return { ...common, summary: "Your workspace didn't start. Your agents are safe.", action: '', preservation: '' };
   }

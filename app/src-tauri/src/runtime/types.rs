@@ -49,6 +49,7 @@ pub enum WorkspaceCause {
     GuestConnection,
     Services,
     StopUnconfirmed,
+    ForcedStop,
     Unknown,
 }
 /// Bounded renderer-safe facts. Private diagnostics never contribute to these fields.
@@ -92,6 +93,7 @@ impl WorkspaceFailure {
             RuntimeError::Image(ImageError::Network(_)) => (O::Download, C::Network, None),
             RuntimeError::Infrastructure(_) => (O::Services, C::Services, None),
             RuntimeError::StopUnconfirmed(_) => (O::Stop, C::StopUnconfirmed, None),
+            RuntimeError::ShutdownForced => (O::Stop, C::ForcedStop, None),
             RuntimeError::Io(error) => (
                 operation,
                 match error.kind() {
@@ -130,9 +132,9 @@ impl WorkspaceFailure {
                 None,
             ),
         };
-        // Any failed stop leaves guest custody unconfirmed, whatever its typed origin.
+        // A confirmed forced exit is unclean, but has no unobserved writer.
         let operation = if stopping { O::Stop } else { operation };
-        let cause = if operation == O::Stop {
+        let cause = if operation == O::Stop && cause != C::ForcedStop {
             C::StopUnconfirmed
         } else {
             cause
@@ -140,7 +142,7 @@ impl WorkspaceFailure {
         Self::new(operation, cause, code)
     }
 }
-/// A startup error retained with its private diagnostic; the original stays typed.
+/// A typed startup failure with private diagnostic context, including earlier errors.
 #[derive(Debug)]
 pub struct StartupFailure {
     pub error: RuntimeError,
@@ -158,6 +160,8 @@ pub enum RuntimeError {
     Closed,
     /// A native writer may still be alive; never admit another startup.
     StopUnconfirmed(String),
+    /// Native termination was confirmed, but required destructive cleanup.
+    ShutdownForced,
     Protocol(ProtocolError),
     Image(ImageError),
     /// The guest started but its services did not become ready; text is private.
@@ -254,7 +258,7 @@ impl BackendHandle {
 }
 pub struct VmLease {
     pub spec: LaunchSpec,
-    pub(super) handle: BackendHandle,
+    pub(crate) handle: BackendHandle,
 }
 /// Every successful stop/pause/resume observes completion. A failed start must
 /// clean up anything it created before returning; no lease is reconstructed by PID.
@@ -278,6 +282,13 @@ mod workspace_failure_tests {
     fn classify(error: RuntimeError, op: O) -> (O, C, Vec<u32>) {
         let f = WorkspaceFailure::from_error(&error, op);
         (f.operation, f.cause, f.codes)
+    }
+    #[test]
+    fn confirmed_forced_stop_is_not_classified_as_an_unobserved_writer() {
+        assert_eq!(
+            classify(RuntimeError::ShutdownForced, O::Stop),
+            (O::Stop, C::ForcedStop, vec![])
+        );
     }
     #[test]
     fn every_typed_error_selects_its_documented_finite_category() {

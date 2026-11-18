@@ -501,7 +501,21 @@ impl Inner {
         operation: WorkspaceOperation,
         stop_unconfirmed: bool,
     ) {
-        let mut state = self.state.lock().unwrap();
+        Self::record_failure(
+            &mut self.state.lock().unwrap(),
+            reason,
+            error,
+            operation,
+            stop_unconfirmed,
+        );
+    }
+    fn record_failure(
+        state: &mut State,
+        reason: String,
+        error: &RuntimeError,
+        operation: WorkspaceOperation,
+        stop_unconfirmed: bool,
+    ) {
         state.failure = Some(reason);
         state.preflight_failure = match error {
             RuntimeError::Preflight(failure) => Some(*failure),
@@ -525,6 +539,7 @@ impl Inner {
 pub struct LocalVm {
     inner: Arc<Inner>,
     factory: Option<Arc<dyn LocalFactory>>,
+    close_origin: Arc<Mutex<Option<std::time::Instant>>>,
     /// Only a fresh recovery-blocked owner proves factory custody was never acquired.
     recovery_without_factory: bool,
     recovery_blocked: std::sync::atomic::AtomicBool,
@@ -560,6 +575,17 @@ impl Drop for UpgradeQuiescence<'_> {
 }
 impl LocalVm {
     fn make(factory: Option<Arc<dyn LocalFactory>>, recovery_without_factory: bool) -> Arc<Self> {
+        Self::make_with_close_origin(
+            factory,
+            recovery_without_factory,
+            Arc::new(Mutex::new(None)),
+        )
+    }
+    fn make_with_close_origin(
+        factory: Option<Arc<dyn LocalFactory>>,
+        recovery_without_factory: bool,
+        close_origin: Arc<Mutex<Option<std::time::Instant>>>,
+    ) -> Arc<Self> {
         let (cancelled, _) = watch::channel(false);
         let (completion, _) = watch::channel(None);
         Arc::new(Self {
@@ -590,6 +616,7 @@ impl LocalVm {
                 session: Arc::new(AsyncMutex::new(None)),
             }),
             factory,
+            close_origin,
             recovery_without_factory,
             recovery_blocked: std::sync::atomic::AtomicBool::new(false),
             choice: Arc::new(AsyncMutex::new(())),
@@ -914,7 +941,37 @@ impl LocalVm {
         self.set_workspace_replaced(dto.transaction.is_some());
         self.cache_upgrade_status(dto);
     }
+    fn stop_was_forced(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .workspace_failure
+            .as_ref()
+            .is_some_and(|failure| {
+                failure.cause == crate::runtime::types::WorkspaceCause::ForcedStop
+            })
+    }
     fn quarantine_upgrade(&self) {
+        // A confirmed hard stop still blocks the upgrade, but must not be
+        // rewritten as an unobserved native writer by this custody guard.
+        let forced = {
+            let mut state = self.inner.state.lock().unwrap();
+            let forced = state.workspace_failure.as_ref().is_some_and(|failure| {
+                failure.cause == crate::runtime::types::WorkspaceCause::ForcedStop
+            });
+            if !forced {
+                // Preserve-or-record is atomic with owned stop completion.
+                Inner::record_failure(
+                    &mut state,
+                    "Workspace shutdown or custody release could not be confirmed.".into(),
+                    &RuntimeError::StopUnconfirmed("Workspace recovery is required.".into()),
+                    WorkspaceOperation::Stop,
+                    false,
+                );
+            }
+            forced
+        };
         let mut dto = self
             .upgrade_cache
             .lock()
@@ -922,17 +979,15 @@ impl LocalVm {
             .clone()
             .unwrap_or_else(crate::workspace_upgrade::UpgradeStatusDto::none);
         dto.state = "conflict";
-        dto.error = Some("stopUnconfirmed");
+        dto.error = Some(if forced {
+            "forcedStop"
+        } else {
+            "stopUnconfirmed"
+        });
         dto.busy = false;
         dto.can_replace = false;
         dto.can_restore = false;
         self.cache_upgrade_status(dto);
-        self.inner.fail(
-            "Workspace shutdown or custody release could not be confirmed.".into(),
-            &RuntimeError::StopUnconfirmed("Workspace recovery is required.".into()),
-            WorkspaceOperation::Stop,
-            false,
-        );
         // Keep upgrading=true: only process restart may release this quarantine.
     }
     fn cache_upgrade_status(&self, dto: crate::workspace_upgrade::UpgradeStatusDto) {
@@ -958,6 +1013,7 @@ impl LocalVm {
         observed_revision: u64,
         dto: crate::workspace_upgrade::UpgradeStatusDto,
     ) -> crate::workspace_upgrade::UpgradeStatusDto {
+        let forced = self.stop_was_forced(); // Never nest state and cache guards.
         let mut cache = self.upgrade_cache.lock().unwrap();
         if self
             .upgrade_cache_revision
@@ -969,7 +1025,13 @@ impl LocalVm {
                 dto.state = "conflict";
                 dto
             });
-            current.busy = current.error != Some("stopUnconfirmed")
+            if forced && current.error == Some("stopUnconfirmed") {
+                current.error = Some("forcedStop");
+                *cache = Some(current.clone());
+                self.upgrade_cache_revision
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            current.busy = !matches!(current.error, Some("stopUnconfirmed" | "forcedStop"))
                 && self.upgrading.load(std::sync::atomic::Ordering::Acquire);
             return current;
         }
@@ -1035,7 +1097,14 @@ impl LocalVm {
         };
         if self.upgrading.load(std::sync::atomic::Ordering::Acquire) {
             let mut dto = cached.unwrap_or_else(crate::workspace_upgrade::UpgradeStatusDto::none);
-            dto.busy = dto.error != Some("stopUnconfirmed");
+            if dto.error == Some("stopUnconfirmed") && self.stop_was_forced() {
+                // The quiescence waiter may have timed out before the owned
+                // stop task confirmed hard termination. Keep admission closed.
+                dto.error = Some("forcedStop");
+                dto.busy = false;
+                self.cache_upgrade_status(dto.clone());
+            }
+            dto.busy = !matches!(dto.error, Some("stopUnconfirmed" | "forcedStop"));
             return self.with_upgrade_capability(dto);
         }
         let phase = self.status();
@@ -1337,6 +1406,7 @@ impl LocalVm {
         state.close_started = false;
         state.stopped = None;
         state.progress = None;
+        *self.close_origin.lock().unwrap() = None;
         state.cancelled = watch::channel(false).0;
         state.completion = watch::channel(None).0;
         let cancelled = state.cancelled.subscribe();
@@ -1384,7 +1454,11 @@ impl LocalVm {
                         format!("Starting the local VM failed: {}", failure_reason(&error)),
                         &error,
                         operation,
-                        matches!(error, RuntimeError::StopUnconfirmed(_)),
+                        matches!(
+                            WorkspaceFailure::from_error(&error, operation).cause,
+                            crate::runtime::types::WorkspaceCause::StopUnconfirmed
+                                | crate::runtime::types::WorkspaceCause::ForcedStop
+                        ),
                     )
                 }
             }
@@ -1611,6 +1685,15 @@ impl LocalVm {
             })
         })?
     }
+    fn publish_close(&self, state: &mut State) {
+        // Metadata precedes publication; idle native sessions must not grant a
+        // fresh interval after other shutdown work or delayed observation.
+        self.close_origin
+            .lock()
+            .unwrap()
+            .get_or_insert_with(std::time::Instant::now);
+        state.cancelled.send_replace(true);
+    }
     pub fn request_close(&self) {
         let mut state = self.inner.state.lock().unwrap();
         state.terminal = true;
@@ -1621,7 +1704,7 @@ impl LocalVm {
         }
         state.closing = true;
         state.progress = None;
-        state.cancelled.send_replace(true);
+        self.publish_close(&mut state);
         if let Some(cancel) = state.upgrade_cancel.as_mut() {
             cancel.source = UpgradeCancellationSource::Terminal;
             cancel.signal.send_replace(true);
@@ -1653,7 +1736,7 @@ impl LocalVm {
             state.closing = true;
             state.phase = LocalVmStatus::Closing;
             state.progress = None;
-            state.cancelled.send_replace(true);
+            self.publish_close(state);
             state.close_started = true;
             let startup = state.startup.take();
             let inner = self.inner.clone();

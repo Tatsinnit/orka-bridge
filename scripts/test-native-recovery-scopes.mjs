@@ -370,8 +370,8 @@ assert.ok(smoke.includes('clickButton("Show details")\n    clickButton("Remove")
 const model = await readFile(new URL('./native-model-macos.swift', import.meta.url), 'utf8');
 const captureManifest = JSON.parse(await readFile(new URL('./native-model-captures.json', import.meta.url), 'utf8'));
 assert.equal(captureManifest.model.length, 208);
-assert.equal(captureManifest['destinations-workspace'].length, 45);
-assert.equal(new Set([...captureManifest.model, ...captureManifest['destinations-workspace']]).size, 253);
+assert.equal(captureManifest['destinations-workspace'].length, 51);
+assert.equal(new Set([...captureManifest.model, ...captureManifest['destinations-workspace']]).size, 259);
 const overviewCaptures = [
   ...['disconnected', 'connected'].flatMap(ai => ['wide', 'minimum'].flatMap(size => ['collapsed', 'expanded'].map(state => `local-overview-ai-${ai}-${state}-${size}`))),
   ...['wide', 'compact', 'minimum'].flatMap(size => ['collapsed', 'expanded-earlier-pass', 'expanded-earlier-failed', 'expanded-draft'].map(state => `local-controls-overview-${state}-${size}`)),

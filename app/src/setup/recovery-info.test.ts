@@ -35,6 +35,17 @@ test.each(['workspaceUpdateRequired', 'workspaceVersionUnsupported'] as const)('
   expect(helpDetails(info)).toContain(`Category: ${cause}`);
 });
 
+test('confirmed forced stop is not described as clean or still running', () => {
+  const metadata = { cause: 'forcedStop', operation: 'stop', codes: [] };
+  expect(isWorkspaceFailure(metadata)).toBe(true);
+  const info = workspaceRecovery(metadata as WorkspaceFailure);
+  expect(info.retryBlocked).toBe(true);
+  expect(info.summary).toContain('forcibly stopped');
+  expect(info.action).toContain('reopen');
+  expect(info.preservation).toContain('may be lost');
+  expect(info.action).not.toContain('may still be stopping');
+});
+
 test('copied help is fixed labels and accepted codes, not a free-form summary or diagnostic', () => {
   const info = workspaceRecovery(failure('permission', 'start', [5]));
   const copied = helpDetails(info, [5]);

@@ -21,6 +21,10 @@ export const canQueueModel = (status: SetupStatus | undefined) =>
 export function workspaceView(status: SetupStatus, { stopping = false, starting = false }: { stopping?: boolean; starting?: boolean } = {}): { word: string; detail: string; status: Status; tone: Tone } {
   if (stopping || status.localVm === 'closing') return { word: 'Stopping', detail: 'Stopping the workspace. Your agents and files are kept.', status: 'running', tone: 'busy' };
   if (starting || status.selected === 'localVm' && status.localVm === 'idle' || ['preparing', 'installing', 'starting'].includes(status.localVm)) return { word: 'Starting', detail: 'Starting the workspace.', status: 'running', tone: 'busy' };
+  if (status.localVm === 'failed' && status.workspaceFailure?.operation === 'stop' && status.workspaceFailure.cause === 'forcedStop') {
+    const recovery = workspaceRecovery(status.workspaceFailure);
+    return { word: 'Forcibly stopped', detail: `${recovery.summary} ${recovery.preservation} ${recovery.action}`, status: 'failed', tone: 'bad' };
+  }
   if (status.localVm === 'failed') return { word: status.workspaceFailure?.operation === 'stop' ? "Couldn't stop" : "Couldn't start", detail: status.workspaceFailure?.operation === 'stop' ? 'The workspace may still be stopping. Quit Bridge and reopen it before trying again.' : "The workspace couldn't start. Your agents and files are kept.", status: 'failed', tone: 'bad' };
   if (status.localVm === 'ready') return { word: 'Ready', detail: 'The workspace is ready on this computer.', status: 'passed', tone: 'ready' };
   return { word: 'Stopped', detail: 'The workspace is stopped. Your agents and their files are kept.', status: 'not-started', tone: 'wait' };

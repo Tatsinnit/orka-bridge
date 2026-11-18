@@ -105,6 +105,26 @@ test('stop failure offers Quit Bridge through native cleanup and keeps a rejecte
   expect(within(card).getByText('private stop diagnostic')).toBeTruthy();
 });
 
+test('a returning forced stop warns about data loss and offers only Quit Bridge for recovery', async () => {
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', localVmError: 'private forced stop diagnostic', workspaceFailure: { cause: 'forcedStop', operation: 'stop', codes: [] } };
+  const user = await open();
+  const card = await screen.findByRole('region', { name: 'Workspace' });
+  expect(within(card).getByText('Forcibly stopped', { selector: '.pill' })).toBeTruthy();
+  expect(within(card).getByRole('status').textContent).toBe('The workspace was forcibly stopped without a clean shutdown.');
+  expect(within(card).getByText('Changes that had not reached disk may be lost.')).toBeTruthy();
+  expect(within(card).getByText('Quit Bridge and reopen it before trying again.')).toBeTruthy();
+  expect(within(card).queryByText(/didn't stop|may still be stopping|agents and files are kept/i)).toBeNull();
+  expect(within(card).queryByRole('button', { name: /Restart|Try again|Start/ })).toBeNull();
+  expect(within(card).queryByText('private forced stop diagnostic')).toBeNull();
+  const quit = within(card).getByRole('button', { name: 'Quit Bridge' });
+  expect(quit.classList.contains('button-primary')).toBe(true);
+  await user.click(quit);
+  expect(ipc.mock.calls.filter(([command]) => command === 'quit_bridge')).toHaveLength(1);
+  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_select_local');
+  await user.click(within(card).getByRole('button', { name: 'Show details' }));
+  expect(within(card).getByText('private forced stop diagnostic')).toBeTruthy();
+});
+
 test('returning preflight failure keeps its specific remedy and help action', async () => {
   status = { selected: 'localVm', localVm: 'failed', model: 'locked', preflightFailure: 'hypervisorUnavailable' };
   const user = await open();
