@@ -19,7 +19,7 @@ export default function Recovery({ detail, preflightFailure, failure, disabled, 
   }
   return <div className="workspace-failure" role="alert">
     <div className="workspace-failure-explanation"><p className="failure-summary">{info.summary}</p>
-    <p>{info.action}</p><p>{preflightFailure ? 'This check made no changes.' : info.preservation}</p>
+    {info.action && <p>{info.action}</p>}{(preflightFailure || info.preservation) && <p>{preflightFailure ? 'This check made no changes.' : info.preservation}</p>}
     <div className="workspace-step-actions">
       {info.topic && <Button type="button" kind="primary" onClick={() => { void help(); }}>Show me how</Button>}
       <Button type="button" kind={info.topic ? 'secondary' : 'primary'} disabled={disabled || info.retryBlocked}
@@ -29,7 +29,7 @@ export default function Recovery({ detail, preflightFailure, failure, disabled, 
     <Disclosure label={expanded ? 'Hide details' : 'Show details'} open={expanded} controls="workspace-failure-details" onOpenChange={setExpanded}>
     {expanded && <div id="workspace-failure-details" className="workspace-progress-details"><p>Stage: {info.stage}</p><pre tabIndex={0}>{preflightFailure ? info.summary : detail || 'No further error details were reported.'}</pre></div>}</Disclosure>
     </div>
-    {onCluster && <Button kind="quiet" className="workspace-fallback" disabled={disabled} onClick={onCluster}>Use a cluster you already have instead</Button>}
+    {onCluster && <Button kind="secondary" className="workspace-fallback" disabled={disabled} onClick={onCluster}>Use a cluster you already have instead</Button>}
     <p className="muted" role="status">{notice}</p>
   </div>;
 }

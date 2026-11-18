@@ -104,7 +104,7 @@ test('opens the owned pair without a VM and exposes a keyboard File switch', asy
 });
 test('the editor leads and local tests sit above the Team cluster Send card, with history inside it', async () => {
   native(); const user = userEvent.setup(); const { container } = render(<Example />);
-  const run = await screen.findByRole('region', { name: 'Tests on the local cluster' });
+  const run = await screen.findByRole('region', { name: 'Tests on this computer' });
   const editor = container.querySelector('.designer-file')!;
   const history = screen.getByRole('region', { name: 'Past Sends' });
   expect(editor.compareDocumentPosition(run) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -114,7 +114,7 @@ test('the editor leads and local tests sit above the Team cluster Send card, wit
   expect(history.closest('.designer-checks')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'File' }));
   expect(screen.getByRole('textbox', { name: 'Agent file' })).toBeTruthy();
-  expect(screen.getByRole('region', { name: 'Tests on the local cluster' })).toBe(run);
+  expect(screen.getByRole('region', { name: 'Tests on this computer' })).toBe(run);
 });
 test('setup-pending local tests stay disabled, and a selected cluster keeps both areas in view', async () => {
   native(); const { container, rerender } = render(<Example setupPending />);
@@ -124,7 +124,7 @@ test('setup-pending local tests stay disabled, and a selected cluster keeps both
   expect(container.querySelector('.designer-file')!.compareDocumentPosition(pending) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(pending.classList.contains('button-primary')).toBe(false);
   rerender(<Example remote />);
-  expect(await screen.findByRole('region', { name: 'Tests on the local cluster' })).toBeTruthy();
+  expect(await screen.findByRole('region', { name: 'Tests on this computer' })).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Team cluster' })).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Past Sends' }).closest('.designer-checks')).toBeTruthy();
   expect(screen.getByText('Checks from disk').closest('.designer-tests')).toBeTruthy();

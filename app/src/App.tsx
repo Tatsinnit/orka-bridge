@@ -105,6 +105,7 @@ export default function App() {
   const [exampleState, setExampleState] = useState<'loading' | 'loaded' | 'failed'>('loading');
   const [run, setRun] = useState<RunSnapshot>();
   const [runUnavailable, setRunUnavailable] = useState(false);
+  const [overviewAiConnected, setOverviewAiConnected] = useState(false);
   // Setup keeps the sample's latest evidence even while Designer shows another document.
   const [sampleResult, setSampleResult] = useState<{ snapshot?: RunSnapshot }>();
   const [firstPass, setFirstPass] = useState<RunSnapshot>();
@@ -200,8 +201,23 @@ export default function App() {
     ? workspaceView(setup, { stopping: workspaceStopping, starting: workspaceBusy && !workspaceStopping }) : undefined;
   const hostTone = hostWorkspace?.tone ?? view.tone;
   const workspaceReady = setup?.localVm === 'ready';
+  useEffect(() => {
+    setOverviewAiConnected(false);
+    if (page !== 'Overview' || !workspaceReady || workspaceBusy || setup?.model !== 'available') return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    // Native connection state is workspace-wide; no Designer or saved-file selection is needed.
+    const observe = async () => {
+      const result = await runCall('agent_run_status');
+      if (cancelled) return;
+      setOverviewAiConnected(result.ok && (result.snapshot.modelConnected ?? model === 'connected'));
+      timer = setTimeout(() => { void observe(); }, 500);
+    };
+    void observe();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [page, workspaceReady, workspaceBusy, setup?.model, model]);
   const workspaceTransition = !!setup && ['preparing', 'installing', 'starting', 'closing', 'failed'].includes(setup.localVm);
-  const overviewWorkspaceNote = workspaceStopping ? 'Stopping the local cluster'
+  const overviewWorkspaceNote = workspaceStopping ? 'Stopping the workspace'
     : workspaceBusy && (!workspaceTransition || setup?.localVm === 'failed') ? 'Getting your workspace ready…'
       : workspaceTransition ? setupLine : undefined;
   const placeName = remote ? place.target?.context_name ?? 'Choose a cluster'
@@ -220,7 +236,7 @@ export default function App() {
     : cases ? 'tests passing' : 'ready to edit';
   const agentStateWord = agentStatus.match(/\b(passing|failing|running|cancelled|cancelling|unknown|unavailable|unconfirmed|not confirmed|ready)\b/);
   const tabStatus: Record<Page, string> = {
-    Overview: overviewCounts,
+    Overview: welcome ? '' : overviewCounts,
     Designer: agentName ? `${agentName}, ${agentStatus}` : !exampleOpen ? exampleReadOnly ? 'Ready after setup' : 'No agent open'
       : exampleState === 'failed' ? 'Example unavailable' : exampleState === 'loaded' ? 'Agent file' : 'Opening example…',
     Clusters: remote ? place.target ? 'Access confirmed' : 'Choose a cluster' : welcome ? 'Start here' : view.tabLine,
@@ -266,7 +282,7 @@ export default function App() {
       setDocumentAction({ id: ++actionSequence.current, documentId: id, action: action === 'run' ? 'send' : 'open' });
       return;
     }
-    // Local tests stay local; Chat needs the local cluster, while Open keeps the selected Send destination.
+    // Local tests stay local; Chat needs the workspace, while Open keeps the selected Send destination.
     if (remote && action === 'chat') choosePlace({ kind: 'thisComputer' });
     openDesigner(id);
     setDocumentAction({ id: ++actionSequence.current, documentId: id, action });
@@ -301,7 +317,7 @@ export default function App() {
           ))}
         </nav>
         <div className="chrome-tools">
-          <span className="host-chip" title={remote ? placeName : hostDetail}><span className={`live-dot ${remote ? place.target ? 'ready' : 'wait' : hostTone}`} aria-hidden="true" /><span className="host-label">{placeName}</span><span className="sr-only">: {remote ? place.target ? 'Access confirmed' : 'Not connected' : hostDetail}</span></span>
+          <span className="host-chip" title={remote ? placeName : hostDetail}><span className={`live-dot ${remote ? place.target ? 'ready' : 'wait' : hostTone}`} aria-hidden="true" /><span className="host-label">{placeName}</span>{remote && place.target && <span className="chip">In use</span>}<span className="sr-only">: {remote ? place.target ? 'Access confirmed' : 'Not connected' : hostDetail}</span></span>
         </div>
       </header>
       <main ref={content} className="page-content" aria-labelledby="page-title">
@@ -317,8 +333,8 @@ export default function App() {
             onOpenExample={() => openDesigner(SAMPLE_DOCUMENT_ID)} onOpenAgent={() => openDesigner()} />
         </div>
         {page === 'Designer' && overviewNotice && <p className="muted" role="status">{overviewNotice}</p>}
-        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogPaused={!remote && automaticTestPending} catalogKey={catalogReady ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} onStopLocalCluster={() => { setPage('Clusters'); localCluster.current?.stop(); }} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} onSeeInOverview={seeInOverview} /></div>}
-        <Overview onNewAgent={() => openDesigner(undefined, true)} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} activeDocumentId={firstTest === 'running' ? SAMPLE_DOCUMENT_ID : run?.busy?.documentId} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} workspaceNote={overviewWorkspaceNote} filesRevision={agentsRevision} onCounts={setOverviewCounts}
+        {exampleOpen && <div hidden={page !== 'Designer'}><Example key={exampleAttempt} sampleRevision={sampleRevision} actionRequest={documentAction} onActionHandled={handleDocumentAction} agentsRevision={agentsRevision} onRegistered={() => setAgentsRevision(value => value + 1)} documentId={documentId} persistInitialSelection={persistInitialSelection} openDocumentRequest={openDocumentRequest} newAgentRequest={newAgentRequest} onNewAgentHandled={() => setNewAgentRequest(0)} onDocument={setDocumentId} remote={remote} catalogPaused={!remote && automaticTestPending} catalogKey={catalogReady ? catalogEpoch : undefined} place={place} onChooseCluster={() => setPage('Clusters')} workspaceReady={workspaceReady && !workspaceBusy} setupPending={exampleReadOnly} active={page === 'Designer'} onPair={observePair} onRun={observeRun} onSaveState={observeSave} onStale={observeStale} onSeeInOverview={seeInOverview} /></div>}
+        <Overview onNewAgent={() => openDesigner(undefined, true)} localAiConnected={overviewAiConnected} active={page === 'Overview'} runBusy={firstTest === 'running' || !!run?.busy} activeDocumentId={firstTest === 'running' ? SAMPLE_DOCUMENT_ID : run?.busy?.documentId} workspaceKey={`${setup?.localVm ?? 'unknown'}/${workspaceBusy}`} workspaceNote={overviewWorkspaceNote} filesRevision={agentsRevision} onCounts={setOverviewCounts}
           onOpenDocument={(id, key) => { void openOverviewDocument(id, 'open', key); }}
           onChatDocument={id => openOverviewDocument(id, 'chat')}
           onRunDocument={(id, key) => { void openOverviewDocument(id, 'run', key); }}
@@ -331,7 +347,7 @@ export default function App() {
         {footer.map((part, index) => <span key={index}>{index > 0 && <span aria-hidden="true"> · </span>}<span aria-live={index > 0 ? 'polite' : undefined}>{part}</span></span>)}
         {checks && <span className="checks-status">{checks}</span>}
         <span className="sr-only" role="status" aria-atomic="true">{[
-          page !== 'Clusters' || !localSetupView ? `Local cluster: ${setupDetail === setupLine ? setupLine : `${setupLine} · ${setupDetail}`}` : undefined,
+          page !== 'Clusters' || !localSetupView ? `Workspace: ${setupDetail === setupLine ? setupLine : `${setupLine} · ${setupDetail}`}` : undefined,
           page !== 'Designer' && checks ? `Checks: ${checks}` : undefined,
         ].filter(Boolean).join(' · ')}</span>
       </footer>

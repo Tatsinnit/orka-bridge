@@ -1,14 +1,15 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
-export type WorkspaceRequirements = { memoryBytes: number; imageBytes: number; stateDiskBytes: number };
+export type WorkspaceRequirements = { memoryBytes: number; imageBytes: number; stateDiskBytes: number; downloadBytes: number | null };
 export async function workspaceRequirements(): Promise<WorkspaceRequirements | null> {
   if (!isTauri()) return null;
   try {
     const value = await invoke<unknown>('setup_requirements');
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-    if (Object.keys(value).sort().join(',') !== 'imageBytes,memoryBytes,stateDiskBytes') return null;
-    const sizes = value as Record<string, unknown>;
-    if (!Object.values(sizes).every(size => typeof size === 'number' && Number.isSafeInteger(size) && size > 0)) return null;
+    if (Object.keys(value).sort().join(',') !== 'downloadBytes,imageBytes,memoryBytes,stateDiskBytes') return null;
+    const { downloadBytes, ...sizes } = value as Record<string, unknown>;
+    const positiveBytes = (size: unknown) => typeof size === 'number' && Number.isSafeInteger(size) && size > 0;
+    if (!Object.values(sizes).every(positiveBytes) || downloadBytes !== null && !positiveBytes(downloadBytes)) return null;
     return value as WorkspaceRequirements;
   } catch { return null; }
 }

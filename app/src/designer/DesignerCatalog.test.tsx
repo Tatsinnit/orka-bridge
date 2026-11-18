@@ -116,7 +116,7 @@ test('Stop clears a busy catalog wait and an older read cannot restart discovery
   expect(screen.getByText('Loading available tools and models…')).toBeTruthy();
   view.rerender(<Example setupPending />);
   expect(screen.queryByText('Loading available tools and models…')).toBeNull();
-  expect(screen.getByText('Tools will be available when the local cluster is ready.', { selector: 'p' })).toBeTruthy();
+  expect(screen.getByText('Tools will be available when the workspace is ready.', { selector: 'p' })).toBeTruthy();
   const stoppedCalls = calls;
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); });
   expect(calls).toBe(stoppedCalls);

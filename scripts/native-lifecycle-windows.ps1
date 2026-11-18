@@ -180,6 +180,25 @@ function Save-BrowserDiagnostics([string]$Name) {
         } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $script:themeOutput "browser-$Name.json")
     } catch { Write-Warning "Browser diagnostics unavailable: $_" }
 }
+function Write-StartupEvent([string]$Event) {
+    # Sample before writing so producer and observer times can expose delayed delivery.
+    $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    try {
+        $entry = [pscustomobject]@{
+            event = $Event; epoch_ms = $epoch
+            hostPid = $(if ($script:app) { $script:app.Id } else { $null })
+            hwnd = $(if ($script:hwnd) { $script:hwnd.ToInt64() } else { 0 })
+        } | ConvertTo-Json -Compress
+        [IO.File]::AppendAllText((Join-Path $script:themeOutput 'startup-timeline.jsonl'), "$entry`n")
+    } catch { Write-Warning "Startup timeline unavailable: $_" }
+}
+function Test-NativeReady {
+    if (!(Test-Path $script:startupLog)) { return $false }
+    $stream = [IO.File]::Open($script:startupLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $reader = [IO.StreamReader]::new($stream)
+    try { $startup = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    return $startup.Contains('bridge-startup: ready')
+}
 function Start-Bridge {
     if ((Test-Path $selected) -or (Test-Path $vmData)) { throw 'Saved local selection or VM data appeared; refusing to resume a VM' }
     $script:window = $null
@@ -189,7 +208,9 @@ function Start-Bridge {
     $script:startupLog = $null
     Save-BrowserDiagnostics 'before-launch'
     $script:startupLog = Join-Path $script:themeOutput "app-$([Guid]::NewGuid().ToString('N')).err.log"
+    Write-StartupEvent 'launch-begin'
     $script:app = Start-Process $Executable -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $script:themeOutput "app-$([Guid]::NewGuid().ToString('N')).out.log") -RedirectStandardError $script:startupLog
+    Write-StartupEvent 'launch-returned'
     # Process.MainWindowHandle can select Tao's hidden event target. Identify
     # the real app frame by its configured title and this launch's process ID.
     $script:hwnd = Wait-For 'Main native window did not appear' {
@@ -201,19 +222,20 @@ function Start-Bridge {
             if ($owner -eq $script:app.Id -and [NativeWalk]::IsWindowVisible($h)) { return $h }
         }
     }
+    # This is first observation of the frame, not its producer-side creation time.
+    Write-StartupEvent 'frame-observed'
 }
 function Find-ReadyClusters {
     if (!$script:window) {
         # Keep the original frame and control waits separate. Native setup proves
         # controller construction finished; the Clusters control, not page-load
         # completion, proves the frontend is ready for this walk.
-        if (!(Test-Path $script:startupLog)) { return }
-        $stream = [IO.File]::Open($script:startupLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-        $reader = [IO.StreamReader]::new($stream)
-        try { $startup = $reader.ReadToEnd() } finally { $reader.Dispose() }
-        if (!$startup.Contains('bridge-startup: ready')) { return }
+        if (!(Test-NativeReady)) { return }
+        Write-StartupEvent 'native-ready-observed'
+        Write-StartupEvent 'uia-attach-begin'
         $script:desktop = [System.Windows.Automation.AutomationElement]::RootElement
         $script:window = [System.Windows.Automation.AutomationElement]::FromHandle($script:hwnd)
+        Write-StartupEvent 'uia-attached'
         [NativeWalk]::SetForegroundWindow($script:hwnd) | Out-Null
     }
     Find-Control $script:window 'Clusters' $button
@@ -265,7 +287,7 @@ function Tray-Menu {
     [NativeWalk]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
     # Both providers require enabled, on-screen native items; MSAA yields real click points.
     $open = Wait-For 'Open Bridge menu item missing' { Find-PopupControl 'Open Bridge' }
-    $stop = Wait-For 'Stop the local cluster and quit menu item missing' { Find-PopupControl 'Stop the local cluster and quit' }
+    $stop = Wait-For 'Quit Bridge menu item missing' { Find-PopupControl 'Quit Bridge' }
     return @($open, $stop)
 }
 function Retained {
@@ -306,7 +328,15 @@ try {
         Broadcast-Theme
         Start-Bridge
         $script:originalPid = $script:app.Id
-        Press (Wait-For 'Clusters button missing' { Find-ReadyClusters })
+        Write-StartupEvent 'clusters-wait-begin'
+        try {
+            $clusters = Wait-For 'Clusters button missing' { Find-ReadyClusters }
+            Write-StartupEvent 'clusters-found'
+        } catch {
+            Write-StartupEvent 'clusters-wait-failed'
+            throw
+        }
+        Press $clusters
         Save-BrowserDiagnostics 'loaded'
         # The dark walk reuses the light walk's profile, so the welcome may already be dismissed.
         Wait-For 'Welcome or Places did not appear' { (Find-Control $script:window 'Get started' $button) -or (Find-Action $script:window 'Set up') } | Out-Null
@@ -319,14 +349,14 @@ try {
         $requirements = Wait-For 'Computer requirements panel missing' { Find-Control $script:window 'Computer requirements' $null }
         Wait-For 'Computer requirements did not settle' {
             $lines = (Get-UiNames $requirements) -join ' '
-            $lines.Contains('These checks do not change this computer.') -or $lines.Contains('Fix the computer requirements above before continuing.') -or $lines.Contains("Bridge couldn't check this computer yet.")
+            $lines.Contains('These checks do not change this computer.') -or $lines.Contains('This computer has') -or $lines.Contains('Virtualization:') -or $lines.Contains("Bridge couldn't check")
         } | Out-Null
-        # Required RAM stays visible; image and maximum disk facts are behind What's inside.
+        # Required RAM and maximum data-disk growth stay visible; installed image size is disclosed.
         Press (Wait-For 'Workspace details disclosure missing' { Find-Control $script:window "What's inside" $button })
         Wait-For 'Local size facts did not settle' {
             $names = Get-UiNames $script:window
             $text = ($names -join ' ') -replace '\s+', ' '
-            ($text -cmatch 'about \d+\.\d GB of installed memory') -and ($text -cmatch 'image size is \d+\.\d GB after installation, not the amount downloaded') -and ($text -cmatch 'data disk can grow to \d+\.\d GB') -and !($names -cmatch '^Reading|Unavailable in this build')
+            ($text -cmatch 'Needs virtualization and \d+\.\d GB of memory') -and ($text -cmatch 'image size is \d+\.\d GB after installation, not the amount downloaded') -and ($text -cmatch 'Data disk can grow to \d+\.\d GB') -and !($names -cmatch '^Reading|Unavailable in this build')
         } | Out-Null
         # Observe the real runner; never inject Ready or select a local workspace.
         Capture 'computer-requirements'
@@ -372,35 +402,13 @@ try {
             }
         } | Out-Null
         $noticeMarker = Join-Path $data 'close-notice-seen-v1'
-        $needsNotice = !(Test-Path $noticeMarker)
-        # SC_CLOSE follows the native titlebar Close route, unlike process termination.
-        [NativeWalk]::PostMessage($script:hwnd, 0x112, [IntPtr]0xf060, [IntPtr]::Zero) | Out-Null
-        if ($needsNotice) {
-            $notice = Wait-For 'First Close did not explain background running' { Find-Control $desktop 'Bridge is still running' $null }
-            if ($notice.Current.ProcessId -ne $script:app.Id) { throw 'Close notice belongs to another process' }
-            if (Test-Path $noticeMarker) { throw 'Close notice marked seen before acknowledgement' }
-            Capture 'first-close-notice' $true
-            $copy = (Get-UiNames $notice) -join ' '
-            if (!$copy.Contains('system tray') -or !$copy.Contains('Stop the local cluster and quit')) { throw 'Close notice lost reopen/Quit guidance' }
-            # TaskDialog exposes its OK action as a Pane on this runner. Keep the exact
-            # label scoped to the already verified same-process notice; Press uses its native clickable point.
-            Press (Wait-For 'Close notice OK missing' { Find-Control $notice 'OK' $null })
-        }
-        Wait-For 'Native Close did not hide' { ![NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
-        if (!(Test-Path $noticeMarker) -or (Find-Control $desktop 'Bridge is still running' $null)) { throw 'Acknowledged notice was not remembered/dismissed' }
-        if ($script:app.HasExited) { throw 'Close quit instead of hiding' }
+        $priorNoticeMarker = if (Test-Path $noticeMarker) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($noticeMarker)) } else { $null }
+        # No native VM is started in this driver. Exercise retention with the
+        # visible menu and minimization, not a fabricated running-workspace Close.
         $commands = Tray-Menu
-        Capture 'menu-hidden' $true
+        Capture 'menu-visible' $true
         Press $commands[0]
-        Wait-For 'Open Bridge did not reopen' { [NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
         Retained; Capture 'reopened-menu'
-        [NativeWalk]::PostMessage($script:hwnd, 0x112, [IntPtr]0xf060, [IntPtr]::Zero) | Out-Null
-        Wait-For 'Close before second launch did not hide' { ![NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
-        if (Find-Control $desktop 'Bridge is still running' $null) { throw 'Second Close repeated the information dialog' }
-        $second = Start-Process $Executable -NoNewWindow -PassThru
-        if (!$second.WaitForExit(15000) -or $second.ExitCode -ne 0) { throw 'Hidden-window second launch did not hand off and exit cleanly' }
-        Wait-For 'Second launch did not show hidden original window' { [NativeWalk]::IsWindowVisible($script:hwnd) } | Out-Null
-        Retained; Capture 'reopened-second-launch-hidden'
         [NativeWalk]::ShowWindow($script:hwnd, 6) | Out-Null
         Wait-For 'Window did not minimize' { [NativeWalk]::IsIconic($script:hwnd) } | Out-Null
         $second = Start-Process $Executable -NoNewWindow -PassThru
@@ -499,10 +507,18 @@ assertions: []
         $commands = Tray-Menu
         Capture 'menu-stop' $true
         Press $commands[1]; Wait-Exit
+        # Idle Close is terminal: this launch has no saved selection or native Ready.
+        Start-Bridge
+        Wait-For 'Clusters button missing after idle relaunch' { Find-ReadyClusters } | Out-Null
+        [NativeWalk]::PostMessage($script:hwnd, 0x112, [IntPtr]0xf060, [IntPtr]::Zero) | Out-Null
+        Wait-Exit
+        $afterNoticeMarker = if (Test-Path $noticeMarker) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($noticeMarker)) } else { $null }
+        if ($afterNoticeMarker -cne $priorNoticeMarker) { throw 'Idle Close changed the running-workspace notice marker' }
+        'idle-close-exited: no native Ready producer; no background notice claimed.' | Set-Content (Join-Path $script:themeOutput 'idle-close-exited.txt')
         # File > Quit is exercised by the native menu/failed-stop subprocess test,
         # not by a duplicate GUI lookup through this runner's incomplete UIA tree.
         if ((Test-Path $selected) -or (Test-Path $vmData)) { throw 'Saved local selection or VM data appeared' }
-        "PASS $theme`: native own-repo chooser, selected path/copy, blank web-reader-named draft pair only (no nested Git/marker); native first-Close notice/acknowledgement when unseen, profile marker and second Close without dialog, Close/hide, tray menu/Open, same PID $script:originalPid/window $script:hwnd, File view/edited text retained, hidden/minimized second launches, menu stop. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/provider/cluster/session logout proof. OS popup theme is captured as drawn, not forced by product hooks." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
+        "PASS $theme`: native own-repo chooser, selected path/copy, blank draft pair only; idle-close-exited without notice/marker change; tray menu/Open, same PID/window, File view/edited text retained, minimized second launch, menu Quit Bridge. Standard Quit is covered by native subprocess tests. Integrated debug shell only; empty image source, no VM/Ready/background-close/notice/provider/cluster/session logout proof. OS popup theme is captured as drawn." | Tee-Object (Join-Path $script:themeOutput 'evidence.txt')
     }
 } catch {
     $failure = $_

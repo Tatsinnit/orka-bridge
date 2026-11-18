@@ -52,11 +52,12 @@ test('an older Orka blocks normal update but permits only an explicit separate-a
   expect(await screen.findByText(explanation)).toBeTruthy();
   const separate = await screen.findByRole('button', { name: 'Send as a separate agent' });
   expect((separate as HTMLButtonElement).disabled).toBe(false);
-  const actions = screen.getByRole('button', { name: 'Update agent and run tests' }).parentElement!;
-  expect(separate.parentElement).toBe(actions);
-  expect(actions.querySelectorAll('.button-primary')).toHaveLength(1);
-  expect(actions.querySelectorAll('.button-secondary')).toHaveLength(2);
-  expect(screen.getByText('Creates a new agent here. Previous work may still run; this does not stop or replace it.')).toBeTruthy();
+  const details = separate.closest('details')!;
+  expect(details.open).toBe(false);
+  expect(screen.getByRole('button', { name: 'Check again' }).className).toContain('primary');
+  await userEvent.click(screen.getByText('Resources and file hashes'));
+  expect(details.open).toBe(true);
+  expect(screen.getByText('Sends as a new agent; the old one keeps running.')).toBeTruthy();
   expect(ipc.mock.calls.some(([cmd]) => cmd === 'send_start')).toBe(false);
   await userEvent.click(separate);
   expect(ipc.mock.calls.find(([cmd]) => cmd === 'send_start')?.[1]).toMatchObject({ separateAgent: true, expectedSource: source });

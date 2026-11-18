@@ -73,10 +73,10 @@ test('a persistent polite status announces the final Send verdict', async () => 
   await waitFor(() => expect(live?.textContent).toBe('Test result failed. 0 of 1 passed.'));
   expect(live?.isConnected).toBe(true);
 });
-test('stale local results do not gate sending and preflight retry shares its action row', async () => {
+test('stale local results do not gate sending and destination refresh is in Details', async () => {
   native(); render(<Send place={place} source={source} stale />);
  await waitFor(() => expect((screen.getByRole('button', { name: 'Send and run tests' }) as HTMLButtonElement).disabled).toBe(false));
-  expect(screen.getByRole('button', { name: 'Check again' }).parentElement).toBe(screen.getByRole('button', { name: 'Send and run tests' }).parentElement);
+  expect(screen.getByRole('button', { name: 'Check again' }).closest('details')?.open).toBe(false);
 });
 test('capture failure shows the native check explanation, not a stale-file claim', async () => {
   native(idle, null, { ...allowed, source: null, model: null, rows: [{ label: 'Saved files', status: 'cannotCheck', message: 'Your saved files could not be read.' }], canSend: false });
@@ -140,7 +140,7 @@ test('changed disk files can be explicitly reloaded before preflight is retried'
   await user.click(await screen.findByRole('button', { name: 'Reload saved files' }));
   await waitFor(() => expect((screen.getByRole('button', { name: 'Send and run tests' }) as HTMLButtonElement).disabled).toBe(false));
   expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).value).toBe('Changed on disk.\n');
-  expect(screen.getByText((_, node) => node?.tagName === 'DD' && node.textContent === 'file-model through team-model · AI connection ready; the model is checked when tests run')).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'What you send' }).textContent).toContain('file-model, checked when tests run');
 });
 test('a delayed reload never overwrites edits made while files are being read', async () => {
   vi.stubGlobal('isTauri', true); let opened = false; let finish!: (value: unknown) => void;

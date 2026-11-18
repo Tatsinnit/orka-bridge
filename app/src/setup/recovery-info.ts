@@ -11,38 +11,38 @@ export function isWorkspaceFailure(value: unknown): value is WorkspaceFailure {
     && Array.isArray(item.codes) && item.codes.length <= 4 && item.codes.every(isOsCode);
 }
 const operationLabels: Record<WorkspaceFailure['operation'], string> = {
-  requirements: 'Checking requirements', download: 'Downloading the local cluster', verify: 'Checking cluster files',
-  prepare: 'Preparing the local cluster', start: 'Starting the local cluster', services: 'Starting cluster services', stop: 'Stopping the local cluster',
+  requirements: 'Checking requirements', download: 'Downloading the workspace', verify: 'Checking cluster files',
+  prepare: 'Preparing the workspace', start: 'Starting the workspace', services: 'Starting cluster services', stop: 'Stopping the workspace',
 };
 // Only native finite metadata selects a cause. Private diagnostics are never input.
 export function workspaceRecovery(failure?: WorkspaceFailure): RecoveryInfo {
   const operation = failure?.operation ?? 'start';
   const cause = failure?.cause ?? 'unknown';
   const common = { stage: operationLabels[operation], category: cause,
-    heading: operation === 'download' ? "The local cluster couldn't be downloaded" : operation === 'prepare' || operation === 'verify' ? "The local cluster couldn't be prepared" : "The local cluster couldn't start",
+    heading: operation === 'download' ? "The workspace couldn't be downloaded" : operation === 'prepare' || operation === 'verify' ? "The workspace couldn't be prepared" : "The workspace couldn't start",
     preservation: operation === 'requirements' ? 'This check made no changes.'
       : operation === 'download' ? 'Your agent files are kept. Try again to continue setup.'
       : operation === 'prepare' || operation === 'verify' ? 'Your existing cluster and agent files are kept.'
-      : 'Your local cluster and agent files are kept.',
+      : 'Your workspace and agent files are kept.',
   };
   switch (cause) {
-    case 'permission': return { ...common, summary: operation === 'prepare' || operation === 'verify' ? 'Bridge does not have permission to prepare the local cluster.' : 'Bridge does not have permission to start the local cluster.', action: 'Check Bridge file permissions, then press Try again.', topic: 'workspace' };
-    case 'noSpace': return { ...common, summary: "There isn't enough free space for the local cluster.", action: 'Free some space on this computer, then press Try again.', topic: 'workspace' };
+    case 'permission': return { ...common, summary: operation === 'prepare' || operation === 'verify' ? 'Bridge does not have permission to prepare the workspace.' : 'Bridge does not have permission to start the workspace.', action: 'Check Bridge file permissions, then press Try again.', topic: 'workspace' };
+    case 'noSpace': return { ...common, summary: "There isn't enough free space for the workspace.", action: 'Free some space on this computer, then press Try again.', topic: 'workspace' };
     case 'integrity': return { ...common, summary: "The cluster download couldn't be verified.", action: 'Check that the cluster files match this Bridge build, then press Try again.', topic: 'workspace' };
     case 'workspaceUpdateRequired': return { ...common, summary: 'This version of Bridge needs a new workspace.', action: 'Open the matching Bridge version.', retryBlocked: true };
     case 'workspaceVersionUnsupported': return { ...common, summary: 'This workspace uses different cluster files.', action: 'Open the matching Bridge version.', retryBlocked: true };
     case 'inUse': return { ...common, summary: 'The cluster files are still in use or need checking.', action: 'Close any other Bridge window, then press Try again.', topic: 'workspace' };
-    case 'network': return { ...common, summary: "The local cluster couldn't be downloaded.", action: 'Check your internet connection, then press Try again.' };
-    case 'preparation': return { ...common, summary: "The local cluster couldn't be prepared.", action: 'Press Try again. If it happens again, copy the details for help.' };
-    case 'guestConnection': return { ...common, summary: "The local cluster didn't finish starting.", action: 'Press Try again to restart it. If it happens again, copy the details for help.' };
-    case 'services': return { ...common, summary: "The local cluster's services couldn't start.", action: 'Press Try again to restart the local cluster. If it happens again, copy the details for help.' };
-    case 'stopUnconfirmed': return { ...common, summary: "The local cluster couldn't be stopped safely.", action: 'Quit Bridge and reopen it before trying again. The local cluster may still be stopping.', topic: 'workspace', retryBlocked: true };
-    default: return { ...common, summary: "Bridge couldn't determine why the local cluster failed.", action: 'Press Try again. If it happens again, copy the details for help.' };
+    case 'network': return { ...common, summary: "The workspace couldn't be downloaded.", action: 'Check your internet connection, then press Try again.' };
+    case 'preparation': return { ...common, summary: "The workspace couldn't be prepared.", action: 'Press Try again. If it happens again, copy the details for help.' };
+    case 'guestConnection': return { ...common, summary: "The workspace didn't finish starting.", action: 'Press Try again to restart it. If it happens again, copy the details for help.' };
+    case 'services': return { ...common, summary: "The workspace's services couldn't start.", action: 'Press Try again to restart the workspace. If it happens again, copy the details for help.' };
+    case 'stopUnconfirmed': return { ...common, summary: "The workspace couldn't be stopped safely.", action: 'Quit Bridge and reopen it before trying again. The workspace may still be stopping.', topic: 'workspace', retryBlocked: true };
+    default: return { ...common, summary: "Your workspace didn't start. Your agents are safe.", action: '', preservation: '' };
   }
 }
 
 export function helpDetails(info: RecoveryInfo, codes: number[] = []): string {
-  return ['Bridge local cluster setup', `Operation: ${info.stage}`, `Category: ${info.category ?? 'requirements'}`,
+  return ['Bridge workspace setup', `Operation: ${info.stage}`, `Category: ${info.category ?? 'requirements'}`,
     ...[...new Set(codes.filter(isOsCode))].slice(0, 4).map(code => `OS code: ${code}`), 'Private diagnostic text is not included.'].join('\n');
 }
 

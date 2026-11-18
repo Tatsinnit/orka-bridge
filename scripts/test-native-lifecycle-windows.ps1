@@ -7,6 +7,44 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'native-lifecycle-windows.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw "Lifecycle script parse errors: $errors" }
+# Timestamp writes must stay off the success pipeline: callers return controls/handles.
+foreach ($name in @('Write-StartupEvent', 'Test-NativeReady')) {
+    $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if (!$definition) { throw "$name missing" }
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+$script:themeOutput = Join-Path ([IO.Path]::GetTempPath()) "bridge-startup-test-$([Guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory $script:themeOutput | Out-Null
+$script:startupLog = Join-Path $script:themeOutput 'app.err.log'
+$script:app = [pscustomobject]@{ Id = 123 }
+$script:hwnd = [IntPtr]456
+try {
+    $before = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $output = @(Write-StartupEvent 'frame-observed')
+    $after = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $events = @(Get-Content (Join-Path $script:themeOutput 'startup-timeline.jsonl') | ConvertFrom-Json)
+    if ($output.Count -ne 0 -or $events.Count -ne 1) { throw 'Timestamp event leaked output or was not written once' }
+    $event = $events[0]
+    if ($event.event -cne 'frame-observed' -or $event.epoch_ms -lt $before -or $event.epoch_ms -gt $after -or $event.hostPid -ne 123 -or $event.hwnd -ne 456) { throw 'Timestamp fields incorrect' }
+    Write-Host 'PASS startup event correlates epoch, process and frame without success output'
+
+    if (Test-NativeReady) { throw 'Missing stderr log was accepted as ready' }
+    [IO.File]::WriteAllText($script:startupLog, "bridge-startup: main epoch_ms=1`nbridge-startup: installing lifecycle epoch_ms=2`n")
+    if (Test-NativeReady) { throw 'Pre-ready milestones were accepted as ready' }
+    [IO.File]::AppendAllText($script:startupLog, "bridge-startup: ready epoch_ms=3 elapsed_ms=2 pid=123`n")
+    $ready = @(Test-NativeReady)
+    if ($ready.Count -ne 1 -or $ready[0] -ne $true) { throw 'Timestamped readiness prefix no longer yields exactly one Boolean' }
+    Write-Host 'PASS startup readiness still requires the existing ready marker with timestamp suffixes'
+
+    # A missing destination makes the best-effort diagnostic write fail, not the walk.
+    $script:themeOutput = Join-Path $script:themeOutput 'absent'
+    $output = @(Write-StartupEvent 'frame-observed' -WarningAction SilentlyContinue)
+    if ($output.Count) { throw 'Failed timestamp write leaked success output' }
+    Write-Host 'PASS unavailable timeline destination does not fail startup or leak output'
+} finally {
+    Remove-Item -LiteralPath (Split-Path $script:startupLog) -Recurse -Force
+}
+
 $lookup = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-Action' }, $true)
 if (!$lookup) { throw 'Find-Action missing' }
 . ([scriptblock]::Create($lookup.Extent.Text))

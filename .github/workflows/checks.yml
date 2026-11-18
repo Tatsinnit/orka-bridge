@@ -172,12 +172,16 @@ jobs:
           cargo +1.98.1 fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --test engine
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --lib --test dev_image_profile
+          cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --lib native_store_all_phases -- --ignored
+          cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --lib native_credential_process_death -- --ignored
           cargo +1.98.1 test --manifest-path src-tauri/Cargo.toml --locked --bin orka-bridge --features custom-protocol
           cargo +1.98.1 clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
       - name: Release Rust checks
         if: matrix.suite == 'release-checks'
         run: |
           cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
+          cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --lib native_store_all_phases -- --ignored
+          cargo +1.98.1 test --release --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --lib native_credential_process_death -- --ignored
           cargo +1.98.1 clippy --release --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
       # Keep successful compilation/tests even if the later desktop walk fails.
       - name: Preserve verified Rust cache
@@ -243,6 +247,8 @@ jobs:
         run: |
           bash ../scripts/build-vm-helper-macos.sh
           cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol
+          cargo +1.98.1 build --manifest-path src-tauri/Cargo.toml --locked --features custom-protocol --example model_walk
+          swift ../scripts/native-model-macos.swift --self-test
       - name: Prepare Mac model build
         if: runner.os == 'macOS' && matrix.suite == 'model-fixtures'
         run: |
@@ -279,6 +285,34 @@ jobs:
           osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
           test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
           swift ../scripts/native-lifecycle-macos.swift "native-lifecycle/$theme" "$bundle" "$theme"
+      - name: Mac destination and workspace fixtures (no VM or credentials)
+        if: runner.os == 'macOS' && matrix.suite == 'lifecycle-fixtures'
+        run: |
+          prior_dark="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
+          prior_style="$(defaults read -g AppleInterfaceStyle 2>/dev/null || true)"
+          prior_auto="$(defaults read -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true)"
+          prior="$(defaults read -g AppleKeyboardUIMode 2>/dev/null || true)"
+          restore_model_theme() {
+            local status=0
+            if [[ -n "$prior" ]]; then defaults write -g AppleKeyboardUIMode -int "$prior" || status=$?
+            else defaults delete -g AppleKeyboardUIMode 2>/dev/null || true; fi
+            osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $prior_dark" || status=$?
+            if [[ -n "$prior_style" ]]; then defaults write -g AppleInterfaceStyle -string "$prior_style" || status=$?
+            else defaults delete -g AppleInterfaceStyle 2>/dev/null || true; fi
+            if [[ -n "$prior_auto" ]]; then defaults write -g AppleInterfaceStyleSwitchesAutomatically -bool "$prior_auto" || status=$?
+            else defaults delete -g AppleInterfaceStyleSwitchesAutomatically 2>/dev/null || true; fi
+            return "$status"
+          }
+          trap restore_model_theme EXIT
+          defaults write -g AppleKeyboardUIMode -int 3
+          theme="${{ matrix.theme }}"
+          scope_output="native-lifecycle/$theme/destinations-workspace"
+          mkdir -p "$scope_output"
+          git rev-parse HEAD > "$scope_output/head.txt"
+          if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
+          osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
+          test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
+          swift ../scripts/native-model-macos.swift "$scope_output" "$PWD/src-tauri/target/debug/examples/model_walk" "$theme" destinations-workspace
       - name: Mac native model renderer fixtures (no VM or credentials)
         if: runner.os == 'macOS' && matrix.suite == 'model-fixtures'
         run: |
@@ -305,7 +339,7 @@ jobs:
           if [[ "$theme" = dark ]]; then dark=true; else dark=false; fi
           osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
           test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
-          swift ../scripts/native-model-macos.swift "native-model/$theme" "$PWD/src-tauri/target/debug/examples/model_walk" "$theme"
+          swift ../scripts/native-model-macos.swift "native-model/$theme" "$PWD/src-tauri/target/debug/examples/model_walk" "$theme" model
       - name: Mac app bundle and native walk
         if: runner.os == 'macOS' && matrix.suite == 'bundle'
         run: |

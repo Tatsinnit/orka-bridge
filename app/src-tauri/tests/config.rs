@@ -86,6 +86,8 @@ fn agent_commands_are_granted_only_to_local_main_window() {
         "cluster_forget",
         "cluster_contexts",
         "cluster_discover",
+        "cluster_service_accounts",
+        "cluster_service_account_preview",
         "cluster_use",
         "cluster_reload",
         "send_preflight",

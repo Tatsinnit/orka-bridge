@@ -34,7 +34,10 @@ pub fn hide(app: &tauri::AppHandle) {
     if app.state::<Arc<TerminalShutdown>>().closing() {
         return;
     }
-    match app.state::<CloseNotice>().admit() {
+    let running =
+        app.state::<Arc<LocalVm>>().status() == bridge_engine::local_vm::LocalVmStatus::Ready;
+    match app.state::<CloseNotice>().admit(running) {
+        CloseAction::Quit => stop(app),
         CloseAction::Hide => hide_or_stop(app),
         CloseAction::Pending => {}
         CloseAction::Explain => {
@@ -46,19 +49,25 @@ pub fn hide(app: &tauri::AppHandle) {
             let location = if cfg!(target_os = "macos") {
                 "menu bar"
             } else {
-                "system tray"
+                "tray"
             };
-            app.dialog().message(format!(
-                "Closing this window doesn't stop your workspace. Open Bridge from the {location}. To stop the workspace and quit Bridge, choose ‘Stop the local cluster and quit’ from its menu."
-            )).title("Bridge is still running").parent(&window).show(move |acknowledged| {
-                // Quit can win while the information dialog is open.
-                let shutdown = handle.state::<Arc<TerminalShutdown>>();
-                if shutdown.closing() || shutdown.completed() { return; }
-                if let Err(error) = handle.state::<CloseNotice>().finish(acknowledged) {
-                    eprintln!("Could not remember Bridge's close notice: {error}");
-                }
-                hide_or_stop(&handle);
-            });
+            app.dialog()
+                .message(format!(
+                "Bridge keeps your workspace running in the {location}. Quit from there to stop it."
+            ))
+                .title("Bridge is still running")
+                .parent(&window)
+                .show(move |acknowledged| {
+                    // Quit can win while the information dialog is open.
+                    let shutdown = handle.state::<Arc<TerminalShutdown>>();
+                    if shutdown.closing() || shutdown.completed() {
+                        return;
+                    }
+                    if let Err(error) = handle.state::<CloseNotice>().finish(acknowledged) {
+                        eprintln!("Could not remember Bridge's close notice: {error}");
+                    }
+                    hide_or_stop(&handle);
+                });
         }
     }
 }
@@ -120,7 +129,7 @@ pub fn install(
         {
             // Muda's predefined Windows Quit posts WM_QUIT without ExitRequested.
             // A custom item must bar admission and join cleanup before leaving Tao.
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Bridge", true, None::<&str>)?;
             let file = tauri::menu::Submenu::with_items(app, "File", true, &[&quit])?;
             app.set_menu(Menu::with_items(app, &[&file])?)?;
             app.on_menu_event(|app, event| {
@@ -130,13 +139,7 @@ pub fn install(
             });
         }
         let open = MenuItem::with_id(app, "open", "Open Bridge", true, None::<&str>)?;
-        let quit = MenuItem::with_id(
-            app,
-            "stop-quit",
-            "Stop the local cluster and quit",
-            true,
-            None::<&str>,
-        )?;
+        let quit = MenuItem::with_id(app, "stop-quit", "Quit Bridge", true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&open, &quit])?;
         let icon = app
             .default_window_icon()

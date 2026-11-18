@@ -169,8 +169,7 @@ impl ChatFixture {
     }
 }
 
-// Returning-workspace transitions are action-owned; the existing selector only
-// settles an in-flight transition (or injects an unreadable status).
+// Synthetic renderer state only. Explicit capture scenes do not start a native VM.
 #[cfg(all(target_os = "macos", feature = "custom-protocol"))]
 struct WorkspaceFixture {
     selected: bool,
@@ -518,6 +517,36 @@ fn main() {
                         }
                     }
                     let mut state = workspace.lock().unwrap();
+                    if command == "setup_status" {
+                        let scene = match phase.as_deref() {
+                            Some("workspace-scene-ready") => Some("ready"),
+                            Some("workspace-scene-starting") => Some("starting"),
+                            Some("workspace-scene-failed" | "workspace-scene-stopped-unexpectedly" | "workspace-scene-stop-failed") => Some("failed"),
+                            Some("workspace-scene-closed") => Some("closed"),
+                            _ => None,
+                        };
+                        if let Some(scene) = scene {
+                            let reload = !state.returning;
+                            state.selected = true;
+                            state.phase = scene;
+                            state.returning = true;
+                            state.stop_failed = phase.as_deref() == Some("workspace-scene-stop-failed");
+                            if reload {
+                                // Retire setup presentation once, then observe the saved selection
+                                // on a fresh renderer, just as a returning fixture session would.
+                                invoke.message.webview()
+                                    .eval("localStorage.setItem('bridge.firstTest.v1', 'attempted'); location.reload();")
+                                    .expect("fixture returning renderer reload");
+                            }
+                            let mut status = state.status();
+                            if phase.as_deref() == Some("workspace-scene-stopped-unexpectedly") {
+                                status["workspaceFailure"] = json!({"operation":"start", "cause":"unknown", "codes":[]});
+                                status["localVmError"] = json!("Synthetic workspace stopped unexpectedly.");
+                            }
+                            invoke.resolver.resolve(status);
+                            return true;
+                        }
+                    }
                     if command == "setup_status" && phase.as_deref() == Some("workspace-reset-ready") {
                         // Explicit fixture-only reset between independent terminal captures.
                         // Never rearm the first test or exercise a real restart here.
@@ -606,7 +635,7 @@ fn main() {
                 "setup_example" => json!({"agent":original, "tests":tests}),
                 // Sizing is synthetic, distinct from transfer progress above. The renderer
                 // must show decimal GB without treating materialized image bytes as a download.
-                "setup_requirements" => json!({"memoryBytes":4294967296_u64, "imageBytes":3006477107_u64, "stateDiskBytes":21474836480_u64}),
+                "setup_requirements" => json!({"memoryBytes":4294967296_u64, "imageBytes":3006477107_u64, "stateDiskBytes":21474836480_u64, "downloadBytes":2800000000_u64}),
                 "setup_preflight" => {
                     let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
                     let unknown = phase.as_deref() == Some("preflight-unknown");
@@ -697,6 +726,16 @@ fn main() {
                 }
                 "setup_remove_model" => {
                     connected.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
+                    let cleanup = match phase.as_deref() {
+                        Some("cleanup-status") => Some(("modelStatus", "unsupported")),
+                        Some("cleanup-preconditions") => Some(("modelStatusPreconditions", "refused")),
+                        _ => None,
+                    };
+                    if let Some(cleanup) = cleanup {
+                        invoke.resolver.reject(json!({"kind":"modelReconnect", "cleanup":cleanup, "message":"synthetic-private-token"}));
+                        return true;
+                    }
                     if key_connected.load(std::sync::atomic::Ordering::SeqCst)
                         && !key_removed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
                         invoke.resolver.reject(json!({"kind":"modelKeyCleanup"}));
@@ -704,7 +743,7 @@ fn main() {
                     }
                     key_connected.store(false, std::sync::atomic::Ordering::SeqCst);
                     if !removed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                        invoke.resolver.reject(json!({"kind":"modelBusy"}));
+                        invoke.resolver.reject(json!({"kind":"modelReconnect", "cleanup":["disconnectRetainedModel","refused"], "message":"synthetic-private-token"}));
                         return true;
                     }
                     json!({"ready":false})

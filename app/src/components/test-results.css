@@ -5,7 +5,8 @@
 .test-result { border-top: 1px solid var(--color-border); padding-block: var(--space-2); }
 .test-result:first-child { border-top: 0; }
 .test-result > summary > .disclosure-label { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: center; gap: var(--space-2); flex: 1; color: var(--color-text); }
-.test-result > summary > .disclosure-label > span { grid-column: 2; font: var(--type-body); }
+.test-result > summary > .disclosure-label > span:last-child { grid-column: 2; font: var(--type-body); }
+.test-result > summary > .disclosure-label > .test-name { grid-column: 2; display: grid; gap: var(--space-1); min-width: 0; overflow-wrap: anywhere; }
 .test-result > summary > .disclosure-label code { overflow-wrap: anywhere; }
 .test-answer { padding: var(--space-4) 0 0 var(--space-4); }
 .test-answer .reading { white-space: pre-wrap; overflow-wrap: anywhere; max-width: 70ch; color: inherit; margin: var(--space-2) 0 var(--space-4); }
@@ -15,5 +16,5 @@
 .test-results.result-stale { color: var(--color-text-secondary); }
 @media (min-width: 650px) {
   .test-result > summary > .disclosure-label { grid-template-columns: 16px minmax(0, 1fr) auto; }
-  .test-result > summary > .disclosure-label > span { grid-column: 3; }
+  .test-result > summary > .disclosure-label > span:last-child { grid-column: 3; }
 }

@@ -14,6 +14,9 @@ export function retireFirstTest() {
 export function firstTestPending() {
   try { return localStorage.getItem(preference) === 'pending'; } catch { return false; }
 }
+export function firstTestAttempted() {
+  try { return localStorage.getItem(preference) === 'attempted'; } catch { return false; }
+}
 function claim() {
   if (!firstTestPending()) return false;
   try { localStorage.setItem(preference, 'attempted'); return true; } catch { return false; }

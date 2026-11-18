@@ -10,35 +10,25 @@ fn run_cancel_guest(build: &str) -> bool {
     const BUILDS: &[&str] = &[];
     BUILDS.contains(&build)
 }
+#[path = "local_vm_image.rs"]
+pub(crate) mod image;
 #[cfg(any(
     test,
     all(windows, target_arch = "x86_64"),
     all(target_os = "macos", target_arch = "aarch64")
 ))]
-#[path = "local_vm_image.rs"]
-pub(crate) mod image;
+use crate::runtime::journal::JournalCustody;
 #[cfg(test)]
 use crate::runtime::types::BackendKind;
 #[cfg(any(test, all(windows, target_arch = "x86_64")))]
 use crate::runtime::windows::inputs::{verify_windows_runtime, FilePin};
-#[cfg(any(
-    test,
-    all(windows, target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-use crate::runtime::{
-    image_install::InstalledImageSet,
-    journal::{Journal, JournalCustody},
-};
+use crate::runtime::{image_install::InstalledImageSet, journal::Journal};
 #[cfg(any(test, all(windows, target_arch = "x86_64")))]
 use std::io::Read;
-use std::path::PathBuf;
-#[cfg(any(
-    test,
-    all(windows, target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 #[cfg(any(
     test,
@@ -198,13 +188,17 @@ fn retain_start_failure(
 }
 
 /// Native selection is Rust-owned; only debug builds may select development paths.
-pub fn configured(resources: Option<PathBuf>, data: Option<PathBuf>) -> Arc<LocalVm> {
+pub fn configured(
+    resources: Option<PathBuf>,
+    data: Option<PathBuf>,
+    local: Option<PathBuf>,
+) -> Arc<LocalVm> {
     #[cfg(any(
         all(windows, target_arch = "x86_64"),
         all(target_os = "macos", target_arch = "aarch64")
     ))]
-    if let (Some(resources), Some(data)) = (&resources, &data) {
-        let root = data.join("local-vm-v1");
+    if let (Some(resources), Some(data), Some(local)) = (&resources, &data, &local) {
+        let root = local.join("local-vm-v1");
         #[cfg(windows)]
         let target = crate::runtime::image_types::ImageTarget::WindowsAmd64;
         #[cfg(target_os = "macos")]
@@ -229,15 +223,69 @@ pub fn configured(resources: Option<PathBuf>, data: Option<PathBuf>) -> Arc<Loca
         ) {
             return LocalVm::new(Arc::new(NativeFactory {
                 resources: resources.clone(),
+                data: data.clone(),
                 root,
-                cache: data.join("image-cache-v1"),
+                cache: local.join("image-cache-v1"),
                 source,
                 pending: Arc::new(Mutex::new(JournalCustody(None))),
             }));
         }
     }
-    let _ = (resources, data);
+    let _ = (resources, data, local);
     LocalVm::unavailable()
+}
+/// Same native-selected target as `configured`, for the explicit upgrade facade.
+/// Never the debug development path: replace/retry only ever move between
+/// pinned, release-qualified images.
+pub(crate) fn upgrade_source() -> Option<image::ImageSource> {
+    #[cfg(any(
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    {
+        #[cfg(windows)]
+        let target = crate::runtime::image_types::ImageTarget::WindowsAmd64;
+        #[cfg(target_os = "macos")]
+        let target = crate::runtime::image_types::ImageTarget::MacosArm64;
+        let profile = image::shipping_image(target)?;
+        let host = image::native_host_target(target).ok()?;
+        Some(image::ImageSource::Pinned {
+            profile: Box::new(profile),
+            host,
+        })
+    }
+    #[cfg(not(any(
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    )))]
+    None
+}
+/// Select source and machine identity on the native side; no renderer input
+/// can construct an upgrade target or override its pinned image.
+pub fn upgrade_target(resources: &Path) -> Result<UpgradeTarget, RuntimeError> {
+    Ok(UpgradeTarget {
+        source: upgrade_source().ok_or(RuntimeError::Unavailable)?,
+        machine_id: upgrade_machine_id(resources)?,
+    })
+}
+/// Matches the fixed/derived identity `NativeFactory::launch` uses for a brand
+/// new installation, so a fresh destination's machine identity is consistent
+/// with an ordinary first boot.
+fn upgrade_machine_id(
+    #[allow(unused_variables)] resources: &Path,
+) -> Result<Vec<u8>, RuntimeError> {
+    #[cfg(windows)]
+    {
+        Ok(b"pc-q35-11.0".to_vec())
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        crate::runtime::apple_input::machine_identifier(resources)
+    }
+    #[cfg(not(any(windows, all(target_os = "macos", target_arch = "aarch64"))))]
+    {
+        Err(RuntimeError::Unavailable)
+    }
 }
 #[cfg(any(test, all(windows, target_arch = "x86_64")))]
 fn runtime_manifest_pin() -> FilePin {
@@ -295,11 +343,6 @@ fn read_runtime_manifest(root: &Path, pin: &FilePin) -> Result<Vec<FilePin>, Run
     pins.push(pin.clone()); // Nested provenance manifest is itself in the exact inventory.
     Ok(pins)
 }
-#[cfg(any(
-    test,
-    all(windows, target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
 fn reopen(
     root: &Path,
     source: &mut image::ImageSource,
@@ -320,6 +363,8 @@ fn reopen(
 ))]
 struct NativeFactory {
     resources: PathBuf,
+    /// D (app-data): where setup-v1 model/account metadata lives.
+    data: PathBuf,
     root: PathBuf,
     cache: PathBuf,
     source: image::ImageSource,
@@ -331,6 +376,14 @@ struct NativeFactory {
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl JournalCustody {
+    fn preflight_replacement(&self, target: &UpgradeTarget) -> Result<(), RuntimeError> {
+        if let Some(journal) = &self.0 {
+            // Use the live journal's verified handles, never reopen or recreate
+            // its new-only authority just to inspect replacement eligibility.
+            target.source.upgrade_eligibility(journal)?;
+        }
+        Ok(())
+    }
     fn take_for_launch(&mut self, closed: &watch::Receiver<bool>) -> Result<Journal, RuntimeError> {
         // Keep original creation authority through the very last cancellation checkpoint.
         if *closed.borrow() {
@@ -344,6 +397,12 @@ impl JournalCustody {
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl LocalFactory for NativeFactory {
+    fn preflight_replacement(&self, target: &UpgradeTarget) -> Result<(), RuntimeError> {
+        self.pending
+            .lock()
+            .map_err(|_| RuntimeError::Unavailable)?
+            .preflight_replacement(target)
+    }
     fn release_stopped(&self) -> Result<(), RuntimeError> {
         self.pending
             .lock()
@@ -352,13 +411,28 @@ impl LocalFactory for NativeFactory {
             .take();
         Ok(())
     }
+    /// Explicit replace/retry already renamed A and created B under this exact
+    /// root; keep that live journal so an ordinary later start reuses its
+    /// still-live new-only authority instead of reopening from scratch.
+    fn adopt_destination(
+        &self,
+        journal: crate::runtime::journal::Journal,
+    ) -> Result<(), RuntimeError> {
+        let mut custody = self.pending.lock().map_err(|_| RuntimeError::Unavailable)?;
+        if custody.0.is_some() {
+            return Err(RuntimeError::Busy);
+        }
+        custody.0 = Some(journal);
+        Ok(())
+    }
     fn launch(
         &self,
         closed: watch::Receiver<bool>,
         progress: Arc<dyn Fn(LocalProgress) + Send + Sync>,
     ) -> StartFuture<'_> {
-        let (resources, root, pending, source, cache) = (
+        let (resources, data, root, pending, source, cache) = (
             self.resources.clone(),
+            self.data.clone(),
             self.root.clone(),
             self.pending.clone(),
             self.source.clone(),
@@ -384,9 +458,14 @@ impl LocalFactory for NativeFactory {
                             path,
                         )?)
                     };
-                    crate::workspace_upgrade::admit(&root)?;
-                    // The factory retains the original owner through preparation retries.
+                    // Admission must use the exact live creator journal when present.
                     let mut custody = pending.lock().map_err(|_| RuntimeError::Unavailable)?;
+                    match custody.0.as_ref() {
+                        Some(journal) => {
+                            crate::workspace_upgrade::admit_prepared(&data, &root, journal)?
+                        }
+                        None => crate::workspace_upgrade::admit(&data, &root)?,
+                    }
                     let installed = image::prepare_installation(
                         &source,
                         &root,

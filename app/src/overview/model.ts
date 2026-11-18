@@ -61,7 +61,7 @@ function localStatus(file: SavedFile, result: Observation | undefined, running: 
   // A failure on earlier files is still a failure; a pass on earlier files says nothing about the saved one.
   if (verdict === 'failed') return { status: 'failed', pill: 'Failed', earlier: !current };
   if (!file.source) return { status: 'stale', pill: 'Result unknown' };
-  if (!current) return { status: 'stale', pill: 'Not run since your edit' };
+  if (!current) return { status: 'stale', pill: 'Not run since your edit', earlier: true };
   if (verdict === 'passed') return { status: 'passed', pill: 'Passed' };
   if (verdict === 'cancelled') return { status: 'not-started', pill: 'Not tested' };
   return { status: 'stale', pill: 'Result unknown' };
@@ -101,7 +101,7 @@ export function buildCards(i: Inputs) {
   const local: Card[] = saved.map(file => {
     const { result, running } = resultFor(file, i.observed, i.finals, i.pending && i.activeDocumentId === file.documentId);
     const s = localStatus(file, result, running, history);
-    const counts = result?.report && (s.status === 'passed' || s.status === 'failed') ? `${result.report.passed} of ${result.report.total} tests${s.earlier ? ' on earlier files' : ''}` : undefined;
+    const counts = result?.report && (s.status === 'passed' || s.status === 'failed' || s.earlier && result.report.verdict === 'passed') ? `${result.report.passed} of ${result.report.total} passed${s.earlier ? ', before your edit' : ''}` : undefined;
     const details: Detail[] = [];
     if (file.source) details.push({ label: 'Agent file hash', value: file.source.agent, copy: true }, { label: 'Test file hash', value: file.source.tests, copy: true });
     if (result) details.push({ label: 'Tested', value: absolute(result.observedAt) }, { label: 'Test run Agent', value: result.agentName }, { label: 'Test run Agent ID', value: result.agentUid, copy: true });
@@ -121,7 +121,7 @@ export function buildCards(i: Inputs) {
   // it must never be used to claim ownership or authorize resource cleanup.
   const strays: Card[] = !ownershipKnown || !i.observed ? [] : i.observed.agents.filter(a => !/^bridge-chat-agent-[0-9a-f]{32}$/.test(a.name) && !owned.has(exact(i.observed!.installation, a.namespace, a.uid))).map(a => ({
     key: `local/${exact(a.namespace, a.uid)}`, groupKey: 'local', agentKey: `agent/local/${a.namespace}/${a.uid}`, title: a.name, place: 'This computer', subject: a.name,
-    description: 'No agent file on this computer.', meta: { also: [], on: 'This computer' }, remote: false, actions: [],
+    description: 'Running on this computer, not saved here', meta: { also: [], on: 'This computer' }, remote: false, actions: [],
     details: [{ label: 'Name on the cluster', value: a.name }, { label: 'Namespace', value: a.namespace }, { label: 'Agent ID', value: a.uid, copy: true }, { label: 'Last seen', value: absolute(i.observed!.observedAt) }],
   }));
   const unavailable = i.places?.historyState === 'unavailable';
@@ -129,15 +129,15 @@ export function buildCards(i: Inputs) {
     const earlier = !!record && !!file?.source && sameSource(record.source, file.source) === false;
     const s: { status?: Status; pill?: string } = unavailable ? { status: 'needs-you', pill: "Couldn't check" } : !record ? {}
       : place.stale || record.verdict === 'unknown' ? { status: 'stale', pill: 'Result unknown' }
-        : record.verdict === 'running' ? { status: 'running', pill: 'Running' } : record.verdict === 'cancelled' ? { status: 'not-started', pill: 'Not tested' } : { status: record.verdict === 'passed' && earlier ? 'stale' : record.verdict, pill: record.verdict === 'passed' ? earlier ? 'Earlier files' : 'Passed' : 'Failed' };
+        : record.verdict === 'running' ? { status: 'running', pill: 'Running' } : record.verdict === 'cancelled' ? { status: 'not-started', pill: 'Not tested' } : { status: record.verdict === 'passed' && earlier ? 'stale' : record.verdict, pill: record.verdict === 'passed' ? earlier ? 'Not run since your edit' : 'Passed' : 'Failed' };
     const name = labels.get(place.key)!;
     const details: Detail[] = [{ label: 'Name on the cluster', value: agent.name }, { label: 'Namespace', value: place.namespace }, { label: 'Agent ID', value: agent.uid, copy: true }, { label: 'Cluster', value: `${place.context} · ${place.service}` }];
     if (record) details.push({ label: 'Agent file hash', value: record.source.agent, copy: true }, { label: 'Test file hash', value: record.source.tests, copy: true });
     if (place.observedAt !== null) details.push({ label: 'Last seen', value: absolute(place.observedAt) });
     return {
       key: `${place.key}/${agent.uid}`, groupKey: place.key, agentKey: file?.documentId ?? `agent/${place.key}/${agent.uid}`, title: file ? fileTitle(file) : agent.name, place: name, subject: file?.name ?? agent.name,
-      ...s, testedAt: record ? record.time * 1000 : undefined, description: file ? file.summary?.description || 'No description in the agent file.' : 'No agent file on this computer.',
-      meta: { tests: record && place.stale ? `Last Send ${record.verdict}` : record?.report ? `${record.report.passed} of ${record.report.total} tests${earlier ? ' on earlier files' : ''}` : undefined, model: agent.model ?? file?.summary?.model, tools: toolText(agent.tools ?? file?.summary?.tools),
+      ...s, testedAt: record ? record.time * 1000 : undefined, description: file ? file.summary?.description || 'No description in the agent file.' : `Running on ${name}, not saved here`,
+      meta: { tests: record && place.stale ? `Last Send ${record.verdict}` : record?.report ? `${record.report.passed} of ${record.report.total} passed${earlier ? ', before your edit' : ''}` : undefined, model: agent.model ?? file?.summary?.model, tools: toolText(agent.tools ?? file?.summary?.tools),
         also: file ? ['this computer', ...where(file.documentId, place.key)] : [], on: file ? undefined : name },
       documentId: file?.state === 'readable' ? file.documentId : undefined, remote: true,
       actions: file?.state === 'readable' ? [{ id: 'open', primary: s.status === 'failed' },
@@ -157,13 +157,12 @@ export function clusterGroups(i: Inputs, built: Built): Group[] {
   if (i.workspaceNote) notes.push({ text: i.workspaceNote, clusters: true });
   if (state === 'reading') notes.push({ text: 'Reading agents…' });
   if (state === 'updating') notes.push({ text: 'Updating when the test finishes.', seen });
-  if (state === 'busy') notes.push({ text: 'The local cluster is busy right now.', seen, check: true });
-  if (state === 'stopped') notes.push({ text: 'The local cluster is stopped. Start it to test or chat.', clusters: true });
-  if (state === 'image') notes.push({ text: "This local cluster can't list its agents yet." });
+  if (state === 'busy') notes.push({ text: 'The workspace is busy right now.', seen, check: true });
+  if (state === 'stopped') notes.push({ text: 'The workspace is stopped. Start it to test or chat.', clusters: true });
   if (state === 'read') notes.push({ text: "Couldn't check just now.", seen, check: true });
   if (i.files?.state === 'complete' && !history && !i.filesStale) notes.push({ text: "Test history is unavailable, so other agents on this cluster aren't shown and results are unknown." });
   if (history && state === 'ok' && !local.length && !strays.length) notes.push({ text: 'No agents on this computer yet.' });
-  const groups: Group[] = [{ key: 'local', title: 'This computer', sub: 'local cluster', notes, cards: [...local, ...strays], count: local.length + strays.length || undefined }];
+  const groups: Group[] = [{ key: 'local', title: 'This computer', notes, cards: [...local, ...strays], count: local.length + strays.length || undefined }];
   (i.places?.places ?? []).forEach(place => {
     const cards = built.remoteCards.filter(c => c.groupKey === place.key);
     const n: Note[] = [];
@@ -177,7 +176,7 @@ export function clusterGroups(i: Inputs, built: Built): Group[] {
 export function agentGroups(cards: Card[], files: SavedFile[]): Group[] {
   const groups: Group[] = files.map(f => ({ key: f.documentId, title: fileTitle(f), description: f.summary?.description || f.reason || undefined, notes: [], cards: cards.filter(c => c.agentKey === f.documentId) }));
   const strays = cards.filter(c => !files.some(f => f.documentId === c.agentKey));
-  return [...groups, ...(strays.length ? [{ key: 'unlinked', title: 'Agents without a file', notes: [], cards: strays }] : [])].map(g => ({ ...g, count: g.cards.length }));
+  return [...groups, ...(strays.length ? [{ key: 'unlinked', title: 'Running agents, not saved here', notes: [], cards: strays }] : [])].map(g => ({ ...g, count: g.cards.length }));
 }
 // Each group goes to the shorter stack by card count; order inside a stack stays logical.
 export function balance(groups: Group[]): [Group[], Group[]] {
@@ -190,7 +189,7 @@ export function summaryLabel(cards: Card[], partial: boolean) {
   return `${cards.length} ${cards.length === 1 ? 'agent' : 'agents'}${partial ? ' shown' : ''}${failed ? `, ${failed} failed` : ''}`;
 }
 // Empty means nothing could be hiding: no files, no remembered clusters, no Agents, every read succeeded. A stopped or
-// image-limited local cluster still counts as empty; a failed read, a busy list or hidden unowned Agents do not.
+// image-limited workspace still counts as empty; a failed read, a busy list or hidden unowned Agents do not.
 export function isEmpty(i: Inputs, built: Built) {
   const { state, history } = built;
   return i.files?.state === 'complete' && !i.filesStale && !!i.places && !i.placeError && !i.places.places.length && !built.cards.length

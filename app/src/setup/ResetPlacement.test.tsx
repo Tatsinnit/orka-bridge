@@ -1,20 +1,19 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import Setup from './SetupHarness';
 
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 
-test('AI recovery stays usable after Stop and restart without claiming a stopping workspace is running', async () => {
+test('AI recovery stays usable after observed failure and restart without claiming a failed workspace is running', async () => {
   vi.stubGlobal('isTauri', true); localStorage.setItem('bridge.welcomeSeen.v1', '1');
-  let phase = 'ready'; let finishStop!: () => void;
+  let phase = 'ready';
   const status = () => ({ selected: 'localVm', localVm: phase, model: phase === 'ready' ? 'available' : 'locked' });
   const ipc = vi.fn((command: string) => {
     if (command === 'setup_status') return status();
     if (command === 'setup_requirements') return null;
     if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
-    if (command === 'setup_cancel_local') return new Promise(resolve => { finishStop = () => { phase = 'cancelled'; resolve(status()); }; });
     if (command === 'setup_select_local') { phase = 'ready'; return status(); }
     if (command === 'setup_connect_model') throw { kind: 'modelInstallationMismatch', recovery: {
       installation: '10000000-0000-4000-8000-000000000001', savedInstallation: '20000000-0000-4000-8000-000000000002', credentialSlot: '30000000-0000-4000-8000-000000000003',
@@ -25,13 +24,11 @@ test('AI recovery stays usable after Stop and restart without claiming a stoppin
   mockIPC(ipc); const user = userEvent.setup(); render(<Setup onOpenExample={() => {}} />);
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  await screen.findByText('Your workspace is running. Nothing is lost.');
-  await user.click(screen.getByRole('button', { name: 'Stop the local cluster' }));
-  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
-  expect(screen.getByText('Stopping', { selector: '.pill' })).toBeTruthy();
+  await screen.findByRole('region', { name: 'Saved AI connection' });
+  phase = 'failed'; fireEvent.focus(window);
+  await screen.findByRole('alert');
   expect(screen.queryByText('Your workspace is running. Nothing is lost.')).toBeNull();
-  await act(async () => finishStop());
-  await user.click(await screen.findByRole('button', { name: 'Start' }));
+  await user.click(await screen.findByRole('button', { name: 'Try again' }));
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   const recovery = await screen.findByRole('region', { name: 'Saved AI connection' });
   expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
@@ -59,7 +56,7 @@ test.each(['stay', 'navigate'])('AI recovery keeps reset completion visible afte
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   expect(await screen.findByRole('heading', { level: 1, name: 'This computer' })).toBeTruthy();
   expect(screen.getByText("The AI couldn't connect", { selector: 'p' })).toBeTruthy();
-  const row = screen.getByText('Choose the AI your agent uses').closest('li')!;
+  const row = screen.getByText('Connect the AI', { selector: 'li b' }).closest('li')!;
   expect(within(row).getByRole('button', { name: 'Reset AI connection' })).toBeTruthy();
   expect(screen.getByText('Your workspace is ready on this computer.')).toBeTruthy();
   await user.click(within(row).getByRole('button', { name: 'Show details' }));
@@ -67,11 +64,13 @@ test.each(['stay', 'navigate'])('AI recovery keeps reset completion visible afte
   const place = screen.getByRole('region', { name: 'This computer' });
   expect(within(place).getByRole('button', { name: 'Reset AI connection' })).toBeTruthy();
   expect(within(place).getByRole('button', { name: 'Hide details' })).toBeTruthy();
-  expect(within(place).getByText('Workspace running')).toBeTruthy();
+  expect(within(place).getByText('The AI needs to be set up again')).toBeTruthy();
+  expect(within(place).getByText('Needs you', { selector: '.pill' })).toBeTruthy();
+  expect(place.querySelectorAll('.button-primary')).toHaveLength(1);
   await user.click(within(place).getByRole('button', { name: 'Reset AI connection' }));
   await user.click(within(place).getByRole('button', { name: 'Reset' }));
   if (destination === 'navigate') {
-    await user.click(within(place).getByRole('button', { name: 'Connect the AI' }));
+    await user.click(within(place).getByRole('button', { name: 'View workspace' }));
     screen.getByRole('heading', { level: 1 }).focus();
   }
   const focused = document.activeElement;

@@ -1,7 +1,7 @@
 .cluster-card { display: grid; gap: 12px; min-width: 0; width: 100%; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-card); background: var(--color-card); }
 .places-workspace { width: 100%; }
 .places-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
-.places-heading > h1 { flex-basis: 100%; }
+.places-heading > h1 { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
 .places-heading > p { margin: 0; }
 .places-back { margin-bottom: 16px; }
 .places-list { display: grid; gap: 16px; }
@@ -22,6 +22,7 @@
 .context-markers { display: flex; flex-wrap: wrap; gap: 12px; font-size: var(--size-small); }
 .cluster-checking { display: flex; align-items: center; gap: 8px; }
 .cluster-failure .workspace-failure-explanation { background: var(--color-tint-failed); }
+.cluster-failure .failure-summary { overflow-wrap: anywhere; }
 .cluster-error-details { display: grid; gap: 8px; }
 .place-row > button { justify-self: end; }
 .place-row .pill { justify-self: start; white-space: normal; grid-column: 3; grid-row: 1; }
@@ -67,6 +68,14 @@
 .send-warning p { margin: 0; }
 .send-panel { min-width: 0; padding: 16px; }
 .send-panel > p { max-width: 65ch; }
+.send-panel .long-card-head h3 { min-width: 0; overflow-wrap: anywhere; }
+.send-panel :is(.long-card-summary, .card-section p) { overflow-wrap: anywhere; }
+.send-panel .card-section[aria-label="What you send"] { position: relative; border: 0; padding-top: 0; margin-top: 12px; }
+.send-panel .card-section[aria-label="What you send"] p { margin: 0; color: var(--color-text-secondary); }
+.send-panel .card-section[aria-label="What you send"] > h4 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.send-panel .send-checks { padding: 8px 12px; background: var(--color-chrome); border-radius: var(--radius-row); }
+.send-checks > summary { display: flex; flex-wrap: wrap; }
+.send-checks > summary .disclosure-hint { margin-left: auto; }
 .send-panel > .cluster-details { margin: 16px 0; }
 .send-preflight { margin: 16px 0; }
 .send-preflight h4 { margin: 0 0 12px; }

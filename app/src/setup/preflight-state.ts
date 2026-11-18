@@ -29,7 +29,7 @@ export async function readPreflight(required: number): Promise<HostPreflight | n
 export function preflightRecovery(failure: PreflightFailure): RecoveryInfo {
   const stage = 'Checking computer requirements';
   switch (failure) {
-    case 'insufficientMemory': return { summary: 'This computer has less installed memory than the local cluster needs.', action: 'Use a computer with more installed memory, or use a cluster instead.', stage };
+    case 'insufficientMemory': return { summary: 'This computer has less installed memory than the workspace needs.', action: 'Use a computer with more installed memory, or use a cluster instead.', stage };
     case 'virtualizationUnsupported': return { summary: "Virtualization isn't supported on this Mac.", action: 'Use a supported Apple-silicon Mac, or use a cluster instead.', stage };
     case 'virtualizationDisabled': return { summary: 'Virtualization is turned off or unavailable on this PC.', action: 'Check whether this PC supports virtualization and enable it in its startup settings, then restart and try again.', topic: 'virtualization', stage };
     case 'hypervisorUnavailable': return { summary: "Windows Hypervisor Platform isn't available.", action: 'Enable Windows Hypervisor Platform in Windows features, restart, then try again.', topic: 'hypervisor', stage };

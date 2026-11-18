@@ -61,7 +61,7 @@ test('before connecting, each choice names its actual fixed default model withou
 test('key custody copy is neutral about the native store and names the workspace', () => {
   render(<Model enabled />); keyChoice();
   const help = card().querySelector('#model-key-help')!.textContent!;
-  expect(help).toBe('Saved in this computer’s credential store and given only to your workspace. Never written to your agent files.');
+  expect(help).toBe('Stored on this computer, never in your agent files.');
   expect(card().textContent).not.toMatch(/Keychain|Credential Manager|local cluster/);
 });
 

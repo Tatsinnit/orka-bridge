@@ -75,6 +75,7 @@ fn unavailable() -> SetupError {
         kind: "modelUnavailable",
         message: "The stored model connection is unavailable or its completion is unknown.",
         vendor: None,
+        cleanup: None,
         diagnostic: None,
         native: None,
         recovery: None,
@@ -115,7 +116,10 @@ fn read_binding(root: &Path) -> Result<Option<Binding>, SetupError> {
     if bytes.len() > 16384 {
         return Err(unavailable());
     }
-    let b: Binding = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    decode_binding(&bytes).map(Some)
+}
+fn decode_binding(bytes: &[u8]) -> Result<Binding, SetupError> {
+    let b: Binding = serde_json::from_slice(bytes).map_err(|_| unavailable())?;
     if (b.kind == CredentialKind::Key) != b.vendor.is_some()
         || b.connection
             .as_ref()
@@ -130,7 +134,7 @@ fn read_binding(root: &Path) -> Result<Option<Binding>, SetupError> {
     {
         return Err(unavailable());
     }
-    Ok(Some(b))
+    Ok(b)
 }
 fn write_binding(root: &Path, b: &Binding) -> Result<(), SetupError> {
     write_file(
@@ -138,6 +142,9 @@ fn write_binding(root: &Path, b: &Binding) -> Result<(), SetupError> {
         "model-v1",
         &serde_json::to_vec(b).map_err(|_| unavailable())?,
     )
+}
+pub(super) fn write_upgrade_file(root: &Path, name: &str, bytes: &[u8]) -> Result<(), SetupError> {
+    write_file(root, name, bytes)
 }
 fn write_file(root: &Path, name: &str, bytes: &[u8]) -> Result<(), SetupError> {
     let path = root.join(format!("model-next-{}", Uuid::new_v4()));
@@ -175,6 +182,51 @@ impl Drop for ModelOwner {
     }
 }
 impl SetupStore {
+    pub(crate) fn clear_upgrade_slot(&self, slot: Uuid) -> Result<(), SetupError> {
+        let root = self.root.as_deref().ok_or_else(unavailable)?;
+        if read_binding(root)?.is_some_and(|b| b.slot == slot) {
+            fs::remove_file(root.join("model-v1")).map_err(|_| unavailable())?;
+        }
+        let account = root.join(ACCOUNT_FILE);
+        match fs::symlink_metadata(&account) {
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Ok(m) if m.is_file() && m.len() <= MAX_ACCOUNT_FILE => {
+                let bytes = fs::read(&account).map_err(|_| unavailable())?;
+                let record: AccountRecord =
+                    serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+                if record.slot == slot {
+                    fs::remove_file(account).map_err(|_| unavailable())?;
+                }
+            }
+            _ => return Err(unavailable()),
+        }
+        let dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
+            .map_err(|_| unavailable())?;
+        crate::runtime::image_cache::fs::sync(&dir).map_err(|_| unavailable())
+    }
+    pub(crate) fn upgrade_slot(model: Option<&[u8]>) -> Result<Option<Uuid>, SetupError> {
+        model
+            .map(|bytes| decode_binding(bytes).map(|b| b.slot))
+            .transpose()
+    }
+    pub(crate) fn transferred_model(
+        model: Option<&[u8]>,
+        destination: Uuid,
+    ) -> Result<Option<Vec<u8>>, SetupError> {
+        let Some(bytes) = model else { return Ok(None) };
+        let mut b = decode_binding(bytes)?;
+        if !valid_saved_connection(&b) || destination.is_nil() {
+            return Err(unavailable());
+        }
+        if !matches!(b.phase, Phase::Stored | Phase::Connected) {
+            return Ok(None);
+        }
+        b.installation = destination;
+        b.phase = Phase::Stored;
+        b.nonce = None;
+        b.connection = None;
+        serde_json::to_vec(&b).map(Some).map_err(|_| unavailable())
+    }
     /// Recovery already has exact durable snapshots; lock without interpreting a
     /// temporarily mixed pair of records as a new credential association.
     #[allow(dead_code)]
@@ -332,6 +384,28 @@ fn finish_connect(
     write_binding(root, b)?;
     Ok(state(root, Some(b), true))
 }
+// Closed classes only: never format the error payload, which may contain secrets.
+fn cleanup_error_class(error: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    if error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<crate::runtime::client::GuestRequestRefused>())
+    {
+        return "refused";
+    }
+    match error.kind() {
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => "timeout",
+        ErrorKind::Unsupported => "unsupported",
+        ErrorKind::InvalidData | ErrorKind::InvalidInput => "protocol",
+        ErrorKind::UnexpectedEof
+        | ErrorKind::BrokenPipe
+        | ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::NotConnected => "connection",
+        ErrorKind::PermissionDenied => "permission",
+        _ => "io",
+    }
+}
 // Explicit intent only, under both ownership locks. A fresh guest has no token,
 // but kmx's owned model resources survive on the state disk and must be stopped.
 fn cleanup_previous_boot(
@@ -339,33 +413,53 @@ fn cleanup_previous_boot(
     b: &mut Binding,
     client: &mut VmClient,
 ) -> Result<(), SetupError> {
+    let failure = |operation, class| SetupError {
+        cleanup: Some((operation, class)),
+        ..SetupError::model("modelReconnect")
+    };
     let connection = b.connection.as_ref().ok_or_else(unavailable)?;
     let before = client
         .model_status()
-        .map_err(|_| SetupError::model("modelReconnect"))?;
+        .map_err(|error| failure("modelStatus", cleanup_error_class(&error)))?;
     if !before.retained_cleanup
         || before.phase != ModelPhase::Idle
         || before.connection.is_some()
         || before.credential.installed
         || before.credential.generation.is_some()
     {
-        return Err(SetupError::model("modelReconnect"));
+        return Err(failure("modelStatusPreconditions", "refused"));
     }
     client
         .disconnect_retained_model(connection)
-        .map_err(|_| SetupError::model("modelReconnect"))?;
+        .map_err(|error| failure("disconnectRetainedModel", cleanup_error_class(&error)))?;
     b.phase = Phase::Stored;
     b.nonce = None;
     b.connection = None;
     write_binding(root, b)
 }
 impl SetupStore {
+    fn mutation_owner(
+        &self,
+        root: &Path,
+        removal: bool,
+    ) -> Result<(crate::workspace_upgrade::WorkspaceUpgrade, ModelOwner), SetupError> {
+        let local = self.upgrade_root.as_deref().ok_or_else(unavailable)?;
+        fs::create_dir_all(local).map_err(|_| unavailable())?;
+        let data = root.parent().ok_or_else(unavailable)?;
+        let upgrade = crate::workspace_upgrade::WorkspaceUpgrade::open(data, local)
+            .map_err(|_| unavailable())?;
+        let owner = model_owner(root)?;
+        upgrade
+            .guard_model(read_binding(root)?.as_ref().map(|b| b.slot), removal)
+            .map_err(|_| unavailable())?;
+        Ok((upgrade, owner))
+    }
     // Diagnose the saved installation before association/vendor refusals or any capture.
     // Mutating paths still check again under their own ownership guards.
     fn check_model_installation(&self, installation: Uuid) -> Result<(), SetupError> {
         let _access = self.access.lock().map_err(|_| unavailable())?;
         let root = self.root.as_deref().ok_or_else(unavailable)?;
-        let _owner = model_owner(root)?;
+        let _owners = self.mutation_owner(root, false)?;
         if installation.is_nil() {
             return Err(unavailable());
         }
@@ -386,7 +480,7 @@ impl SetupStore {
         let _access = self.access.lock().map_err(|_| unavailable())?;
         let root = self.root.as_deref().ok_or_else(unavailable)?;
         selected(root)?;
-        let _owner = model_owner(root)?;
+        let _owners = self.mutation_owner(root, true)?;
         if installation.is_nil() {
             return Err(unavailable());
         }
@@ -421,11 +515,20 @@ impl SetupStore {
         if !selected(root)? {
             return Ok(());
         }
-        let _owner = model_owner(root)?;
-        if let Some(b) = read_binding(root)? {
-            if b.installation == installation && b.phase == Phase::Storing {
+        let owners = self.mutation_owner(root, false)?;
+        match read_binding(root)? {
+            Some(b) if b.installation == installation && b.phase == Phase::Storing => {
+                owners
+                    .0
+                    .guard_model(Some(b.slot), true)
+                    .map_err(|_| unavailable())?;
                 discard_absent_reservation(root, &b, store)?;
             }
+            None => owners
+                .0
+                .guard_model(None, true)
+                .map_err(|_| unavailable())?,
+            _ => {}
         }
         Ok(())
     }
@@ -578,7 +681,7 @@ impl SetupStore {
         if installation.is_nil() || !selected(root)? {
             return Err(unavailable());
         }
-        let _owner = model_owner(root)?;
+        let _owners = self.mutation_owner(root, true)?;
         if read_binding(root)?.is_some() {
             return Err(SetupError::model("modelAlreadyAssociated"));
         }
@@ -654,6 +757,7 @@ impl SetupStore {
         remote: ModelState,
         client: &mut VmClient,
         store: &impl CredentialStore,
+        upgrade: &crate::workspace_upgrade::WorkspaceUpgrade,
     ) -> Result<ModelSetupState, SetupError> {
         let result = finish_connect(root, b, remote);
         if b.kind == CredentialKind::Key
@@ -672,8 +776,12 @@ impl SetupStore {
                 return Err(SetupError::model("modelConnect"));
             }
             // Reuse sign-out's removal lifecycle without releasing either ownership guard.
-            self.finish_sign_out(root, b, Some(client), store)
-                .map_err(|_| SetupError::model("modelKeyCleanup"))?;
+            self.finish_sign_out(root, b, Some(client), store, upgrade)
+                .map_err(|mut error| {
+                    error.kind = "modelKeyCleanup";
+                    error.message = SetupError::model("modelKeyCleanup").message;
+                    error
+                })?;
         }
         result
     }
@@ -690,7 +798,7 @@ impl SetupStore {
         if !selected(root)? || !selection.valid() {
             return Err(unavailable());
         }
-        let _owner = model_owner(root)?;
+        let _owners = self.mutation_owner(root, false)?;
         let mut b = read_binding(root)?.ok_or_else(unavailable)?;
         if b.installation != installation {
             return Err(mismatch(installation, &b));
@@ -756,7 +864,7 @@ impl SetupStore {
                 let remote = client
                     .connect_model(generation, selection)
                     .map_err(|_| SetupError::model("modelConnect"))?;
-                return self.finish_model_connect(root, &mut b, remote, client, store);
+                return self.finish_model_connect(root, &mut b, remote, client, store, &_owners.0);
             } else if remote.phase != ModelPhase::Idle {
                 return Err(unavailable());
             }
@@ -808,7 +916,7 @@ impl SetupStore {
         let remote = client
             .connect_model(generation, selection)
             .map_err(|_| SetupError::model("modelConnect"))?;
-        self.finish_model_connect(root, &mut b, remote, client, store)
+        self.finish_model_connect(root, &mut b, remote, client, store, &_owners.0)
     }
     /// Explicit sign-out; unavailable/unknown VM cleanup never deletes the host slot.
     pub fn sign_out_model(
@@ -819,7 +927,7 @@ impl SetupStore {
     ) -> Result<ModelSetupState, SetupError> {
         let _access = self.access.lock().map_err(|_| unavailable())?;
         let root = self.root.as_deref().ok_or_else(unavailable)?;
-        let _owner = model_owner(root)?;
+        let _owners = self.mutation_owner(root, true)?;
         if installation.is_nil() {
             return Err(unavailable());
         }
@@ -844,10 +952,10 @@ impl SetupStore {
                         }
                     }
                 }
-                return self.finish_sign_out(root, &mut b, Some(client), store);
+                return self.finish_sign_out(root, &mut b, Some(client), store, &_owners.0);
             }
         }
-        self.finish_sign_out(root, &mut b, None, store)
+        self.finish_sign_out(root, &mut b, None, store, &_owners.0)
     }
     fn finish_sign_out(
         &self,
@@ -855,7 +963,11 @@ impl SetupStore {
         b: &mut Binding,
         client: Option<&mut VmClient>,
         store: &impl CredentialStore,
+        upgrade: &crate::workspace_upgrade::WorkspaceUpgrade,
     ) -> Result<ModelSetupState, SetupError> {
+        upgrade
+            .guard_model(Some(b.slot), true)
+            .map_err(|_| unavailable())?;
         if !matches!(b.phase, Phase::Storing | Phase::Stored | Phase::Cleared) {
             let client = client.ok_or_else(unavailable)?;
             if b.nonce != Some(client.boot_nonce()) {

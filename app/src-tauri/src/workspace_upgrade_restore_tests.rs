@@ -103,7 +103,7 @@ fn restore_preserves_complete_a_and_b_and_current_b_metadata_without_booting_eit
         assert_eq!(archived.account, Some(account_b));
         assert_eq!(owner.recover().unwrap(), UpgradeStatus::Restored);
         assert!(owner.restore(id).is_err());
-        assert!(admit(&root).is_err()); // Still unexposed pending credential guards.
+        assert!(admit(&s.data, &root).is_err()); // Restored A is unsupported on this app.
     }
 }
 #[test]
@@ -377,7 +377,7 @@ fn fresh_c_archive_interruption_keeps_admission_blocked_and_retries_idempotently
                 );
                 let owner = WorkspaceUpgrade::open(&s.data, &s.local).unwrap();
                 assert_eq!(owner.recover().unwrap(), UpgradeStatus::Restored);
-                assert!(admit(&s.local.join("local-vm-v1")).is_err());
+                assert!(admit(&s.data, &s.local.join("local-vm-v1")).is_err());
             } else {
                 assert_eq!(s.replace(None).unwrap(), UpgradeStatus::Fresh);
             }

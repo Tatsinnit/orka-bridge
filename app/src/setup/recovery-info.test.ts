@@ -14,14 +14,14 @@ test('workspace metadata only accepts finite categories and at most four unsigne
 test('cause and operation select plain copy without interpreting diagnostics', () => {
   const denied = workspaceRecovery(failure('permission'));
   expect(denied.summary).toContain('does not have permission');
-  expect(denied.heading).toBe("The local cluster couldn't start");
+  expect(denied.heading).toBe("The workspace couldn't start");
   const download = workspaceRecovery(failure('network', 'download'));
-  expect(download.heading).toBe("The local cluster couldn't be downloaded");
+  expect(download.heading).toBe("The workspace couldn't be downloaded");
   expect(download.preservation).toContain('Your agent files are kept');
   expect(download.preservation).not.toContain('What you downloaded is kept');
   expect(workspaceRecovery(failure('preparation', 'prepare')).preservation).toContain('existing cluster and agent files are kept');
   expect(workspaceRecovery(failure('stopUnconfirmed', 'stop')).retryBlocked).toBe(true);
-  expect(workspaceRecovery().summary).toContain("couldn't determine");
+  expect(workspaceRecovery().summary).toContain("Your workspace didn't start");
 });
 
 test.each(['workspaceUpdateRequired', 'workspaceVersionUnsupported'] as const)('binding refusal %s stays distinct from a corrupt download', cause => {
@@ -38,7 +38,7 @@ test.each(['workspaceUpdateRequired', 'workspaceVersionUnsupported'] as const)('
 test('copied help is fixed labels and accepted codes, not a free-form summary or diagnostic', () => {
   const info = workspaceRecovery(failure('permission', 'start', [5]));
   const copied = helpDetails(info, [5]);
-  expect(copied).toContain('Operation: Starting the local cluster');
+  expect(copied).toContain('Operation: Starting the workspace');
   expect(copied).toContain('Category: permission');
   expect(copied).toContain('OS code: 5');
   expect(copied).not.toContain(info.summary);

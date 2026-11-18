@@ -82,7 +82,8 @@ test('an unused Send has no card or Team cluster heading; its entry remains on C
   const send = await screen.findByRole('region', { name: 'Send and cluster tests' });
   await waitFor(() => expect(document.activeElement).toBe(send));
   expect(screen.getByRole('button', { name: 'Agent' }).getAttribute('aria-pressed')).toBe('true');
-  expect(screen.getByText('Team clusters are early in this preview.')).toBeTruthy();
+  expect(screen.queryByText('Team clusters are early in this preview.')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Choose a cluster' }).className).toContain('primary');
   const action = screen.getByRole('button', { name: 'Send and run tests' });
   expect(action.hasAttribute('disabled')).toBe(true);
   expect(screen.getByText('Choose a cluster and AI connection in Clusters first')).toBeTruthy();

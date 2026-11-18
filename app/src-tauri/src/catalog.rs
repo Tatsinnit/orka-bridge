@@ -14,6 +14,27 @@ pub const IMAGE_BYTES: Option<u64> = if cfg!(all(target_os = "macos", target_arc
     None
 };
 
+/// Image payload only: compressed OS plus the direct-boot files, not installed disk capacity.
+#[cfg(any(test, not(debug_assertions)))]
+pub(crate) fn image_download_bytes(
+    target: crate::runtime::image_types::ImageTarget,
+) -> Option<u64> {
+    use crate::runtime::image_types::ImageTarget;
+    let manifest = match target {
+        ImageTarget::MacosArm64 => {
+            include_bytes!("../../../images/release/macos-arm64.json").as_slice()
+        }
+        ImageTarget::WindowsAmd64 => {
+            include_bytes!("../../../images/release/windows-amd64.json").as_slice()
+        }
+    };
+    let value: serde_json::Value = serde_json::from_slice(manifest).ok()?;
+    value["artifact"]["compressedBytes"]
+        .as_u64()?
+        .checked_add(value["directBoot"]["kernel"]["bytes"].as_u64()?)?
+        .checked_add(value["directBoot"]["initrd"]["bytes"].as_u64()?)
+}
+
 /// Only connection contention is transient; guest and binding failures need explicit refresh.
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

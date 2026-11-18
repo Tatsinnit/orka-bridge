@@ -140,7 +140,7 @@ test('independent catalog failures and empty lists do not fall back to static in
   expect(screen.getByText('No tools listed by this cluster.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: /Read a file/ })).toBeNull();
   view.rerender(<AgentParts source={source} readOnly={false} catalog={{ ...catalog, models: { state: 'ready', items: [] }, tools: { state: 'unavailable' } }} onChange={() => {}} />);
-  expect(screen.getByText('No models listed by the local cluster.')).toBeTruthy();
+  expect(screen.getByText('No models listed by the workspace.')).toBeTruthy();
 });
 test('inline soul and digest publish together, and reference fields never switch source', async () => {
   const changed = vi.fn(); const user = userEvent.setup();
@@ -215,15 +215,13 @@ test('a failed catalog can be refreshed without changing the file', async () => 
   await screen.findByRole('option', { name: 'listed' });
   expect((screen.getByRole('combobox', { name: 'It thinks with' }) as HTMLSelectElement).value).toBe('unlisted');
 });
-test('explicit Stop invalidates catalog before the stop reply, retaining the editor', async () => {
+test('workspace loss invalidates catalog and waits for startup without freezing the editor', async () => {
   vi.stubGlobal('isTauri', true); localStorage.setItem('bridge.welcomeSeen.v1', '1');
-  let finish!: (value: unknown) => void;
   const ready = { selected: 'localVm', localVm: 'ready', model: 'available', localVmError: null };
   let current = ready;
   mockIPC(command => {
     if (command === 'setup_status') return current;
     if (command === 'setup_connect_model') return { ready: true };
-    if (command === 'setup_cancel_local') return new Promise(resolve => { finish = resolve; });
     if (command === 'workspace_catalog') return catalog;
     if (command === 'setup_example') return { agent: source, tests: 'Checks' };
     if (command === 'agent_open') return { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', name: 'web-reader', agent: source, tests: 'Checks' };
@@ -232,18 +230,18 @@ test('explicit Stop invalidates catalog before the stop reply, retaining the edi
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await within(screen.getByRole('region', { name: 'Connect the AI' })).findByText('Connected');
-  await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
   await screen.findByRole('option', { name: 'listed' });
-  await user.click(screen.getByRole('button', { name: /Clusters/ }));
-  await user.click(screen.getByRole('button', { name: 'Stop the local cluster' }));
-  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
+  current = { ...ready, localVm: 'starting', model: 'locked' };
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  await screen.findByRole('group', { name: 'Run tests: Waiting for the workspace to start.' });
   // Designer stays mounted under the inactive page. It must not retain old choices.
   expect(document.querySelector('option[value="listed"]')).toBeNull();
   expect(document.querySelector('.instructions-editor')?.textContent).toBe('Role only.\n');
-  await act(async () => { current = { ...ready, localVm: 'cancelled', model: 'locked' }; finish(current); });
-  expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Designer' }));
   expect((screen.getByRole('textbox', { name: 'Instructions' }) as HTMLTextAreaElement).disabled).toBe(false);
+  expect((screen.getByRole('button', { name: 'Run tests' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Chat' }));
+  expect(screen.getAllByText('Waiting for the workspace to start.').length).toBeGreaterThan(0);
 });
 test('workspace generation invalidates a late catalog without losing the owned draft', async () => {
   const pending: ((value: unknown) => void)[] = []; vi.stubGlobal('isTauri', true);

@@ -6,7 +6,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import Setup from './SetupHarness';
 import App from '../App';
 
-const requirements = { memoryBytes: 6442450944, imageBytes: 3651994962, stateDiskBytes: 34359738368 };
+const requirements = { memoryBytes: 6442450944, imageBytes: 3651994962, stateDiskBytes: 34359738368, downloadBytes: null };
 const ready = { platform: 'windows', virtualization: 'ready', memory: 'ready', installedMemoryBytes: 8589934592, requiredMemoryBytes: 6442450944 };
 async function native(preflight: unknown = ready, integrated = true, onPlace = vi.fn()) {
   vi.stubGlobal('isTauri', true);
@@ -89,38 +89,33 @@ test('returning to local while its check is pending cannot start early or accept
   expect(onPlace).not.toHaveBeenCalled();
 });
 
-test('insufficient installed memory blocks preparation, explains RAM, and can be rechecked without starting', async () => {
-  const { ipc, update } = await native({ ...ready, memory: 'insufficient', installedMemoryBytes: 4294967296 });
+test('insufficient installed memory blocks preparation and offers the cluster route, not a futile recheck', async () => {
+  const { ipc } = await native({ ...ready, memory: 'insufficient', installedMemoryBytes: 4294967296 });
   const user = userEvent.setup();
   const panel = await screen.findByRole('region', { name: 'Computer requirements' });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true));
   const memory = within(panel).getByRole('region', { name: 'Installed memory' });
-  await waitFor(() => expect(memory.textContent).toContain('about 4.3 GB installed; about 6.4 GB needed'));
+  await waitFor(() => expect(within(memory).getByRole('alert').textContent).toBe('This computer has 4.3 GB of memory; Bridge needs 6.4 GB.'));
   await user.click(within(memory).getByRole('button', { name: 'About this check' }));
-  expect(memory.textContent).toMatch(/Closing apps does not increase installed memory/);
-  expect(memory.textContent).toMatch(/cluster/);
+  expect(memory.textContent).toMatch(/installed RAM, not currently free memory/);
   expect(ipc.mock.calls.some(([c]) => c === 'setup_select_local')).toBe(false);
-  expect(within(panel).getByRole('status').textContent).toBe('Fix the computer requirements above before continuing.');
+  expect(within(panel).getByRole('status').textContent).toBe('');
   expect(memory.querySelector('.status-failed')).toBeTruthy();
-  update(ready);
-  await user.click(screen.getByRole('button', { name: 'Check again' }));
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false));
-  expect(within(panel).getByRole('status').textContent).toBe('These checks do not change this computer.');
-  expect(document.activeElement).toBe(within(panel).getByRole('status'));
-  expect(within(panel).getByRole('status').className).toBe('muted');
-  expect(within(panel).queryByRole('region', { name: 'Installed memory' })).toBeNull();
-  expect(ipc.mock.calls.filter(([c]) => c === 'setup_preflight')).toHaveLength(2);
-  expect(ipc.mock.calls.some(([c]) => c === 'setup_select_local')).toBe(false);
+  expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Copy details for help' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'Continue' }));
-  expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
-  expect(ipc.mock.calls.filter(([c]) => c === 'setup_select_local')).toHaveLength(1);
+  expect(ipc.mock.calls.some(([c]) => c === 'setup_select_local')).toBe(false);
+  await user.click(screen.getByRole('button', { name: 'Use a cluster instead' }));
+  expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false);
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+  expect(await screen.findByLabelText('kubectl context')).toBeTruthy();
+  expect(ipc.mock.calls.some(([c]) => c === 'setup_select_local')).toBe(false);
 });
 
-test('rounded RAM values are approximate and the memory disclosure preserves exact failed amounts', async () => {
+test('rounded-equal RAM values retain exact failed amounts in the memory disclosure', async () => {
   const { ipc } = await native({ ...ready, memory: 'insufficient', installedMemoryBytes: 6400000000 });
   const memory = await screen.findByRole('region', { name: 'Installed memory' });
-  await waitFor(() => expect(memory.textContent).toContain('about 6.4 GB installed; about 6.4 GB needed'));
-  expect(screen.getByText(/about 6.4 GB of installed memory/)).toBeTruthy();
+  await waitFor(() => expect(within(memory).getByRole('alert').textContent).toBe('Not enough memory. This computer has 6.4 GB of memory; Bridge needs 6.4 GB.'));
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
   await userEvent.setup().click(within(memory).getByRole('button', { name: 'About this check' }));
   expect(memory.textContent).toContain(`Required: ${requirements.memoryBytes.toLocaleString()} bytes.`);
@@ -153,7 +148,7 @@ test('virtualization failure offers native fixed-topic help, sanitized copy, and
 
 test.each([null, { ...ready, extra: 'SECRET_MARKER' }, { ...ready, requiredMemoryBytes: 1 }, { ...ready, installedMemoryBytes: -1 }, { ...ready, memory: 'SECRET_MARKER' }])('unreadable observations settle to unknown and defer to native launch: %j', async value => {
   const { ipc } = await native(value);
-  expect(await screen.findByText("Bridge couldn't check this computer yet. It checks again when the workspace starts.")).toBeTruthy();
+  expect(await screen.findByText("Bridge couldn't check virtualization or memory yet. It checks again when the workspace starts.")).toBeTruthy();
   await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false));
   expect(document.body.textContent).not.toContain('SECRET_MARKER');
   const next = screen.getByRole('button', { name: 'Continue' });
@@ -162,9 +157,9 @@ test.each([null, { ...ready, extra: 'SECRET_MARKER' }, { ...ready, requiredMemor
   expect(screen.queryByRole('button', { name: 'Copy details for help' })).toBeNull();
   expect(screen.queryByText('Not checked')).toBeNull();
   for (const name of ['Virtualization', 'Installed memory']) expect(screen.queryByRole('region', { name })).toBeNull();
-  expect(screen.getByText("Bridge couldn't check this computer yet. It checks again when the workspace starts.").closest('.workspace-option')?.querySelector('#workspace-local')).toBeTruthy();
+  expect(screen.getByText("Bridge couldn't check virtualization or memory yet. It checks again when the workspace starts.").closest('.workspace-option')?.querySelector('#workspace-local')).toBeTruthy();
   await userEvent.setup().click(next);
-  expect(await screen.findByText('Starting the local cluster…')).toBeTruthy();
+  expect(await screen.findByText('Starting the workspace…')).toBeTruthy();
   expect(ipc.mock.calls.filter(([c]) => c === 'setup_select_local')).toHaveLength(1);
 });
 
@@ -176,7 +171,10 @@ test.each([
   const row = await screen.findByRole('region', { name: failed });
   expect(row.querySelector('.status-failed')).toBeTruthy();
   expect(screen.queryByRole('region', { name: failed === 'Virtualization' ? 'Installed memory' : 'Virtualization' })).toBeNull();
-  expect(screen.getAllByText("Bridge couldn't check this computer yet. It checks again when the workspace starts.")).toHaveLength(1);
+  expect(screen.getByText(`Bridge couldn't check ${virtualization === 'unknown' ? 'virtualization' : 'memory'} yet. It checks again when the workspace starts.`)).toBeTruthy();
+  expect(screen.queryByText(/Fix the computer requirements|couldn't check this computer/)).toBeNull();
+  expect(!!screen.queryByRole('button', { name: 'Check again' })).toBe(virtualization === 'disabled');
+  expect(!!screen.queryByRole('button', { name: 'Copy details for help' })).toBe(virtualization === 'disabled');
   expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(true);
 });
 
@@ -206,7 +204,7 @@ test('Mac unsupported virtualization explains platform support without Windows h
 
 test('unavailable builds never query or claim host readiness', async () => {
   const { ipc } = await native(ready, false);
-  await screen.findByText(/Local cluster setup is not included/);
+  await screen.findByText(/Workspace setup is not included/);
   expect(screen.queryByRole('region', { name: 'Computer requirements' })).toBeNull();
   expect(ipc.mock.calls.some(([c]) => c === 'setup_preflight')).toBe(false);
 });

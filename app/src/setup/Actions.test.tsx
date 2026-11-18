@@ -30,9 +30,9 @@ test('AI connection is the only next primary and its prerequisite is visible bef
   expect(screen.getByText(/GitHub CLI must be installed and signed in/)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Open example' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Change where agents run' })).toBeNull();
-  expect(screen.getByRole('button', { name: 'Stop the local cluster' }).className).toBe('button button-quiet');
+  expect(screen.queryByRole('button', { name: /Stop.*workspace/ })).toBeNull();
   await user.click(connect);
-  expect(await screen.findByText('Connected', { selector: '.model-state .pill' })).toBeTruthy();
+  expect(await screen.findByText('Connected', { selector: '.steps-head .pill' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Open your first agent' }).className).toBe('button button-primary');
   expect(document.body.textContent).not.toMatch(/guest|\bVM\b|inference/);
   expect(screen.getByText('gpt-5.6-terra', { selector: 'code' })).toBeTruthy();
@@ -41,6 +41,7 @@ test('AI connection is the only next primary and its prerequisite is visible bef
 });
 
 test.each(['Run it again', 'See what it answered'])('%s selects this computer before its guarded local handoff, without starting a VM', async action => {
+  localStorage.setItem('bridge.firstTest.v1', 'pending');
   const ipc = native(); const user = userEvent.setup(); const calls: string[] = [];
   render(<Setup place={{ kind: 'cluster' }} firstCheck="stale" firstTestResult={{ failed: 0 }}
     onPlace={place => calls.push(place.kind)} onOpenExample={() => calls.push('Designer')} />);
@@ -53,16 +54,13 @@ test.each(['Run it again', 'See what it answered'])('%s selects this computer be
   expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_select_local');
 });
 
-test('the restored local page owns Stop and stays restartable even without an old welcome preference', async () => {
+test('the restored local page has no normal workspace action even without an old welcome preference', async () => {
   localStorage.removeItem('bridge.welcomeSeen.v1');
-  const ipc = native(); const user = userEvent.setup(); render(<App />); await openLocalSetup();
-  await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
-  const stop = await screen.findByRole('button', { name: 'Stop the local cluster' });
-  expect(stop.className).toBe('button button-quiet');
-  await user.click(stop);
-  await user.click(screen.getByRole('button', { name: 'Stop workspace' }));
-  expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy();
-  expect(ipc.mock.calls.filter(([command]) => command === 'setup_cancel_local')).toHaveLength(1);
+  localStorage.setItem('bridge.firstTest.v1', 'attempted');
+  const ipc = native(); render(<App />); await openLocalSetup();
+  expect(await screen.findByRole('region', { name: 'Workspace' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /Stop.*workspace|^Start$|Restart workspace/ })).toBeNull();
+  expect(ipc.mock.calls.some(([command]) => ['setup_cancel_local', 'setup_select_local', 'setup_change_local'].includes(command))).toBe(false);
 });
 
 test('cluster picking is explicitly separate from stopping and does not stop the local workspace', async () => {

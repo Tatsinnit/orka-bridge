@@ -1,188 +1,180 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { createRef } from 'react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import App from '../App';
-import { setupView } from './progress';
-import Setup, { type LocalClusterControl } from './Setup';
 import type { SetupStatus } from './state';
 import { openLocalSetup } from './test-navigation';
 
 let status: SetupStatus;
-let holdStop: (() => void) | undefined;
-let holdStart: (() => void) | undefined;
 let unreadable = false;
 let agentName = 'my-agent';
-let agentsReadable = true;
+let quitFails = false;
+let helpFails = false;
+let helpPending: Promise<void> | null = null;
 const ipc = vi.fn((command: string) => {
   if (command === 'setup_status') { if (unreadable) throw Error('unreadable'); return status; }
   if (command === 'setup_requirements') return null;
-  if (command === 'setup_cancel_local') {
-    return new Promise(resolve => { holdStop = () => { status = { selected: 'localVm', localVm: 'cancelled', model: 'locked' }; resolve(status); }; });
-  }
-  if (command === 'setup_select_local') {
-    return new Promise(resolve => { holdStart = () => { status = { selected: 'localVm', localVm: 'starting', model: 'locked', workspaceProgress: { phase: 'starting', elapsedMs: 18000, bytes: null, totalBytes: null, remainingMs: null } }; resolve(status); }; });
-  }
-  if (command === 'agents_list') { if (!agentsReadable) throw Error('unreadable'); return [{ id: '00000000-0000-4000-8000-000000000001', name: agentName, path: '/agents/my-agent.agent.md', available: true }]; }
+  if (command === 'setup_select_local') return status = { selected: 'localVm', localVm: 'starting', model: 'locked', workspaceProgress: { phase: 'starting', elapsedMs: 18000, bytes: null, totalBytes: null, remainingMs: null } };
+  if (command === 'setup_open_help') { if (helpPending) return helpPending; if (helpFails) throw Error('unavailable'); return; }
+  if (command === 'quit_bridge') { if (quitFails) throw Error('unavailable'); return; }
+  if (command === 'agents_list') return [{ id: '00000000-0000-4000-8000-000000000001', name: agentName, path: '/agents/my-agent.agent.md', available: true }];
   if (command === 'agent_creation_root') return '/agents';
   if (command === 'cluster_contexts') return [];
   throw Error('Unexpected command: ' + command);
 });
 beforeEach(() => {
   vi.stubGlobal('isTauri', true); localStorage.setItem('bridge.welcomeSeen.v1', '1');
+  localStorage.setItem('bridge.firstTest.v1', 'attempted');
   status = { selected: 'localVm', localVm: 'ready', model: 'available' };
-  agentName = 'my-agent'; agentsReadable = true;
-  unreadable = false; holdStop = undefined; holdStart = undefined; ipc.mockClear(); mockIPC(ipc);
+  agentName = 'my-agent'; unreadable = false; quitFails = false; helpFails = false; helpPending = null; ipc.mockClear(); mockIPC(ipc);
 });
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 
-async function requestStop() {
-  const user = userEvent.setup(); render(<App />); await openLocalSetup(user);
-  await user.click(await screen.findByRole('button', { name: 'Stop the local cluster' }));
-  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_cancel_local');
-  await user.click(await screen.findByRole('button', { name: 'Stop workspace' }));
-  return user;
-}
-async function stop() {
-  const user = await requestStop();
-  await act(async () => holdStop?.());
-  await screen.findByRole('button', { name: 'Start' });
-  return user;
-}
+async function open() { const user = userEvent.setup(); render(<App />); await openLocalSetup(user); return user; }
+async function observe(value: SetupStatus) { status = value; await act(async () => window.dispatchEvent(new Event('focus'))); }
 
-test.each(['starting', 'ready', 'failed'] as const)('the local place keeps its title while %s', async localVm => {
-  status = { selected: 'localVm', localVm, model: localVm === 'ready' ? 'available' : 'locked' };
-  render(<App />); await openLocalSetup();
+test('a returning ready workspace has no lifecycle action and keeps its files beside the AI', async () => {
+  const user = await open();
+  const card = await screen.findByRole('region', { name: 'Workspace' });
+  expect(within(card).getByText('Ready', { selector: '.pill' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^(Stop|Start)( the workspace)?$/ })).toBeNull();
+  expect(await within(card).findByText('my-agent')).toBeTruthy();
+  expect(within(card).getByText('/agents')).toBeTruthy();
+  expect(card.closest('.workspace-setup-grid')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'AI', level: 2 })).toBeTruthy();
+  await user.click(within(card).getByRole('button', { name: "What's inside" }));
+  expect(within(card).getByText(/Uses about 4 GB of memory while Bridge is open. Quit Bridge to free it./)).toBeTruthy();
+  expect(screen.queryByRole('radio', { name: 'On this computer' })).toBeNull();
+});
+
+test('reopening shows observed Starting and elapsed time without another Start command', async () => {
+  status = { selected: 'localVm', localVm: 'starting', model: 'locked', workspaceProgress: { phase: 'starting', elapsedMs: 18000, bytes: null, totalBytes: null, remainingMs: null } };
+  await open();
+  const card = await screen.findByRole('region', { name: 'Workspace' });
+  expect(within(card).getByText('Starting', { selector: '.pill' })).toBeTruthy();
+  expect(within(card).getByText('0:18 so far')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'AI', level: 2 }).closest('.card')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Start$/ })).toBeNull();
+  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_select_local');
+  await observe({ selected: 'localVm', localVm: 'ready', model: 'available' });
+  expect(await within(card).findByText('Ready', { selector: '.pill' })).toBeTruthy();
+});
+
+test('the saved workspace awaits native auto-start without flashing a stopped action', async () => {
+  status = { selected: 'localVm', localVm: 'idle', model: 'locked' };
+  await open();
+  const card = await screen.findByRole('region', { name: 'Workspace' });
+  expect(within(card).getByText('Starting', { selector: '.pill' })).toBeTruthy();
+  expect(within(card).queryByRole('button', { name: /Start|Restart/ })).toBeNull();
+  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_select_local');
+});
+
+test('an interrupted first setup remains setup after reopening', async () => {
+  localStorage.setItem('bridge.firstTest.v1', 'pending');
+  await open();
+  expect(screen.queryByRole('region', { name: 'Workspace' })).toBeNull();
+  expect(screen.getByText('Run your first agent')).toBeTruthy();
+});
+
+test.each(['failed', 'cancelled'] as const)('%s workspace restarts on This computer without arming another first test', async localVm => {
+  status = { selected: 'localVm', localVm, model: 'locked', ...(localVm === 'failed' ? { localVmError: 'retained diagnostic', workspaceFailure: { cause: 'services' as const, operation: 'start' as const, codes: [] } } : {}) };
+  const user = await open();
+  await user.click(await screen.findByRole('button', { name: 'Restart workspace' }));
+  expect(await screen.findByText('0:18 so far')).toBeTruthy();
   expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
-});
-
-test('Stop keeps This computer and native selection instead of first-run setup', async () => {
-  await stop();
-  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
-  expect(document.querySelector('.host-chip')?.textContent).toContain('This computer');
-  expect(document.querySelector('.host-chip')?.textContent).not.toContain('No cluster selected');
-  expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull();
-  expect(screen.queryByRole('radio')).toBeNull();
-  expect(screen.queryByRole('list', { name: 'Setup steps' })).toBeNull();
-  expect(screen.getByText('my-agent')).toBeTruthy();
-  expect(screen.getByText('/agents')).toBeTruthy();
-  expect(ipc.mock.calls.filter(([command]) => command === 'setup_cancel_local')).toHaveLength(1);
-  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_change_local');
-});
-
-test('the active Clusters tab opens Places without losing the stopped workspace or restarting it', async () => {
-  const user = await stop();
-  await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  const row = await screen.findByRole('region', { name: 'This computer' });
-  await user.click(within(row).getByRole('button', { name: 'Start' }));
-  expect(within(screen.getByRole('region', { name: 'Workspace' })).getByText('Stopped', { selector: '.pill' })).toBeTruthy();
-  expect(screen.queryByRole('list', { name: 'Setup steps' })).toBeNull();
-  expect(ipc.mock.calls.filter(([command]) => command === 'setup_cancel_local')).toHaveLength(1);
-  expect(ipc.mock.calls.filter(([command]) => ['setup_select_local', 'setup_change_local'].includes(command))).toHaveLength(0);
-});
-
-test('Stopping overrides the last ready snapshot and disables Start until acknowledged', async () => {
-  await requestStop();
-  const card = screen.getByRole('region', { name: 'Workspace' });
-  expect(within(card).getByText('Stopping', { selector: '.pill' })).toBeTruthy();
-  expect((within(card).getByRole('button', { name: 'Start' }) as HTMLButtonElement).disabled).toBe(true);
-  expect(document.querySelector('.status-bar')?.textContent).toContain('Workspace stopping');
-  expect(within(card).queryByText('Running', { selector: '.pill' })).toBeNull();
-});
-
-test('restart shows observed elapsed time without a bar and Cancel stays on This computer', async () => {
-  const user = await stop();
-  await user.click(screen.getByRole('button', { name: 'Start' }));
-  await act(async () => holdStart?.());
-  expect(await screen.findByText(/0:18/)).toBeTruthy();
-  expect(screen.queryByRole('progressbar')).toBeNull();
-  expect(document.querySelector('.status-bar')?.textContent).not.toContain('step');
   expect(localStorage.getItem('bridge.firstTest.v1')).not.toBe('pending');
-  await user.click(screen.getByRole('button', { name: 'Cancel' }));
-  await act(async () => holdStop?.());
-  expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy();
-  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
+  expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
 });
 
-test('returning mode survives navigation and start failure offers typed recovery on the place', async () => {
-  const user = await stop();
-  await user.click(screen.getByRole('button', { name: 'Overview' }));
-  await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
-  await user.click(screen.getByRole('button', { name: 'Start' }));
-  await act(async () => holdStart?.());
-  status = { selected: 'localVm', localVm: 'failed', model: 'locked', localVmError: 'retained diagnostic', workspaceFailure: { cause: 'services', operation: 'start', codes: [] } };
-  await act(async () => window.dispatchEvent(new Event('focus')));
-  expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy();
-  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
-  await user.click(screen.getByRole('button', { name: 'Show details' }));
-  expect(screen.getByText('retained diagnostic')).toBeTruthy();
+test('stop failure offers Quit Bridge through native cleanup and keeps a rejected quit retryable', async () => {
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', localVmError: 'private stop diagnostic', workspaceFailure: { cause: 'stopUnconfirmed', operation: 'stop', codes: [] } };
+  quitFails = true;
+  const user = await open();
+  const card = await screen.findByRole('region', { name: 'Workspace' });
+  expect(within(card).getByText("The workspace didn't stop.")).toBeTruthy();
+  expect(within(card).queryByRole('button', { name: /Restart|Try again|Start/ })).toBeNull();
+  const quit = within(card).getByRole('button', { name: 'Quit Bridge' });
+  expect(quit.classList.contains('button-primary')).toBe(true);
+  await user.click(quit);
+  expect(await within(card).findByRole('alert')).toBeTruthy();
+  expect((quit as HTMLButtonElement).disabled).toBe(false);
+  expect(ipc.mock.calls.filter(([command]) => command === 'quit_bridge')).toHaveLength(1);
+  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_select_local');
+  await user.click(within(card).getByRole('button', { name: 'Show details' }));
+  expect(within(card).getByText('private stop diagnostic')).toBeTruthy();
 });
 
-test('Designer emergency Stop uses the same preserving stop without another confirmation', async () => {
-  const ref = createRef<LocalClusterControl>();
-  render(<Setup ref={ref} onOpenExample={() => {}} />);
-  await openLocalSetup();
-  await act(async () => ref.current?.stop());
-  expect(ipc.mock.calls.map(([command]) => command)).toContain('setup_cancel_local');
-  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_change_local');
-  await act(async () => holdStop?.());
-  expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy();
-  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
+test('returning preflight failure keeps its specific remedy and help action', async () => {
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', preflightFailure: 'hypervisorUnavailable' };
+  const user = await open();
+  const card = await screen.findByRole('region', { name: 'Workspace' });
+  expect(within(card).getByText("Windows Hypervisor Platform isn't available.")).toBeTruthy();
+  expect(within(card).getByText('Enable Windows Hypervisor Platform in Windows features, restart, then try again.')).toBeTruthy();
+  await user.click(within(card).getByRole('button', { name: 'Show me how' }));
+  expect(ipc).toHaveBeenCalledWith('setup_open_help', { topic: 'hypervisor' });
 });
 
-test.each(['closed', 'failed'] as const)('terminal %s after Stop never offers an inert restart', async phase => {
-  await stop();
-  status = { selected: 'localVm', localVm: phase, model: 'locked', ...(phase === 'failed' ? { workspaceFailure: { cause: 'stopUnconfirmed' as const, operation: 'stop' as const, codes: [] } } : {}) };
-  await act(async () => window.dispatchEvent(new Event('focus')));
-  await screen.findAllByText(/Quit Bridge and reopen it/, { selector: 'p' });
-  expect(screen.queryByRole('button', { name: 'Start' })).toBeNull();
-  const retry = screen.queryByRole('button', { name: 'Try again' });
-  if (retry) expect((retry as HTMLButtonElement).disabled).toBe(true);
+test.each(['workspaceUpdateRequired', 'workspaceVersionUnsupported'] as const)('blocked %s restart explains the remedy without hover', async cause => {
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', workspaceFailure: { cause, operation: 'verify', codes: [] } };
+  await open();
+  const card = await screen.findByRole('region', { name: 'Workspace' });
+  expect(within(card).getByText('Open the matching Bridge version.', { selector: 'p' })).toBeTruthy();
+  expect((within(card).getByRole('button', { name: 'Restart workspace' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
-test('restart reaching ready keeps the place heading and requires an explicit AI connection', async () => {
-  const user = await stop();
-  await user.click(screen.getByRole('button', { name: 'Start' }));
-  await act(async () => holdStart?.());
-  status = { selected: 'localVm', localVm: 'ready', model: 'available' };
-  await act(async () => window.dispatchEvent(new Event('focus')));
-  expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy();
-  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('This computer');
-  expect(screen.getByRole('button', { name: 'Connect the AI' })).toBeTruthy();
-  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_connect_model');
-  expect(localStorage.getItem('bridge.firstTest.v1')).not.toBe('pending');
+test('unavailable integration keeps its explanation instead of promising startup', async () => {
+  status = { selected: 'localVm', localVm: 'notIntegrated', model: 'locked' };
+  await open();
+  expect(screen.queryByRole('region', { name: 'Workspace' })).toBeNull();
+  expect(screen.getByText('Workspace setup is not included in this build. Nothing will be downloaded or started.')).toBeTruthy();
 });
 
-test('Keep running returns keyboard focus to the Stop trigger', async () => {
-  const user = userEvent.setup(); render(<App />); await openLocalSetup(user);
-  const trigger = await screen.findByRole('button', { name: 'Stop the local cluster' });
-  await user.click(trigger);
-  await user.click(screen.getByRole('button', { name: 'Keep running' }));
-  expect(document.activeElement).toBe(trigger);
-  expect(ipc.mock.calls.map(([command]) => command)).not.toContain('setup_cancel_local');
+test('returning failure guidance names the offered restart and details controls', async () => {
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', workspaceFailure: { cause: 'services', operation: 'services', codes: [] } };
+  await open();
+  expect(screen.getByText('Press Restart workspace to restart the workspace. If it happens again, open Show details for help.')).toBeTruthy();
 });
 
-test.each([true, false])('returning from Designer refreshes saved agents, initially readable=%s', async initiallyReadable => {
-  agentsReadable = initiallyReadable;
-  const user = await stop();
-  await screen.findByText(initiallyReadable ? 'my-agent' : 'Agent list unavailable');
+test('a rejected help action does not leave a failure notice on a recovered workspace', async () => {
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', preflightFailure: 'hypervisorUnavailable' }; helpFails = true;
+  const user = await open();
+  await user.click(screen.getByRole('button', { name: 'Show me how' }));
+  expect(await screen.findByText("Couldn't open help. Open Show details to read the error.")).toBeTruthy();
+  await observe({ selected: 'localVm', localVm: 'ready', model: 'available' });
+  await within(screen.getByRole('region', { name: 'Workspace' })).findByText('Ready', { selector: '.pill' });
+  expect(screen.queryByText("Couldn't open help. Open Show details to read the error.")).toBeNull();
+  await observe({ selected: 'localVm', localVm: 'failed', model: 'locked', workspaceFailure: { cause: 'permission', operation: 'start', codes: [] } });
+  await within(screen.getByRole('region', { name: 'Workspace' })).findByText('Bridge does not have permission to start the workspace.');
+  expect(screen.queryByText("Couldn't open help. Open Show details to read the error.")).toBeNull();
+});
+
+test('a late help rejection cannot enter a newer failure episode', async () => {
+  let rejectHelp!: (reason: Error) => void;
+  helpPending = new Promise<void>((_, reject) => { rejectHelp = reject; });
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', preflightFailure: 'hypervisorUnavailable' };
+  const user = await open();
+  await user.click(screen.getByRole('button', { name: 'Show me how' }));
+  await observe({ selected: 'localVm', localVm: 'ready', model: 'available' });
+  await within(screen.getByRole('region', { name: 'Workspace' })).findByText('Ready', { selector: '.pill' });
+  await observe({ selected: 'localVm', localVm: 'failed', model: 'locked', workspaceFailure: { cause: 'permission', operation: 'start', codes: [] } });
+  await within(screen.getByRole('region', { name: 'Workspace' })).findByText('Bridge does not have permission to start the workspace.');
+  await act(async () => { rejectHelp(Error('old help unavailable')); });
+  expect(screen.queryByText("Couldn't open help. Open Show details to read the error.")).toBeNull();
+});
+
+test('returning to This computer refreshes saved agents', async () => {
+  const user = await open(); await screen.findByText('my-agent');
   await user.click(screen.getByRole('button', { name: 'Designer' }));
-  agentName = 'new-agent'; agentsReadable = true;
+  agentName = 'new-agent';
   await user.click(screen.getByRole('button', { name: 'Clusters' }));
   expect(await screen.findByText('new-agent')).toBeTruthy();
-  expect(within(screen.getByRole('region', { name: 'Workspace' })).queryByText('my-agent')).toBeNull();
 });
 
-test('terminal closed is Manage, not a Start promise on the Places row', () => {
-  expect(setupView({ selected: 'localVm', localVm: 'closed', model: 'locked' }, { workspace: true }).action).toBe('Manage');
-  expect(setupView({ selected: 'localVm', localVm: 'cancelled', model: 'locked' }, { workspace: true }).action).toBe('Start');
-});
-
-test('unreadable stopped status cannot authorize a restart', async () => {
-  await stop(); unreadable = true;
+test('unreadable workspace status cannot authorize a restart', async () => {
+  status = { selected: 'localVm', localVm: 'failed', model: 'locked', workspaceFailure: { cause: 'services', operation: 'start', codes: [] } };
+  await open(); unreadable = true;
   await act(async () => window.dispatchEvent(new Event('focus')));
   await screen.findByText('The setup choice could not be read or saved.');
-  expect((screen.getByRole('button', { name: 'Start' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Restart workspace' }) as HTMLButtonElement).disabled).toBe(true);
 });

@@ -2,7 +2,6 @@
 .workspace-steps { padding: var(--space-4); }
 .setup-column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .setup-column:empty { display: none; }
-.returning-workspace-stack { display: grid; gap: 16px; max-width: 680px; }
 .returning-workspace { padding: 16px; }
 .returning-workspace > p { margin: 8px 0; }
 .workspace-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -11,8 +10,6 @@
 .workspace-facts dt { color: var(--color-text-secondary); }
 .workspace-facts dd { margin: 0; overflow-wrap: anywhere; }
 .returning-workspace > .disclosure { border-top: 1px solid var(--color-border); padding-top: 12px; }
-.workspace-stop-confirm { padding: 16px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-row); }
-.workspace-stop-confirm legend { font: var(--type-card); padding: 0 4px; }
 .steps-four { list-style: none; padding: 0; margin: 0; }
 .steps-four > li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--color-border); }
 .steps-four > li:first-child { padding-top: 0; }
@@ -31,7 +28,12 @@
 .infra-bar.indeterminate > span { position: absolute; inset: 0 auto 0 0; width: 35%; animation: workspace-sweep 1.5s linear infinite; }
 @keyframes workspace-sweep { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
 @media (prefers-reduced-motion: reduce) { .infra-bar > span { transition: none; } .infra-bar.indeterminate > span { animation: none; transform: translateX(95%); } }
-.model-recovery-slot:empty, .setup-model-slot:empty { display: none; }
+.model-recovery-slot:empty, .model-choice-slot:empty, .setup-model-slot:empty { display: none; }
+.model-inline-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--color-text-secondary); }
+.model-inline-head .button { margin-left: auto; }
+.model-choice-slot .model-choice { margin: 8px 0; }
+.setup-model .steps-head h2 { margin: 0; }
+.setup-model > div[hidden] { display: none; }
 .workspace-setup-failed .setup-side:has(.setup-model-slot:empty) { display: none; }
 .model-recovery { min-width: 0; }
 .model-recovery h2, .model-recovery h3 { font: var(--type-card); margin: 0 0 8px; }
@@ -62,7 +64,7 @@
 .workspace-fallback .workspace-tip { pointer-events: none; white-space: normal; max-width: 100%; }
 .workspace-failure > [role="status"]:empty { display: none; }
 .workspace-failure > [role="status"] { margin: 12px 0 0; }
-.workspace-meet { padding: 24px; }
+.workspace-meet { padding: 16px; }
 .workspace-kicker { color: var(--color-text-secondary); font-size: var(--size-body); }
 .workspace-meet h2 { margin: 8px 0; font: var(--type-card); }
 .workspace-meet .meet-description { font: var(--type-body); }
@@ -80,10 +82,16 @@
 .first-pass > p { font: var(--type-body); max-width: 65ch; }
 .first-pass .test-answer { border: 0; padding: 16px 0; }
 .first-pass .reading { overflow-wrap: anywhere; }
-.workspace-management { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--color-border); }
+@media (min-width: 820px) {
+  .first-pass { max-width: 1060px; padding: 16px 0; }
+  .first-pass > .status-icon { width: 24px; height: 24px; margin-bottom: 12px; }
+  .first-pass > p { margin-block: 12px; }
+  .first-pass-stories { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+}
 .workspace-tool { margin: 0 8px 8px 0; }
-.workspace-change { flex-basis: 100%; padding: 16px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-row); background: var(--color-chrome); }
+.workspace-change { flex-basis: 100%; min-width: 0; margin: 0; padding: 16px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-row); background: var(--color-chrome); }
 .workspace-change h2 { font: var(--type-card); margin-top: 0; }
+.workspace-change legend { font: var(--type-card); padding: 0 4px; }
 @media (max-width: 820px) {
   .setup.workspace-setup-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .workspace-setup-grid > .setup-column { display: contents; }

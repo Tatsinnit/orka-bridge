@@ -35,7 +35,7 @@ test.each([
   ['preparation', "couldn't be prepared", undefined],
   ['guestConnection', "didn't finish starting", undefined],
   ['services', "services couldn't start", undefined],
-  ['unknown', "couldn't determine", undefined],
+  ['unknown', "Your workspace didn't start. Your agents are safe.", undefined],
 ] as const)('finite %s cause offers recovery and a way out', async (cause, summary, topic) => {
   const { ipc } = native({ cause, operation: cause === 'network' ? 'download' : 'start', codes: [] });
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
@@ -55,7 +55,7 @@ test.each([
 test('download heading and preservation do not promise rejected bytes are kept', async () => {
   native({ cause: 'network', operation: 'download', codes: [] }); render(<App />); await openLocalSetup();
   expect(await screen.findByRole('heading', { level: 1, name: 'This computer' })).toBeTruthy();
-  expect(screen.getByText("The local cluster couldn't be downloaded")).toBeTruthy();
+  expect(screen.getByText("The workspace couldn't be downloaded")).toBeTruthy();
   expect(screen.getByRole('alert').textContent).toContain('Your agent files are kept. Try again to continue setup.');
 });
 
@@ -64,7 +64,7 @@ test('keyboard retry calls native selection once and returns to progress', async
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   const retry = await screen.findByRole('button', { name: 'Try again' });
   retry.focus(); await user.keyboard('{Enter}{Enter}');
-  await screen.findByRole('progressbar', { name: 'Local cluster setup progress' });
+  await screen.findByRole('progressbar', { name: 'Workspace setup progress' });
   expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
   expect(screen.queryByRole('alert')).toBeNull();
 });
@@ -82,7 +82,7 @@ test('copy includes only native finite metadata, ignoring misleading raw diagnos
 test('raw text can neither classify the error nor supply copied OS codes', async () => {
   native(undefined, 'virtualizationDisabled NoSpace code: 5 startupStopFailed');
   const user = userEvent.setup(); const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(); render(<App />); await openLocalSetup();
-  expect((await screen.findByRole('alert')).textContent).toContain("couldn't determine");
+  expect((await screen.findByRole('alert')).textContent).toContain("Your workspace didn't start. Your agents are safe.");
   await user.click(screen.getByRole('button', { name: 'Copy details for help' }));
   expect(copy.mock.calls[0][0]).not.toContain('code: 5');
 });
@@ -138,7 +138,7 @@ test('sign-in removal stays in progress in the setup step and shell', async () =
   await screen.findByRole('alert');
   await user.click(screen.getByRole('button', { name: 'Remove sign-in' }));
   await user.click(within(screen.getByRole('group', { name: 'Remove sign-in confirmation' })).getByRole('button', { name: 'Remove sign-in' }));
-  const step = within(screen.getByRole('list', { name: 'Setup steps' })).getByText('Choose the AI your agent uses').closest('li')!;
+  const step = within(screen.getByRole('list', { name: 'Setup steps' })).getByText('Connect the AI', { selector: 'li b' }).closest('li')!;
   expect(step.textContent).toContain('Removing sign-in');
   expect(step.querySelector('.status-running')).toBeTruthy();
   expect(screen.getByRole('contentinfo').textContent).toContain('Removing the AI sign-in');
@@ -149,10 +149,10 @@ test('AI failure marks its setup step and every shell status without losing the 
   const user = userEvent.setup(); render(<App />); await openLocalSetup();
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Bridge could not confirm the AI connection'));
-  expect(screen.getByText('Needs attention').closest('li')?.className).toBe('step-failed');
-  expect(within(screen.getByRole('navigation')).getByText('AI needs attention')).toBeTruthy();
-  expect(screen.getByRole('contentinfo').textContent).toContain('AI needs attention');
-  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is running on this computer.');
+  expect(screen.getByText("Couldn't start").closest('li')?.className).toBe('step-failed');
+  expect(within(screen.getByRole('navigation')).getByText('Setting up, step 3 of 4')).toBeTruthy();
+  expect(screen.getByRole('contentinfo').textContent).toContain('AI not connected');
+  expect(document.querySelector('.host-chip')?.getAttribute('title')).toBe('The workspace is ready on this computer.');
   expect(document.querySelector('.host-chip .live-dot')?.className).toContain('ready');
   expect(screen.getByRole('alert').textContent).toContain('Your workspace and agent files are kept');
 });
