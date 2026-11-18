@@ -1,6 +1,6 @@
 import { openLocalSetup } from '../setup/test-navigation';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import Example from '../designer/Example';
@@ -17,7 +17,7 @@ const report = { verdict: 'failed', cases: [{ id: 'reads-the-page', question: 'W
 const running = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', id: '00000000-0000-4000-8000-000000000004', targetId: target.id, providerId: provider.id, targetName: target.context_name, source, model: 'literal-model', agentName: 'bridge-run-frozen', state: 'running', stage: 'observe', acknowledged: [{ kind: 'Agent', name: 'bridge-run-frozen', uid: 'uid-agent' }], pending: null, report: null, error: null, storageError: false };
 const allowed = { documentId: '9b2b93c4-375c-4815-9717-39852a96e411', source, targetId: target.id, providerId: provider.id, model: 'literal-model', rows: [{ label: 'Provider', status: 'allowed', message: 'Ready; the file model is tested by checks.' }], canSend: true };
 beforeEach(() => { Object.defineProperty(HTMLDivElement.prototype, 'showPopover', { configurable: true, value() { this.style.display = 'grid'; } }); });
-afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); localStorage.clear(); Reflect.deleteProperty(HTMLDivElement.prototype, 'showPopover'); });
+afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); Reflect.deleteProperty(HTMLDivElement.prototype, 'showPopover'); });
 function native(local: unknown = idle, initial: unknown = null, preflight: unknown = allowed) {
   vi.stubGlobal('isTauri', true); let send = initial;
   const ipc = vi.fn((command: string) => {
@@ -73,6 +73,84 @@ test('a persistent polite status announces the final Send verdict', async () => 
   await waitFor(() => expect(live?.textContent).toBe('Test result failed. 0 of 1 passed.'));
   expect(live?.isConnected).toBe(true);
 });
+test('foreign busy release refreshes destination checks across document changes', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('isTauri', true);
+  const otherDocument = '22345678-1234-1234-1234-123456789abc';
+  let active = true;
+  const ipc = vi.fn((command: string, args: unknown) => {
+    const documentId = (args as { documentId?: string })?.documentId;
+    if (command === 'send_history') return [];
+    if (command === 'send_preflight') return { ...allowed, documentId };
+    if (command === 'send_status') return { documentId, busy: active ? { documentId: pair.documentId, name: 'web-reader' } : null,
+      view: documentId === pair.documentId ? active ? running : { ...running, state: 'complete', stage: 'done', report } : null };
+    throw Error('Unsupported');
+  });
+  mockIPC(ipc);
+  const panel = (documentId: string) => <Send documentId={documentId} place={place} source={source} stale={false} />;
+  const view = render(panel(pair.documentId)); await act(async () => {});
+  view.rerender(panel(otherDocument)); await act(async () => {});
+  expect(screen.getByText('web-reader is sending tests.')).toBeTruthy();
+  view.rerender(panel(pair.documentId)); await act(async () => {});
+  expect(screen.getByRole('button', { name: 'Cancel tests' })).toBeTruthy();
+  view.rerender(panel(otherDocument)); await act(async () => {});
+  const checks = ipc.mock.calls.filter(([command]) => command === 'send_preflight').length;
+  active = false; await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+  expect(screen.queryByText('web-reader is sending tests.')).toBeNull();
+  expect(ipc.mock.calls.filter(([command]) => command === 'send_preflight')).toHaveLength(checks + 1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(ipc.mock.calls.filter(([command]) => command === 'send_preflight')).toHaveLength(checks + 1);
+  // A later busy generation for the same document refreshes independently.
+  active = true; await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+  active = false; await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+  expect(ipc.mock.calls.filter(([command]) => command === 'send_preflight')).toHaveLength(checks + 2);
+  view.rerender(panel(pair.documentId)); await act(async () => {});
+  expect(screen.getByText('0 of 1 tests passed')).toBeTruthy();
+});
+
+test('a deferred status for the selected document cannot display the previous owner as its own Send', async () => {
+  vi.useFakeTimers(); vi.stubGlobal('isTauri', true);
+  const otherDocument = '22345678-1234-1234-1234-123456789abc';
+  let finish!: (value: unknown) => void; let active = true;
+  mockIPC((command, args) => {
+    const documentId = (args as { documentId?: string })?.documentId;
+    if (command === 'send_history') return [];
+    if (command === 'send_preflight') return { ...allowed, documentId };
+    if (command === 'send_status') {
+      if (documentId === otherDocument && active) return new Promise(resolve => { finish = resolve; });
+      return { documentId, busy: active ? { documentId: pair.documentId, name: 'web-reader' } : null,
+        view: documentId === pair.documentId ? active ? running : { ...running, state: 'complete', stage: 'done', report } : null };
+    }
+    throw Error('Unsupported');
+  });
+  const panel = (documentId: string) => <Send documentId={documentId} place={place} source={source} stale={false} />;
+  const view = render(panel(pair.documentId)); await act(async () => {});
+  expect(screen.getByRole('button', { name: 'Cancel tests' })).toBeTruthy();
+  view.rerender(panel(otherDocument)); await act(async () => {});
+  expect(finish).toBeTypeOf('function');
+  expect(screen.queryByRole('button', { name: 'Cancel tests' })).toBeNull();
+  active = false;
+  await act(async () => { finish({ documentId: otherDocument, view: null, busy: null }); });
+  view.rerender(panel(pair.documentId)); await act(async () => {});
+  expect(screen.getByText('0 of 1 tests passed')).toBeTruthy();
+});
+
+test.each(['complete', 'unknown'])('an already-%s start reply refreshes destination checks and renders the result', async state => {
+  vi.useFakeTimers(); vi.stubGlobal('isTauri', true);
+  let current = { ...running, state: 'complete', stage: 'done', report };
+  const ipc = vi.fn((command: string) => {
+    if (command === 'send_history') return [];
+    if (command === 'send_preflight') return allowed;
+    if (command === 'send_start') current = { ...running, state, stage: 'done', report };
+    if (command === 'send_status' || command === 'send_start') return { documentId: pair.documentId, view: current, busy: null };
+    throw Error('Unsupported');
+  });
+  mockIPC(ipc); render(<Send place={place} source={source} stale={false} />); await act(async () => {});
+  const checks = ipc.mock.calls.filter(([command]) => command === 'send_preflight').length;
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Send and run tests' })); });
+  expect(screen.getByRole('heading', { name: state === 'complete' ? '0 of 1 tests passed' : 'Outcome not confirmed' })).toBeTruthy();
+  expect(ipc.mock.calls.filter(([command]) => command === 'send_preflight')).toHaveLength(checks + 1);
+});
+
 test('stale local results do not gate sending and destination refresh is in Details', async () => {
   native(); render(<Send place={place} source={source} stale />);
  await waitFor(() => expect((screen.getByRole('button', { name: 'Send and run tests' }) as HTMLButtonElement).disabled).toBe(false));

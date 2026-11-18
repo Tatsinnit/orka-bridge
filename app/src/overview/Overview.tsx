@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import { type LiveAgents, type Observation, type Places, type RunAgent, readAgents, readFiles, readPlaces, type SavedFiles, unavailableAgents } from './api';
-import { agentGroups, balance, buildCards, clusterGroups, type CompleteAgents, type Inputs, isEmpty, summaryLabel } from './model';
-import { Board, GroupSection, useCompact } from './places';
+import { agentRows, buildCards, clusterGroups, type CompleteAgents, type Inputs, isEmpty, summaryLabel } from './model';
+import { PlaceNotes } from './places';
+import { AgentListRow } from './card';
 import { type AgentFocus, sendAgentCheck } from '../clusters/send-api';
 import './overview.css';
 
@@ -14,11 +15,12 @@ export type OverviewProps = {
   focus?: { id: number; sendId: string; target?: AgentFocus };
   focusPending?: boolean;
   onRetryFocus?: (sendId: string) => void;
-  workspaceNote?: string; filesRevision?: number;
+  workspaceNote?: string; filesRevision?: number; placesRevision?: number;
 };
 const focusNotes = { present: 'Not shown in Overview yet.', gone: 'The original agent is no longer available. Your saved result is unchanged.', cannotCheck: 'Cannot check this agent. Your saved result is unchanged.' };
 const complete = (v?: LiveAgents): v is CompleteAgents => v?.state === 'complete' && v.installation !== null && v.observedAt !== null;
-export default function Overview({ onNewAgent, active, runBusy, localAiConnected, activeDocumentId, workspaceKey, onOpenDocument, onChatDocument, onRunDocument, onOpenExample, onChooseWorkspace, onCounts, workspaceNote, filesRevision = 0, focus: navigationFocus, focusPending = false, onRetryFocus }: OverviewProps) {
+const hasRunningSend = (value?: Places) => value?.places.some(p => p.agents.some(a => a.record?.verdict === 'running')) || value?.unobserved.some(a => a.verdict === 'running');
+export default function Overview({ onNewAgent, active, runBusy, localAiConnected, activeDocumentId, workspaceKey, onOpenDocument, onChatDocument, onRunDocument, onOpenExample, onChooseWorkspace, onCounts, workspaceNote, filesRevision = 0, placesRevision = 0, focus: navigationFocus, focusPending = false, onRetryFocus }: OverviewProps) {
   const aiReasonId = useId();
   const [dismissedFocus, setDismissedFocus] = useState<number>();
   const focus = navigationFocus?.id === dismissedFocus ? undefined : navigationFocus;
@@ -34,25 +36,33 @@ export default function Overview({ onNewAgent, active, runBusy, localAiConnected
   const [pending, setPending] = useState(false);
   const [localReady, setLocalReady] = useState(false);
   const [refresh, setRefresh] = useState(0);
-  const [byAgent, setByAgent] = useState(false);
+  const [placeFilter, setPlaceFilter] = useState('all');
+  const [nameFilter, setNameFilter] = useState('');
+  const [reveal, setReveal] = useState<string>();
   const [places, setPlaces] = useState<Places>();
   const [placeError, setPlaceError] = useState(false);
-  const compact = useCompact();
   useEffect(() => {
     if (!active || focusPending || focus?.target) return;
     let cancelled = false;
-    void readPlaces().then(value => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function list() {
+      const value = await readPlaces();
       if (cancelled) return;
       setPlaceError(!value);
       setPlaces(previous => value ?? (previous && { ...previous, places: previous.places.map(p => ({ ...p, stale: true })) }));
-    });
-    return () => { cancelled = true; };
-  }, [active, refresh, focusPending, focus?.target]);
+      // Poll known unfinished work; completion also invalidates a read that missed the initial checkpoint.
+      if (hasRunningSend(value)) timer = setTimeout(() => { void list(); }, 500);
+    }
+    void list();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [active, refresh, focusPending, focus?.target, placesRevision]);
   // See in Overview: refresh only the recorded destination, then focus the exact card (place key + UID, never a name).
   const focusEpoch = useRef(0);
   const toFocus = useRef<string | undefined>(undefined);
   const focusedCard = useRef<HTMLElement | undefined>(undefined);
-  const autofocusRequest = useRef<string | undefined>(undefined);
+  const autofocusRequest = useRef<{ identity: string; pending: boolean; completed: boolean } | undefined>(undefined);
+  // The first read can fulfill navigation before its absence check has settled.
+  const absencePending = useRef(false);
   const ownsFocus = useRef(false);
   useEffect(() => {
     const moved = (event: FocusEvent) => {
@@ -64,35 +74,52 @@ export default function Overview({ onNewAgent, active, runBusy, localAiConnected
   const [focusTick, setFocusTick] = useState(0);
   const [focusNote, setFocusNote] = useState<string>();
   useEffect(() => {
-    if (!active || !focus) { setFocusNote(undefined); toFocus.current = undefined; focusedCard.current = undefined; autofocusRequest.current = undefined; ownsFocus.current = false; return; }
+    if (!active || !focus) { setFocusNote(undefined); toFocus.current = undefined; focusedCard.current = undefined; autofocusRequest.current = undefined; absencePending.current = false; ownsFocus.current = false; return; }
     const request = ++focusEpoch.current;
     const identity = `${focus.id}/${focusRetry}`;
-    if (autofocusRequest.current !== identity) { autofocusRequest.current = identity; ownsFocus.current = true; }
-    setByAgent(false); setFocusNote(undefined); toFocus.current = undefined; focusedCard.current = undefined;
+    const navigate = autofocusRequest.current?.identity !== identity || !!autofocusRequest.current?.pending && !focusPending;
+    if (autofocusRequest.current?.identity !== identity) ownsFocus.current = true;
+    const autofocus = { identity, pending: focusPending, completed: autofocusRequest.current?.identity === identity && autofocusRequest.current.completed };
+    autofocusRequest.current = autofocus;
+    // Completion invalidates the read, not the user's navigation, filters or disclosure choices.
+    if (navigate) { setPlaceFilter('all'); setNameFilter(''); setReveal(undefined); setFocusNote(undefined); toFocus.current = undefined; focusedCard.current = undefined; absencePending.current = true; }
     if (focusPending) return;
-    const { target } = focus;
-    void (async () => {
+    const { target, sendId } = focus;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let targetFound = false;
+    async function list(navigate = false, resolveAbsence = false) {
       const value = target ? await readPlaces(target.key) : undefined;
       if (request !== focusEpoch.current) return;
+      if (navigate) autofocus.completed = true;
       if (target) setPlaceError(!value);
       const seen = value?.places.find(p => p.key === target?.key);
       // Other places were not queried by this refresh, so keep their cached freshness.
       setPlaces(previous => value ?? (target && previous && { ...previous, places: previous.places.map(p => p.key === target.key ? { ...p, stale: true } : p) }) ?? previous);
-      if (target && seen?.agents.some(a => a.uid === target.uid && a.namespace === target.namespace)) { toFocus.current = `${target.key}/${target.uid}`; setFocusTick(v => v + 1); return; }
-      const check = target ? await sendAgentCheck(focus.sendId) : 'cannotCheck';
-      if (request === focusEpoch.current) setFocusNote(focusNotes[check]);
-    })();
-    return () => { focusEpoch.current++; };
-  }, [active, focus, focusRetry, focusPending]);
+      // Scoped reads include other places' cached records; only this destination or Send can keep them polling.
+      if (target && (seen?.agents.some(a => a.record?.verdict === 'running') || value?.unobserved.some(a => a.id === sendId && a.verdict === 'running'))) timer = setTimeout(() => { void list(); }, 500);
+      // Presence supersedes the initial check; polling still preserves disclosure and focus choices.
+      if (target && seen?.agents.some(a => a.uid === target.uid && a.namespace === target.namespace)) {
+        targetFound = true; absencePending.current = false; setFocusNote(undefined);
+        if (navigate) { toFocus.current = `${target.key}/${target.uid}`; setReveal(toFocus.current); setFocusTick(v => v + 1); }
+        return;
+      }
+      if (!resolveAbsence) return;
+      const check = target ? await sendAgentCheck(sendId) : 'cannotCheck';
+      if (request === focusEpoch.current && !targetFound) { absencePending.current = false; setFocusNote(focusNotes[check]); }
+    }
+    // Resume either unfinished step without repeating navigation's initialization resets.
+    void list(!autofocus.completed, absencePending.current);
+    return () => { focusEpoch.current++; clearTimeout(timer); };
+  }, [active, focus, focusRetry, focusPending, placesRevision]);
   useEffect(() => {
-    // Local reads can rebalance the board and remount a destination in the other stack.
+    // A navigation request reveals its exact place/UID before focus moves.
     const key = toFocus.current; if (!active || !localReady || !ownsFocus.current || !key) return;
     if (focusedCard.current?.isConnected) return;
     if (focusedCard.current && document.activeElement !== document.body) { toFocus.current = undefined; focusedCard.current = undefined; return; }
     const card = [...document.querySelectorAll<HTMLElement>('[data-card-key]')].find(node => node.dataset.cardKey === key);
     // Retain ownership across post-run rebalancing, but never override a later user focus.
     if (card) { focusedCard.current = card; card.focus(); card.scrollIntoView?.({ block: 'center' }); }
-  }, [active, localReady, focusTick, places, byAgent, files, live, compact]);
+  }, [active, localReady, focusTick, places, files, live, reveal]);
   const epoch = useRef(0);
   const knownWorkspace = useRef(workspaceKey);
   useEffect(() => {
@@ -153,27 +180,34 @@ export default function Overview({ onNewAgent, active, runBusy, localAiConnected
   const partial = !!workspaceNote || filesStale || files?.historyState !== 'complete' || !complete(live) || pending || !places || placeError || places.places.some(p => p.stale || p.observedAt === null);
   const counts = !files ? 'Reading saved files…' : files.state === 'unavailable' ? 'Saved files unavailable'
     : !filesVisited.current ? filesStale ? 'Saved files unavailable' : files.files.length ? `${files.files.length} saved agent${files.files.length === 1 ? '' : 's'}` : 'No saved agents yet'
-    : summaryLabel(built.cards, partial);
+    : summaryLabel(agentRows(built.cards), partial);
   useEffect(() => { onCounts?.(counts); }, [counts, onCounts]);
   const clusters = clusterGroups(inputs, built);
-  const groups = byAgent ? agentGroups(built.cards, built.saved) : clusters;
+  const knownPlace = placeFilter === 'all' || placeFilter === 'local' || !!places?.places.some(place => place.key === placeFilter);
+  const selectedPlace = knownPlace ? placeFilter : 'all';
+  useEffect(() => { if (places && !knownPlace) setPlaceFilter('all'); }, [places, knownPlace]);
+  const rows = agentRows(built.cards, selectedPlace, nameFilter);
+  const options = [{ key: 'local', label: 'This computer' }, ...(places?.places ?? []).map(p => ({ key: p.key, label: built.labels.get(p.key)! }))];
   const needsAi = !localAiConnected && built.local.some(c => c.actions.some(a => a.id !== 'open'));
   const actions = { localAiReason: needsAi ? aiReasonId : undefined, onOpen: onOpenDocument, onChat: onChatDocument, onRun: onRunDocument, onCheck: () => { setDismissedFocus(navigationFocus?.id); setRefresh(v => v + 1); }, onClusters: onChooseWorkspace };
-  const trouble = { ...clusters[0], cards: [], count: undefined, notes: clusters[0].notes.filter(n => !n.text.startsWith('No agents')) };
-  return <section className="overview" aria-label="Agents by cluster" hidden={!active}>
+  return <section className="overview" aria-label="Your agents" hidden={!active}>
     <div className="page-heading"><h1 id={active ? 'page-title' : undefined}>Your agents</h1><div className="overview-actions">
       {onNewAgent && !empty && <Button kind="primary" onClick={onNewAgent}>New agent</Button>}
-      {!empty && <div className="view-switch" role="group" aria-label="Group agents"><button type="button" aria-pressed={!byAgent} onClick={() => setByAgent(false)}>By cluster</button><button type="button" aria-pressed={byAgent} onClick={() => setByAgent(true)}>By agent</button></div>}
-      <Button onClick={actions.onCheck}>Refresh</Button></div></div>
+      </div></div>
+    {!empty && <div className="overview-filters">
+      {options.length > 4 ? <select className="field" aria-label="Place" value={selectedPlace} onChange={event => { setReveal(undefined); setPlaceFilter(event.target.value); }}><option value="all">All places</option>{options.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}</select>
+        : <div className="view-switch" role="group" aria-label="Place">{[{ key: 'all', label: 'All' }, ...options].map(p => <button key={p.key} type="button" aria-pressed={selectedPlace === p.key} onClick={() => { setReveal(undefined); setPlaceFilter(p.key); }}>{p.label}</button>)}</div>}
+      <input className="field" aria-label="Filter by name" placeholder="Filter by name" value={nameFilter} onChange={event => { setReveal(undefined); setNameFilter(event.target.value); }} />
+      <span className="overview-filter-count" role="status">{summaryLabel(rows, partial)}</span>
+    </div>}
     {needsAi && <p id={aiReasonId} className="overview-note" tabIndex={0}>Connect the AI in Clusters to chat or run tests on this computer.</p>}
     {focusNote && <div className="overview-note" role="status"><p>{focusNote}</p><Button kind="quiet" onClick={() => { if (focus && !focus.target && onRetryFocus) onRetryFocus(focus.sendId); else setFocusRetry(v => v + 1); }}>Refresh</Button></div>}
     {placeError && <div className="overview-note" role="status"><p>Couldn't read clusters just now.{places && ' Showing what Bridge last saw.'}</p><Button kind="quiet" onClick={actions.onCheck}>Check again</Button></div>}
-    {places?.historyState === 'unavailable' && <p role="alert" className="overview-note">Saved Send results are unavailable, so cluster agents show no test result.</p>}
-    {byAgent && !empty && <div className="overview-stack">{clusters.filter(g => g.notes.some(n => !n.text.startsWith('No agents'))).map(g => <GroupSection key={g.key} group={{ ...g, cards: [], count: undefined, notes: g.notes.filter(n => !n.text.startsWith('No agents')) }} byAgent={false} actions={actions} />)}</div>}
+    {places?.historyState === 'unavailable' && <div role="alert" className="overview-note"><p>Saved Send results are unavailable, so cluster agents show no test result.</p><Button kind="quiet" onClick={actions.onCheck}>Check again</Button></div>}
+    <PlaceNotes groups={clusters} actions={actions} />
     {empty ? <>
-      {!!trouble.notes.length && <GroupSection group={trouble} byAgent={false} actions={actions} />}
-      <div className="card overview-empty"><h2>No agents yet</h2><p>Make an agent, or start from web-reader, the example that answers from a web page. Agents you test or send show up here, one card per cluster.</p>
+      <div className="card overview-empty"><h2>No agents yet</h2><p>Make an agent, or start from web-reader, the example that answers from a web page. Agents you test or send show up here, with their results in each place.</p>
         <div className="overview-card-actions">{onNewAgent && <Button kind="primary" onClick={onNewAgent}>New agent</Button>}<Button onClick={onOpenExample}>Open web-reader</Button></div></div>
-    </> : <Board stacks={compact ? [groups, []] : balance(groups)} byAgent={byAgent} actions={actions} />}
+    </> : <div className="overview-list">{rows.map(row => <AgentListRow key={row.key} row={row} actions={actions} reveal={reveal} onToggle={() => setReveal(undefined)} />)}{!rows.length && built.cards.length > 0 && <p className="overview-note">No agents match these filters.</p>}</div>}
   </section>;
 }

@@ -28,7 +28,7 @@ func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
         try rejects("invalid invocation \(bad)") { _ = try parseNativeModelArguments(bad) }
     }
     try manifest.validate()
-    try check(manifest.model.count == 202 && manifest.destinationsWorkspace.count == 45, "202/45 including four long-Chat captures")
+    try check(manifest.model.count == 208 && manifest.destinationsWorkspace.count == 45, "208/45 list and returning-workspace partition including four long-Chat captures")
     for name in ["local-catalog-no-destination-wide", "local-workspace-ready-wide", "local-workspace-stop-failed-details-minimum", "local-designer-waiting-chat-minimum", "local-workspace-image-update-minimum", "local-workspace-image-unsupported-minimum"] {
         try check(manifest.destinationsWorkspace.contains(name), "complete allocated journey includes \(name)")
     }
@@ -95,12 +95,12 @@ struct NativeModelCaptureManifest: Decodable {
         }
     }
     func validate() throws {
-        guard model.count == 202, destinationsWorkspace.count == 45,
+        guard model.count == 208, destinationsWorkspace.count == 45,
               Set(model).count == model.count,
               Set(destinationsWorkspace).count == destinationsWorkspace.count,
               Set(model).isDisjoint(with: Set(destinationsWorkspace)),
               !(model + destinationsWorkspace).contains("local-probe") else {
-            throw NativeModelHarnessError("Capture manifest must partition 247 unique named captures into 202 model and 45 destination/workspace names")
+            throw NativeModelHarnessError("Capture manifest must partition 253 unique named captures into 208 model and 45 destination/workspace names")
         }
     }
 }
@@ -308,6 +308,26 @@ func enabledButton(_ label: String) -> AXUIElement? {
     }
     return buttons.count == 1 ? buttons[0] : nil
 }
+func setOverviewExpanded(_ title: String, _ expanded: Bool) {
+    let label = "Show places for \(title)"
+    let buttons = nativeElements().filter { element in
+        attribute(element, "AXRole") as? String == "AXButton"
+            && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == label }
+    }
+    require(buttons.count == 1, "Cannot identify Overview disclosure \(label)")
+    if attribute(buttons[0], "AXExpanded") as? Bool == expanded { return }
+    let top = enabledButton("Overview").flatMap(nativeBounds)?.maxY ?? window()!.1.minY
+    for _ in 0..<12 {
+        if let bounds = enabledButton(label).flatMap(nativeBounds) {
+            if bounds.minY >= top + 8 && bounds.maxY <= window()!.1.maxY - 32 {
+                click(label, []); return
+            }
+            scroll(bounds.minY < top + 8 ? 150 : -150)
+        } else { scroll(-150) }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    require(false, "Cannot bring Overview disclosure into view: \(label)")
+}
 func click(_ label: String, _ rows: [VNRecognizedTextObservation]) {
     guard let button = enabledButton(label) else { require(false, "Native button is disabled or missing: \(label)"); return }
     // A heading and a step can have the same words as the action. Click the
@@ -377,15 +397,22 @@ require(rows.contains { $0.boundingBox.minX < 0.3 && $0.boundingBox.maxY > 0.85 
 click("Overview", [])
 for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     localSize(CGFloat(width), CGFloat(height)); scroll(4000)
-    for (mode, toggle) in [("by-cluster", "By cluster"), ("by-agent", "By agent")] {
-        click(toggle, []); scroll(4000)
-        require(anyButton("Run tests web-reader") && enabledButton("Run tests web-reader") == nil && enabledButton("Open web-reader") != nil,
-                "Without connected AI, Overview must disable local Run but preserve Open")
-        _ = try capture("local-overview-ai-disconnected-\(mode)-\(size)", ["Your agents", "Connect the AI in Clusters"])
-    }
+    let longContext = "context-" + String(repeating: "unbrokensegment", count: 7)
+    guard let contextBounds = enabledButton(longContext).flatMap(nativeBounds) else { fatalError("Missing long Overview context filter") }
+    require(contextBounds.minX >= window()!.1.minX && contextBounds.maxX <= window()!.1.maxX,
+            "Long Overview context filter must fit the native window")
+    require(!anyButton("By cluster") && !anyButton("By agent") && !anyButton("Refresh"),
+            "Overview list must not retain grouping or top-level Refresh controls")
+    require(nativeResultTextIsVisible("Connect the AI in Clusters to chat or run tests on this computer."),
+            "Disconnected Overview must explain the local AI gate")
+    _ = try capture("local-overview-ai-disconnected-collapsed-\(size)", ["Your agents"])
+    setOverviewExpanded("web-reader", true)
+    require(anyButton("Run tests web-reader") && enabledButton("Run tests web-reader") == nil && enabledButton("Open web-reader") != nil,
+            "Without connected AI, Overview must disable local Run but preserve Open")
+    _ = try capture("local-overview-ai-disconnected-expanded-\(size)", ["Your agents", "web-reader", "This computer", "Run tests"])
+    setOverviewExpanded("web-reader", false)
 }
 localSize(1280, 800); scroll(4000)
-click("By cluster", [])
 click("Clusters", []); waitForButton("Connect the AI")
 localSize(540, 640)
 scroll(4000)
@@ -509,15 +536,14 @@ rows = try capture("reconnected", ["Connected", "Change"])
 click("Overview", [])
 for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     localSize(CGFloat(width), CGFloat(height)); scroll(4000)
-    for (mode, toggle) in [("by-cluster", "By cluster"), ("by-agent", "By agent")] {
-        click(toggle, []); scroll(4000)
-        require(enabledButton("Run tests web-reader") != nil && !nativeTextExists("Connect the AI in Clusters to chat or run tests on this computer."),
-                "Connected AI must enable local Overview actions without the connection reason")
-        _ = try capture("local-overview-ai-connected-\(mode)-\(size)", ["Your agents", "Run tests"])
-    }
+    _ = try capture("local-overview-ai-connected-collapsed-\(size)", ["Your agents", "web-reader"])
+    setOverviewExpanded("web-reader", true)
+    require(enabledButton("Run tests web-reader") != nil && !nativeTextExists("Connect the AI in Clusters to chat or run tests on this computer."),
+            "Connected AI must enable the failed agent's local Run action without the connection reason")
+    _ = try capture("local-overview-ai-connected-expanded-\(size)", ["Your agents", "This computer", "Run tests"])
+    setOverviewExpanded("web-reader", false)
 }
 localSize(1280, 800); scroll(4000)
-click("By cluster", [])
 click("Clusters", [])
 // Returning workspace observations follow the original baseline coverage below.
 // Reuse the setup-progress selector and the existing Places entry to remount real
@@ -1491,41 +1517,28 @@ waitForButton("New conversation")
 _ = try capture("chat-stop-ready-compact", ["Execution termination is unconfirmed."])
 localSize(1280, 800)
 _ = try capture("chat-stop-ready-wide", ["Execution termination is unconfirmed."])
-// Capture card actions before the final test deliberately holds the fixture busy.
+// Capture list actions before the final test deliberately holds the fixture busy.
 click("Overview", [])
 for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact"), (540, 640, "minimum")] {
-    localSize(CGFloat(width), CGFloat(height))
-    scroll(4000)
-    if size == "minimum" {
-        _ = try seek("2 of 2 passed, before your edit", -300)
-        let expected = ["Not run since your edit", "2 of 2 passed, before your edit", "Draft"]
-        let proof = try capture("local-controls-overview-\(size)", expected)
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try capture("local-controls-overview-collapsed-\(size)", ["Your agents", "web-reader"])
+    for (agent, scene, expected) in [
+        ("release-notes", "earlier-pass", ["Not run since your edit", "2 of 2 passed, before your edit", "Run tests"]),
+        ("pr-summary", "earlier-failed", ["Failed", "1 of 2 passed, before your edit", "Run tests"]),
+        ("draft-helper", "draft", ["Draft", "Add instructions and a test to get started."])
+    ] {
+        scroll(4000)
+        setOverviewExpanded(agent, true)
+        if size == "minimum" { scroll(-150) }
+        _ = try seek(scene == "draft" ? expected[0] : expected[1], -150)
+        let proof = try capture("local-controls-overview-expanded-\(scene)-\(size)", expected)
         let pixels = proof.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(expected.allSatisfy { pixels.contains($0) }, "Cluster result and draft must be visible in OCR")
-    } else {
-        _ = try capture("local-controls-overview-\(size)", ["Your agents", "Refresh", "web-reader", "Failed", "Run tests"])
+        require(expected.allSatisfy { pixels.contains($0) }, "Expanded Overview result must be visible in OCR")
+        scroll(4000)
+        setOverviewExpanded(agent, false)
     }
 }
-scroll(4000)
-click("By agent", [])
-for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact"), (540, 640, "minimum")] {
-    localSize(CGFloat(width), CGFloat(height))
-    scroll(4000)
-    if size == "minimum" {
-        // The draft anchor is unique; the failed count alone also occurs on the local file.
-        _ = try seek("Add instructions and a test to get started.", -300)
-        // Leave room for the draft's status below its group heading.
-        scroll(-150)
-        let expected = ["team-dev", "Failed", "1 of 2 passed, before your edit", "Draft"]
-        let proof = try capture("local-overview-by-agent-\(size)", expected)
-        let pixels = proof.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(expected.allSatisfy { pixels.contains($0) }, "Cluster failure and draft must be visible in OCR")
-    } else {
-        _ = try capture("local-overview-by-agent-\(size)", ["Your agents", "web-reader", "This computer"])
-    }
-}
-scroll(4000)
-click("By cluster", [])
+localSize(1280, 800); scroll(4000)
 click("Designer", [])
 scroll(4000)
 click("Agent", [])

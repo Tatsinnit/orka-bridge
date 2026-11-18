@@ -3,7 +3,6 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import Overview from './Overview';
-import { Board } from './places';
 
 const source = { agent: 'a'.repeat(64), tests: 'b'.repeat(64) };
 const id = '12345678-1234-1234-1234-123456789abc';
@@ -24,78 +23,75 @@ function ipc(value: unknown = places(), files: unknown = saved(), live: unknown 
   mockIPC(command => command === 'overview_places' ? value : command === 'overview_files' ? files : live);
 }
 afterEach(() => { cleanup(); clearMocks(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
-const group = (name: string) => screen.findByRole('region', { name });
+const row = (name = 'reader') => screen.findByRole('article', { name });
+async function expanded(name = 'reader') {
+  const agent = await row(name);
+  const toggle = within(agent).getByRole('button', { name: `Show places for ${name}` });
+  if (toggle.getAttribute('aria-expanded') === 'false') await userEvent.click(toggle);
+  return agent;
+}
 const buttons = (el: HTMLElement) => within(el).getAllByRole('button').map(b => b.textContent);
 
-test('the board explicitly marks a single stack and removes that layout when a second stack appears', () => {
-  const groups = [{ key: 'local', title: 'This computer', notes: [], cards: [] }];
-  const actions = { onOpen: vi.fn(), onCheck: vi.fn(), onClusters: vi.fn() };
-  const view = render(<Board stacks={[groups, []]} byAgent={false} actions={actions} />);
-  expect(view.container.querySelector('.overview-board-single')).toBeTruthy();
-  view.rerender(<Board stacks={[groups, [{ ...groups[0], key: 'team', title: 'Team' }]]} byAgent={false} actions={actions} />);
-  expect(view.container.querySelector('.overview-board-single')).toBeNull();
-  expect(view.container.querySelectorAll('.overview-board > .overview-stack')).toHaveLength(2);
-});
-
-test('By cluster: This computer first, then each cluster by context name, with a count at the right', async () => {
+test('one linked row retains distinct place evidence and keeps Open at the parent', async () => {
   ipc(); render(<Overview {...props} />);
-  const first = await group('This computer');
-  expect(within(first).queryByText(/^(local cluster|workspace)$/)).toBeNull();
-  const remote = await group('team-one');
-  expect(within(remote).getByText('2 agents')).toBeTruthy();
-  const order = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent);
-  expect(order[0]).toBe('This computer'); expect(order.slice().sort()).toEqual(['This computer', 'team-one', 'team-two']);
+  const parent = await expanded();
+  expect(parent.getAttribute('aria-label')).toBe('reader');
+  expect(within(parent).getAllByRole('article', { name: /team-one,|team-two,/ })).toHaveLength(2);
+  expect(buttons(within(parent).getByRole('article', { name: 'This computer, Not tested' }))).toEqual(['Details']);
+  const remote = within(parent).getByRole('article', { name: 'team-one, Passed' });
+  expect(buttons(remote)).toEqual(['Details']);
+  await userEvent.click(within(parent).getByRole('button', { name: 'Open reader' }));
+  expect(props.onOpenDocument).toHaveBeenCalledWith(id);
+  expect(within(remote).queryByRole('button', { name: /Open/ })).toBeNull();
 });
 
-test('remote cards keep a verdict only from a Bridge record, link a file only on exactly one hash match, and offer Open only', async () => {
+test('an unlinked remote Agent has no Open or Run action and keeps Details evidence', async () => {
   ipc(); render(<Overview {...props} />);
-  const remote = await group('team-one');
-  const linked = within(remote).getByRole('article', { name: /^reader/ });
-  expect(within(linked).getByText('Passed')).toBeTruthy();
-  expect(buttons(linked)).toEqual(['Open', 'Details']);
-  await userEvent.click(within(linked).getByRole('button', { name: 'Open reader on team-one' }));
-  expect(props.onOpenDocument).toHaveBeenCalledWith(id, 'one');
-  const external = within(remote).getByRole('article', { name: /^external-agent/ });
-  expect(within(external).queryByText(/Passed|Failed|Not tested|Result unknown/)).toBeNull();
-  expect(buttons(external)).toEqual(['Details']);
-  expect(within(external).getByText('Running on team-one, not saved here')).toBeTruthy();
+  const parent = await expanded('external-agent');
+  expect(within(parent).getByText('Running on team-one, not saved here')).toBeTruthy();
+  const remote = within(parent).getByRole('article', { name: 'team-one, No recorded result' });
+  expect(within(remote).queryByRole('button', { name: /^Open|^Run tests/ })).toBeNull();
+  expect(buttons(remote)).toEqual(['Details']);
+  await userEvent.click(within(remote).getByRole('button', { name: 'Details' }));
+  expect(within(remote).getByText('external-agent')).toBeTruthy();
+  expect(within(remote).getByText('Agent ID')).toBeTruthy();
 });
 
-test('local disconnection never blocks a team Run with its own destination', async () => {
-  ipc();
-  const run = vi.fn(); render(<Overview {...props} localAiConnected={false} onChatDocument={vi.fn()} onRunDocument={run} />);
-  const remote = within(await group('team-one')).getByRole('button', { name: 'Run tests reader on team-one' });
-  expect(remote.matches(':disabled')).toBe(false);
-  await userEvent.click(remote);
-  expect(run).toHaveBeenCalledWith(id, 'one');
-  expect(screen.getByRole('button', { name: 'Run tests reader' }).matches(':disabled')).toBe(true);
+test('local disconnection never blocks the fitting team Run with its own destination', async () => {
+  ipc(); const run = vi.fn(); render(<Overview {...props} localAiConnected={false} onChatDocument={vi.fn()} onRunDocument={run} />);
+  const parent = await expanded();
+  const remote = within(parent).getByRole('button', { name: 'Run tests reader on team-one' });
+  const local = within(parent).getByRole('button', { name: 'Run tests reader' });
+  expect(remote).toHaveProperty('disabled', false); expect(local).toHaveProperty('disabled', true);
+  await userEvent.click(remote); expect(run).toHaveBeenCalledWith(id, 'one');
 });
 
-test('document evidence survives edits and identical copies, with cluster counts and safe action targets', async () => {
+test('document evidence survives edits while ambiguous hash copies never silently link', async () => {
   const enriched = { ...record, documentId: id, detailState: 'saved', report: { verdict: 'passed', passed: 2, total: 3 } };
   ipc(places([place('one', 'team-one', [{ ...agent, record: enriched }])]), saved([{ ...file, source: { ...source, tests: 'c'.repeat(64) } }, { ...file, documentId: id2, name: 'copy', summary: { ...file.summary, name: 'copy' } }]));
-  const onRunDocument = vi.fn(); render(<Overview {...props} onRunDocument={onRunDocument} />);
-  const remote = await group('team-one');
-  const linked = await within(remote).findByRole('article', { name: 'reader, Not run since your edit' });
-  expect(within(linked).getByText(/2 of 3 passed, before your edit/)).toBeTruthy();
-  expect(buttons(linked)).toEqual(['Open', 'Run tests', 'Details']);
-  expect(within(linked).getByRole('button', { name: 'Run tests reader on team-one' }).className).toContain('button-primary');
-  await userEvent.click(within(linked).getByRole('button', { name: /^Run tests/ }));
-  expect(onRunDocument).toHaveBeenCalledWith(id, 'one');
-  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
-  expect(within(screen.getByRole('region', { name: 'reader' })).getAllByRole('article')).toHaveLength(2);
-  expect(within(screen.getByRole('region', { name: 'copy' })).getAllByRole('article')).toHaveLength(1);
+  const run = vi.fn(); render(<Overview {...props} onRunDocument={run} />);
+  const parent = await expanded();
+  const remote = within(parent).getByRole('article', { name: 'team-one, Not run since your edit' });
+  expect(within(remote).getByText(/2 of 3 passed, before your edit/)).toBeTruthy();
+  await userEvent.click(within(remote).getByRole('button', { name: /^Run tests/ }));
+  expect(run).toHaveBeenCalledWith(id, 'one');
+  expect(within(parent).queryByText(/button-primary/)).toBeNull();
+  cleanup();
+  ipc(places([two]), saved([file, { ...file, documentId: id2, name: 'copy', summary: { ...file.summary, name: 'copy' } }]));
+  render(<Overview {...props} />);
+  const unlinked = await expanded('same-name');
+  expect(within(unlinked).getByText('Running on team-two, not saved here')).toBeTruthy();
+  expect(within(unlinked).queryByRole('button', { name: /^Open|^Run tests/ })).toBeNull();
 });
 
-test('a failed Send on earlier files remains failed and counted in the tab summary', async () => {
+test('a failed Send on earlier files remains failed and counts once per agent row', async () => {
   const counts = vi.fn();
   ipc(places([place('one', 'team-one', [{ ...agent, record: { ...record, verdict: 'failed', documentId: id, detailState: 'saved', report: { verdict: 'failed', passed: 0, total: 1 } } }])]), saved([{ ...file, source: { ...source, agent: 'c'.repeat(64) } }]));
   render(<Overview {...props} onCounts={counts} onRunDocument={vi.fn()} />);
-  const remote = await group('team-one');
-  expect(await within(remote).findByText('Failed')).toBeTruthy();
-  expect(within(remote).getByText(/0 of 1 passed, before your edit/)).toBeTruthy();
-  expect(within(remote).getByRole('button', { name: /^Open/ }).className).toContain('button-primary');
-  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('2 agents, 1 failed'));
+  const parent = await expanded();
+  expect(within(parent).getByRole('article', { name: 'team-one, Failed' })).toBeTruthy();
+  expect(within(parent).getByText(/0 of 1 passed, before your edit/)).toBeTruthy();
+  await waitFor(() => expect(counts).toHaveBeenLastCalledWith('1 agent, 1 failed'));
 });
 
 test.each([
@@ -105,9 +101,9 @@ test.each([
 ])('new document evidence never silently rebinds by hash: %j', async evidence => {
   ipc(places([place('one', 'team-one', [{ ...agent, record: { ...record, ...evidence, report: null } }])]));
   render(<Overview {...props} onRunDocument={vi.fn()} />);
-  const remote = await group('team-one');
-  expect(await within(remote).findByText('Running on team-one, not saved here')).toBeTruthy();
-  expect(within(remote).queryByRole('button', { name: /^Open|^Run tests/ })).toBeNull();
+  const parent = await expanded('same-name');
+  expect(within(parent).getByText('Running on team-one, not saved here')).toBeTruthy();
+  expect(within(parent).queryByRole('button', { name: /^Open|^Run tests/ })).toBeNull();
 });
 
 test.each(['omitted', 'unavailable', 'legacy', 'removed'])('untrusted %s detail counts are not accepted as passing evidence', async detailState => {
@@ -117,157 +113,87 @@ test.each(['omitted', 'unavailable', 'legacy', 'removed'])('untrusted %s detail 
   expect(screen.queryByText(/1 of 1 passed/)).toBeNull();
 });
 
-test('an untouched blank draft is editable but never advertised as runnable or broken in either grouping', async () => {
+test('blank drafts are editable but expose no fitting action or broken state', async () => {
   ipc(places([]), saved([{ ...file, draft: true, summary: null, reason: 'Add instructions and a test to get started.', localResult: null }]));
   render(<Overview {...props} onRunDocument={vi.fn()} onChatDocument={vi.fn()} />);
-  const here = await group('This computer');
-  expect(await within(here).findByText('Draft')).toBeTruthy();
-  expect(buttons(within(here).getByRole('article'))).toEqual(['Open', 'Details']);
-  expect(within(here).getByText('Add instructions and a test to get started.')).toBeTruthy();
-  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
-  expect(within(screen.getByRole('region', { name: 'reader' })).getByText('Draft')).toBeTruthy();
+  const parent = await expanded();
+  expect(within(parent).getByText('Add instructions and a test to get started.')).toBeTruthy();
+  const localRow = within(parent).getByRole('article', { name: 'This computer, Draft' });
+  expect(buttons(localRow)).toEqual(['Details']);
   expect(screen.queryByText(/unsupported|invalid/i)).toBeNull();
 });
 
-test('a cancelled cluster result remains neutral rather than failed or passed', async () => {
+test('cancelled remote and stale unknown evidence retain neutral or stale states', async () => {
   ipc(places([{ ...two, agents: [{ ...agent, record: { ...record, verdict: 'cancelled' } }] }]));
-  render(<Overview {...props} />);
-  const remote = await group('team-two');
-  expect(within(remote).getByText('Not tested')).toBeTruthy();
-  expect(remote.querySelector('.status-passed, .status-failed')).toBeNull();
-  expect(remote.querySelector('.status-not-started')).toBeTruthy();
-});
-
-test('identical saved files are ambiguous: the cluster card stays unlinked, local cards stay one per document', async () => {
-  ipc(places([two]), saved([file, { ...file, documentId: id2, name: 'copy', summary: { ...file.summary, name: 'copy' } }]));
-  render(<Overview {...props} />);
-  const remote = await group('team-two');
-  expect(within(remote).queryByRole('button', { name: /^Open/ })).toBeNull();
-  expect(within(remote).getByText('Running on team-two, not saved here')).toBeTruthy();
-  const here = await group('This computer');
-  expect(within(here).getAllByRole('article')).toHaveLength(2);
-  expect(within(here).queryByText(/also on/)).toBeNull();
-});
-
-test('also on comes from unique document links: names for two, a count for more', async () => {
-  const third = place('three', 'team-three', [{ ...agent, uid: 'u3', record: { ...record, agentUid: 'u3' } }]);
-  ipc(places([one, two]), saved()); const view = render(<Overview {...props} />);
-  const here = await group('This computer');
-  expect(within(here).getByText(/also on/).closest('p')!.textContent).toBe('declared-model · web_fetch · also on team-one and team-two');
-  const remote = within(await group('team-two')).getByRole('article', { name: /^reader/ });
-  expect(within(remote).getByText(/also on/).closest('p')!.textContent).toBe('observed-model · web_fetch · also on this computer and team-one');
-  view.unmount(); ipc(places([one, two, third])); render(<Overview {...props} />);
-  expect((await within(await group('This computer')).findByText(/also on/)).textContent).toContain('also on 3 clusters');
-});
-
-test('same-context clusters stay distinguishable', async () => {
-  ipc(places([place('a', 'same', [], { service: 'control/a' }), place('b', 'same', [], { service: 'control/b' })])); render(<Overview {...props} />);
-  expect(await group('same · agents · control/a')).toBeTruthy(); expect(screen.getByRole('region', { name: 'same · agents · control/b' })).toBeTruthy();
-});
-
-test('By agent: one group per file with a card per cluster, agents without a file last with their cluster', async () => {
-  ipc(); render(<Overview {...props} />);
-  await group('team-one');
-  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
-  expect(screen.getByRole('button', { name: 'By agent' }).getAttribute('aria-pressed')).toBe('true');
-  const doc = screen.getByRole('region', { name: 'reader' });
-  expect(within(doc).getAllByText('Reads a page')).toHaveLength(1);
-  expect(within(doc).getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['This computer', 'team-one', 'team-two']);
-  const none = screen.getByRole('region', { name: 'Running agents, not saved here' });
-  expect(within(none).getByRole('heading', { level: 3, name: 'external-agent' })).toBeTruthy();
-  expect(within(none).getByText('team-one', { selector: 'code' }).closest('p')!.textContent).toBe('observed-model · web_fetch · on team-one');
-  const titles = screen.getAllByRole('heading', { level: 2 }).map(h => h.textContent);
-  expect(titles).toEqual(['reader', 'Running agents, not saved here']);
-});
-
-test('By agent keeps an unreadable saved document in its own group with a cluster title', async () => {
-  ipc(places([]), saved([{ ...file, state: 'unreadable', source: null, summary: null, reason: 'The saved file is unreadable.' }]));
-  render(<Overview {...props} />); await group('This computer');
-  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
-  const doc = screen.getByRole('region', { name: 'reader' });
-  expect(within(doc).getByRole('heading', { level: 3, name: 'This computer' })).toBeTruthy();
-  expect(within(doc).getByText('The saved file is unreadable.')).toBeTruthy();
-  expect(within(doc).queryByRole('button', { name: /^Open/ })).toBeNull();
-});
-
-test('By agent keeps cluster trouble explanations and recovery actions visible', async () => {
-  ipc(places([{ ...two, stale: true }]), saved(), { ...local, state: 'unavailable', reason: 'stopped' });
-  render(<Overview {...props} />); await group('team-two');
-  await userEvent.click(screen.getByRole('button', { name: 'By agent' }));
-  expect(screen.getByText('The workspace is stopped. Start it to test or chat.')).toBeTruthy();
-  expect(screen.getByText(/Couldn't check just now/)).toBeTruthy();
-  expect(screen.getAllByRole('button', { name: 'Open Clusters' })).toHaveLength(2);
-});
-
-test('groups go to two stacks by card count and compact is one stack in the same logical order', async () => {
-  const many = place('many', 'big', [agent, { ...agent, uid: 'b' }, { ...agent, uid: 'c' }].map((a, i) => ({ ...a, record: null, uid: `m${i}` })));
-  ipc(places([many, place('s1', 'small-1', []), place('s2', 'small-2', [])])); const view = render(<Overview {...props} />);
-  await group('big');
-  const stacks = () => [...document.querySelectorAll('.overview-stack')].map(s => [...s.querySelectorAll('h2')].map(h => h.textContent));
-  // Greedy by card count: the tall group sits alone in its stack while the short ones share the other.
-  expect(stacks()).toEqual([['This computer', 'small-1', 'small-2'], ['big']]);
+  const view = render(<Overview {...props} />); const parent = await expanded();
+  const cancelled = within(parent).getByRole('article', { name: 'team-two, Not tested' });
+  expect(cancelled.querySelector('.status-passed, .status-failed')).toBeNull();
   view.unmount();
-  vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener: () => {}, removeEventListener: () => {} }));
-  render(<Overview {...props} />); await group('big');
-  expect(stacks()[0]).toEqual(['This computer', 'big', 'small-1', 'small-2']);
-});
-
-test('a cluster not connected since startup shows no count and no invented empty or green state', async () => {
-  ipc(places([place('west', 'team-west', [], { observedAt: null, stale: true, checkedAt: 1234567890000 })]));
-  const choose = vi.fn(); render(<Overview {...props} onChooseWorkspace={choose} />);
-  const west = await group('team-west');
-  expect(within(west).getByText('Not connected since Bridge started. Connect it to see its agents.')).toBeTruthy();
-  expect(within(west).queryByText(/^\d+ agents?$/)).toBeNull();
-  expect(within(west).queryByText(/No agents in/)).toBeNull();
-  await userEvent.click(within(west).getByRole('button', { name: 'Open Clusters' })); expect(choose).toHaveBeenCalled();
-});
-
-test('a stale cluster keeps cards as Result unknown with Open only, offers Check again, and recovers on a fresh read', async () => {
   ipc(places([{ ...two, stale: true }])); render(<Overview {...props} />);
-  const remote = await group('team-two');
-  expect(within(remote).getByText("Couldn't check just now.", { exact: false })).toBeTruthy();
-  expect(within(remote).getByText(/Showing what Bridge saw/)).toBeTruthy();
-  expect(within(remote).getByText('Result unknown')).toBeTruthy();
-  expect(within(remote).getByText('Last Send passed', { exact: false })).toBeTruthy();
-  expect(remote.querySelector('.status-passed')).toBeNull();
-  expect(within(remote).getByRole('button', { name: 'Open Clusters' })).toBeTruthy();
-  ipc(places([two])); await userEvent.click(within(remote).getByRole('button', { name: 'Check again' }));
-  await waitFor(() => expect(within(screen.getByRole('region', { name: 'team-two' })).getByText('Passed')).toBeTruthy());
+  const staleParent = await expanded();
+  const stale = within(staleParent).getByRole('article', { name: 'team-two, Result unknown' });
+  expect(within(stale).getByText('Last Send passed', { exact: false })).toBeTruthy();
+  expect(stale.querySelector('.status-passed')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
 });
 
-test('a failed cluster read keeps the last good clusters flagged stale, never as fresh', async () => {
-  ipc(); render(<Overview {...props} />);
-  await group('team-two');
+test('same-context clusters stay distinguishable in filters and exact place rows', async () => {
+  ipc(places([place('a', 'same', [agent], { service: 'control/a' }), place('b', 'same', [{ ...agent, uid: 'uid-two', record: { ...record, agentUid: 'uid-two' } }], { service: 'control/b' })]));
+  render(<Overview {...props} />); const parent = await row();
+  const control = screen.getByRole('group', { name: 'Place' });
+  expect(within(control).getByRole('button', { name: 'same · agents · control/a' })).toBeTruthy();
+  expect(within(control).getByRole('button', { name: 'same · agents · control/b' })).toBeTruthy();
+  await userEvent.click(within(parent).getByRole('button', { name: 'Show places for reader' }));
+  expect(within(parent).getByRole('article', { name: 'same · agents · control/a, Passed' })).toBeTruthy();
+  expect(within(parent).getByRole('article', { name: 'same · agents · control/b, Passed' })).toBeTruthy();
+});
+
+test('a stale cluster keeps cached results unknown and recovers on a fresh read', async () => {
+  ipc(places([{ ...two, stale: true }])); render(<Overview {...props} />);
+  await expanded(); expect(screen.getByText(/Showing what Bridge saw/)).toBeTruthy();
+  expect(screen.getByRole('article', { name: 'team-two, Result unknown' })).toBeTruthy();
+  ipc(places([two])); await userEvent.click(screen.getByRole('button', { name: 'Check again' }));
+  await waitFor(() => expect(screen.getByRole('article', { name: 'team-two, Passed' })).toBeTruthy());
+});
+
+test('a failed cluster read marks cached clusters stale and never becomes onboarding', async () => {
+  ipc(); const view = render(<Overview {...props} />); await row();
   mockIPC(command => { if (command === 'overview_places') throw Error('nope'); return command === 'overview_files' ? saved() : local; });
-  await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
-  expect(await screen.findByText(/Couldn't read clusters just now/)).toBeTruthy();
-  const remote = screen.getByRole('region', { name: 'team-two' });
-  expect(within(remote).getByText('Result unknown')).toBeTruthy(); expect(within(remote).queryByText('Passed')).toBeNull();
+  view.rerender(<Overview {...props} active={false} />); view.rerender(<Overview {...props} />);
+  const error = screen.getByRole('article', { name: 'reader' });
+  await userEvent.click(within(error).getByRole('button', { name: 'Show places for reader' }));
   expect(screen.queryByRole('heading', { name: 'No agents yet' })).toBeNull();
+  // Re-read through the surviving failure control, not a removed top-level Refresh.
+  const failed = await screen.findByText(/Couldn't read clusters just now/);
+  expect(failed).toBeTruthy();
+  await userEvent.click(within(failed.parentElement!).getByRole('button', { name: 'Check again' }));
+  expect(await screen.findByRole('article', { name: 'team-two, Result unknown' })).toBeTruthy();
 });
 
-test('without saved Send summaries cluster cards say they could not check, and Earlier Sends never appears', async () => {
-  ipc(places([two], { historyState: 'unavailable', unobserved: [{ ...record, agentUid: null, verdict: 'unknown' }] })); render(<Overview {...props} />);
-  const remote = await group('team-two');
-  expect(within(remote).getByText("Couldn't check")).toBeTruthy();
-  expect(remote.querySelector('.pill.status-needs-you')).toBeTruthy();
+test('unavailable Send history produces an alert and no trusted pass evidence', async () => {
+  ipc(places([{ ...two, agents: [{ ...agent, uid: 'uid-three', record: null }] }], { historyState: 'unavailable', unobserved: [{ ...record, agentUid: null, verdict: 'unknown' }] })); render(<Overview {...props} />);
+  const parent = await expanded('same-name');
+  expect(within(parent).getByRole('article', { name: "team-two, Couldn't check" })).toBeTruthy();
   expect(screen.getByRole('alert').textContent).toContain('Saved Send results are unavailable');
-  expect(screen.queryByText('Earlier Sends')).toBeNull(); expect(screen.queryByRole('region', { name: 'Earlier Sends' })).toBeNull();
+  expect(screen.queryByText('Earlier Sends')).toBeNull();
 });
 
-test('cluster Details hold the generated identity; nothing generated is on the card face', async () => {
+test('cluster Details contain generated identity while the place face does not', async () => {
   ipc(places([two])); render(<Overview {...props} />);
-  const c = within(await group('team-two')).getByRole('article', { name: /^reader/ });
-  expect(c.textContent).not.toMatch(/uid-three|same-name/);
-  await userEvent.click(within(c).getByRole('button', { name: 'Details' }));
-  expect(within(c).getByText('same-name')).toBeTruthy(); expect(within(c).getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy();
+  const remote = within(await expanded()).getByRole('article', { name: 'team-two, Passed' });
+  expect(remote.textContent).not.toMatch(/uid-three|same-name/);
+  await userEvent.click(within(remote).getByRole('button', { name: 'Details' }));
+  expect(within(remote).getByText('same-name')).toBeTruthy();
+  expect(within(remote).getByRole('button', { name: 'Copy Agent ID' })).toBeTruthy();
 });
 
-test('unlinked local Agent and a cluster with no agents', async () => {
-  ipc(places([place('empty', 'team-empty', [])]), saved([]), { ...local, agents: [{ name: 'mine', namespace: 'orka-system', uid: 'mine-uid' }] });
+test('an unconnected or empty place is represented by status notes, not an invented green row', async () => {
+  ipc(places([place('west', 'team-west', [], { observedAt: null, stale: true, checkedAt: 1234567890000 }), place('empty', 'team-empty', [])]), saved([]), { ...local, agents: [{ name: 'mine', namespace: 'orka-system', uid: 'mine-uid' }] });
   render(<Overview {...props} />);
-  expect(await screen.findByText('No agents in agents yet.')).toBeTruthy();
-  expect(within(await group('This computer')).getByRole('heading', { level: 3, name: 'mine' })).toBeTruthy();
+  expect(await screen.findByText('Not connected since Bridge started. Connect it to see its agents.')).toBeTruthy();
+  expect(screen.getByText('No agents in agents yet.')).toBeTruthy();
+  const unlinked = await expanded('mine');
+  expect(within(unlinked).getByRole('article', { name: 'This computer, No recorded result' })).toBeTruthy();
   expect(screen.queryByRole('heading', { name: 'No agents yet' })).toBeNull();
 });
 
@@ -278,5 +204,5 @@ test('replies after hiding are ignored', async () => {
   await waitFor(() => expect(resolve).toBeTypeOf('function'));
   view.rerender(<Overview {...props} active={false} />);
   await act(async () => { resolve(places()); await Promise.resolve(); });
-  expect(view.container.querySelector('section[aria-label="team-one"]')).toBeNull();
+  expect(view.container.querySelector('.overview-places')).toBeNull();
 });

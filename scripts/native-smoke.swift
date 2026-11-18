@@ -228,6 +228,12 @@ func visibleButtons(_ label: String) -> [CGRect] {
     nativeButtons(label).filter { attribute($0, "AXEnabled") as? Bool == true }
         .compactMap { nativeBounds($0) }.filter { bodyBounds().contains($0) }
 }
+func setOverviewExpanded(_ title: String, _ expanded: Bool) {
+    let label = "Show places for \(title)"
+    let controls = nativeButtons(label)
+    require(controls.count == 1, "Cannot identify Overview disclosure \(label)")
+    if attribute(controls[0], "AXExpanded") as? Bool != expanded { clickButton(label) }
+}
 func clickButton(_ label: String) {
     for attempt in 0..<8 {
         let found = visibleButtons(label)
@@ -370,10 +376,12 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         guard let tiff = comparison.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff), let png = bitmap.representation(using: .png, properties: [:]) else { fail("Cannot compose native comparison") }
         try png.write(to: URL(fileURLWithPath: "\(output)/\(name)-comparison.png"))
     }
+    // Overview's scrolled evidence can paint an overlay scrollbar at the window edge.
+    let chromeInset = name == "overview" || name.hasPrefix("overview-") ? 20 : 8
     // Render the PNG's profile into sRGB bytes; NSColor calibration changed the sampled values.
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
         let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-        let pixel = image.cropping(to: CGRect(x: CGFloat(image.width - 8), y: CGFloat(image.height - 8), width: 1, height: 1)),
+        let pixel = image.cropping(to: CGRect(x: CGFloat(image.width - chromeInset), y: CGFloat(image.height - 8), width: 1, height: 1)),
         let space = CGColorSpace(name: CGColorSpace.sRGB) else { fail("Cannot decode screenshot") }
     var rgba = [UInt8](repeating: 0, count: 4)
     let sampled = rgba.withUnsafeMutableBytes { bytes in
@@ -402,7 +410,7 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         "\(observation.boundingBox): \(observation.topCandidates(1).first?.string ?? "")"
     }.joined(separator: "\n")
     try recognized.write(toFile: "\(output)/\(name).ocr.txt", atomically: true, encoding: .utf8)
-    if name == "new-agent-probe" || name == "send-probe" || name == "cluster-probe" || name == "overview-probe" || name.hasPrefix("overview-fixture-") { return observations }
+    if name == "new-agent-probe" || name == "send-probe" || name == "cluster-probe" || name == "overview-probe" || name.hasPrefix("overview-probe-") || name.hasPrefix("overview-fixture-") { return observations }
     if name.hasPrefix("new-agent-") && name.hasSuffix("-end") {
         require(visibleButtons("Create").count == 1 && visibleButtons("Cancel").count == 1, "Creation actions overlap the fixed chrome")
         return observations
@@ -924,13 +932,27 @@ let retained = try capture("places-retained", "Clusters")
 require(!retained.contains { $0.topCandidates(1).first?.string == "Get started" },
         "Restart must retain welcome dismissal without starting a workspace")
 clickTab("Overview", retained)
-let overview = try capture("overview", "Overview")
+_ = try capture("overview", "Overview")
 require(!nativeTextIsVisible("This workspace can't list its agents yet."),
         "Saved files must not be contradicted by a local inventory caveat")
 require(!visibleButtons("Open web-reader").isEmpty && nativeTextIsVisible("web-reader"),
         "Overview must show the saved file opened through the native Designer")
-clickTab("Designer", overview)
-let designer = try capture("designer-pointer", "Designer")
+func activateOverviewButton(_ label: String) throws {
+    let buttons = nativeButtons(label).filter { attribute($0, "AXEnabled") as? Bool == true }
+        .filter { nativeBounds($0).map(bodyBounds().contains) == true }
+    require(buttons.count == 1, "Cannot identify keyboard Overview control \(label)")
+    require(AXUIElementSetAttributeValue(buttons[0], kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success,
+            "Cannot focus Overview control \(label)")
+    key(36)
+    Thread.sleep(forTimeInterval: 0.5)
+}
+try activateOverviewButton("Show places for web-reader")
+_ = try capture("overview-expanded-keyboard", "Overview")
+require(nativeTextIsVisible("This computer"), "Keyboard disclosure did not reveal Overview places")
+try activateOverviewButton("Open web-reader")
+let designer = try capture("designer-opened-from-overview-keyboard", "Designer")
+require(designer.contains { ($0.topCandidates(1).first?.string ?? "") == "web-reader" },
+        "Keyboard Open did not retain the saved agent destination")
 let clustersTab = clickTab("Clusters", designer)
 try capture("clusters-pointer", "Clusters")
 // Pointer activation on macOS need not focus a button. Establish and verify the
@@ -1425,7 +1447,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try resultSize(1220, 900)
     try clickSendControl("See in Overview", scrolling: -350)
     Thread.sleep(forTimeInterval: 1)
-    let passedUID = try recordShot("overview-fixture-versions-passed-by-place", "Passed")
+    let passedUID = try recordShot("overview-fixture-versions-passed-expanded", "Passed")
     clickTab("Designer", [])
     try resultSize(540, 640)
     // Read side effects only from the loopback fixture after real native IPC/HTTP.
@@ -1563,15 +1585,15 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
             "Native Overview size not verified")
     func visibleTextBounds(_ text: String) -> [CGRect] { nativeTextBounds(text) }
     @discardableResult
-    func overviewShot(_ name: String, _ required: [String], heading: String? = nil) throws -> [VNRecognizedTextObservation] {
+    func overviewShot(_ name: String, _ required: [String]) throws -> [VNRecognizedTextObservation] {
         scrollMain(12000)
         for _ in 0..<40 {
-            let anchors = heading.map { nativeTextBounds($0, heading: true) } ?? visibleTextBounds(required[0])
+            let anchors = visibleTextBounds(required[0])
             if !anchors.isEmpty && required.allSatisfy({ nativeTextIsVisible($0) }) {
-                let anchor = anchors[0]
-                scrollMain(-Int32(max(0, anchor.minY - window()!.1.minY - 150)))
-                require(required.allSatisfy({ nativeTextIsVisible($0) }) && (heading.map { !nativeTextBounds($0, heading: true).isEmpty } ?? true), "Overview state moved out of view: \(required)")
-                let seen = try capture(name, "Overview")
+                // The required state already fits. Reframing can scroll its recovery note away.
+                let seen = try capture(name, "Overview", afterFrame: {
+                    require(required.allSatisfy({ nativeTextIsVisible($0) }), "Overview state moved during capture: \(required)")
+                })
                 print("PASS \(name): visible native state \(required)")
                 return seen
             }
@@ -1590,29 +1612,29 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         fail("Overview state not visible for \(name): \(required)")
     }
     func recordShot(_ name: String, _ checks: String) throws -> String {
-        try overviewShot("overview-probe", [checks])
+        try overviewShot("overview-probe-collapsed", ["web-reader", checks])
+        setOverviewExpanded("web-reader", true)
         let viewport = bodyBounds()
-        let cards = nativeElements().compactMap { element -> (AXUIElement, CGRect)? in
+        let places = nativeElements().compactMap { element -> (AXUIElement, CGRect)? in
             guard attribute(element, "AXRole") as? String == "AXGroup",
                 ["AXTitle", "AXDescription"].contains(where: { (attribute(element, $0) as? String)?.hasSuffix(", \(checks)") == true }),
                 let bounds = nativeBounds(element), viewport.contains(bounds) else { return nil }
             return (element, bounds)
         }
-        guard let selected = cards.min(by: { $0.1.minY < $1.1.minY }) else { fail("No visible Overview card for \(checks)") }
-        let card = selected.0
-        // Another column's Details can be closer vertically; keep every action inside this card.
-        func cardButton(_ label: String) -> CGRect? {
-            guard let bounds = nativeBounds(card) else { return nil }
+        guard let selected = places.min(by: { $0.1.minY < $1.1.minY }) else { fail("No visible Overview place for \(checks)") }
+        let place = selected.0
+        func placeButton(_ label: String) -> CGRect? {
+            guard let bounds = nativeBounds(place) else { return nil }
             let matches = visibleButtons(label).filter { bounds.contains($0) }
             return matches.count == 1 ? matches[0] : nil
         }
-        guard let disclosure = cardButton("Details") else { fail("Details not visible inside the \(checks) card") }
+        guard let disclosure = placeButton("Details") else { fail("Details not visible inside the \(checks) place") }
         let point = CGPoint(x: disclosure.midX, y: disclosure.midY)
         mouse(.leftMouseDown, point); mouse(.leftMouseUp, point)
         Thread.sleep(forTimeInterval: 0.5)
         // Generated IDs are shortened on screen; exercise Copy instead of requiring a raw UID in the layout.
-        try overviewShot("overview-probe", [checks, "Agent ID"])
-        guard let copy = cardButton("Copy Agent ID") else { fail("Agent ID Copy not visible inside the \(checks) card") }
+        try overviewShot("overview-probe-expanded", [checks, "Agent ID"])
+        guard let copy = placeButton("Copy Agent ID") else { fail("Agent ID Copy not visible inside the \(checks) place") }
         NSPasteboard.general.clearContents()
         let copyPoint = CGPoint(x: copy.midX, y: copy.midY)
         mouse(.leftMouseDown, copyPoint); mouse(.leftMouseUp, copyPoint)
@@ -1621,21 +1643,24 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         require(uid.hasPrefix("uid-bridge-run-"), "Copy did not retain the full synthetic Agent UID")
         NSPasteboard.general.clearContents()
         try capture(name, "Overview")
-        if let close = cardButton("Details") {
+        if let close = placeButton("Details") {
             let p = CGPoint(x: close.midX, y: close.midY)
             mouse(.leftMouseDown, p); mouse(.leftMouseUp, p)
         }
+        setOverviewExpanded("web-reader", false)
         print("PASS \(name): \(checks), retained \(uid)")
         return uid
     }
     try clickSendControl("See in Overview", scrolling: -350)
     Thread.sleep(forTimeInterval: 1)
-    let unknownUID = try recordShot("overview-fixture-versions-unknown-by-place", "Result unknown")
+    let unknownUID = try recordShot("overview-fixture-versions-unknown-expanded", "Result unknown")
     // The rejected update also supersedes the original agent's earlier pass.
     // Either retained identity can therefore correctly lead the unknown cards;
     // their distinct UIDs and exact create count were verified at separate Send.
-    require(separateAgents.contains { $0["uid"] as? String == unknownUID }, "Unknown Overview card did not retain an acknowledged Agent UID")
-    try overviewShot("overview-fixture-external-by-place", ["runtime-reader", "Running on fixture-cluster, not saved here", "external-model", "web_fetch"])
+    require(separateAgents.contains { $0["uid"] as? String == unknownUID }, "Unknown Overview place did not retain an acknowledged Agent UID")
+    setOverviewExpanded("runtime-reader", true)
+    try overviewShot("overview-fixture-external-expanded", ["runtime-reader", "Running on fixture-cluster, not saved here"])
+    setOverviewExpanded("runtime-reader", false)
     // Explicit retries reuse this attempt's exact Task UID. Neither an HTTP
     // acknowledgement nor a lost response may manufacture a terminal result.
     clickTab("Designer", [])
@@ -1683,11 +1708,10 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try clickSendControl("Update agent and run tests", scrolling: -350)
     try capturePreflight("send-restored-shared-version", "1 of 1 tests passed")
     clickTab("Overview", [])
-    // Overview's explicit refresh gives the primary place its historical observation.
-    // Places shows it later without refreshing again; the secondary has none yet.
-    scrollMain(12000)
-    _ = try capture("overview-probe", "Overview")
-    clickButton("Refresh")
+    // Reopening Overview requests the primary place's historical observation;
+    // there is no grouping mode or top-level Refresh control in the list.
+    clickTab("Clusters", [])
+    clickTab("Overview", [])
     Thread.sleep(forTimeInterval: 1)
     // Confirm another real synthetic installation via the existing Use flow.
     clickTab("Clusters", [])
@@ -1787,29 +1811,24 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": true])
     clickTab("Overview", noReceipt)
     Thread.sleep(forTimeInterval: 1)
-    // Manage already observed the cluster's agents; an offline refresh keeps that earlier check.
-    try overviewShot("overview-fixture-first-read-unavailable", ["Couldn't check just now.", "Showing what Bridge saw", "runtime-reader"], heading: "fixture-secondary")
+    // Manage already observed the cluster's agents; an unavailable revisit keeps that earlier check.
+    try overviewShot("overview-fixture-first-read-unavailable", ["Couldn't check just now.", "Showing what Bridge saw", "runtime-reader"])
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false])
-    scrollMain(12000)
-    _ = try capture("overview-probe", "Overview")
-    clickButton("Refresh")
+    clickTab("Clusters", []); clickTab("Overview", [])
     Thread.sleep(forTimeInterval: 1)
-    try overviewShot("overview-fixture-multiple-places-by-place", ["fixture-secondary", "Passed"], heading: "fixture-secondary")
-    require(!nativeTextIsVisible("Earlier Sends"), "Unobserved Send attempts must stay in Send history, not become Overview cards")
-    scrollMain(12000)
-    clickText("By agent", in: try capture("overview-probe", "Overview"))
-    try overviewShot("overview-fixture-multiple-places-by-agent", ["web-reader", "This computer", "fixture-secondary"])
+    setOverviewExpanded("web-reader", true)
+    try overviewShot("overview-fixture-multiple-places-expanded", ["web-reader", "This computer", "fixture-secondary", "Passed"])
+    require(!nativeTextIsVisible("Earlier Sends"), "Unobserved Send attempts must stay in Send history, not become Overview places")
+    setOverviewExpanded("web-reader", false)
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": true])
     defer { try? fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false]) }
-    scrollMain(12000)
-    _ = try capture("overview-probe", "Overview")
-    clickButton("Refresh")
+    clickTab("Clusters", []); clickTab("Overview", [])
     Thread.sleep(forTimeInterval: 1)
-    try overviewShot("overview-fixture-offline-by-agent", ["fixture-secondary", "Last Send passed", "Result unknown"])
-    scrollMain(12000)
-    clickText("By cluster", in: try capture("overview-probe", "Overview"))
-    try overviewShot("overview-fixture-offline-by-place", ["fixture-secondary", "Couldn't check just now.", "Showing what Bridge saw"], heading: "fixture-secondary")
-    try overviewShot("overview-fixture-offline-record-by-place", ["Last Send passed", "Result unknown"])
+    setOverviewExpanded("web-reader", true)
+    // Anchor the recovery note's source label, not a distant place mark.
+    try overviewShot("overview-fixture-offline-expanded", ["fixture-secondary:", "Couldn't check just now.", "Showing what Bridge saw"])
+    try overviewShot("overview-fixture-offline-record-expanded", ["Last Send passed", "Result unknown"])
+    setOverviewExpanded("web-reader", false)
     try fixtureControl(["action": "offline", "place": "fixture-secondary", "offline": false])
     // Keep the existing preflight-only cards out of the focused Overview walk.
     // These identities still exercise the same blocked states without a Send.

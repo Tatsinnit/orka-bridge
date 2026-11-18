@@ -1572,7 +1572,9 @@ try {
       const failedRemote = { ...remote, name: 'checksum-checker', uid: 'remote-uid-2', record: { ...remote.record,
         id: '33333333-3333-4333-8333-333333333333', documentId: ids[0], plannedAgentName: 'checksum-checker', agentUid: 'remote-uid-2', verdict: 'failed', report: { verdict: 'failed', passed: 1, total: 3 } } };
       const external = { ...remote, name: 'review-helper', uid: 'external-uid', record: null };
-      const places = { historyState: 'complete', unobserved: [], places: variant === 'clusters' ? [{ key: 'fixture-remote', context: 'team-dev', service: 'control / orka', namespace: 'agents', stale: false, observedAt: now - 60000, agents: [remote, failedRemote, external] }] : [] };
+      const extraPlaces = ['team-secondary', 'team-staging', 'team-review'].map((context, index) => ({ key: 'fixture-extra-' + index, context, service: 'control / orka', namespace: 'agents', stale: false, observedAt: now - 60000, agents: [] }));
+      const longPlace = { ...extraPlaces[0], key: 'fixture-long-context', context: 'context-' + 'unbrokensegment'.repeat(16) };
+      const places = { historyState: 'complete', unobserved: [], places: variant === 'clusters' ? [{ key: 'fixture-remote', context: 'team-dev', service: 'control / orka', namespace: 'agents', stale: false, observedAt: now - 60000, agents: [remote, failedRemote, external] }, ...extraPlaces] : variant === 'starting' ? [longPlace] : [] };
       const progress = { phase: 'starting', bytes: null, totalBytes: null, elapsedMs: 12000, remainingMs: null };
       const starting = variant === 'starting';
       localStorage.setItem('bridge.welcomeSeen.v1', '1');
@@ -1603,65 +1605,99 @@ try {
     const check = async mode => {
       const body = await text();
       const fail = reason => { throw Error(`overview-${variant}/${size}/${mode}: ${reason}: ${body}`); };
+      const overflow = await evaluate(`(() => { const main = document.querySelector('main'); return Math.max(main.scrollWidth - main.clientWidth, ...[...document.querySelectorAll('.overview-filters .view-switch button')].map(button => button.scrollWidth - button.clientWidth)); })()`);
+      if (overflow > 2) fail('page or Place label overflows horizontally');
       if (variant === 'starting') {
         if (!/Starting the workspace/.test(body) || /stopped/i.test(body)) fail('startup must say starting, not stopped');
         return;
       }
-      for (const label of ['Failed', 'Passed', 'Not tested']) if (!body.includes(label)) fail(`missing ${label} verdict`);
       if (/bridge-chat-agent/.test(body)) fail('generated Chat Agent is visible');
+      const structure = await evaluate(`(() => {
+        const root = document.querySelector('section.overview');
+        const agents = [...root.querySelectorAll('.overview-agent')];
+        const places = [...root.querySelectorAll('.overview-place')];
+        const placeButtons = [...root.querySelectorAll('[role="group"][aria-label="Place"] button')].map(b => b.textContent);
+        const placeSelect = root.querySelector('select[aria-label="Place"]');
+        const nameFilter = root.querySelector('input[aria-label="Filter by name"]');
+        const disclosures = [...root.querySelectorAll('.overview-agent-head button[aria-label^="Show places for "]')];
+        return { agents: agents.length, places: places.length, placeButtons, placeOptions: placeSelect ? [...placeSelect.options].map(o => o.textContent) : [], nameFilter: !!nameFilter,
+          disclosures: disclosures.map(b => ({ expanded: b.getAttribute('aria-expanded'), label: b.getAttribute('aria-label') })),
+          oldCards: root.querySelectorAll('.overview-card').length, oldGroups: root.querySelectorAll('.overview-group').length,
+          oldViews: [...root.querySelectorAll('.page-heading button')].some(b => ['By agent', 'By cluster'].includes(b.textContent)),
+          refresh: [...root.querySelectorAll('.page-heading button')].some(b => b.textContent === 'Refresh') };
+      })()`);
+      if (!structure.agents || !structure.nameFilter || (variant === 'clusters' ? structure.placeOptions[0] !== 'All places' || structure.placeOptions.length !== 6 : structure.placeButtons[0] !== 'All')) fail('list filters, place threshold, or agent rows missing');
+      if (structure.oldCards || structure.oldGroups || structure.oldViews || structure.refresh) fail('obsolete grouping or Refresh controls remain');
+      if (mode === 'collapsed' && (structure.places || structure.disclosures.some(d => d.expanded !== 'false'))) fail('places must be unmounted while collapsed');
+      if (mode === 'expanded' && (!structure.places || structure.disclosures.some(d => d.expanded !== 'true'))) fail('places must be mounted after expansion');
+      if (mode === 'collapsed') return;
+      for (const label of ['Failed', 'Passed', 'Not tested']) if (!body.includes(label)) fail(`missing ${label} verdict`);
       const readiness = await evaluate(`(() => {
         const root = document.querySelector('section.overview');
         const reason = [...root.querySelectorAll('.overview-note')].filter(n => n.textContent === 'Connect the AI in Clusters to chat or run tests on this computer.');
-        const actions = [...root.querySelectorAll('.overview-card button')].filter(b => /^(Chat|Run tests) /.test(b.getAttribute('aria-label') ?? ''));
+        const actions = [...root.querySelectorAll('.overview-place button')].filter(b => /^(Chat|Run tests) /.test(b.getAttribute('aria-label') ?? ''));
         const local = actions.filter(b => b.closest('[data-card-key]').dataset.cardKey.startsWith('local/'));
         const remote = actions.filter(b => !b.closest('[data-card-key]').dataset.cardKey.startsWith('local/'));
-        return { reason: reason.length === 1 && reason[0].tabIndex === 0, local: local.length > 0 && local.every(b => b.disabled && b.getAttribute('aria-describedby') === reason[0]?.id), remote: remote.every(b => !b.disabled) };
+        const labels = [...document.querySelectorAll('.overview-place')].every(place => /, (?:No recorded result|[^,]+)$/.test(place.getAttribute('aria-label') ?? ''));
+        return { reason: reason.length === 1 && reason[0].tabIndex === 0, labels,
+          local: local.length > 0 && local.every(b => b.disabled && b.getAttribute('aria-describedby') === reason[0]?.id),
+          remote: remote.every(b => !b.disabled) };
       })()`);
-      if (!readiness.reason || !readiness.local || !readiness.remote) fail('local AI must gate local controls only, with one shared accessible reason');
+      if (!readiness.reason || !readiness.labels || !readiness.local || !readiness.remote) fail('local AI must gate local controls only, with exact place labels and one shared accessible reason');
       if (variant === 'clusters') {
         const proof = await evaluate(`(() => {
-          const find = key => document.querySelector('[data-card-key="' + key + '"]');
-          const describe = card => ({ text: card?.innerText, buttons: [...(card?.querySelectorAll('button, [role="button"]') ?? [])].map(b => b.textContent), group: card?.closest('.overview-group')?.querySelector('h2')?.textContent });
-          return { passed: describe(find('fixture-remote/remote-uid-1')), failed: describe(find('fixture-remote/remote-uid-2')), draft: describe(find('local/cccccccc-cccc-4ccc-8ccc-cccccccccccc')), external: describe(find('fixture-remote/external-uid')) };
+          const describe = key => {
+            const card = document.querySelector('[data-card-key="' + key + '"]');
+            return { text: card?.innerText, rowText: card?.closest('.overview-agent')?.innerText, buttons: [...(card?.querySelectorAll('button, [role="button"]') ?? [])].map(b => b.textContent), label: card?.getAttribute('aria-label') };
+          };
+          return { passed: describe('fixture-remote/remote-uid-1'), failed: describe('fixture-remote/remote-uid-2'), draft: describe('local/cccccccc-cccc-4ccc-8ccc-cccccccccccc'), external: describe('fixture-remote/external-uid') };
         })()`);
         if (!proof.passed.text?.includes('Not run since your edit') || !proof.passed.text.includes('2 of 2 passed, before your edit') || !proof.failed.text?.includes('1 of 3 passed, before your edit') || !proof.failed.text.includes('Failed')) fail('final counts or earlier-file verdicts missing');
-        if (mode === 'by-agent' && (proof.passed.group !== 'web-reader' || proof.failed.group !== 'checksum-checker')) fail('document identity lost to another file hash');
-        if (proof.draft.buttons.join('|') !== 'Open|Details' || !proof.draft.text?.includes('Draft') || !body.includes('Add instructions and a test to get started.')) fail('blank draft must be Open-only');
-        if (proof.external.buttons.join('|') !== 'Details' || !proof.external.text?.includes('Running on team-dev, not saved here')) fail('external Agent must be Details-only');
-        if (![proof.passed, proof.failed].every(c => c.buttons.join('|') === 'Open|Run tests|Details')) fail('linked cluster actions missing');
+        if (proof.draft.buttons.join('|') !== 'Details' || !proof.draft.text?.includes('Draft') || !body.includes('Add instructions and a test to get started.')) fail('blank draft place must expose only its evidence Details');
+        if (proof.external.buttons.join('|') !== 'Details' || !proof.external.rowText?.includes('Running on team-dev, not saved here')) fail('external Agent must retain only evidence Details and its owning-row description');
+        if (![proof.passed, proof.failed].every(c => c.buttons.join('|') === 'Run tests|Details')) fail('linked cluster fitting action or Details missing');
       }
       if (variant === 'local-only' && body.includes('team-dev')) fail('remote cluster should be absent');
-      const overflow = await evaluate(`(() => { const main = document.querySelector('main'); return main.scrollWidth - main.clientWidth; })()`);
-      if (overflow > 2) fail('page overflows horizontally');
     };
     if (variant === 'starting') {
       await until(async () => /Starting the workspace/.test(await text()), 'Overview startup note');
-      await check('');
-      await shoot('');
+      await until(() => evaluate(`[...document.querySelectorAll('section.overview .view-switch button')].some(button => button.textContent.length > 200)`), 'Overview long context label');
+      await check('collapsed');
+      await shoot('-collapsed');
       return;
     }
-    await until(async () => (await text()).includes('Not tested'), 'Overview cards');
-    const captureCards = async mode => {
-      await check(mode);
-      await evaluate(`document.querySelector('main').scrollTo(0, 0)`);
-      await shoot('-' + mode);
-      if (variant !== 'clusters') return;
-      // These are fixed expressions, not data interpolated into executable JavaScript.
-      for (const [scene, card] of [
-        ['earlier-pass', `document.querySelector('[data-card-key="fixture-remote/remote-uid-1"]')`],
-        ['earlier-failed', `document.querySelector('[data-card-key="fixture-remote/remote-uid-2"]')`],
-        ['draft', `document.querySelector('[data-card-key="local/cccccccc-cccc-4ccc-8ccc-cccccccccccc"]')`],
-      ]) {
-        await evaluate(`${card}.scrollIntoView({ block: 'center' })`);
-        const visible = await evaluate(`(() => { const r = ${card}.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()`);
-        if (!visible) throw Error('Overview evidence card is outside the viewport: ' + scene);
-        await shoot('-' + mode + '-' + scene);
-      }
-    };
-    await captureCards('by-cluster');
-    await clickAction('By agent');
-    await until(() => evaluate(`document.querySelector('.view-switch button:nth-child(2)')?.getAttribute('aria-pressed') === 'true'`), 'By agent view');
-    await captureCards('by-agent');
+    await until(async () => (await text()).includes('web-reader'), 'Overview agent rows');
+    await check('collapsed');
+    const filterProof = await evaluate(`(() => {
+      const root = document.querySelector('section.overview');
+      const input = root.querySelector('input[aria-label="Filter by name"]');
+      const setInput = value => { const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); };
+      setInput('checksum-checker');
+      return new Promise(resolve => requestAnimationFrame(() => {
+        const named = root.querySelectorAll('.overview-agent').length;
+        setInput('');
+        requestAnimationFrame(() => { const reset = root.querySelectorAll('.overview-agent').length; resolve({ named, reset }); });
+      }));
+    })()`);
+    if (filterProof.named !== 1 || filterProof.reset <= 1) throw Error('Overview name filter did not narrow and reset the real rows');
+    await evaluate(`document.querySelector('main').scrollTo(0, 0)`);
+    await shoot('-collapsed');
+    await evaluate(`[...document.querySelectorAll('.overview-agent-head button[aria-label^="Show places for "][aria-expanded="false"]')].forEach(button => button.click())`);
+    await until(() => evaluate(`document.querySelectorAll('.overview-place').length > 0`), 'expanded Overview places');
+    await check('expanded');
+    await evaluate(`document.querySelector('main').scrollTo(0, 0)`);
+    await shoot('-expanded');
+    if (variant !== 'clusters') return;
+    for (const [scene, card] of [
+      ['earlier-pass', `document.querySelector('[data-card-key="fixture-remote/remote-uid-1"]')`],
+      ['earlier-failed', `document.querySelector('[data-card-key="fixture-remote/remote-uid-2"]')`],
+      ['draft', `document.querySelector('[data-card-key="local/cccccccc-cccc-4ccc-8ccc-cccccccccccc"]')`],
+    ]) {
+      await evaluate(`${card}.scrollIntoView({ block: 'center' })`);
+      const visible = await evaluate(`(() => { const r = ${card}.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })()`);
+      if (!visible) throw Error('Overview evidence place is outside the viewport: ' + scene);
+      await shoot('-expanded-' + scene);
+    }
   }
   const notes = [];
   await resizeTo({ width: 1280, height: 800 }, 'Wide');

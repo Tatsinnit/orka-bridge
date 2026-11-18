@@ -143,6 +143,8 @@ test('an unreachable model stays in setup with explicit recovery and never repla
 test.each(['edited', 'unreadable'] as const)('completion file freshness survives subsequent native status polls (%s)', async state => {
   const { ipc, finish, editFiles, loseFileReads } = native(); const user = await completeSetup();
   await screen.findByText('Setting up, step 4 of 4');
+  // Step 4 also covers preparation; edit only after submission to exercise completion freshness.
+  await waitFor(() => expect(ipc.mock.calls.filter(([command]) => command === 'agent_run')).toHaveLength(1));
   if (state === 'edited') editFiles(); else loseFileReads();
   finish();
   await waitFor(() => expect(screen.getByRole('button', { name: 'Designer' }).getAttribute('aria-current')).toBe('page'));

@@ -2,12 +2,12 @@ import type { Status } from '../components/DesignSystem';
 import { sameSource } from '../designer/agent-api';
 import type { LiveAgents, Observation, Place, Places, SavedFile, SavedFiles } from './api';
 
-export type CardAction = { id: 'open' | 'chat' | 'run'; primary?: boolean };
+export type CardAction = { id: 'open' | 'chat' | 'run' };
 export type Detail = { label: string; value: string; copy?: boolean };
 export type Card = {
   key: string; groupKey: string; agentKey: string; title: string; place: string; subject: string;
   status?: Status; pill?: string; testedAt?: number; description: string;
-  meta: { tests?: string; model?: string; tools?: string; also: string[]; on?: string };
+  meta: { tests?: string };
   documentId?: string; remote: boolean; actions: CardAction[]; details: Detail[];
 };
 export type Note = { text: string; seen?: number; check?: boolean; clusters?: boolean };
@@ -71,12 +71,11 @@ function localActions(file: SavedFile, status: Status, chat: boolean, run: boole
   if (file.state !== 'readable') return [];
   if (file.draft) return [{ id: 'open' }];
   return [
-    { id: 'open', primary: status === 'failed' },
+    { id: 'open' },
     ...(chat && status !== 'failed' ? [{ id: 'chat' as const }] : []),
-    ...(run ? [{ id: 'run' as const, primary: status !== 'passed' && status !== 'failed' }] : []),
+    ...(run ? [{ id: 'run' as const }] : []),
   ];
 }
-const toolText = (tools?: string[] | null) => tools ? tools.join(', ') || 'no tools' : undefined;
 
 export function buildCards(i: Inputs) {
   const files = i.files?.state === 'complete' ? i.files : undefined;
@@ -88,15 +87,12 @@ export function buildCards(i: Inputs) {
   const labels = placeLabels(i.places?.places ?? []);
   // New Sends identify the document even after an edit or when another file has identical bytes.
   // Only legacy records without document evidence may use the exactly-one-hash fallback.
-  const linked = new Map<string, string[]>();
   const remote = (i.places?.places ?? []).flatMap(place => place.agents.map(agent => {
     const record = i.places?.historyState === 'complete' ? agent.record : null;
     const file = record ? record.documentId ? saved.find(f => f.documentId === record.documentId)
       : record.detailState === undefined || record.detailState === 'legacy' ? ownedFile(record.source, saved) : undefined : undefined;
-    if (file) linked.set(file.documentId, [...(linked.get(file.documentId) ?? []), place.key]);
     return { place, agent, record, file };
   }));
-  const where = (documentId: string, except?: string) => [...new Set(linked.get(documentId) ?? [])].filter(k => k !== except).map(k => labels.get(k)!);
 
   const local: Card[] = saved.map(file => {
     const { result, running } = resultFor(file, i.observed, i.finals, i.pending && i.activeDocumentId === file.documentId);
@@ -108,7 +104,7 @@ export function buildCards(i: Inputs) {
     return {
       key: `local/${file.documentId}`, groupKey: 'local', agentKey: file.documentId, title: fileTitle(file), place: 'This computer', subject: file.name,
       status: s.status, pill: s.pill, testedAt: result?.observedAt, description: file.summary?.description || file.reason || 'No description in the agent file.',
-      meta: { tests: counts, model: file.summary?.model, tools: toolText(file.summary?.tools), also: where(file.documentId) },
+      meta: { tests: counts },
       documentId: file.state === 'readable' ? file.documentId : undefined, remote: false, actions: localActions(file, s.status, i.chat && acts, i.run && acts), details,
     };
   });
@@ -121,7 +117,7 @@ export function buildCards(i: Inputs) {
   // it must never be used to claim ownership or authorize resource cleanup.
   const strays: Card[] = !ownershipKnown || !i.observed ? [] : i.observed.agents.filter(a => !/^bridge-chat-agent-[0-9a-f]{32}$/.test(a.name) && !owned.has(exact(i.observed!.installation, a.namespace, a.uid))).map(a => ({
     key: `local/${exact(a.namespace, a.uid)}`, groupKey: 'local', agentKey: `agent/local/${a.namespace}/${a.uid}`, title: a.name, place: 'This computer', subject: a.name,
-    description: 'Running on this computer, not saved here', meta: { also: [], on: 'This computer' }, remote: false, actions: [],
+    description: 'Running on this computer, not saved here', meta: {}, remote: false, actions: [],
     details: [{ label: 'Name on the cluster', value: a.name }, { label: 'Namespace', value: a.namespace }, { label: 'Agent ID', value: a.uid, copy: true }, { label: 'Last seen', value: absolute(i.observed!.observedAt) }],
   }));
   const unavailable = i.places?.historyState === 'unavailable';
@@ -137,11 +133,10 @@ export function buildCards(i: Inputs) {
     return {
       key: `${place.key}/${agent.uid}`, groupKey: place.key, agentKey: file?.documentId ?? `agent/${place.key}/${agent.uid}`, title: file ? fileTitle(file) : agent.name, place: name, subject: file?.name ?? agent.name,
       ...s, testedAt: record ? record.time * 1000 : undefined, description: file ? file.summary?.description || 'No description in the agent file.' : `Running on ${name}, not saved here`,
-      meta: { tests: record && place.stale ? `Last Send ${record.verdict}` : record?.report ? `${record.report.passed} of ${record.report.total} passed${earlier ? ', before your edit' : ''}` : undefined, model: agent.model ?? file?.summary?.model, tools: toolText(agent.tools ?? file?.summary?.tools),
-        also: file ? ['this computer', ...where(file.documentId, place.key)] : [], on: file ? undefined : name },
+      meta: { tests: record && place.stale ? `Last Send ${record.verdict}` : record?.report ? `${record.report.passed} of ${record.report.total} passed${earlier ? ', before your edit' : ''}` : undefined },
       documentId: file?.state === 'readable' ? file.documentId : undefined, remote: true,
-      actions: file?.state === 'readable' ? [{ id: 'open', primary: s.status === 'failed' },
-        ...(!place.stale && !i.filesStale && !file.draft && i.run ? [{ id: 'run' as const, primary: s.status !== 'passed' && s.status !== 'failed' }] : [])] : [], details,
+      actions: file?.state === 'readable' ? [{ id: 'open' },
+        ...(!place.stale && !i.filesStale && !file.draft && i.run ? [{ id: 'run' as const }] : [])] : [], details,
     };
   });
   return { cards: [...local, ...strays, ...remoteCards], local, strays, remoteCards, saved, history, state, labels };
@@ -160,7 +155,7 @@ export function clusterGroups(i: Inputs, built: Built): Group[] {
   if (state === 'busy') notes.push({ text: 'The workspace is busy right now.', seen, check: true });
   if (state === 'stopped') notes.push({ text: 'The workspace is stopped. Start it to test or chat.', clusters: true });
   if (state === 'read') notes.push({ text: "Couldn't check just now.", seen, check: true });
-  if (i.files?.state === 'complete' && !history && !i.filesStale) notes.push({ text: "Test history is unavailable, so other agents on this cluster aren't shown and results are unknown." });
+  if (i.files?.state === 'complete' && !history && !i.filesStale) notes.push({ text: "Test history is unavailable, so other agents on this cluster aren't shown and results are unknown.", check: true });
   if (history && state === 'ok' && !local.length && !strays.length) notes.push({ text: 'No agents on this computer yet.' });
   const groups: Group[] = [{ key: 'local', title: 'This computer', notes, cards: [...local, ...strays], count: local.length + strays.length || undefined }];
   (i.places?.places ?? []).forEach(place => {
@@ -173,18 +168,22 @@ export function clusterGroups(i: Inputs, built: Built): Group[] {
   });
   return groups;
 }
-export function agentGroups(cards: Card[], files: SavedFile[]): Group[] {
-  const groups: Group[] = files.map(f => ({ key: f.documentId, title: fileTitle(f), description: f.summary?.description || f.reason || undefined, notes: [], cards: cards.filter(c => c.agentKey === f.documentId) }));
-  const strays = cards.filter(c => !files.some(f => f.documentId === c.agentKey));
-  return [...groups, ...(strays.length ? [{ key: 'unlinked', title: 'Running agents, not saved here', notes: [], cards: strays }] : [])].map(g => ({ ...g, count: g.cards.length }));
+export type AgentRow = { key: string; title: string; description: string; cards: Card[]; status?: Status; testedAt?: number };
+const urgency = (status?: Status) => status === 'failed' ? 0 : status === 'running' ? 1 : status === 'stale' ? 2 : 3;
+export function agentRows(cards: Card[], place = 'all', name = ''): AgentRow[] {
+  const rows = new Map<string, Card[]>();
+  cards.forEach(card => rows.set(card.agentKey, [...(rows.get(card.agentKey) ?? []), card]));
+  return [...rows].flatMap(([key, all]) => {
+    const first = all.find(c => !c.remote) ?? all[0];
+    const visible = all.filter(c => place === 'all' || c.groupKey === place);
+    if (!visible.length || !first.title.toLocaleLowerCase().includes(name.trim().toLocaleLowerCase())) return [];
+    const worst = visible.reduce((a, b) => urgency(a.status) <= urgency(b.status) ? a : b);
+    const times = visible.flatMap(c => c.testedAt === undefined ? [] : [c.testedAt]);
+    return [{ key, title: first.title, description: first.description, cards: visible, status: worst.status, testedAt: times.length ? Math.max(...times) : undefined }];
+  }).sort((a, b) => urgency(a.status) - urgency(b.status) || (b.testedAt ?? -Infinity) - (a.testedAt ?? -Infinity) || a.title.localeCompare(b.title) || a.key.localeCompare(b.key));
 }
-// Each group goes to the shorter stack by card count; order inside a stack stays logical.
-export function balance(groups: Group[]): [Group[], Group[]] {
-  const stacks: [Group[], Group[]] = [[], []]; const load = [0, 0];
-  groups.forEach(g => { const k = load[1] < load[0] ? 1 : 0; stacks[k].push(g); load[k] += 1 + g.cards.length; });
-  return stacks;
-}
-export function summaryLabel(cards: Card[], partial: boolean) {
+
+export function summaryLabel(cards: { status?: Status }[], partial: boolean) {
   const failed = cards.filter(c => c.status === 'failed').length;
   return `${cards.length} ${cards.length === 1 ? 'agent' : 'agents'}${partial ? ' shown' : ''}${failed ? `, ${failed} failed` : ''}`;
 }

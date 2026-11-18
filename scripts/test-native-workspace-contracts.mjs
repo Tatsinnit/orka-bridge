@@ -101,7 +101,7 @@ for (const size of ['wide', 'minimum']) {
   for (const view of ['tests', 'chat']) assert.ok(destinationCaptures.has(`local-designer-waiting-${view}-${size}`), `allocated Designer waiting capture missing: ${view}/${size}`);
 }
 assert.ok(destinationCaptures.has('local-workspace-inside'));
-assert.equal(captures.model.length, 202, '198 upstream model frames plus four long-Chat frames must remain intact');
+assert.equal(captures.model.length, 208, '202 incoming model frames plus six existing Overview list/evidence captures must remain intact');
 assert.equal(destinationCaptures.size, 45, '18 cluster/catalog frames plus27 returning workspace/Designer frames');
 assert.ok(captures.model.every(name => !destinationCaptures.has(name)), 'native journeys must be disjoint');
 const mac = await read('./native-model-macos.swift');

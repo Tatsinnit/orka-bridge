@@ -335,7 +335,8 @@ fn main() {
                         "agentType":"runtime","model":"team-model","tools":["web_fetch"],"record":null
                     }]
                 },{
-                    "key":"team-remembered","context":"team-west","service":"control/orka","namespace":"agents",
+                    // A long remembered label exercises the Overview filter; discovery fixtures below remain independent.
+                    "key":"team-remembered","context":format!("context-{}", "unbrokensegment".repeat(7)),"service":"control/orka","namespace":"agents",
                     "stale":true,"observedAt":null,"agents":[]
                 }]})
                 },

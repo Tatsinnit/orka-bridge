@@ -72,7 +72,7 @@ test.each(['preparing', 'installing', 'starting', 'closing', 'failed'])('Overvie
   await user.click(screen.getByRole('button', { name: 'Overview' }));
   const page = await screen.findByRole('main', { name: 'Your agents' });
   const expected = localVm === 'starting' ? 'Starting the workspace' : localVm === 'closing' ? 'Stopping the workspace' : localVm === 'failed' ? 'Setup failed' : 'Getting the workspace ready';
-  const overview = within(page).getByRole('region', { name: 'Agents by cluster' });
+  const overview = within(page).getByRole('region', { name: 'Your agents' });
   expect(await within(overview).findByText(expected)).toBeTruthy();
   expect(within(overview).queryByText(/The workspace is stopped/)).toBeNull();
 });
@@ -91,7 +91,7 @@ test.each(['closed', 'failed'])('Overview shows a pending start before the first
   await openLocalSetup(user);
   await user.click(await screen.findByRole('button', { name: localVm === 'failed' ? 'Try again' : 'Start again' }));
   await user.click(screen.getByRole('button', { name: 'Overview' }));
-  const overview = screen.getByRole('region', { name: 'Agents by cluster' });
+  const overview = screen.getByRole('region', { name: 'Your agents' });
   expect(await within(overview).findByText('Getting your workspace ready…')).toBeTruthy();
   expect(within(overview).queryByText(/stopped|Setup failed/i)).toBeNull();
 });
@@ -166,7 +166,8 @@ test('Overview reads saved documents without opening, setup or VM commands; Open
   expect(calls.filter(c => c === 'agent_open')).toHaveLength(1);
 });
 
-test.each(['Chat', 'Run tests'] as const)('Overview %s routes to the saved document on This computer', async action => {
+test('Overview fitting Chat routes to the saved document on This computer', async () => {
+  const action = 'Chat';
   vi.stubGlobal('isTauri', true);
   const id = '12345678-1234-4234-8234-123456789abc';
   const installation = '22345678-1234-4234-8234-123456789abc';
@@ -189,7 +190,9 @@ test.each(['Chat', 'Run tests'] as const)('Overview %s routes to the saved docum
   await openLocalSetup(user);
   await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
   await user.click(screen.getByRole('button', { name: 'Overview' }));
-  await user.click(await screen.findByRole('button', { name: `${action} reader` }));
+  const row = await screen.findByRole('article', { name: 'reader' });
+  await user.click(within(row).getByRole('button', { name: 'Show places for reader' }));
+  await user.click(within(row).getByRole('button', { name: `${action} reader` }));
   await screen.findByRole('heading', { name: 'reader', level: 1 });
   if (action === 'Chat') await waitFor(() => expect(screen.getByRole('button', { name: 'Chat', pressed: true })).toBeTruthy());
   else await waitFor(() => expect(calls.filter(call => call.command === 'agent_run')).toEqual([{ command: 'agent_run', args: { documentId: id } }]));
@@ -555,8 +558,8 @@ test.each(['saved file', 'cluster Agent'])('%s Open keeps the selected cluster a
   await user.click(await screen.findByRole('button', { name: 'Use this cluster' }));
   await screen.findByRole('button', { name: 'Open your agent' });
   await user.click(screen.getByRole('button', { name: 'Overview' }));
-  const originRegion = await screen.findByRole('region', { name: origin === 'saved file' ? 'This computer' : 'team-dev' });
-  await user.click(await within(originRegion).findByRole('button', { name: origin === 'saved file' ? 'Open reader' : 'Open reader on team-dev' }));
+  const originRow = await screen.findByRole('article', { name: 'reader' });
+  await user.click(within(originRow).getByRole('button', { name: 'Open reader' }));
   await screen.findByRole('heading', { name: 'reader', level: 1 });
   // Opening a file or its agent from Overview keeps the selected Send destination; local tests are independent of it.
   expect(document.querySelector('.host-chip')?.textContent).toContain('team-dev');
@@ -646,10 +649,11 @@ test('Overview waits for native busy release even when the report is already com
   await within(screen.getByRole('contentinfo')).findByText('1 of 1 passed');
   await user.click(screen.getByRole('button', { name: 'Overview' }));
   await screen.findByText('Updating when the test finishes.');
-  await user.click(screen.getByRole('button', { name: 'Refresh' }));
   expect(lists).toBe(0);
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
   busy = false;
-  await within(screen.getByRole('region', { name: 'This computer' })).findByText('The workspace is stopped. Start it to test or chat.', {}, { timeout: 2000 });
+  await user.click(screen.getByRole('button', { name: 'Overview' }));
+  await screen.findByText('The workspace is stopped. Start it to test or chat.', {}, { timeout: 2000 });
   expect(lists).toBe(1);
 });
 

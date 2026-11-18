@@ -5,6 +5,7 @@ import { SAMPLE_DOCUMENT_ID, type SourceId, sameSource } from '../designer/agent
 import type { RunSnapshot } from '../designer/run-api';
 import { modelLabel } from '../designer/model-label';
 import type { SelectedPlace } from './api';
+import type { SendStart } from './use-send-settlement';
 import { type AttemptSummary, type Cancellation, type SendCheck, type SendHistoryDetail, type SendStatus, sendCall, sendErrors, sendHistory, sendHistoryDetail, sendPreflight } from './send-api';
 import './clusters.css';
 import { CardSection, Details, Elapsed, GeneratedValue, LongCard, type Status, StatusIcon, StatusPill } from '../components/DesignSystem';
@@ -167,11 +168,12 @@ export function SendHistory({ revision, onChanged }: { revision: string; onChang
       : history ? history.length ? <ol>{history.map(attempt => <SavedSend key={attempt.id} attempt={attempt} revision={revision} onChanged={onChanged} />)}</ol> : <p>No saved Sends yet.</p> : <p role="status">Reading saved Sends…</p>}
   </Disclosure></section>;
 }
-export default function Send({ expanded = true, documentId = SAMPLE_DOCUMENT_ID, place, source, model, agentName, testCount, local, stale, blocked, onChooseCluster, onReloadSource, onSeeInOverview, onFixLocal, onFixInDesigner }: {
+export default function Send({ expanded = true, documentId = SAMPLE_DOCUMENT_ID, place, source, model, agentName, testCount, local, stale, blocked, onChooseCluster, onReloadSource, onSeeInOverview, onFixLocal, onFixInDesigner, startSend: startOwnedSend }: {
   expanded?: boolean; documentId?: string; place: SelectedPlace; source?: SourceId; model?: string; agentName?: string; testCount?: number; local?: RunSnapshot; stale: boolean;
   blocked?: string; onChooseCluster?: () => void; onReloadSource?: () => Promise<void>; onFixInDesigner?: () => void;
   /** Opens Overview on the agent recorded for this native Send attempt. */
   onSeeInOverview?: (sendId: string) => void; onFixLocal?: (testId: string) => void;
+  startSend?: SendStart;
 }) {
   const [status, setSnapshot] = useState<SendStatus>();
   const snapshot = status?.documentId === documentId ? status.view : null;
@@ -207,12 +209,17 @@ export default function Send({ expanded = true, documentId = SAMPLE_DOCUMENT_ID,
   const busyDocumentId = foreignBusy?.documentId;
   const sendId = snapshot?.id; const sendState = snapshot?.state;
   useEffect(() => {
+    // Switching documents hides the old snapshot before the new status reply; that is not settlement.
+    if (status?.documentId !== documentId) return;
     const previous = previousSend.current;
     previousSend.current = sendId && sendState ? { id: sendId, state: sendState } : undefined;
-    const foreignFinished = !!previousBusy.current && !busyDocumentId;
+    const previousBusyDocument = previousBusy.current;
+    const foreignFinished = !!previousBusyDocument && !busyDocumentId;
     previousBusy.current = busyDocumentId;
-    if (foreignFinished || (previous?.id === sendId && previous?.state === 'running' && sendState !== 'running')) setRefresh(value => value + 1);
-  }, [sendId, sendState, busyDocumentId]);
+    const finished = !!sendId && !!sendState && sendState !== 'running'
+      && previous?.id === sendId && previous.state === 'running';
+    if (foreignFinished || finished) setRefresh(value => value + 1);
+  }, [documentId, status?.documentId, sendId, sendState, busyDocumentId]);
   const checkKey = JSON.stringify([documentId, targetId, providerId, agentHash, testsHash, refresh]);
   const checkingEnabled = !blocked && !!targetId && !!providerId && !!agentHash && !!testsHash;
   useEffect(() => {
@@ -248,8 +255,13 @@ export default function Send({ expanded = true, documentId = SAMPLE_DOCUMENT_ID,
     }
     admitted.current = true; setBusy(true); const request = ++epoch.current;
     try {
-      const result = await sendCall(command, { ...args, documentId });
-      if (request === epoch.current) { setSnapshot(result); setMessage(undefined); }
+      // App observes admission before this editor's epoch/unmount guards can discard its reply.
+      const result = await (command === 'send_start' && startOwnedSend ? startOwnedSend({ ...args, documentId }) : sendCall(command, { ...args, documentId }));
+      if (request === epoch.current) {
+        // A fast terminal admission still refreshes this card's destination checks.
+        if (command === 'send_start' && result.view && result.view.state !== 'running') setRefresh(value => value + 1);
+        setSnapshot(result); setMessage(undefined);
+      }
     } catch (error) { if (request === epoch.current) setMessage((error as Error).message); }
     finally { if (request === epoch.current) { admitted.current = false; setBusy(false); } }
   }

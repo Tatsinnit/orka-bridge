@@ -368,10 +368,55 @@ assert.ok(smoke.includes('clickButton("Show details")\n    clickButton("Change c
 assert.ok(smoke.includes('clickButton("Show details")\n    clickButton("Remove")'), 'restart removal must explicitly open details');
 // Source contracts supplement, but never substitute for, the hosted native walk.
 const model = await readFile(new URL('./native-model-macos.swift', import.meta.url), 'utf8');
-const modelCaptures = JSON.parse(await readFile(new URL('./native-model-captures.json', import.meta.url), 'utf8'));
+const captureManifest = JSON.parse(await readFile(new URL('./native-model-captures.json', import.meta.url), 'utf8'));
+assert.equal(captureManifest.model.length, 208);
+assert.equal(captureManifest['destinations-workspace'].length, 45);
+assert.equal(new Set([...captureManifest.model, ...captureManifest['destinations-workspace']]).size, 253);
+const overviewCaptures = [
+  ...['disconnected', 'connected'].flatMap(ai => ['wide', 'minimum'].flatMap(size => ['collapsed', 'expanded'].map(state => `local-overview-ai-${ai}-${state}-${size}`))),
+  ...['wide', 'compact', 'minimum'].flatMap(size => ['collapsed', 'expanded-earlier-pass', 'expanded-earlier-failed', 'expanded-draft'].map(state => `local-controls-overview-${state}-${size}`)),
+];
+assert.deepEqual(captureManifest.model.filter(name => name.includes('overview')).sort(), overviewCaptures.sort(), 'scoped manifest must retain every list/evidence capture with no obsolete grouping names');
+const overviewDriver = source.slice(source.indexOf('  // Overview renderer fixtures:'), source.indexOf('  const notes = []'));
+const expandOverview = overviewDriver.match(/await evaluate\(`(\[\.\.\.document\.querySelectorAll\('\.overview-agent-head[^`]+)`\);/)?.[1];
+assert.ok(expandOverview, 'Overview must activate its real disclosure controls');
+let overviewClicks = 0;
+vm.runInNewContext(expandOverview, { document: { querySelectorAll(selector) {
+  assert.equal(selector, '.overview-agent-head button[aria-label^="Show places for "][aria-expanded="false"]');
+  return [{ click() { overviewClicks++; } }, { click() { overviewClicks++; } }];
+} } });
+assert.equal(overviewClicks, 2, 'the injected expression must parse and activate each collapsed row');
+const overviewSeed = overviewDriver.match(/await evaluate\(`([\s\S]*?)`\);/)?.[1];
+assert.ok(overviewSeed);
+const overviewWindow = {};
+vm.runInNewContext(overviewSeed.replace('${JSON.stringify(variant)}', JSON.stringify('starting')).replace('${JSON.stringify(pair)}', '{}'), {
+  window: overviewWindow, localStorage: { setItem() {} }, document: { getElementById: () => ({ replaceWith() {} }), createElement: () => ({}) },
+});
+const longPlaces = await overviewWindow.__TAURI_INTERNALS__.invoke('overview_places');
+assert.equal(longPlaces.places.length, 1, 'starting must exercise a segmented remote-place control');
+assert.ok(longPlaces.places[0].context.length > 200, 'the native viewport case must include an unbroken long context label');
+assert.ok(overviewDriver.includes(".overview-agent-head button[aria-label^=\"Show places for \"]"), 'Overview fixtures must drive the real agent disclosure contract');
+assert.ok(overviewDriver.includes("document.querySelectorAll('.overview-place')"), 'Overview fixtures must prove place evidence is mounted only after expansion');
+assert.ok(overviewDriver.includes("document.querySelector('[data-card-key=\"fixture-remote/remote-uid-1\"]')"), 'expanded places must retain exact Card keys');
+assert.ok(overviewDriver.includes("getAttribute('aria-label')"), 'place accessibility labels must be accepted by the capture gate');
+assert.ok(overviewDriver.includes("card?.querySelectorAll('button, [role=\"button\"]')"), 'Overview action proof must include summary-based Details controls');
+assert.ok(overviewDriver.includes('oldCards:') && overviewDriver.includes('oldGroups:') && !overviewDriver.includes("clickAction('By agent')") && !overviewDriver.includes("clickAction('By cluster')"), 'obsolete grouping/card controls must be rejected by the Overview fixture');
+assert.ok(overviewDriver.includes("shoot('-collapsed')") && overviewDriver.includes("shoot('-expanded')"), 'Overview must capture collapsed and expanded native states');
+assert.ok(model.includes('local-overview-ai-disconnected-collapsed-') && model.includes('local-overview-ai-connected-expanded-'), 'native model fixtures must cover disconnected and connected list states');
+assert.ok(!model.includes('by-cluster') && !model.includes('by-agent'), 'native model fixtures must not retain grouping controls');
+assert.ok(model.includes('Cannot bring Overview disclosure into view') && model.includes('let top = enabledButton("Overview").flatMap(nativeBounds)?.maxY'), 'native Overview disclosures must be brought clear of fixed navigation before pointer activation');
+assert.ok(model.includes('capture("local-overview-ai-disconnected-collapsed-\\(size)", ["Your agents"])') && model.includes('require(nativeResultTextIsVisible("Connect the AI in Clusters to chat or run tests on this computer.")'), 'disconnected Overview must verify the exact native reason without fragile OCR of AI/Al');
+assert.ok(smoke.includes('Show places for web-reader') && smoke.includes('overview-fixture-multiple-places-expanded'), 'native smoke must expand the agent list before proving per-place evidence');
+assert.ok(!smoke.includes('heading: "fixture-secondary"'), 'place names are marks or evidence labels, never list headings');
+assert.ok(smoke.includes('overviewShot("overview-fixture-offline-expanded", ["fixture-secondary:",'), 'offline recovery must anchor its source label, not a distant place mark');
+const overviewShotGate = smoke.slice(smoke.indexOf('    func overviewShot('), smoke.indexOf('    func recordShot('));
+assert.ok(overviewShotGate.includes('afterFrame:') && !overviewShotGate.includes('anchor.minY'), 'capture the already-visible native Overview state; do not scroll it away for cosmetic framing');
+assert.ok(smoke.includes('name.hasPrefix("overview-probe-")'), 'renamed scrolled Overview probes must retain the existing heading exemption');
+assert.ok(smoke.includes('CGFloat(image.width - chromeInset)') && smoke.includes('name.hasPrefix("overview-") ? 20 : 8'), 'Overview theme sampling must avoid its transient edge scrollbar without relaxing the theme tolerance');
+assert.ok(!smoke.includes('clickText("Refresh"') && !smoke.includes('clickButton("Refresh")') && !smoke.includes('clickText("By agent"') && !smoke.includes('clickText("By cluster"'), 'native smoke must remove top Refresh and grouping-only Overview paths');
 for (const name of ['chat-long-early-wide', 'chat-long-early-minimum', 'chat-long-end-wide', 'chat-long-end-minimum']) {
-  assert.ok(modelCaptures.model.includes(name), `long Chat capture must belong to model scope: ${name}`);
-  assert.ok(!modelCaptures['destinations-workspace'].includes(name), `long Chat capture must not leak into destination scope: ${name}`);
+  assert.ok(captureManifest.model.includes(name), `long Chat capture must belong to model scope: ${name}`);
+  assert.ok(!captureManifest['destinations-workspace'].includes(name), `long Chat capture must not leak into destination scope: ${name}`);
 }
 assert.ok(model.includes('nativeHeadingExists("Conversation 1") && nativeHeadingExists("Conversation 2")'), 'numbered Chat versions must be verified as native headings, not body static text');
 assert.ok(model.includes('anchorChatHeading("Conversation 2")'), 'Chat capture must align its native heading clear of fixed navigation');
