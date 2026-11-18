@@ -331,6 +331,11 @@ func key(_ code: CGKeyCode, shift: Bool = false) {
     Thread.sleep(forTimeInterval: 0.3)
 }
 @discardableResult
+// Vision joins “1of 1” in the smaller result heading; normalize spacing, not the count or verdict.
+func normalizedSendText(_ text: String) -> String {
+    text.replacingOccurrences(of: #"(?<=\d)\s*of\s*(?=\d)"#, with: " of ", options: .regularExpression)
+        .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+}
 func sendFrameVisible(_ observations: [VNRecognizedTextObservation]) -> Bool {
     let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
     let markers = ["Send your agent", "Team cluster", "Ready to send", "Tests on your cluster", "passed", "evaluating tests", "Planned agent", "question", "answer", "Earlier files", "Not run since your edit", "Stopped watching",
@@ -722,7 +727,7 @@ func clickSendControl(_ label: String, scrolling pixels: Int32, region: String? 
         // Vision includes the native disclosure triangle as a bullet in this label.
         let matches = scopedSeen.filter { observation in
             guard let text = observation.topCandidates(1).first?.string else { return false }
-            return text == label || (label == "published-checksum" && text.range(of: #"published-checksum\b"#, options: [.regularExpression, .caseInsensitive]) != nil) || (label == "Details" && text.lowercased().range(of: #"^\W*details\b"#, options: .regularExpression) != nil) || (label == "Destination ready" && text.range(of: #"^\W*Destination ready\b"#, options: .regularExpression) != nil)
+            return text == label || (label == "published-checksum" && text.range(of: #"published-checksum\b"#, options: [.regularExpression, .caseInsensitive]) != nil) || (label == "Details" && text.lowercased().range(of: #"^\W*details\b"#, options: .regularExpression) != nil) || (label == "Ready to send" && text.range(of: #"^\W*Ready to send\b"#, options: .regularExpression) != nil)
         }
         if let target = matches.first, let control = target.topCandidates(1).first?.string {
             if let viewport {
@@ -1169,6 +1174,51 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     @discardableResult
     func capturePreflight(_ name: String, _ expected: String, anchor: String? = nil,
                           region: String = "Send and cluster tests", requiring: (([VNRecognizedTextObservation]) -> Bool)? = nil) throws -> [VNRecognizedTextObservation] {
+        let cropEligible = expected == "published-checksum" || expected == "1 of 1 tests passed"
+        func matchesCapturedText(_ value: String) -> Bool {
+            let text = normalizedSendText(value)
+            guard cropEligible else { return text.localizedCaseInsensitiveContains(expected) }
+            let checksumPattern = #"(?<![\w.-])"# + NSRegularExpression.escapedPattern(for: expected) + #"(?![\w.-])"#
+            return text.range(of: checksumPattern, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+        func enlargedSendTextVisible(_ viewport: CGRect, _ frame: CGRect) throws -> Bool {
+            guard [viewport.origin.x, viewport.origin.y, viewport.width, viewport.height,
+                   frame.origin.x, frame.origin.y, frame.width, frame.height].allSatisfy({ $0.isFinite }),
+                !viewport.isEmpty, frame.width > 0, frame.height > 0,
+                let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: "\(output)/send-probe.png") as CFURL, nil),
+                let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return false }
+            let scaleX = CGFloat(image.width) / frame.width, scaleY = CGFloat(image.height) / frame.height
+            let pixels = CGRect(x: (viewport.minX - frame.minX) * scaleX,
+                y: (viewport.minY - frame.minY) * scaleY,
+                width: viewport.width * scaleX, height: viewport.height * scaleY)
+            guard [pixels.origin.x, pixels.origin.y, pixels.width, pixels.height].allSatisfy({ $0.isFinite }) else { return false }
+            let clipped = pixels.intersection(CGRect(x: 0, y: 0, width: CGFloat(image.width), height: CGFloat(image.height)))
+            guard !clipped.isNull, !clipped.isEmpty else { return false }
+            // Round inward so the crop never includes pixels outside the visible Send region.
+            let rect = CGRect(x: ceil(clipped.minX), y: ceil(clipped.minY),
+                width: floor(clipped.maxX) - ceil(clipped.minX), height: floor(clipped.maxY) - ceil(clipped.minY))
+            guard rect.width > 0, rect.height > 0, let crop = image.cropping(to: rect),
+                let space = CGColorSpace(name: CGColorSpace.sRGB),
+                let context = CGContext(data: nil, width: crop.width * 2, height: crop.height * 2,
+                    bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.interpolationQuality = .high
+            context.draw(crop, in: CGRect(x: 0, y: 0, width: CGFloat(crop.width * 2), height: CGFloat(crop.height * 2)))
+            guard let enlarged = context.makeImage(),
+                let png = NSBitmapImageRep(cgImage: enlarged).representation(using: .png, properties: [:]) else { return false }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            do { try VNImageRequestHandler(cgImage: enlarged, options: [:]).perform([request]) }
+            catch { print("Frozen Send crop OCR failed: \(error)"); return false }
+            let rows = request.results ?? []
+            let text = rows.compactMap { $0.topCandidates(1).first?.string }.reduce("") { text, line in
+                text + (text.isEmpty || text.hasSuffix("-") ? "" : " ") + line
+            }
+            try png.write(to: URL(fileURLWithPath: "\(output)/\(name)-send-crop-2x.png"), options: .atomic)
+            try rows.map { "\($0.boundingBox): \($0.topCandidates(1).first?.string ?? "")" }.joined(separator: "\n")
+                .write(toFile: "\(output)/\(name)-send-crop-2x.ocr.txt", atomically: true, encoding: .utf8)
+            return matchesCapturedText(text)
+        }
         for _ in 0..<8 {
             // Preserve a visible transient state before doing any search work.
             let seen = try capture("send-probe", "Designer", searching: true)
@@ -1191,7 +1241,15 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
             }
             // Section labels are uppercased; Vision also varies casing in the fixed fixture ID.
             // Require Send context in this same captured frame, never later accessibility state.
-            if text.localizedCaseInsensitiveContains(expected) && sendFrameVisible(seen) && (requiring?(seen) ?? true) {
+            var matchesExpected = matchesCapturedText(text)
+            // Full-window OCR can omit small IDs or read the count's 1 as l. Re-OCR only these
+            // frozen pixels, never correct glyphs; retain the original rows, context and guards.
+            let hasContext = (matchesExpected || cropEligible)
+                && sendFrameVisible(seen) && (requiring?(seen) ?? true)
+            if !matchesExpected && cropEligible && hasContext {
+                matchesExpected = try enlargedSendTextVisible(viewport, frame)
+            }
+            if matchesExpected && hasContext {
                 // Keep the frame we verified. A transient state can end between
                 // two screenshots; a second OCR pass would test a different frame.
                 if name != "send-probe" {
@@ -1228,7 +1286,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         }.prefix(4).joined(separator: "; ")
         fail("Preflight state missing: \(expected); native candidates: \(candidates)")
     }
-    let sendActionLabels = ["Cancel tests", "Check cluster status", "Retry cancellation", "Reload saved files", "Choose a cluster", "Check again", "See in Overview", "Send and run tests", "Update agent and run tests", "Run cluster tests again", "Send as a separate agent"]
+    let sendActionLabels = ["Cancel tests", "Check cluster status", "Retry cancellation", "Reload saved files", "Choose a cluster", "Check again", "See in Overview", "Fix in Designer", "Send and run tests", "Update agent and run tests", "Run cluster tests again", "Send as a separate agent"]
     func closeSendDetails() throws {
         if nativeButtons("Copy Planned agent", root: nativeRegion("Send and cluster tests")).contains(where: { nativeBounds($0).map { $0.width > 1 && $0.height > 1 } == true }) {
             try clickSendControl("Details", scrolling: 350)
@@ -1289,7 +1347,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         Thread.sleep(forTimeInterval: 0.5)
         try closeSendDetails()
         // Observe a real Send control after reflow. Vision can omit the small uppercase section label.
-        let actions = ["See in Overview", "Cancel tests", "Send and run tests", "Update agent and run tests", "Run cluster tests again", "Check cluster status", "Reload saved files", "Choose a cluster", "Check again"]
+        let actions = ["See in Overview", "Fix in Designer", "Cancel tests", "Send and run tests", "Update agent and run tests", "Run cluster tests again", "Check cluster status", "Reload saved files", "Choose a cluster", "Check again"]
         let root = nativeRegion("Send and cluster tests")
         guard let action = actions.first(where: { nativeButtons($0, root: root).filter { nativeBounds($0).map { $0.width > 1 && $0.height > 1 } == true }.count == 1 }) else { fail("Send panel has no recognized action after reflow") }
         _ = try capturePreflight("send-probe", action)
@@ -1343,8 +1401,9 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     try capturePreflight("send-first-minimum", "Send and run tests")
     try clickSendControl("Send and run tests", scrolling: -350)
     Thread.sleep(forTimeInterval: 1)
-    let result = try capturePreflight("send-result", "1 of 1 tests passed")
-    require(result.contains { ($0.topCandidates(1).first?.string ?? "").contains("1 of 1 tests passed") }, "Fixture-backed Send did not pass its real tests")
+    try capturePreflight("send-result", "1 of 1 tests passed", requiring: { rows in
+        rows.contains { $0.topCandidates(1).first?.string.caseInsensitiveCompare("Passed") == .orderedSame }
+    })
     try resultSize(1280, 800)
     try capturePreflight("send-result-wide", "1 of 1 tests passed")
     try clickSendControl("published-checksum", scrolling: -250)
@@ -1460,7 +1519,7 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
     require(nativeStrings().contains { $0.contains("has-a-date") }, "Captured test title must retain its code ID")
     try resultSize(540, 640)
     try capturePreflight("send-failed-minimum", "Finds the publication date", anchor: "has-a-date", requiring: visibleFailure)
-    try captureSendPresentation("send-failed", actions: ["Run cluster tests again", "See in Overview"])
+    try captureSendPresentation("send-failed", actions: ["Fix in Designer", "Run cluster tests again"])
     // Arm only the loopback fixture: first answer completes, second Task stays
     // live. Hold the cancel reply until its in-flight state has been captured.
     try fixtureControl(["action": "cancel-mode", "place": "fixture-cluster", "mode": "cancelling"])
@@ -1765,8 +1824,12 @@ if ProcessInfo.processInfo.environment["BRIDGE_WALK_KUBECONFIG"] != nil {
         let agent = try capture("agent-cluster-owned", "Designer")
         clickText("Send to a cluster", in: agent)
         Thread.sleep(forTimeInterval: 1)
-        let checked = try capturePreflight(name, expected)
-        clickTab("Clusters", checked)
+        for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
+            try resultSize(width, height)
+            try capturePreflight("\(name)-\(size)", expected)
+            try requireSendActions(["Check again"])
+        }
+        clickTab("Clusters", [])
     }
     // Unsupported is deliberately the last Send: unfinished work must not block
     // the shared-version update and cross-target evidence above. Reuse the known

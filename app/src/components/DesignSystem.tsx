@@ -45,6 +45,6 @@ export function Details({ children, hint }: { children: ReactNode; hint?: string
 export function CardSection({ title, children }: { title: string; children: ReactNode }) {
   return <section className="card-section" aria-label={title}><h4 className="section-label">{title}</h4>{children}</section>;
 }
-export function LongCard({ title, status, action, summary, children }: { title: string; status: ReactNode; action?: ReactNode; summary: ReactNode; children: ReactNode }) {
-  return <div className="long-card"><header className="long-card-head"><h3>{title}</h3>{status}<div className="long-card-action">{action}</div></header><p className="long-card-summary">{summary}</p>{children}</div>;
+export function LongCard({ title, status, action, summary, children }: { title: ReactNode; status: ReactNode; action?: ReactNode; summary: ReactNode; children: ReactNode }) {
+  return <div className="long-card"><header className="long-card-head"><h3>{title}</h3>{status}<div className="long-card-action">{action}</div></header>{summary && <p className="long-card-summary">{summary}</p>}{children}</div>;
 }

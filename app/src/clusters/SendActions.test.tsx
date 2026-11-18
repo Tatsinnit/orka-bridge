@@ -26,7 +26,7 @@ async function openDetails() { await userEvent.click(within(card()).getByText('R
 test.each(['failed', 'cancelled', 'unknown', 'passed'] as const)('%s result leads with the useful next action and only one secondary', async verdict => {
   const seen = vi.fn(); native({ ...result, report: { verdict, cases: [{ ...row, verdict, ...(verdict === 'cancelled' ? { phase: 'Cancelled', assertions: [] } : {}) }] } });
   render(<Send place={place} source={source} stale={false} onSeeInOverview={seen} />);
-  await screen.findByText('Destination ready');
+  await screen.findByText(/Ready to send: \d+ checks? passed/);
   const buttons = within(actionRow()).getAllByRole('button');
   expect(buttons.map(b => b.textContent)).toEqual(verdict === 'passed' ? ['See in Overview', 'Run cluster tests again'] : ['Run cluster tests again', 'See in Overview']);
   expect(buttons[0].className).toContain('button-primary');
@@ -87,7 +87,7 @@ test('an earlier target is labelled and preflight failure offers a check, not Ov
 test('returning to an unchanged destination uses its preflight rerun wording, not the retained result target', async () => {
   native({ ...result, targetId: '00000000-0000-4000-8000-000000000005', targetName: 'earlier-team' });
   render(<Send place={place} source={source} stale={false} onSeeInOverview={() => {}} />);
-  await screen.findByText('Destination ready');
+  await screen.findByText(/Ready to send: \d+ checks? passed/);
   const button = screen.getByRole('button', { name: 'Run cluster tests again' });
   expect(button.className).toContain('button-primary');
   expect(screen.queryByRole('button', { name: 'Update agent and run tests' })).toBeNull();
@@ -106,8 +106,8 @@ test('status recovery keeps its prerequisite cluster selection in Details when n
 
 test('Send copy is concise and friendly while recorded raw model/provider remain in Details', async () => {
   native(); render(<Send place={place} source={source} stale={false} />);
-  await screen.findByText('Destination ready');
-  expect(screen.getByText('GPT-5.6 Terra, checked when tests run')).toBeTruthy();
+  await screen.findByText(/Ready to send: \d+ checks? passed/);
+  expect(within(card()).getByRole('region', { name: 'What you send' }).textContent).toContain('GPT-5.6 Terra, checked when tests run');
   expect(screen.queryByText('Team clusters are early in this preview.')).toBeNull();
   const separateHelp = screen.getByText('Sends as a new agent; the old one keeps running.');
   expect(separateHelp.closest('details')?.open).toBe(false);

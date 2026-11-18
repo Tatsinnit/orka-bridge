@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import { readForm, changeDescription, changeInstructions, changeModel, changeSoulInline, changeSoulReference, addTool, removeTool } from './agent-form';
+import { readAgentName, readForm, changeDescription, changeInstructions, changeModel, changeSoulInline, changeSoulReference, addTool, removeTool } from './agent-form';
 const source = '---\nname: reader\ndescription: \'Read a page\' # keep\nmodel: gpt-file\nfuture: {keep: "exact"} # untouched\nkmx:\n  schemaVersion: 1\n  runtime: orka\n  tools:\n    - kind: builtin\n      name: web_fetch # existing\n    - kind: tool\n      name: custom\n      future: {stay: here}\n---\n\nRead it.\n';
 test.each(['\n', '\r\n'])('no-op form leaves all original bytes and scalar styles intact (%j)', nl => {
   const s = source.replaceAll('\n', nl); const form = readForm(s);
@@ -137,6 +137,44 @@ test('a scalar value equal to a merge-key spelling remains editable', () => {
   expect(readForm(changed).description).toBe('<<');
   expect(readForm(changed).descriptionEditable).toBe(true);
   expect(readForm(changeDescription(changed, '<< next')).description).toBe('<< next');
+});
+test.each(['\n', '\r\n'])('display names tolerate unrelated anchors and aliases without enabling writes (%j)', async nl => {
+  const s = source.replace("'Read a page'", '&desc Reader').replace('future: {keep: "exact"}', 'future: *desc').replaceAll('\n', nl);
+  expect(readAgentName(s)).toBe('reader');
+  expect(readForm(s).name).toBeUndefined();
+  expect(readForm(s)).toMatchObject({ metadataEditable: false, descriptionEditable: false, modelEditable: false, toolsEditable: false, soulEditable: false });
+  expect(changeDescription(s, 'New')).toBe(s);
+  expect(changeModel(s, 'New')).toBe(s);
+  expect(addTool(s, 'file_read')).toBe(s);
+  expect(removeTool(s, 0)).toBe(s);
+  expect(await changeSoulInline(s, 'New')).toBe(s);
+  expect(changeSoulReference(s, 'name', 'New')).toBe(s);
+});
+test.each([
+  ['name: renamed-reader # saved name', 'renamed-reader'],
+  ['name: "renamed-reader" # saved name', 'renamed-reader'],
+  ["name: 'renamed-reader'", 'renamed-reader'],
+  ['name: renamed-reader\ndescription: &desc Reader\nmodel: *desc', 'renamed-reader'],
+  ['name: reader\nname: duplicate', undefined],
+  ['name: reader\ndescription: one\ndescription: two', undefined],
+  ['name: reader\ndescription: [unfinished', undefined],
+  ['name: 42', undefined],
+  ['name: null', undefined],
+  ['name: [reader]', undefined],
+  ['name: {name: reader}', undefined],
+  ['description: &desc reader\nname: *desc', undefined],
+  ['name: &name reader', 'reader'],
+  ['name: !!str reader', 'reader'],
+  ['name: !custom reader', undefined],
+  ['description: Reader', undefined],
+  ['- reader', undefined],
+])('read-only display name handles scalar and invalid metadata: %s', (header, expected) => {
+  expect(readAgentName(`---\n${header}\n---\nname: body-is-not-metadata`)).toBe(expected);
+});
+test('read-only display names require closed front matter, not body text', () => {
+  expect(readAgentName('name: reader')).toBeUndefined();
+  expect(readAgentName('---\nname: reader')).toBeUndefined();
+  expect(readAgentName('---\nname: reader\n---')).toBe('reader');
 });
 test('changing one metadata field leaves mixed newline bytes untouched', () => {
   const s = source.replace('description:', '\r\ndescription:');

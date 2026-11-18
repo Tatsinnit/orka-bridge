@@ -22,13 +22,13 @@ function native(current: unknown = null, check: unknown = allowed) {
 const card = () => screen.getByRole('region', { name: 'Send and cluster tests' });
 test('a local freshness rejection is respected despite matching cached hashes', async () => {
   native(); render(<Send place={place} source={source} stale={false} local={{ state: 'complete', canRun: true, source, sourceCurrent: false, report: { verdict: 'passed', cases: [] }, acknowledged: [], pending: null, error: null }} />);
-  await screen.findByText('Destination ready');
+  await screen.findByText(/Ready to send: \d+ checks? passed/);
   expect(screen.queryByText('Passed on these files')).toBeNull();
   expect(screen.getByText('Earlier files')).toBeTruthy();
 });
 test('a ready destination reads Ready to send with its checks collapsed behind one line', async () => {
   native(); render(<Send place={place} source={source} stale={false} />);
-  const toggle = await screen.findByText('Destination ready');
+  const toggle = await screen.findByText(/Ready to send: \d+ checks? passed/);
   expect(screen.getByText('Ready to send')).toBeTruthy();
   const checks = toggle.closest('details')!;
   expect(checks.open).toBe(false);
@@ -47,7 +47,7 @@ test('blocked and unknown checks stay inline with their reason and mark the pill
 test('advisory unverified rows in a sendable preflight stay with the collapsed checks, as the native check reports them', async () => {
   native(null, { ...allowed, rows: [{ label: 'Agent access', status: 'allowed', message: 'You can create agents.' }, { label: 'Model inference', status: 'unverified', message: 'Inference is checked when tests run.' }] });
   render(<Send place={place} source={source} stale={false} />);
-  const checks = (await screen.findByText('Destination ready')).closest('details')!;
+  const checks = (await screen.findByText(/Ready to send: \d+ checks? passed/)).closest('details')!;
   expect(checks.open).toBe(false);
   expect(checks.contains(screen.getByText('Inference is checked when tests run.'))).toBe(true);
   expect(screen.getByText('Ready to send')).toBeTruthy();
@@ -61,15 +61,16 @@ test('the first and a later Send have fixed action wording; Run cluster tests ag
     run.unmount();
   }
 });
-test('a failed result leads with its verdict, keeps the fixed section order and puts the collapsed checks after the answer', async () => {
+test('a failed result keeps its verdict and the checks between the summary and answer', async () => {
   native(view('complete', { verdict: 'failed', cases: [row('failed')] }, { agentAction: 'update' }), { ...allowed, action: 'unchanged' });
   render(<Send place={place} source={source} stale={false} onSeeInOverview={() => undefined} />);
-  expect(await screen.findByRole('heading', { name: '0 of 1 tests passed', level: 3 })).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: '0 of 1 tests passed', level: 4 })).toBeTruthy();
   expect(screen.getByText('Failed', { selector: '.pill' })).toBeTruthy();
   const order = ['What you send', 'What happened'].map(name => within(card()).getByRole('region', { name }));
   expect(order[0].compareDocumentPosition(order[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const checks = (await screen.findByText('Destination ready')).closest('details')!;
-  expect(order[1].compareDocumentPosition(checks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const checks = (await screen.findByText(/Ready to send: \d+ checks? passed/)).closest('details')!;
+  expect(order[0].compareDocumentPosition(checks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(checks.compareDocumentPosition(order[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const details = [...card().querySelectorAll('.card-details')].at(-1)!;
   expect(checks.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });

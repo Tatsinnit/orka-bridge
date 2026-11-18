@@ -28,7 +28,7 @@ func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
         try rejects("invalid invocation \(bad)") { _ = try parseNativeModelArguments(bad) }
     }
     try manifest.validate()
-    try check(manifest.model.count == 198 && manifest.destinationsWorkspace.count == 45, "198/45 returning-workspace partition")
+    try check(manifest.model.count == 202 && manifest.destinationsWorkspace.count == 45, "202/45 including four long-Chat captures")
     for name in ["local-catalog-no-destination-wide", "local-workspace-ready-wide", "local-workspace-stop-failed-details-minimum", "local-designer-waiting-chat-minimum", "local-workspace-image-update-minimum", "local-workspace-image-unsupported-minimum"] {
         try check(manifest.destinationsWorkspace.contains(name), "complete allocated journey includes \(name)")
     }
@@ -95,12 +95,12 @@ struct NativeModelCaptureManifest: Decodable {
         }
     }
     func validate() throws {
-        guard model.count == 198, destinationsWorkspace.count == 45,
+        guard model.count == 202, destinationsWorkspace.count == 45,
               Set(model).count == model.count,
               Set(destinationsWorkspace).count == destinationsWorkspace.count,
               Set(model).isDisjoint(with: Set(destinationsWorkspace)),
               !(model + destinationsWorkspace).contains("local-probe") else {
-            throw NativeModelHarnessError("Capture manifest must partition 243 unique named captures into 198 model and 45 destination/workspace names")
+            throw NativeModelHarnessError("Capture manifest must partition 247 unique named captures into 202 model and 45 destination/workspace names")
         }
     }
 }
@@ -248,7 +248,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         // Recovery copy has apostrophes and "AI" that Vision misreads; require visible native text instead.
         let lenient = ["local-key-", "local-reset-", "local-remove-"].contains { name.hasPrefix($0) }
         let nativeText = !found && name.hasPrefix("local-") && (nativeResultTextIsVisible(value) || lenient && nativeChatTextIsVisible(value))
-        let chatText = !found && (name.hasPrefix("chat-") || name.hasPrefix("cluster-")) && nativeChatTextIsVisible(value)
+        let chatText = !found && (name.hasPrefix("chat-") || name.hasPrefix("cluster-") || name.hasPrefix("local-shell-chat-")) && nativeChatTextIsVisible(value)
         let workspaceControl = !found && name.hasPrefix("local-workspace-") && nativeWorkspaceButtonIsVisible(value)
         let overviewControl = !found && name.hasPrefix("local-") && name.contains("overview") && nativeWorkspaceButtonIsVisible(value)
         require(found || nativeText || chatText || workspaceControl || overviewControl, "Missing \(value) in \(name): \(text)")
@@ -1124,13 +1124,24 @@ func fillMessage(_ text: String, secure: Bool = false, fieldLabel: String? = nil
     }
     // Deliver text in short Unicode payloads, not an unpaced pair of events
     // per character that can flood the native event queue on a busy runner.
-    let characters = Array(text.utf16)
-    for start in stride(from: 0, to: characters.count, by: 16) {
-        let units = Array(characters[start..<min(start + 16, characters.count)])
-        for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)!
-            units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress!) }
-            event.flags = []; event.post(tap: .cghidEventTap)
+    for (lineIndex, line) in text.components(separatedBy: "\n").enumerated() {
+        // A Unicode payload beginning with a newline can drop its following text.
+        // Use the real newline gesture, never an unmodified Enter that submits Chat.
+        if lineIndex > 0 {
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: nil, virtualKey: 36, keyDown: down)!
+                event.flags = .maskShift; event.post(tap: .cghidEventTap)
+            }
+        }
+        let characters = Array(line.utf16)
+        for start in stride(from: 0, to: characters.count, by: 16) {
+            let units = Array(characters[start..<min(start + 16, characters.count)])
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)!
+                units.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: units.count, unicodeString: $0.baseAddress!) }
+                event.flags = []; event.post(tap: .cghidEventTap)
+            }
+            if text.utf16.count > 256 { Thread.sleep(forTimeInterval: 0.08) }
         }
     }
     Thread.sleep(forTimeInterval: 0.2)
@@ -1376,15 +1387,34 @@ func requireSingleChatCopy() {
     let strings = nativeElements().flatMap { element in
         ["AXValue", "AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
     }
-    require(strings.contains("Chat on this computer") && strings.contains("Chat doesn't change test results."), "Chat heading, label or help copy missing")
+    require(strings.contains(where: { $0.contains("Chat on this computer. Chat doesn't change test results.") }), "Chat subtitle missing from the agent heading")
     require(!strings.contains(where: { $0.contains("Conversation 1") }), "A single Chat version must not be numbered, including its accessible label")
+}
+func requireChatComposerVisible() {
+    let fields = nativeElements().filter { element in
+        attribute(element, "AXRole") as? String == "AXTextArea"
+            && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == "Message" })
+    }
+    let sends = nativeElements().filter { element in
+        attribute(element, "AXRole") as? String == "AXButton"
+            && ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == "Send message" })
+    }
+    require(fields.count == 1 && sends.count == 1, "Chat must retain accessible Message and Send message controls")
+    guard let field = fields.first.flatMap(nativeBounds), let send = sends.first.flatMap(nativeBounds) else {
+        require(false, "Chat composer bounds missing"); return
+    }
+    require(reachable(field) && reachable(send) && abs(field.maxY - send.maxY) < 3 && field.maxX <= send.minX,
+            "Chat composer and visible Send must fit beside one another above the footer")
+    require(nativeChatTextIsVisible("Enter sends · Shift+Enter for a new line", aboveFooter: true), "Chat keyboard hint must remain visible")
 }
 if scope.runsModel {
 for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     localSize(CGFloat(width), CGFloat(height)); scroll(4000)
-    _ = try seek("Ask your agent a question", -100)
     requireSingleChatCopy()
-    _ = try capture("chat-empty-\(size)", ["Ask your agent a question"])
+    require(!anyButton("New conversation") && !nativeTextExists("About this conversation")
+            && !nativeTextExists("Ask your agent a question") && !nativeTextExists("Ready for your message."), "Healthy empty Chat must not show controls, invitation or routine Ready")
+    requireChatComposerVisible()
+    _ = try capture("chat-empty-\(size)", ["Message your agent", "Enter sends · Shift+Enter for a new line"])
 }
 fillMessage("Remember the checksum ALPHA.")
 waitForButton("Send message")
@@ -1412,20 +1442,36 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
     localSize(CGFloat(width), CGFloat(height)); scroll(4000)
     _ = try seek("The checksum is ALPHA.", -100)
     requireSingleChatCopy()
-    _ = try capture("chat-answer-\(size)", ["The checksum is ALPHA.", "<script>fixture</script>"])
+    requireChatComposerVisible()
+    require(nativeChatTextIsVisible("web_fetch"), "Chat tool use must remain visible without opening a disclosure")
+    _ = try capture("chat-answer-\(size)", ["The checksum is ALPHA.", "<script>fixture</script>", "web_fetch"])
 }
 localSize(1280, 800)
-fillMessage("What checksum did I ask you to remember?")
+// Use the existing synthetic native turn, not injected DOM or a new fixture backend.
+fillMessage("What checksum did I ask you to remember?" + String(repeating: "\nEarlier message.", count: 40))
 waitForButton("Send message")
 click("Send message", [])
 waitForChatText("You asked me to remember ALPHA.")
 _ = try capture("chat-followup-wide", ["You asked me to remember ALPHA."])
 localSize(540, 900)
 _ = try capture("chat-followup-compact", ["You asked me to remember ALPHA."])
+for (width, height, size) in [(1280, 800, "wide"), (540, 640, "minimum")] {
+    localSize(CGFloat(width), CGFloat(height)); scroll(4000)
+    _ = try seek("Remember the checksum ALPHA.", -100)
+    require(nativeChatTextIsVisible("Remember the checksum ALPHA.") && !nativeChatTextIsVisible("You asked me to remember ALPHA."),
+            "Long transcript capture must read earlier messages, not the end")
+    requireChatComposerVisible()
+    _ = try capture("chat-long-early-\(size)", ["Remember the checksum ALPHA.", "Enter sends · Shift+Enter for a new line"])
+    scroll(-4000)
+    requireChatComposerVisible()
+    _ = try capture("chat-long-end-\(size)", ["You asked me to remember ALPHA.", "Enter sends · Shift+Enter for a new line"])
+}
+localSize(1280, 800); scroll(4000)
 click("New conversation", [])
+scroll(-4000)
 fillMessage("Read another page.")
 waitForButton("Send message")
-rows = try seek("Send message", -150)
+rows = try seek("Enter sends · Shift+Enter for a new line", -150)
 click("Send message", rows)
 waitForChatText("Read another page.")
 require(nativeHeadingExists("Conversation 1") && nativeHeadingExists("Conversation 2"), "Two Chat versions must retain both numbered headings")
@@ -1442,9 +1488,9 @@ _ = try capture("chat-working-compact", ["Stop", "Read another page."])
 click("Stop", [])
 waitForChatText("Execution termination is unconfirmed.")
 waitForButton("New conversation")
-_ = try capture("chat-stop-ready-compact", ["Ready", "Execution termination is unconfirmed."])
+_ = try capture("chat-stop-ready-compact", ["Execution termination is unconfirmed."])
 localSize(1280, 800)
-_ = try capture("chat-stop-ready-wide", ["Ready", "Execution termination is unconfirmed."])
+_ = try capture("chat-stop-ready-wide", ["Execution termination is unconfirmed."])
 // Capture card actions before the final test deliberately holds the fixture busy.
 click("Overview", [])
 for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact"), (540, 640, "minimum")] {

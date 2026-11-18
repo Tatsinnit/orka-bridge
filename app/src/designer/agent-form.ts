@@ -21,6 +21,16 @@ function metadata(source: string) {
   return { ...split, root: safe ? doc.contents as YAMLMap : undefined };
 }
 function text(node: unknown): string | undefined { return isScalar(node) && typeof node.value === 'string' ? node.value : undefined; }
+// Display metadata need not be safely patchable. Read only the direct scalar;
+// never resolve aliases or convert the document to JS.
+export function readAgentName(source: string): string | undefined {
+  const split = document(source);
+  if (!split.closed || !split.offset) return undefined;
+  const doc = parseDocument(split.header);
+  if (doc.errors.length || !isMap(doc.contents)) return undefined;
+  const name = doc.contents.get('name', true);
+  return isScalar(name) && (!name.tag || name.tag === 'tag:yaml.org,2002:str') ? text(name) : undefined;
+}
 function patch(source: string, start: number, end: number, value: string) { return source.slice(0, start) + value + source.slice(end); }
 function newline(source: string) { return source.includes('\r\n') ? '\r\n' : '\n'; }
 function profile(root?: YAMLMap) {

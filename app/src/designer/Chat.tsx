@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import { StatusIcon } from '../components/DesignSystem';
 import { Disclosure } from '../components/Disclosure';
@@ -19,18 +19,29 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
   const [error, setError] = useState<{ message: string; uncertainSend?: boolean }>(); const [readError, setReadError] = useState<string>();
   const [command, setCommand] = useState<ChatCommand>();
   const mutation = useRef(false); const epoch = useRef(0); const alive = useRef(true);
-  const pending = useRef<{ message: string; count: number; uncertain?: boolean } | undefined>(undefined);
+  const pending = useRef<{ message: string; count: number; scrollTop?: number; uncertain?: boolean; readerMovedAway?: boolean } | undefined>(undefined);
   const [awaitingTurn, setAwaitingTurn] = useState(false);
   const composer = useRef<HTMLTextAreaElement>(null); const composing = useRef(false);
   const transcript = useRef<HTMLElement>(null); const scrollArea = useRef<HTMLElement | null>(null); const follow = useRef(true);
+  const resumeFollow = () => {
+    const submitted = pending.current; const area = scrollArea.current;
+    // Geometry can change before the browser delivers its scroll event.
+    if (submitted && area && (submitted.readerMovedAway || area.scrollTop !== submitted.scrollTop)) {
+      follow.current = area.scrollHeight - area.clientHeight - area.scrollTop < 48;
+    } else if (!submitted?.readerMovedAway) follow.current = true;
+  };
   const receive = (value: ChatSnapshot) => {
     const turns = value.versions.flatMap(version => version.turns);
     const submitted = pending.current;
     if (submitted && turns.slice(submitted.count).some(turn => turn.message === submitted.message)) {
+      if (submitted.uncertain) resumeFollow();
       if (draftRef.current === submitted.message) { draftRef.current = ''; setDraft(''); }
       pending.current = undefined; setAwaitingTurn(false);
     } else if (submitted) {
-      if (value.busy) submitted.uncertain = false;
+      if (value.busy) {
+        if (submitted.uncertain) resumeFollow();
+        submitted.uncertain = false;
+      }
       // A lost IPC reply is not a rejection. An idle snapshot alone may precede
       // admission; retain acknowledgement until a turn or its busy→idle is seen.
       if (!value.busy && (value.state === 'contextUnavailable' || !submitted.uncertain && value.state === 'ready')) {
@@ -57,16 +68,40 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
     void observe();
     return () => { mounted = false; alive.current = false; epoch.current++; clearTimeout(timer); };
   }, [documentId]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!active) return;
-    const area = transcript.current?.closest<HTMLElement>('.page-content');
-    if (!area) return;
+    const conversation = transcript.current; const dock = composer.current?.closest('form');
+    const area = conversation?.closest<HTMLElement>('.page-content');
+    if (!area || !conversation || !dock) return;
     scrollArea.current = area;
-    const track = () => { follow.current = area.scrollHeight - area.clientHeight - area.scrollTop < 48; };
-    area.addEventListener('scroll', track);
-    return () => { area.removeEventListener('scroll', track); scrollArea.current = null; };
+    let frame: number | undefined;
+    const track = () => {
+      follow.current = area.scrollHeight - area.clientHeight - area.scrollTop < 48;
+      // A pending Send must not override reading begun after submission.
+      if (pending.current && !follow.current && area.scrollTop !== pending.current.scrollTop) pending.current.readerMovedAway = true;
+    };
+    const reveal = () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      const target = document.activeElement;
+      if (!(target instanceof HTMLElement)) return;
+      // Native focus scrolling does not know the sticky composer obscures main.
+      // Measure after that scroll, including the dock's current draft/status height.
+      frame = requestAnimationFrame(() => {
+        frame = undefined;
+        if (document.activeElement !== target) return;
+        const bottom = target.getBoundingClientRect().bottom;
+        const visibleBottom = Math.min(area.getBoundingClientRect().bottom, dock.getBoundingClientRect().top);
+        if (bottom > visibleBottom) area.scrollTop += bottom - visibleBottom;
+      });
+    };
+    area.addEventListener('scroll', track); conversation.addEventListener('focusin', reveal);
+    return () => {
+      area.removeEventListener('scroll', track); conversation.removeEventListener('focusin', reveal);
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      scrollArea.current = null;
+    };
   }, [active]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (active && snapshot && follow.current && scrollArea.current) scrollArea.current.scrollTop = scrollArea.current.scrollHeight;
   }, [active, snapshot]);
   useEffect(() => {
@@ -88,14 +123,16 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
     if (action === 'agent_chat_send' && (blocked || !snapshot.canSend || awaitingTurn || !draftRef.current.trim())) return;
     mutation.current = true; const request = ++epoch.current; setCommand(action); setError(undefined);
     if (action === 'agent_chat_send') {
-      pending.current = { message: draftRef.current, count: snapshot.versions.reduce((n, version) => n + version.turns.length, 0) };
+      pending.current = { message: draftRef.current, count: snapshot.versions.reduce((n, version) => n + version.turns.length, 0), scrollTop: scrollArea.current?.scrollTop };
       setAwaitingTurn(true);
     }
     const operation = action === 'agent_chat_reconnect' && pending.current?.uncertain ? 'agent_chat_status' : action;
     const result = await chatCall(operation, documentId, pending.current?.message);
     if (!alive.current || request !== epoch.current) return;
-    if (result.ok) receiveRef.current(result.snapshot);
-    else {
+    if (result.ok) {
+      if (action === 'agent_chat_send') resumeFollow();
+      receiveRef.current(result.snapshot);
+    } else {
       if (action === 'agent_chat_send') {
         if (result.uncertain && pending.current) pending.current.uncertain = true;
         else { pending.current = undefined; setAwaitingTurn(false); }
@@ -119,11 +156,18 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
     : snapshot?.state === 'ready' && snapshot.error === 'connection'
     ? 'The workspace could not be reached. Check Clusters, then try sending again.'
     : snapshot?.error ? chatErrors[snapshot.error] : undefined;
-  return <section className="chat-panel card" aria-label="Chat on this computer">
-    <div className="chat-heading"><h2>Chat on this computer</h2><Button type="button" kind="secondary" disabled={!canReset || !!command} title={blocked ?? (!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined)} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button></div>
-    <p className="muted">Chat doesn't change test results.</p>
+  const hasTurns = snapshot?.versions.some(version => version.turns.length);
+  const showControls = hasTurns || blocked || error || readError || snapshotError || awaitingTurn || command || snapshot && snapshot.state !== 'ready';
+  return <section className="chat-panel" aria-label="Chat on this computer">
+    <h2 className="sr-only">Chat on this computer</h2>
+    {showControls && <div className="chat-heading"><Button type="button" kind="quiet" disabled={!canReset || !!command} title={blocked ?? (!canReset ? 'Wait for the current turn to finish or reconnect to check it.' : undefined)} onClick={() => { void act('agent_chat_new'); }}>New conversation</Button>
+      <Disclosure className="chat-about" label="About this conversation">
+        <p>Your agent remembers up to 50 messages. Interrupted replies may not be remembered; tool activity is shown separately.</p>
+        <p>This view clears when you quit Bridge. Agents and transcripts remain in the workspace; New conversation does not delete them.</p>
+        <p>Stop requests an end to the reply. A tool may still finish while you continue, and its effects are not undone. If the conversation cannot continue, start a new one. You may need to restart the workspace if its history has changed elsewhere.</p>
+      </Disclosure>
+    </div>}
     <section ref={transcript} className="chat-transcript" aria-label="Conversation">
-      {!snapshot?.versions.some(version => version.turns.length) && <p className="muted">Ask your agent a question to start a conversation.</p>}
       {snapshot?.versions.map((version, index) => <section key={index} className="chat-version" aria-label={snapshot.versions.length > 1 ? `Conversation ${index + 1}` : undefined}>
         {snapshot.versions.length > 1 && <h3>Conversation {index + 1}</h3>}
         {index > 0 && <p className="muted">New conversation. Earlier turns are shown for reference, not sent as history.</p>}
@@ -142,17 +186,20 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
                 : <p className="muted">{turn.phase === 'Failed' ? 'The turn failed without an answer.' : 'No answer was received.'}</p>}
               {turn.stopUnconfirmed ? <p className="chat-notice">{states.stopUnconfirmed}</p> : turn.terminationUnconfirmed && <p className="chat-notice">{states.stopRequested}</p>}
               {!turn.contextRetained && !waiting && !confirming && <p className="muted">This turn is not confirmed in later context.</p>}
-              {!!turn.tools.length && <Disclosure className="card-details" label="Tool activity"><ul className="chat-tools">{turn.tools.map((tool, t) => <li key={t}><code>{tool.name}</code> · {tool.phase}</li>)}</ul></Disclosure>}
+              {!!turn.tools.length && <ul className="chat-tools" aria-label="Tool activity">{turn.tools.slice(-1).map((tool, t) => <li key={t}><code>{tool.name}</code> · {tool.phase}</li>)}</ul>}
+              {turn.tools.length > 1 && <Disclosure label={`${turn.tools.length - 1} more tool activit${turn.tools.length === 2 ? 'y' : 'ies'}`}>
+                <ul className="chat-tools">{turn.tools.slice(0, -1).map((tool, t) => <li key={t}><code>{tool.name}</code> · {tool.phase}</li>)}</ul>
+              </Disclosure>}
             </div>
           </article>;
         })}
       </section>)}
     </section>
-    <p role="status" aria-live="polite" aria-atomic="true">{status}</p>
-    {(error || readError || snapshotError) && <p role="alert">{error?.message ?? readError ?? snapshotError}</p>}
     <form className="chat-composer" onSubmit={event => { event.preventDefault(); void act('agent_chat_send'); }}>
-      <label htmlFor={`message-${documentId}`}>Message</label>
-      <textarea className="field" ref={composer} id={`message-${documentId}`} rows={1} value={draft} aria-describedby={`chat-hint-${documentId}`}
+      <p className={`chat-status${status === states.ready ? ' sr-only' : ''}`} role="status" aria-live="polite" aria-atomic="true">{status === states.ready && !latestTurn ? undefined : status}</p>
+      {(error || readError || snapshotError) && <p role="alert">{error?.message ?? readError ?? snapshotError}</p>}
+      <label className="sr-only" htmlFor={`message-${documentId}`}>Message</label>
+      <div className="chat-compose-row"><textarea className="field" ref={composer} id={`message-${documentId}`} rows={1} placeholder="Message your agent" value={draft} aria-describedby={`chat-hint-${documentId}`}
         onChange={event => { draftRef.current = event.target.value; setDraft(event.target.value); }}
         onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
         onKeyDown={event => {
@@ -160,17 +207,13 @@ export default function Chat({ documentId, blocked, active = true }: { documentI
             event.preventDefault(); void act('agent_chat_send');
           }
         }} />
-      <p className="muted" id={`chat-hint-${documentId}`}>{reason ?? 'Enter to send · Shift+Enter for a new line.'}</p>
+        <Button type="submit" kind="primary" aria-label="Send message" disabled={!!reason || !draft.trim()} title={reason ?? (!draft.trim() ? 'Write a message first.' : undefined)}>Send</Button>
+      </div>
+      <p className="muted" id={`chat-hint-${documentId}`}>{reason ?? 'Enter sends · Shift+Enter for a new line'}</p>
       <div className="chat-actions">
-        <Button type="submit" kind="primary" disabled={!!reason || !draft.trim()} title={reason ?? (!draft.trim() ? 'Write a message first.' : undefined)}>Send message</Button>
         {canStop && <Button type="button" kind="secondary" disabled={!!command || snapshot.state === 'requestingStop'} onClick={() => { void act('agent_chat_stop'); }}>Stop</Button>}
         {snapshot && snapshot.state !== 'contextUnavailable' && !snapshot.busy && (!snapshot.canSend || pending.current?.uncertain) && <Button type="button" kind="secondary" disabled={!!command} onClick={() => { void act('agent_chat_reconnect'); }}>Reconnect</Button>}
       </div>
     </form>
-    <Disclosure className="card-details" label="About this conversation">
-      <p>Your agent remembers up to 50 messages. Interrupted replies may not be remembered; tool activity is shown separately.</p>
-      <p>This view clears when you quit Bridge. Agents and transcripts remain in the workspace; New conversation does not delete them.</p>
-      <p>Stop requests an end to the reply. A tool may still finish while you continue, and its effects are not undone. If the conversation cannot continue, start a new one. You may need to restart the workspace if its history has changed elsewhere.</p>
-    </Disclosure>
   </section>;
 }

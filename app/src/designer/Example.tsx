@@ -1,7 +1,7 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { Disclosure } from '../components/Disclosure';
 import { Button } from '../components/Button';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { SAMPLE_DOCUMENT_ID, REPO_SAVE_CONFLICT, agentCall, agentInfo, storageCopy, type AgentPair, type SaveState } from './agent-api';
 import Run from './Run';
 import { Details } from '../components/DesignSystem';
@@ -14,7 +14,7 @@ import FileEditor from './FileEditor';
 import FileLocation from './FileLocation';
 import NewAgent from './NewAgent';
 import { listDocuments, selectDocument, type AgentEntry } from './documents-api';
-import { readForm } from './agent-form';
+import { readAgentName, readForm } from './agent-form';
 import type { RunSnapshot } from './run-api';
 import type { SelectedPlace } from '../clusters/api';
 import Send, { SendEntry, SendHistory } from '../clusters/Send';
@@ -220,6 +220,9 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
   }, [sampleRevision, boundDocument]);
   const info = { ...agentInfo(draft), description: readForm(draft).description };
   const instructionsMissing = !!pair && !readForm(draft).instructions.trim();
+  const savedName = useMemo(() => readAgentName(pair?.agent ?? ''), [pair?.agent]);
+  const testFile = pair?.tests;
+  const definitions = useMemo(() => testFile === undefined ? undefined : testDefinitions(testFile), [testFile]);
   const testDraft = !!pair && isTestDraft(pair.tests);
   const nameCounts = new Map<string, number>();
   for (const entry of entries ?? []) nameCounts.set(entry.name, (nameCounts.get(entry.name) ?? 0) + 1);
@@ -241,7 +244,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     }} onCancel={() => { setCreating(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('.new-agent-entry')?.focus()); }} />}
     <section className="designer" hidden={creating} aria-labelledby={active && !creating ? 'page-title' : undefined}>
     <div className="page-heading designer-heading">
-      <div className="agent-heading-copy"><h1 className="agent-name" id={active && !creating ? 'page-title' : undefined}>{info.name ?? (pair ? 'Agent file' : 'Designer')}</h1>{info.description && <p className="muted">{info.description}</p>}</div>
+      <div className="agent-heading-copy"><h1 className="agent-name" id={active && !creating ? 'page-title' : undefined}>{info.name ?? (pair ? 'Agent file' : 'Designer')}</h1>{view === 'Chat' ? <p className="muted">Chat on this computer. Chat doesn't change test results.</p> : info.description && <p className="muted">{info.description}</p>}</div>
       <div className="heading-actions">
         <div className="view-switch" role="group" aria-label="Designer view">
           <button type="button" aria-pressed={view === 'Agent'} onClick={() => setView('Agent')}>Agent</button>
@@ -259,7 +262,7 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
     </div>
     {selectionError && <p role="alert">{selectionError}</p>}
     {!pair ? error ? <div className="designer-file card"><p role="alert">{error}</p><div className="heading-actions"><Button type="button" kind="secondary" onClick={() => { setError(undefined); requestDocument(boundDocument); setOpenAttempt(value => value + 1); }}>Try opening again</Button></div></div> : <div className="designer-file card designer-skeleton" role="status" aria-label="Opening your agent" aria-busy="true"><span className="sr-only">Opening your agent…</span><div aria-hidden="true"><div className="skeleton-field skeleton-prompt" /><div className="skeleton-field" /><div className="skeleton-field" /><div className="skeleton-field" /></div></div> : <>
-      <div hidden={view !== 'Chat'}><Chat key={boundDocument} documentId={boundDocument} blocked={chatBlocked} active={active && !creating && view === 'Chat'} /></div>
+      <div className="designer-chat" hidden={view !== 'Chat'}><Chat key={boundDocument} documentId={boundDocument} blocked={chatBlocked} active={active && !creating && view === 'Chat'} /></div>
       <div hidden={view === 'Chat'} className="designer-work">
       <div className="designer-editing">
       <div className="designer-file card">
@@ -284,10 +287,10 @@ export default function Example({ sampleRevision = 0, actionRequest, onActionHan
           : setupPending ? <div><h3>Tests</h3><span className="coming-control" tabIndex={0} role="group" aria-label="Run tests: Waiting for the workspace to start." title="Waiting for the workspace to start."><Button type="button" kind="secondary" className="action-spaced" disabled title="Waiting for the workspace to start.">Run tests</Button><span className="control-tip" aria-hidden="true">Waiting for the workspace to start.</span></span><p className="muted">Waiting for the workspace to start.</p>{onChooseCluster && <Button type="button" kind="primary" onClick={onChooseCluster}>Go to Clusters</Button>}</div>
           : <Run tests={pair.tests} workspaceReady={workspaceReady} onChooseCluster={onChooseCluster} onEditInstructions={editInstructions} documentId={boundDocument} source={pair.source} onSnapshot={observeRun} blocked={instructionsMissing || pendingSoul || saveState !== 'saved'} stale={stale} startRequest={actionReady && view === 'Agent' && actionRequest?.action === 'run' ? actionRequest.id : undefined} onStartRequestHandled={finishAction} onStart={() => { if (latest.current === draft) setStale(false); }} />}
         {/* Run shows the test list and test file itself; this copy is only for the not-ready state. */}
-        {setupPending && !testDraft && <><DesignerTests definitions={testDefinitions(pair.tests)} stale={false} /><Details hint="Test file">{testSource}</Details></>}
+        {setupPending && !testDraft && <><DesignerTests definitions={definitions} stale={false} /><Details hint="Test file">{testSource}</Details></>}
       </div></section>
       <section className="designer-checks" aria-label="Team cluster">
-        <Send expanded={sendRequest > 0} documentId={boundDocument} place={place} source={pair.source} model={readForm(draft).model} local={localRun} stale={stale} blocked={sendBlocked} onSeeInOverview={onSeeInOverview} onFixLocal={focusLocalResult} onChooseCluster={onChooseCluster} onReloadSource={reloadSource} />
+        <Send expanded={sendRequest > 0} documentId={boundDocument} place={place} source={pair.source} model={readForm(draft).model} agentName={savedName ?? pair.name} testCount={definitions?.length} onFixInDesigner={editInstructions} local={localRun} stale={stale} blocked={sendBlocked} onSeeInOverview={onSeeInOverview} onFixLocal={focusLocalResult} onChooseCluster={onChooseCluster} onReloadSource={reloadSource} />
       </section>
       </div>
       </div>
