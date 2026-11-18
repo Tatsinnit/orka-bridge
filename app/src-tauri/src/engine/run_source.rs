@@ -437,10 +437,7 @@ impl ParsedAgent {
         }
         let mut tools = Vec::new();
         for tool in &agent.kmx.tools {
-            if !present(&tool.name)
-                || tools.contains(&tool.name)
-                || tool.kind == ToolKind::Builtin && !supported_builtin(&tool.name)
-            {
+            if !present(&tool.name) || tools.contains(&tool.name) {
                 return Err(ErrorKind::Source);
             }
             tools.push(tool.name.clone());
@@ -466,6 +463,13 @@ impl ParsedAgent {
         self.tools()
             .iter()
             .any(|name| NAMES.iter().any(|unsupported| unsupported == name.trim()))
+    }
+    /// Local Agent creation loses the declared kind, so reject unknown builtin
+    /// intent before it could resolve to a same-named custom Tool.
+    pub fn has_unknown_local_builtin(&self) -> bool {
+        self.declared_tools
+            .iter()
+            .any(|tool| tool.kind == ToolKind::Builtin && !supported_builtin(&tool.name))
     }
     pub fn spec(&self, provider: &str) -> serde_json::Value {
         let mut spec = serde_json::json!({"providerRef":{"name":provider},"model":{"name":self.model()},"systemPrompt":{"inline":self.prompt()},"tools":self.tools().iter().map(|name| serde_json::json!({"name":name})).collect::<Vec<_>>()});

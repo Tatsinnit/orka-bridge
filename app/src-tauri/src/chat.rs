@@ -436,6 +436,9 @@ impl Worker {
                 .map_err(|_| ChatError::Source)?
                 .map_err(|_| ChatError::Source)?;
             let parsed = ParsedAgent::parse(&source).map_err(|_| ChatError::Source)?;
+            if parsed.has_unknown_local_builtin() {
+                return Err(ChatError::Source);
+            }
             if parsed.has_unsupported_local_tool() {
                 return Err(ChatError::UnsupportedTool);
             }

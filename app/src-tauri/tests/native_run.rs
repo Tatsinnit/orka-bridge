@@ -231,13 +231,8 @@ fn builtin_names_are_exact_while_custom_resources_remain_distinct() {
         "web_fetch ",
     ] {
         let agent = AGENT.replace("name: web_fetch", &format!("name: '{name}'"));
-        assert!(
-            matches!(
-                ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()),
-                Err(ErrorKind::Source)
-            ),
-            "{name}"
-        );
+        let pair = ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()).unwrap();
+        assert!(pair.agent().has_unknown_local_builtin(), "{name}");
     }
     for name in [
         "web_fetch",
@@ -247,15 +242,14 @@ fn builtin_names_are_exact_while_custom_resources_remain_distinct() {
         "list_connections",
     ] {
         let agent = AGENT.replace("name: web_fetch", &format!("name: {name}"));
-        assert!(
-            ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()).is_ok(),
-            "{name}"
-        );
+        let pair = ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()).unwrap();
+        assert!(!pair.agent().has_unknown_local_builtin(), "{name}");
     }
     let resource = AGENT
         .replace("kind: builtin", "kind: tool")
         .replace("name: web_fetch", "name: custom_authorized_tool");
-    assert!(ParsedPair::parse(resource.as_bytes(), TESTS.as_bytes()).is_ok());
+    let pair = ParsedPair::parse(resource.as_bytes(), TESTS.as_bytes()).unwrap();
+    assert!(!pair.agent().has_unknown_local_builtin());
 }
 
 // Removing soul admission or name-only mapping must fail these consumer tests.

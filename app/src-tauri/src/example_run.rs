@@ -582,6 +582,10 @@ impl ExampleRun {
             self.cancelled_before_start(id);
             return;
         }
+        if pair.agent().has_unknown_local_builtin() {
+            self.fail(id, "source");
+            return;
+        }
         if pair.agent().has_unsupported_local_tool() {
             self.fail(id, "unsupportedTool");
             return;
