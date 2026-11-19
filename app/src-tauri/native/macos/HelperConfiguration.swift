@@ -107,7 +107,8 @@ struct HelperConfiguration: Decodable {
         configuration.bootLoader = loader
         configuration.platform = platform
         configuration.storageDevices = try [(osDiskPath, "bridge-os"), (stateDiskPath, "bridge-state")].map {
-            let attachment = try VZDiskImageStorageDeviceAttachment(url: URL(fileURLWithPath: $0.0), readOnly: false)
+            let attachment = try VZDiskImageStorageDeviceAttachment(url: URL(fileURLWithPath: $0.0), readOnly: false,
+                                                                   cachingMode: .cached, synchronizationMode: .full)
             let device = VZVirtioBlockDeviceConfiguration(attachment: attachment)
             device.blockDeviceIdentifier = $0.1
             return device

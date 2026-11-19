@@ -87,6 +87,11 @@ without replacement or automatic repair. Recovery is a later caller decision.
 Path checks do not freeze other host writers; the caller must retain ownership
 and the existing installed-image preflight.
 
+Both writable raw images explicitly use `.cached` host caching and `.full`
+synchronization. Full synchronization applies when the guest flushes; it is not
+a replacement for graceful guest shutdown. The initializer and policy properties
+are available on macOS 12+, below the helper's macOS 13 deployment target.
+
 The socket and TERM observer exist before ownership transfers to `BridgeVM`.
 `whenRegistered` gates start on actual kernel signal registration, not just source
 resumption. Failed construction disposes an unstarted driver and closes its guest

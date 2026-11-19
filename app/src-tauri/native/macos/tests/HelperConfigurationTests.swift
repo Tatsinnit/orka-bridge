@@ -152,6 +152,9 @@ private struct ConfigurationTests {
         let disks = config.storageDevices.compactMap { $0 as? VZVirtioBlockDeviceConfiguration }
         check(disks.map { $0.blockDeviceIdentifier } == ["bridge-os", "bridge-state"], "disk identity/order")
         check(disks.allSatisfy { ($0.attachment as? VZDiskImageStorageDeviceAttachment)?.isReadOnly == false }, "readonly disk")
+        let attachments = disks.compactMap { $0.attachment as? VZDiskImageStorageDeviceAttachment }
+        check(attachments.map(\.cachingMode) == [.cached, .cached], "OS/state host caching: \(attachments.map { $0.cachingMode.rawValue })")
+        check(attachments.map(\.synchronizationMode) == [.full, .full], "OS/state synchronization: \(attachments.map { $0.synchronizationMode.rawValue })")
         check(config.entropyDevices.count == 1 && config.entropyDevices[0] is VZVirtioEntropyDeviceConfiguration, "entropy")
         check(config.networkDevices.count == 1, "network count")
         check(config.networkDevices.first?.attachment is VZNATNetworkDeviceAttachment, "not NAT")
