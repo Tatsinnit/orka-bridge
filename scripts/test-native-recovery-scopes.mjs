@@ -6,14 +6,25 @@ import vm from 'node:vm';
 
 const source = (await readFile(new URL('./native-recovery-windows.mjs', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 const prefix = source.slice(0, source.indexOf('for (const root of')).replace(/^import .*;\n/gm, '');
-function selection(scope) {
-  const argv = ['node', 'driver', 'app.exe', 'captures', ...(scope === undefined ? [] : [scope])];
-  return vm.runInNewContext(`${prefix}\n({ executable, output, scope: typeof captureScope === 'undefined' ? undefined : captureScope, runCore: typeof runCore === 'undefined' ? true : runCore, runUi: typeof runUi === 'undefined' ? true : runUi })`, {
+function selection(scope, ...extra) {
+  const argv = ['node', 'driver', 'app.exe', 'captures', ...(scope === undefined ? [] : [scope]), ...extra];
+  return vm.runInNewContext(`${prefix}\n({ executable, output, scope: captureScope, runCore, runUi, runUpgrade })`, {
     process: { platform: 'win32', env: { GITHUB_ACTIONS: 'true' }, argv }, resolve,
   });
 }
 assert.throws(() => selection('typo'), /capture scope/i, 'unknown scope must not silently run the full suite');
 assert.equal(selection().scope, 'all');
+for (const [scope, expected] of [
+  ['all', [true, true, true]], ['core', [true, false, false]],
+  ['chat-agent-clusters', [false, true, false]], ['workspace-upgrade', [false, false, true]],
+]) {
+  const chosen = selection(scope);
+  assert.deepEqual([chosen.runCore, chosen.runUi, chosen.runUpgrade], expected, scope);
+  assert.equal(chosen.output, resolve('captures'));
+}
+for (const args of [['typo'], ['--scope'], ['--scope', 'core'], ['core', 'core'], ['workspace-upgrade', 'all']]) {
+  assert.throws(() => selection(...args), /all\|core\|chat-agent-clusters\|workspace-upgrade/, `invalid arguments must list finite positional scopes: ${args}`);
+}
 assert.equal(selection('core').runUi, false);
 assert.equal(selection('chat-agent-clusters').runCore, false);
 assert.equal(selection('chat-agent-clusters').output, resolve('captures'), 'scope must not become a path');
@@ -34,6 +45,7 @@ const all = actions(selection()), core = actions(selection('core')), ui = action
 assert.equal(all.length, 72);
 assert.equal(core.length, 47);
 assert.equal(ui.length, 25);
+assert.deepEqual(actions(selection('workspace-upgrade')), [], 'upgrade scope must not repeat any of the 47+25 actions');
 assert.ok(core.includes('designer-reply-saved'), 'saved reply captures belong to the core scope');
 assert.ok(!ui.includes('designer-reply-saved'), 'UI scope must not repeat saved reply captures');
 assert.equal(new Set([...core, ...ui]).size, all.length, 'scopes must partition, not repeat or omit cases');
@@ -65,12 +77,14 @@ assert.equal(twoVersions.versions[1].turns[0].message, 'What did the page say?')
 for (const name of ['fixtures', 'setupFixtures']) {
   assert.equal(roster(name, selection('chat-agent-clusters')).length, 0, `UI scope must not repeat ${name}`);
   assert.ok(roster(name, selection('core')).length > 0);
+  assert.equal(roster(name, selection('workspace-upgrade')).length, 0, `upgrade scope must not repeat ${name}`);
 }
 const overviewAll = roster('overviewVariants', selection());
 const overviewCore = roster('overviewVariants', selection('core'));
 const overviewUi = roster('overviewVariants', selection('chat-agent-clusters'));
 assert.deepEqual(overviewAll, ['clusters', 'local-only', 'starting']);
 assert.deepEqual(overviewCore, [], 'Overview must leave the constrained Core scope');
+assert.deepEqual(roster('overviewVariants', selection('workspace-upgrade')), [], 'upgrade scope must not repeat Overview');
 assert.deepEqual(overviewUi, overviewAll, 'UI must own the complete Overview matrix');
 assert.deepEqual([...overviewCore, ...overviewUi], overviewAll, 'split Overview coverage must match all');
 assert.equal(new Set([...overviewCore, ...overviewUi]).size, overviewAll.length, 'Overview must not repeat between scopes');
@@ -116,6 +130,8 @@ assert.doesNotThrow(() => checkDocumentScroll({ documentScrollHeight: 900, heigh
 assert.doesNotThrow(() => checkDocumentScroll({ documentScrollHeight: 719, height: 640 }, 'ai-key', assert.fail));
 assert.throws(() => checkDocumentScroll({ documentScrollHeight: 2105, height: 900, designer: { send: {} } }, 'send-ready', assert.fail));
 assert.throws(() => checkDocumentScroll({ documentScrollHeight: 2105, height: 900 }, 'chat-long', assert.fail));
+assert.doesNotThrow(() => checkDocumentScroll({ documentScrollHeight: 640, height: 640 }, 'upgrade-consumed-restore-confirm', assert.fail));
+assert.throws(() => checkDocumentScroll({ documentScrollHeight: 720, height: 640 }, 'upgrade-consumed-restore-confirm', assert.fail));
 // The Chat subtitle can resize the heading, but not reorder or independently move its controls.
 const headerGate = source.match(/const now = await header\(\);\n([\s\S]*?)\n        if \(view === 'Chat'\)/)?.[1];
 assert.ok(headerGate);
@@ -207,7 +223,7 @@ assert.equal(await capturePanel(true), true);
 await assert.rejects(() => capturePanel(false), /Change panel must fit/);
 assert.equal(await capturePanel(true, 'ai-removal-retry'), false, 'retry fixture must not overwrite the identical pre-removal panel image');
 const workflow = (await readFile(new URL('../.github/workflows/checks.yml', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
-for (const [scope, directory] of [['core', 'native-recovery'], ['chat-agent-clusters', 'native-chat-agent-clusters']]) {
+for (const [scope, directory] of [['core', 'native-recovery'], ['chat-agent-clusters', 'native-chat-agent-clusters'], ['workspace-upgrade', 'native-workspace-upgrade']]) {
   const command = `node ../scripts/native-recovery-windows.mjs src-tauri/target/debug/orka-bridge.exe windows-artifact/${directory} ${scope}`;
   assert.ok(workflow.includes(command), `CI must run ${scope} into its own artifact directory`);
   const before = workflow.slice(0, workflow.indexOf(command));
@@ -367,11 +383,16 @@ assert.ok(smoke.includes('nativeElements(element).dropFirst()'), 'named page h1 
 assert.ok(smoke.includes('clickButton("Show details")\n    clickButton("Change context")'), 'context maintenance must explicitly open details');
 assert.ok(smoke.includes('clickButton("Show details")\n    clickButton("Remove")'), 'restart removal must explicitly open details');
 // Source contracts supplement, but never substitute for, the hosted native walk.
-const model = await readFile(new URL('./native-model-macos.swift', import.meta.url), 'utf8');
+const model = (await readFile(new URL('./native-model-macos.swift', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 const captureManifest = JSON.parse(await readFile(new URL('./native-model-captures.json', import.meta.url), 'utf8'));
+assert.ok(model.includes('let upgradeText = !found && name.hasPrefix("local-upgrade-") && nativeChatTextIsVisible(value, aboveFooter: true)'), 'upgrade OCR fallback must prove the unchanged expected substring in a fully visible native node');
+assert.ok(model.includes('require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl'), 'native upgrade evidence must feed the original hard capture assertion');
+const nativeUpgradeVisibility = model.slice(model.indexOf('func nativeChatTextIsVisible('), model.indexOf('func waitForButton('));
+assert.ok(nativeUpgradeVisibility.includes('text.contains(expected)') && nativeUpgradeVisibility.includes('"AXStaticText"'), 'upgrade fallback must use actual expected native text, not OCR spelling aliases');
+assert.ok(nativeUpgradeVisibility.includes('bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)') && nativeUpgradeVisibility.includes('bounds.maxY <= window()!.1.maxY - 32'), 'hidden, clipped, off-window and footer text cannot satisfy upgrade fallback');
 assert.equal(captureManifest.model.length, 208);
-assert.equal(captureManifest['destinations-workspace'].length, 51);
-assert.equal(new Set([...captureManifest.model, ...captureManifest['destinations-workspace']]).size, 259);
+assert.equal(captureManifest['destinations-workspace'].length, 121);
+assert.equal(new Set([...captureManifest.model, ...captureManifest['destinations-workspace']]).size, 329);
 const overviewCaptures = [
   ...['disconnected', 'connected'].flatMap(ai => ['wide', 'minimum'].flatMap(size => ['collapsed', 'expanded'].map(state => `local-overview-ai-${ai}-${state}-${size}`))),
   ...['wide', 'compact', 'minimum'].flatMap(size => ['collapsed', 'expanded-earlier-pass', 'expanded-earlier-failed', 'expanded-draft'].map(state => `local-controls-overview-${state}-${size}`)),
@@ -465,5 +486,199 @@ assert.ok(source.includes('chat-long-early') && source.includes('chat-long-end')
 assert.ok(source.includes("resizeTo({ width: 1280, height: 800 }, 'Wide')"));
 assert.ok(source.includes("resizeTo({ width: 540, height: 640 }, 'Compact')"));
 assert.ok(!source.includes('Emulation.setDeviceMetricsOverride'), 'a fake viewport cannot qualify native size evidence');
+// Upgrade presentation extends existing scope manifests, not the native safety proof.
+const upgradeManifest = JSON.parse(await readFile(new URL('./native-model-captures.json', import.meta.url), 'utf8'));
+const upgradeNames = upgradeManifest['destinations-workspace'].filter(name => name.startsWith('local-upgrade-'));
+const integrationStates = ['refresh-cached', 'refresh-pending', 'refresh-busy', 'refresh-io', 'cancel-requested', 'cancel-completed', 'cancel-not-cancellable', 'forward-cancelled', 'busy-locked', 'incomplete-forced'];
+const integrationNames = integrationStates.flatMap(state => ['wide', 'compact'].map(size => `local-upgrade-manage-${state}-${size}`));
+assert.equal(upgradeNames.length, 70, '50 preserved upgrade frames plus20 genuinely new owner-contract frames');
+assert.equal(new Set(upgradeNames).size, 70);
+assert.equal(upgradeNames.filter(name => !integrationNames.includes(name)).length, 50, 'both sizes of original setup/Manage states and confirmations remain');
+for (const name of integrationNames) assert.ok(upgradeNames.includes(name), `missing integration frame: ${name}`);
+assert.ok(!upgradeManifest.model.some(name => name.startsWith('local-upgrade-')), 'model journey must not duplicate upgrade captures');
+const upgradeCapture = source.slice(source.indexOf('  async function captureUpgrade('), source.indexOf('  const notes = [];'));
+const upgradePrelude = upgradeCapture.slice(upgradeCapture.indexOf("    const transaction"), upgradeCapture.indexOf("    for (const [localVm"));
+const upgradeVariants = Function(upgradePrelude + '\nreturn variants;')();
+assert.deepEqual(upgradeVariants.slice(0, 20).map(row => row[1]), [
+  'upgrade-eligible-absent', 'upgrade-eligible-credential', 'upgrade-incomplete',
+  'upgrade-source-selected', 'upgrade-source-retained', 'upgrade-restoring', 'upgrade-restoring-confirm',
+  'upgrade-fresh-absent', 'upgrade-fresh-eligible', 'upgrade-fresh-attention', 'upgrade-fresh-removal-confirm',
+  'upgrade-fresh-transferred', 'upgrade-fresh-removed', 'upgrade-consumed-restore-confirm',
+  'upgrade-restored-freshc-confirm', 'upgrade-conflict', 'upgrade-error-network', 'upgrade-error-nospace',
+  'upgrade-error-stop', 'upgrade-busy-cancel',
+], 'all 20 Windows variants retain their exact existing names');
+assert.deepEqual(upgradeVariants.slice(20).map(row => row[1]), ['upgrade-busy-locked', 'upgrade-error-forced', 'upgrade-refresh-pending', 'upgrade-refresh-busy', 'upgrade-refresh-io', 'upgrade-cancel-requested', 'upgrade-cancel-completed', 'upgrade-cancel-not-cancellable', 'upgrade-forward-cancelled']);
+assert.equal(upgradeVariants.length, 29);
+// Every pre-confirmation frame remains allocated, but a name ending -confirm
+// can only be written with that exact filename after its fieldset has opened.
+const observationName = upgradeCapture.match(/const observationName = ([^;]+);/)[1];
+const confirmationName = upgradeCapture.match(/const confirmationName = ([^;]+);/)[1];
+const frameNames = [];
+for (const [, name, , , mode] of upgradeVariants) {
+  frameNames.push(Function('name', 'mode', `return ${observationName}`)(name, mode));
+  if (mode) {
+    const confirmed = Function('name', `return ${confirmationName}`)(name);
+    assert.ok(confirmed.endsWith('-confirm'));
+    assert.ok(!confirmed.endsWith('-confirm-confirm'));
+    if (name.endsWith('-confirm')) assert.equal(confirmed, name);
+    frameNames.push(confirmed);
+  }
+}
+assert.equal(frameNames.length, 36, '27 baseline frame slots plus nine new scenarios; cached freshness adds one separately');
+assert.equal(new Set(frameNames).size, frameNames.length, 'Windows upgrade screenshot filenames must not collide');
+assert.ok(upgradeCapture.indexOf('const confirmationName') > upgradeCapture.indexOf('confirmCount !== 1'), 'exact confirmation filename must follow the actual open fieldset assertion');
+assert.ok(model.includes('Integration keyboard focus was lost'), 'new owner-contract frames retain hard keyboard focus checks');
+assert.ok(model.includes('Cached observation erased manual refresh error'), 'Mac must check sticky owner-query errors after memory polling');
+assert.ok(!upgradeCapture.includes("clickAction('Stop"), 'upgrade fixtures must not navigate through removed Stop');
+assert.ok(upgradeCapture.includes("clickAction('Manage')"), 'returning upgrade scenes must enter Manage directly');
+assert.ok(upgradeCapture.includes("localStorage.setItem('bridge.firstTest.v1', 'attempted')"), 'returning upgrade scenes must own retired first-test intent');
+assert.ok(upgradeCapture.includes("localStorage.removeItem('bridge.firstTest.v1')"), 'initial upgrade scenes must retire previous returning intent');
+assert.ok(upgradeVariants.slice(0, 3).every(row => row[4]), 'every initial upgrade scene requires a confirmation capture');
+assert.ok(model.includes('if manage && index == 0 { waitForButton("Manage"); click("Manage", []) }'), 'fresh returning renderer must explicitly open Manage before observing its card');
+assert.ok(model.includes('event?.flags = backwards && down ? .maskShift : []'), 'each Tab gesture must set its modifiers and release Shift');
+const readyRow = source.match(/await until\(\(\) => evaluate\(`(\['Connect the AI', 'Manage'\][^`]+)`\), 'ready local row'\)/)?.[1];
+assert.ok(readyRow, 'ready fixtures must wait for an observed snapshot, not merely an initial Set up button');
+for (const [label, expected] of [['Set up', false], ['Connect the AI', true], ['Manage', true]]) {
+  assert.equal(vm.runInNewContext(readyRow, { document: { querySelector: () => ({ textContent: label }) } }), expected);
+}
+assert.ok(model.includes('require(currentFocus, "Confirmation keyboard focus was lost")'), 'Mac must retain its hard keyboard focus assertion');
+assert.ok(model.includes('Thread.sleep(forTimeInterval: 0.2)\n                // AX nodes'), 'Mac keyboard deadline must not be extended to pass');
+const cachedFilename = upgradeCapture.match(/await writeFile\(join\(output, (`[^`]*upgrade-refresh-cached\.png`)/)?.[1];
+assert.ok(cachedFilename, 'cached observation must still write its separate frame');
+const cachedName = Function('theme', 'size', `return ${cachedFilename};`)('light', 'wide');
+assert.equal(cachedName, 'light-wide-upgrade-refresh-cached.png');
+const upgradeSlots = [...frameNames, cachedName.replace('light-wide-', '').replace('.png', '')];
+assert.equal(upgradeSlots.length, 37, '27 baseline plus ten integration frames per theme/size');
+assert.equal(new Set(upgradeSlots).size, 37);
+assert.equal(frameNames.filter(name => !upgradeVariants.slice(20).some(row => row[1] === name)).length, 27);
+const scopeSlots = new Map(['core', 'chat-agent-clusters', 'workspace-upgrade', 'all'].map(scope => [scope, []]));
+for (const theme of ['light', 'dark']) for (const size of ['wide', 'compact']) {
+  for (const scope of scopeSlots.keys()) {
+    const chosen = selection(scope);
+    const actionNames = actions(chosen).map(name => `${theme}-${size}-${name}`);
+    assert.equal(actionNames.length, { core: 47, 'chat-agent-clusters': 25, 'workspace-upgrade': 0, all: 72 }[scope]);
+    const partition = ['core', 'chat-agent-clusters', 'workspace-upgrade'].flatMap(part => actions(selection(part))).map(name => `${theme}-${size}-${name}`);
+    assert.deepEqual(partition, actions(selection('all')).map(name => `${theme}-${size}-${name}`));
+    assert.equal(new Set(partition).size, 72);
+    for (const [, name] of upgradeVariants) {
+      const calls = [], stop = new Error('upgrade world boundary');
+      const capture = Function('runUpgrade', 'selectedFixture', 'frameTree', 'call',
+        `${upgradeCapture.replace('of variants)', 'of variants.filter(v => v[1] === selectedFixture))')}; return captureUpgrade;`)(
+        chosen.runUpgrade, name, { frame: { id: 'fixture-frame' } }, async (method, args) => { calls.push([method, args]); throw stop; });
+      if (scope === 'core' || scope === 'chat-agent-clusters') {
+        await capture(theme, size);
+        assert.equal(calls.length, 0, `${scope} must not duplicate any upgrade world`);
+      } else {
+        await assert.rejects(capture(theme, size), error => error === stop);
+        assert.equal(calls.length, 1, `${scope} must admit every upgrade variant`);
+        assert.equal(calls[0][0], 'Page.createIsolatedWorld');
+        assert.equal(calls[0][1].worldName, `upgrade-${theme}-${size}-${name}`);
+      }
+    }
+    if (chosen.runUpgrade) scopeSlots.get(scope).push(...upgradeSlots.map(name => `${theme}-${size}-${name}.png`));
+  }
+}
+assert.equal(scopeSlots.get('workspace-upgrade').length, 148);
+assert.deepEqual(scopeSlots.get('workspace-upgrade'), scopeSlots.get('all'));
+const splitSlots = ['core', 'chat-agent-clusters', 'workspace-upgrade'].flatMap(scope => scopeSlots.get(scope));
+assert.deepEqual(splitSlots, scopeSlots.get('all'), 'split scopes preserve every upgrade frame exactly once');
+assert.equal(new Set(splitSlots).size, 148, 'no theme/size/frame overwrites across split scopes');
+// Execute the driver's actual resize/theme loops: a separately invented size list
+// cannot detect compact captures accidentally overwriting wide artifacts.
+async function upgradeRoutes(driver) {
+  const wide = driver.slice(driver.indexOf('  const notes = [];'), driver.indexOf('  // Request CSS viewport dimensions'));
+  const compact = driver.slice(driver.indexOf("  await resizeTo({ width: 540, height: 640 }, 'Compact');"), driver.indexOf('  // Preserve the explicitly named Overview minimum'));
+  assert.ok(wide.includes('captureUpgrade') && compact.includes('captureUpgrade'));
+  const routes = []; let viewport;
+  await vm.runInNewContext(`(async () => { ${wide}\n${compact} })()`, {
+    setupFixtures: [], actionFixtures: [], overviewVariants: [],
+    resizeTo: async target => { viewport = target; }, call: async () => {},
+    captureUpgrade: async (theme, size) => routes.push([theme, size, viewport.width, viewport.height]),
+  });
+  assert.deepEqual(routes, [
+    ['light', 'wide', 1280, 800], ['dark', 'wide', 1280, 800],
+    ['light', 'compact', 540, 640], ['dark', 'compact', 540, 640],
+  ]);
+}
+await upgradeRoutes(source);
+await assert.rejects(upgradeRoutes(source.replace("await captureUpgrade(theme, 'compact')", "await captureUpgrade(theme, 'wide')")), /deep-equal/);
+await assert.rejects(upgradeRoutes(source.replace("await captureUpgrade(theme, 'wide')", "await captureUpgrade(theme, 'compact')")), /deep-equal/);
+// The capture is passive even if React catches a rejected mutation reply.
+const upgradeAudit = upgradeCapture.slice(upgradeCapture.indexOf('      for (const { command, args }'), upgradeCapture.indexOf('      await checkLayout('));
+assert.ok(upgradeAudit.includes('workspace_upgrade_'), 'upgrade call audit is missing');
+const auditUpgrade = Function('calls', 'name', 'transaction', upgradeAudit);
+for (const args of [null, {}]) assert.doesNotThrow(() => auditUpgrade([{ command: 'workspace_upgrade_status', args }], 'fixture', 'fixture-transaction'));
+for (const args of [{ path: 'unexpected' }, { transaction: 'fixture-transaction' }, { refresh: true }, { refresh: false }, [], 'unexpected']) {
+  assert.throws(() => auditUpgrade([{ command: 'workspace_upgrade_status', args }], 'fixture', 'fixture-transaction'));
+}
+// Seven real command names: six mutations plus the explicit-refresh status boundary.
+for (const action of ['status', 'replace', 'retry', 'restore', 'cancel', 'transfer', 'remove']) {
+  for (const args of [{ transaction: 'fixture-transaction' }, { refresh: true }, { outcome: 'completed', status: {} }]) {
+    assert.throws(() => auditUpgrade([{ command: `workspace_upgrade_${action}`, args }], 'fixture', 'fixture-transaction'), 'even a well-shaped caught mutation must fail the capture');
+  }
+  if (action !== 'status') for (const args of [null, {}]) {
+    assert.throws(() => auditUpgrade([{ command: `workspace_upgrade_${action}`, args }], 'fixture', 'fixture-transaction'));
+  }
+}
+for (const name of ['upgrade-refresh-pending', 'upgrade-refresh-busy', 'upgrade-refresh-io']) {
+  assert.throws(() => auditUpgrade([], name, 'fixture-transaction'), /exactly one owner refresh/);
+  assert.throws(() => auditUpgrade(Array(2).fill({ command: 'workspace_upgrade_status', args: { refresh: true } }), name, 'fixture-transaction'), /exactly one owner refresh/);
+  assert.doesNotThrow(() => auditUpgrade([
+    { command: 'workspace_upgrade_status', args: null },
+    { command: 'workspace_upgrade_status', args: { refresh: true } },
+    { command: 'workspace_upgrade_status', args: {} },
+  ], name, 'fixture-transaction'), 'cached reads remain allowed around the one explicit owner check');
+  for (const args of [{ refresh: true, path: 'unexpected' }, { refresh: false }, { refresh: true, transaction: 'fixture-transaction' }]) {
+    assert.throws(() => auditUpgrade([{ command: 'workspace_upgrade_status', args }], name, 'fixture-transaction'));
+  }
+  assert.throws(() => auditUpgrade([{ command: 'workspace_upgrade_restore', args: { transaction: 'fixture-transaction' } }], name, 'fixture-transaction'));
+}
+assert.throws(() => auditUpgrade([{ command: 'workspace_upgrade_status', args: { refresh: true } }], 'upgrade-refresh-arbitrary', 'fixture-transaction'));
+// Old isolated-world React pollers may still retire their own first-test intent;
+// their synthetic preferences must not change a later scene's identity.
+const fixtureStorage = source.match(/const fixtureStorage = `([\s\S]*?)`;/)?.[1];
+assert.ok(fixtureStorage, 'each renderer fixture world needs isolated presentation preferences');
+const nativePreferences = new Map([['native-sentinel', 'kept']]);
+const nativeStorage = { getItem: key => nativePreferences.get(key) ?? null, setItem: (key, value) => nativePreferences.set(key, value), removeItem: key => nativePreferences.delete(key) };
+const worlds = [0, 1].map(() => ({ window: { localStorage: nativeStorage } }));
+for (const world of worlds) vm.runInNewContext(fixtureStorage, world);
+worlds[0].window.localStorage.setItem('bridge.firstTest.v1', 'attempted');
+assert.equal(worlds[1].window.localStorage.getItem('bridge.firstTest.v1'), null);
+worlds[1].window.localStorage.setItem('bridge.firstTest.v1', 'pending');
+worlds[0].window.localStorage.setItem('bridge.firstTest.v1', 'attempted');
+assert.equal(worlds[1].window.localStorage.getItem('bridge.firstTest.v1'), 'pending');
+assert.deepEqual([...nativePreferences], [['native-sentinel', 'kept']], 'renderer fixtures must not touch the native profile storage');
+// Execute the fixture's document-start handshake: old-page callbacks must not
+// overwrite the next renderer's intended setup/Manage presentation.
+const upgradeFixture = await readFile(new URL('../app/src-tauri/examples/model_walk.rs', import.meta.url), 'utf8');
+assert.ok(upgradeFixture.includes('assert!(expected_call, "Unexpected upgrade capture call:'), 'Mac must fail even caught passive mutations and nonempty status args');
+assert.ok(upgradeFixture.includes('args.len() == 1') && upgradeFixture.includes('Some(&json!(true))'), 'Mac manual refresh must use the exact finite refresh:true argument');
+assert.ok(upgradeFixture.includes('if key == "sourceRetained"') && upgradeFixture.includes('40000000-0000-4000-8000-000000000005'), 'visually identical retained scene needs a distinct synthetic transaction witness');
+assert.ok(model.includes('if state == "sourceRetained"') && model.includes('waitForNativeText(["4000…0005"])'), 'Mac must observe the requested scene in rendered details before naming its screenshot');
+const nativeTextWait = model.slice(model.indexOf('func waitForNativeText(_ any:'), model.indexOf('func reachable('));
+assert.ok(nativeTextWait.includes('for _ in 0..<40') && nativeTextWait.includes('Thread.sleep(forTimeInterval: 0.1)'), 'the native text deadline must remain unchanged');
+for (const size of ['1.2 GB', '1.3 GB']) assert.ok(model.includes(`waitForNativeText(["${size}"])`), 'Mac allocation witnesses must match one rendered AX text value, not an interpolated paragraph');
+const integrationStart = model.indexOf('for state in ["refresh-pending"');
+const integrationEntry = model.slice(integrationStart, model.indexOf('    if state.hasPrefix("refresh-") {', integrationStart));
+const buttonCondition = integrationEntry.match(/if (.+) \{ waitForButton\(expected\) \}/)?.[1];
+assert.ok(buttonCondition, 'Mac integration action anchors must wait for AXButton, not AXStaticText');
+for (const state of ['refresh-pending', 'refresh-busy', 'refresh-io', 'cancel-requested', 'cancel-completed', 'cancel-not-cancellable', 'forward-cancelled', 'busy-locked', 'incomplete-forced']) {
+  const button = vm.runInNewContext(buttonCondition.replaceAll('.hasPrefix(', '.startsWith('), { state });
+  assert.equal(button, !['busy-locked', 'incomplete-forced'].includes(state), `${state}: action and static-text witness roles must remain distinct`);
+}
+const upgradeBootstrap = upgradeFixture.match(/const UPGRADE_INITIALIZE: &str = r#"([\s\S]*?)"#;/)?.[1];
+assert.ok(upgradeBootstrap, 'fixture intent must be restored at document start, not before old callbacks finish');
+for (const intent of ['pending', 'attempted']) {
+  const local = new Map([['bridge.firstTest.v1', intent === 'pending' ? 'attempted' : 'pending']]);
+  const session = new Map([['bridge.fixture.upgradeIntent', intent]]);
+  const storage = map => ({ getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) });
+  const context = { localStorage: storage(local), sessionStorage: storage(session) };
+  vm.runInNewContext(upgradeBootstrap, context);
+  assert.equal(local.get('bridge.firstTest.v1'), intent);
+  assert.equal(session.has('bridge.fixture.upgradeIntent'), false);
+  local.set('bridge.firstTest.v1', 'attempted');
+  vm.runInNewContext(upgradeBootstrap, { ...context });
+  assert.equal(local.get('bridge.firstTest.v1'), 'attempted', 'bootstrap must not rearm intent after the handshake');
+}
 await import('./test-native-workspace-contracts.mjs');
-console.log('PASS real scope parsing; 47+25 unique action cases; connected cluster IPC/matrix; Chat/Send snapshot matrix and presentation gates; Swift source contracts; layout acceptance/rejection; IPC registration/injection; disjoint CI scopes with unchanged three-minute ceilings');
+console.log('PASS real scope parsing; 47+25 unique action cases; 29 upgrade variants/148 disjoint Windows frame slots; upgrade scope/50 baseline+20 integration-name matrix; connected cluster IPC/matrix; Chat/Send snapshot matrix and presentation gates; Swift source contracts; layout acceptance/rejection; IPC registration/injection; disjoint CI scopes with unchanged three-minute ceilings');

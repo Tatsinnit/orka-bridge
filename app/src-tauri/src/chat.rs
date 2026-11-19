@@ -2,7 +2,7 @@
 use crate::{
     agent_folder::{AgentFolder, DocumentId},
     engine::run::{ParsedAgent, ResourceId},
-    local_vm::LocalVm,
+    local_vm::{LocalVm, LocalVmStatus},
     runtime::types::RuntimeError,
 };
 use bridge_runtime_protocol::{
@@ -12,7 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tokio::{
@@ -151,10 +154,23 @@ struct Context {
     deleted: bool,
     stopping: bool,
 }
-pub struct ChatOwner(Mutex<HashMap<DocumentId, Entry>>, tokio::runtime::Handle);
+pub struct ChatOwner(
+    Mutex<HashMap<DocumentId, Entry>>,
+    tokio::runtime::Handle,
+    AtomicU64,
+);
 impl ChatOwner {
     pub fn new(runtime: tokio::runtime::Handle) -> Arc<Self> {
-        Arc::new(Self(Mutex::default(), runtime))
+        Arc::new(Self(Mutex::default(), runtime, AtomicU64::new(0)))
+    }
+    /// Forget local conversations without sending cleanup to either workspace.
+    pub fn retire_for_workspace_replacement(&self) {
+        let mut entries = self.0.lock().unwrap();
+        for entry in entries.values() {
+            entry.stop.send_replace(true);
+        }
+        self.2.fetch_add(1, Ordering::Relaxed);
+        entries.clear();
     }
     pub fn status(&self, id: DocumentId) -> ChatSnapshot {
         self.0
@@ -173,9 +189,14 @@ impl ChatOwner {
         if message.trim().is_empty() || message.len() > MAX_ORKA_BODY {
             return Err(ChatError::InvalidMessage);
         }
-        let lease = vm.try_authoring().ok_or(ChatError::Busy)?;
         let id = folder.document_id();
         let mut entries = self.0.lock().unwrap();
+        // Retirement shares this lock: capture the lease and launch epoch together,
+        // and admit nothing in the gap before the replacement VM is ready.
+        let lease = vm.try_authoring().ok_or(ChatError::Busy)?;
+        if vm.status() != LocalVmStatus::Ready || !vm.authoring_current(&lease) {
+            return Err(ChatError::Busy);
+        }
         let e = entries.entry(id).or_insert_with(|| Entry::new(id));
         if e.view.busy || e.lease.is_some() {
             return Err(ChatError::Busy);
@@ -245,8 +266,13 @@ impl ChatOwner {
         e.view.error = None;
         Ok(e.view.clone())
     }
-    fn edit(&self, id: DocumentId, f: impl FnOnce(&mut ChatSnapshot)) {
-        f(&mut self.0.lock().unwrap().get_mut(&id).unwrap().view);
+    fn edit(&self, id: DocumentId, epoch: u64, f: impl FnOnce(&mut ChatSnapshot)) {
+        let mut entries = self.0.lock().unwrap();
+        if self.2.load(Ordering::Relaxed) == epoch {
+            if let Some(entry) = entries.get_mut(&id) {
+                f(&mut entry.view);
+            }
+        }
     }
     fn launch(
         self: &Arc<Self>,
@@ -260,6 +286,7 @@ impl ChatOwner {
             owner: owner.clone(),
             vm,
             id,
+            epoch: self.2.load(Ordering::Relaxed),
             context: entry.context.take(),
             lease: entry.lease.take().unwrap(),
             stop: entry.stop.subscribe(),
@@ -274,7 +301,14 @@ impl ChatOwner {
                 result = worker.stop_task().await;
             }
             let mut entries = owner.0.lock().unwrap();
-            let e = entries.get_mut(&id).unwrap();
+            // Retirement can remove and recreate the same document while this
+            // detached worker is awaiting a response. Never restore its old lease.
+            if owner.2.load(Ordering::Relaxed) != worker.epoch {
+                return;
+            }
+            let Some(e) = entries.get_mut(&id) else {
+                return;
+            };
             if let Err(error) = result {
                 e.view.error = Some(error);
                 e.view.state = if worker.preflight
@@ -314,6 +348,7 @@ struct Worker {
     owner: Arc<ChatOwner>,
     vm: Arc<LocalVm>,
     id: DocumentId,
+    epoch: u64,
     context: Option<Context>,
     lease: Arc<OwnedMutexGuard<()>>,
     stop: watch::Receiver<bool>,
@@ -324,10 +359,10 @@ struct Worker {
 }
 impl Worker {
     fn state(&self, state: ChatState) {
-        self.owner.edit(self.id, |s| s.state = state);
+        self.owner.edit(self.id, self.epoch, |s| s.state = state);
     }
     fn turn(&self, f: impl FnOnce(&mut ChatTurn)) {
-        self.owner.edit(self.id, |s| {
+        self.owner.edit(self.id, self.epoch, |s| {
             if let Some(t) = s.versions.last_mut().and_then(|v| v.turns.last_mut()) {
                 f(t);
             }
@@ -357,6 +392,7 @@ impl Worker {
                 return Err(ChatError::Connection);
             }
             let (work, vm, lease) = (work.clone(), self.vm.clone(), self.lease.clone());
+            let (owner, epoch) = (self.owner.clone(), self.epoch);
             let binding = self
                 .context
                 .as_ref()
@@ -366,7 +402,8 @@ impl Worker {
                 .vm
                 .with_client(move |id, client| {
                     // Check admission *inside* the serialized borrow: startup resets its epoch.
-                    if !vm.authoring_current(&lease)
+                    if owner.2.load(Ordering::Relaxed) != epoch
+                        || !vm.authoring_current(&lease)
                         || binding
                             .is_some_and(|b| id != b.installation || client.boot_nonce() != b.boot)
                     {
@@ -495,7 +532,7 @@ impl Worker {
                 deleted: false,
                 stopping: false,
             });
-            self.owner.edit(self.id, |s| {
+            self.owner.edit(self.id, self.epoch, |s| {
                 if fresh {
                     s.versions.push(ChatVersion::default());
                 }
@@ -854,8 +891,18 @@ impl Worker {
         let assistant = messages
             .get(&format!("{prefix}assistant"))
             .map(|m| m.content.as_str());
-        let view = self.owner.status(self.id);
-        let turn = view.versions.last().unwrap().turns.last().unwrap();
+        let turn = {
+            let entries = self.owner.0.lock().unwrap();
+            if self.owner.2.load(Ordering::Relaxed) != self.epoch {
+                return Err(ChatError::WorkspaceChanged);
+            }
+            entries
+                .get(&self.id)
+                .and_then(|e| e.view.versions.last())
+                .and_then(|v| v.turns.last())
+                .cloned()
+                .ok_or(ChatError::WorkspaceChanged)?
+        };
         if user.is_some_and(|u| u != turn.message)
             || assistant.is_some_and(|a| turn.answer.as_ref().is_some_and(|answer| answer != a))
         {
@@ -898,6 +945,98 @@ fn request(method: ChatMethod, path: &str, body: Option<Value>, after: Option<u6
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn workspace_retirement_releases_retained_lease_and_signals_stop() {
+        let owner = ChatOwner::new(tokio::runtime::Handle::current());
+        let vm = LocalVm::unavailable();
+        let id = DocumentId::SAMPLE;
+        let mut entry = Entry::new(id);
+        entry.lease = Some(Arc::new(vm.try_authoring().unwrap()));
+        entry.view.versions.push(ChatVersion {
+            turns: vec![ChatTurn {
+                message: "old workspace".into(),
+                ..ChatTurn::default()
+            }],
+        });
+        let stop = entry.stop.subscribe();
+        owner.0.lock().unwrap().insert(id, entry);
+        assert!(vm.try_authoring().is_none());
+        owner.retire_for_workspace_replacement();
+        assert!(*stop.borrow());
+        assert!(owner.0.lock().unwrap().is_empty());
+        assert!(owner.status(id).versions.is_empty());
+        assert!(vm.try_authoring().is_some());
+    }
+
+    #[tokio::test]
+    async fn retired_worker_edits_cannot_touch_a_new_same_document_conversation() {
+        let owner = ChatOwner::new(tokio::runtime::Handle::current());
+        let vm = LocalVm::unavailable();
+        let id = DocumentId::SAMPLE;
+        let worker = Worker {
+            owner: owner.clone(),
+            vm: vm.clone(),
+            id,
+            epoch: owner.2.load(std::sync::atomic::Ordering::Relaxed),
+            context: None,
+            lease: Arc::new(vm.try_authoring().unwrap()),
+            stop: watch::channel(false).1,
+            deadline: Instant::now() + Duration::from_secs(1),
+            stopping: false,
+            safe: true,
+            preflight: true,
+        };
+        owner.0.lock().unwrap().insert(id, Entry::new(id));
+        owner.retire_for_workspace_replacement();
+        // Missing entries as well as a recreated document must reject old edits.
+        worker.state(ChatState::Working);
+        owner.new_conversation(id).unwrap();
+        worker.state(ChatState::ObservationLost);
+        worker.turn(|_| panic!("a stale turn edit must never run"));
+        let fresh = owner.status(id);
+        assert_eq!(fresh.state, ChatState::Ready);
+        assert!(fresh.versions.is_empty());
+        // Current-epoch edits retain their original semantics.
+        owner.edit(
+            id,
+            owner.2.load(std::sync::atomic::Ordering::Relaxed),
+            |s| s.state = ChatState::Working,
+        );
+        assert_eq!(owner.status(id).state, ChatState::Working);
+    }
+
+    #[tokio::test]
+    async fn retired_worker_finalization_does_not_restore_old_state_or_lease() {
+        let owner = ChatOwner::new(tokio::runtime::Handle::current());
+        let vm = LocalVm::unavailable();
+        let folder = Arc::new(AgentFolder::new(None));
+        let id = folder.document_id();
+        // Exercise detached finalization without requiring a running VM.
+        {
+            let mut entries = owner.0.lock().unwrap();
+            let entry = entries.entry(id).or_insert_with(|| Entry::new(id));
+            entry.lease = Some(Arc::new(vm.try_authoring().unwrap()));
+            owner.launch(vm.clone(), id, entry, Some((folder, "old message".into())));
+        }
+        owner.retire_for_workspace_replacement();
+        owner.new_conversation(id).unwrap();
+        // Drive the real detached task through its failed old-client completion.
+        for _ in 0..100 {
+            if vm.try_authoring().is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            vm.try_authoring().is_some(),
+            "old worker must drop its lease"
+        );
+        let fresh = owner.status(id);
+        assert_eq!(fresh.state, ChatState::Ready);
+        assert!(fresh.error.is_none());
+        assert!(fresh.can_send && !fresh.busy && fresh.versions.is_empty());
+    }
+
     #[test]
     fn completion_overrides_late_stop_without_erasing_interruption_notice() {
         let mut entry = Entry::new(DocumentId::SAMPLE);

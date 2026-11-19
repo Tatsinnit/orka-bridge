@@ -519,6 +519,110 @@ async fn cluster_forget(
 ) -> Result<(), &'static str> {
     state.forget(&key).await
 }
+/// Native-selected only: the renderer never supplies a path, image URL,
+/// source identity or restore/removal target beyond an opaque transaction id.
+fn upgrade_paths<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), &'static str> {
+    let data = app.path().app_data_dir().map_err(|_| "storage")?;
+    let local = app.path().app_local_data_dir().map_err(|_| "storage")?;
+    let resources = app.path().resource_dir().map_err(|_| "storage")?;
+    Ok((data, local, resources))
+}
+#[tauri::command]
+async fn workspace_upgrade_status<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    refresh: Option<bool>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::workspace_upgrade::UpgradeStatusDto, &'static str> {
+    let (data, local, _) = upgrade_paths(&app)?;
+    if refresh.unwrap_or(false) {
+        vm.refresh_upgrade_status(data, local)
+            .await
+            .map_err(|_| "The workspace update status could not be refreshed.")
+    } else {
+        Ok(vm.upgrade_status(data, local).await)
+    }
+}
+#[tauri::command]
+async fn workspace_upgrade_replace<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::workspace_upgrade::UpgradeActionReply, &'static str> {
+    let (data, local, resources) = upgrade_paths(&app)?;
+    let reply = vm
+        .replace_workspace(
+            data,
+            local,
+            local_vm::upgrade_target(&resources)
+                .map_err(|_| "The workspace update is unavailable.")?,
+        )
+        .await
+        .map_err(|_| "The workspace update could not be started.")?;
+    Ok(reply)
+}
+#[tauri::command]
+async fn workspace_upgrade_retry<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    transaction: bridge_runtime_protocol::Uuid,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::workspace_upgrade::UpgradeActionReply, &'static str> {
+    let (data, local, resources) = upgrade_paths(&app)?;
+    let reply = vm
+        .retry_workspace(
+            data,
+            local,
+            local_vm::upgrade_target(&resources)
+                .map_err(|_| "The workspace update is unavailable.")?,
+            transaction,
+        )
+        .await
+        .map_err(|_| "The workspace update could not be retried.")?;
+    Ok(reply)
+}
+#[tauri::command]
+async fn workspace_upgrade_restore<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    transaction: bridge_runtime_protocol::Uuid,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::workspace_upgrade::UpgradeStatusDto, &'static str> {
+    let (data, local, _) = upgrade_paths(&app)?;
+    let dto = vm
+        .restore_workspace(data, local, transaction)
+        .await
+        .map_err(|_| "The previous workspace could not be restored.")?;
+    Ok(dto)
+}
+#[tauri::command]
+async fn workspace_upgrade_transfer<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    transaction: bridge_runtime_protocol::Uuid,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::workspace_upgrade::UpgradeStatusDto, &'static str> {
+    let (data, local, _) = upgrade_paths(&app)?;
+    vm.transfer_workspace_credential(data, local, transaction)
+        .await
+        .map_err(|_| "The saved connection could not be reused.")
+}
+#[tauri::command]
+async fn workspace_upgrade_remove<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    transaction: bridge_runtime_protocol::Uuid,
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::workspace_upgrade::UpgradeStatusDto, &'static str> {
+    let (data, local, _) = upgrade_paths(&app)?;
+    vm.remove_workspace_credential(data, local, transaction)
+        .await
+        .map_err(|_| "The saved connection could not be removed.")
+}
+#[tauri::command]
+async fn workspace_upgrade_cancel(
+    vm: tauri::State<'_, Arc<LocalVm>>,
+) -> Result<bridge_engine::workspace_upgrade::UpgradeCancelOutcome, &'static str> {
+    vm.cancel_workspace_upgrade()
+        .await
+        .map_err(|_| "The workspace update could not be cancelled.")
+}
 #[tauri::command]
 async fn cluster_service_accounts(
     target_id: String,
@@ -736,9 +840,8 @@ fn main() {
             });
             app.manage(store.clone());
             app.manage(vm.clone());
-            app.manage(ChatOwner::new(
-                tauri::async_runtime::handle().inner().clone(),
-            ));
+            let chat = ChatOwner::new(tauri::async_runtime::handle().inner().clone());
+            app.manage(chat.clone());
             let session = bridge_engine::clusters::commands::ClusterSession::with_storage(
                 app.path().app_local_data_dir().ok(),
             );
@@ -751,12 +854,22 @@ fn main() {
                 session,
                 app.path().app_local_data_dir().ok(),
             ));
-            app.manage(bridge_engine::example_run::ExampleRun::with_history_root(
+            let run = bridge_engine::example_run::ExampleRun::with_history_root(
                 tauri::async_runtime::handle().inner().clone(),
                 bridge_engine::local_vm::MODEL_IMAGE_AVAILABLE,
                 folder,
                 app.path().app_local_data_dir().ok(),
-            ));
+            );
+            app.manage(run.clone());
+            let (chat, run) = (Arc::downgrade(&chat), Arc::downgrade(&run));
+            vm.on_workspace_replaced(Arc::new(move || {
+                if let Some(chat) = chat.upgrade() {
+                    chat.retire_for_workspace_replacement();
+                }
+                if let Some(run) = run.upgrade() {
+                    run.retire_for_workspace_replacement();
+                }
+            }));
             #[cfg(debug_assertions)]
             startup_marker("installing lifecycle");
             lifecycle::install(
@@ -811,6 +924,13 @@ fn main() {
             agent_reveal,
             workspace_catalog,
             cluster_catalog,
+            workspace_upgrade_status,
+            workspace_upgrade_replace,
+            workspace_upgrade_retry,
+            workspace_upgrade_restore,
+            workspace_upgrade_transfer,
+            workspace_upgrade_remove,
+            workspace_upgrade_cancel,
             cluster_places,
             cluster_reconnect,
             cluster_select,
@@ -869,4 +989,325 @@ fn main() {
             }
             lifecycle::stop(app);
         });
+}
+
+#[cfg(test)]
+mod upgrade_ipc_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
+
+    fn invoke(
+        window: &tauri::WebviewWindow<MockRuntime>,
+        command: &str,
+        body: Value,
+    ) -> Result<tauri::ipc::InvokeResponseBody, Value> {
+        get_ipc_response(
+            window,
+            tauri::webview::InvokeRequest {
+                cmd: command.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(windows) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .unwrap(),
+                body: tauri::ipc::InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: INVOKE_KEY.into(),
+            },
+        )
+    }
+
+    fn upgrade_app(native: &std::path::Path, vm: Arc<LocalVm>) -> tauri::App<MockRuntime> {
+        // Tauri's macOS resolver canonicalizes deps/../Resources for Cargo test
+        // binaries; app-directory overrides do not override bundled resources.
+        #[cfg(target_os = "macos")]
+        {
+            let exe = tauri::utils::platform::current_exe().unwrap();
+            std::fs::create_dir_all(exe.parent().unwrap().join("../Resources")).unwrap();
+        }
+        let mut context: tauri::Context<MockRuntime> = tauri::generate_context!();
+        context.config_mut().app.app_directories_override = Some(
+            tauri::utils::config::AppDirectoriesOverride::Root(native.to_owned()),
+        );
+        mock_builder()
+            .manage(vm)
+            .invoke_handler(tauri::generate_handler![
+                workspace_upgrade_status,
+                workspace_upgrade_replace,
+                workspace_upgrade_retry,
+                workspace_upgrade_restore,
+                workspace_upgrade_transfer,
+                workspace_upgrade_remove,
+                workspace_upgrade_cancel
+            ])
+            .build(context)
+            .unwrap()
+    }
+
+    #[test]
+    fn decoded_status_uses_cache_unless_refresh_is_true_and_propagates_owner_errors() {
+        let native = tempfile::tempdir().unwrap();
+        let vm = LocalVm::unavailable();
+        let app = upgrade_app(native.path(), vm.clone());
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let initial = invoke(&window, "workspace_upgrade_status", json!({}))
+            .unwrap()
+            .deserialize::<Value>()
+            .unwrap();
+        assert_eq!(initial["state"], "conflict");
+        assert_eq!(initial["error"], "unknown");
+        assert_eq!(initial["canCancel"], false);
+        assert_eq!(initial.as_object().unwrap().len(), 14);
+        assert_eq!(
+            invoke(
+                &window,
+                "workspace_upgrade_status",
+                json!({"refresh": false})
+            )
+            .unwrap()
+            .deserialize::<Value>()
+            .unwrap(),
+            initial
+        );
+        assert_eq!(std::fs::read_dir(native.path()).unwrap().count(), 0);
+        let empty = json!({
+            "state": "none", "transaction": null, "createdAt": null,
+            "sourceReleases": [], "targetRelease": null, "retainedAllocatedBytes": null,
+            "additionalBytes": null, "credential": "absent", "busy": false,
+            "error": null, "repeated": false, "canReplace": false,
+            "canRestore": false, "canCancel": false
+        });
+        assert_eq!(
+            invoke(
+                &window,
+                "workspace_upgrade_status",
+                json!({"refresh": true})
+            )
+            .unwrap()
+            .deserialize::<Value>()
+            .unwrap(),
+            empty
+        );
+        // A real native owner lock must not affect cached observation. Explicit
+        // refresh must reject Busy, not turn that failure into cached success.
+        let store = native.path().join("workspace-upgrades-v1");
+        std::fs::create_dir(&store).unwrap();
+        let owner = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(store.join("owner.lock"))
+            .unwrap();
+        owner.try_lock().unwrap();
+        for body in [
+            json!({}),
+            json!({"refresh": false}),
+            json!({"refresh": null}),
+        ] {
+            assert_eq!(
+                invoke(&window, "workspace_upgrade_status", body)
+                    .unwrap()
+                    .deserialize::<Value>()
+                    .unwrap(),
+                empty
+            );
+        }
+        for refresh in [json!("true"), json!(1), json!({}), json!([])] {
+            let error = invoke(
+                &window,
+                "workspace_upgrade_status",
+                json!({"refresh": refresh}),
+            )
+            .unwrap_err();
+            assert!(error
+                .as_str()
+                .unwrap()
+                .starts_with("invalid args `refresh`"));
+        }
+        assert_eq!(
+            invoke(
+                &window,
+                "workspace_upgrade_status",
+                json!({"refresh": true})
+            )
+            .unwrap_err(),
+            json!("The workspace update status could not be refreshed.")
+        );
+        assert!(vm.workspace_replaced());
+        assert_eq!(
+            invoke(&window, "workspace_upgrade_status", json!({}))
+                .unwrap()
+                .deserialize::<Value>()
+                .unwrap(),
+            empty
+        );
+        drop(owner);
+        std::fs::remove_file(store.join("owner.lock")).unwrap();
+        std::fs::remove_dir(&store).unwrap();
+        std::fs::write(&store, b"not a directory").unwrap();
+        assert_eq!(
+            invoke(
+                &window,
+                "workspace_upgrade_status",
+                json!({"refresh": true})
+            )
+            .unwrap_err(),
+            json!("The workspace update status could not be refreshed.")
+        );
+        let failed = invoke(&window, "workspace_upgrade_status", json!({}))
+            .unwrap()
+            .deserialize::<Value>()
+            .unwrap();
+        assert_eq!(failed["state"], "conflict");
+        assert!(failed["error"].is_string());
+        assert_eq!(failed["canCancel"], false);
+        assert_eq!(std::fs::read(store).unwrap(), b"not a directory");
+        assert_eq!(vm.status(), LocalVmStatus::NotIntegrated);
+    }
+
+    #[test]
+    fn decoded_cancel_returns_bare_not_cancellable_without_touching_storage_or_authoring() {
+        let native = tempfile::tempdir().unwrap();
+        let store = native.path().join("workspace-upgrades-v1");
+        std::fs::write(&store, b"not a directory").unwrap();
+        let vm = LocalVm::unavailable();
+        let lease = vm.try_authoring().unwrap();
+        let app = upgrade_app(native.path(), vm.clone());
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let result = invoke(
+            &window,
+            "workspace_upgrade_cancel",
+            json!({"data": "../renderer", "local": "../renderer", "slot": "bypass"}),
+        )
+        .unwrap()
+        .deserialize::<Value>()
+        .unwrap();
+        assert_eq!(result, json!("notCancellable"));
+        assert!(vm.authoring_current(&lease));
+        assert!(!vm.workspace_replaced());
+        assert_eq!(vm.status(), LocalVmStatus::NotIntegrated);
+        assert_eq!(std::fs::read(store).unwrap(), b"not a directory");
+        assert_eq!(std::fs::read_dir(native.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn forward_and_cancel_commands_retain_native_owner_reply_types() {
+        fn forward_reply(
+            _: impl std::future::Future<
+                Output = Result<bridge_engine::workspace_upgrade::UpgradeActionReply, &'static str>,
+            >,
+        ) {
+        }
+        fn cancel_reply(
+            _: impl std::future::Future<
+                Output = Result<
+                    bridge_engine::workspace_upgrade::UpgradeCancelOutcome,
+                    &'static str,
+                >,
+            >,
+        ) {
+        }
+        let native = tempfile::tempdir().unwrap();
+        let app = upgrade_app(native.path(), LocalVm::unavailable());
+        // Compile the actual adapters against owner replies, without starting
+        // replacement or introducing a test-only image/factory implementation.
+        forward_reply(workspace_upgrade_replace(app.handle().clone(), app.state()));
+        forward_reply(workspace_upgrade_retry(
+            app.handle().clone(),
+            bridge_runtime_protocol::Uuid::new_v4(),
+            app.state(),
+        ));
+        cancel_reply(workspace_upgrade_cancel(app.state()));
+    }
+
+    #[test]
+    fn decoded_upgrade_actions_reject_missing_malformed_nil_and_foreign_transactions() {
+        let root = tempfile::tempdir().unwrap();
+        let native = root.path().join("native");
+        let renderer = root.path().join("renderer");
+        std::fs::create_dir(&native).unwrap();
+        std::fs::create_dir(&renderer).unwrap();
+        let sentinel = renderer.join("keep");
+        std::fs::write(&sentinel, b"untouched").unwrap();
+        let vm = LocalVm::unavailable();
+        let lease = vm.try_authoring().unwrap();
+        let app = upgrade_app(&native, vm.clone());
+        let (data, local, _) = upgrade_paths(app.handle())
+            .expect("IPC fixture must resolve native data, local data and resource paths");
+        assert_eq!(data, native);
+        assert_eq!(local, native);
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        for (command, rejected) in [
+            (
+                "workspace_upgrade_restore",
+                "The previous workspace could not be restored.",
+            ),
+            (
+                "workspace_upgrade_transfer",
+                "The saved connection could not be reused.",
+            ),
+            (
+                "workspace_upgrade_remove",
+                "The saved connection could not be removed.",
+            ),
+        ] {
+            // These are actual decoded requests to production commands, not facade calls.
+            for transaction in [
+                "00000000-0000-0000-0000-000000000000",
+                "00000000-0000-0000-0000-00000000007b",
+            ] {
+                let error = invoke(
+                    &window,
+                    command,
+                    json!({
+                        "transaction": transaction,
+                        "data": renderer,
+                        "local": renderer,
+                        "path": sentinel,
+                        "slot": "00000000-0000-0000-0000-00000000007b",
+                        "sourceId": "renderer-cannot-select-a-source",
+                        "url": "https://example.invalid/image"
+                    }),
+                )
+                .unwrap_err();
+                assert_eq!(error, json!(rejected));
+                assert!(vm.authoring_current(&lease));
+                assert_eq!(vm.status(), LocalVmStatus::NotIntegrated);
+                assert!(!vm.workspace_replaced());
+            }
+        }
+        for command in [
+            "workspace_upgrade_retry",
+            "workspace_upgrade_restore",
+            "workspace_upgrade_transfer",
+            "workspace_upgrade_remove",
+        ] {
+            for body in [
+                json!({"path": sentinel, "sourceId": "bypass"}),
+                json!({"transaction": "../renderer/keep"}),
+                json!({"transaction": 7}),
+                json!({"transaction": null}),
+            ] {
+                let error = invoke(&window, command, body).unwrap_err();
+                assert!(error
+                    .as_str()
+                    .unwrap()
+                    .starts_with("invalid args `transaction`"));
+            }
+        }
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"untouched");
+        assert_eq!(std::fs::read_dir(&native).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(&renderer).unwrap().count(), 1);
+    }
 }

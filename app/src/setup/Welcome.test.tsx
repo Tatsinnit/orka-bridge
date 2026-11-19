@@ -1,3 +1,4 @@
+import { noUpgrade } from './test-upgrade';
 import { openLocalSetup } from './test-navigation';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -12,6 +13,7 @@ function native(initial: object = unselected, sizing: unknown = requirements) {
   vi.stubGlobal('isTauri', true);
   let status = initial;
   const ipc = vi.fn((command: string) => {
+    if (command === 'workspace_upgrade_status') return noUpgrade;
     if (command === 'setup_status') return status;
     if (command === 'setup_requirements') return sizing;
     if (command === 'setup_select_local') {
@@ -159,7 +161,7 @@ test.each([
 
 test('an unseen welcome cannot hide a failed status read or overwrite its preference', async () => {
   native(); let failed = true;
-  const ipc = vi.fn(command => command === 'setup_status'
+  const ipc = vi.fn(command => command === 'workspace_upgrade_status' ? noUpgrade : command === 'setup_status'
     ? failed ? Promise.reject('SECRET_MARKER') : { selected: 'localVm', localVm: 'starting', model: 'locked' }
     : command === 'setup_requirements' ? requirements : Promise.reject({ kind: 'unavailable' }));
   mockIPC(ipc); const user = userEvent.setup(); render(<App />);
@@ -176,7 +178,7 @@ test('an unseen welcome cannot hide a failed status read or overwrite its prefer
 
 test('a delayed initial status cannot flash welcome over an existing workspace', async () => {
   native(); let complete!: (value: unknown) => void;
-  mockIPC(command => command === 'setup_status' ? new Promise(resolve => { complete = resolve; })
+  mockIPC(command => command === 'workspace_upgrade_status' ? noUpgrade : command === 'setup_status' ? new Promise(resolve => { complete = resolve; })
     : command === 'setup_requirements' ? requirements : Promise.reject({ kind: 'unavailable' }));
   render(<App />);
   expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();

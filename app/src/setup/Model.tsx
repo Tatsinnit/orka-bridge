@@ -11,8 +11,8 @@ export type ModelState = 'idle' | 'queued' | 'connecting' | 'removing' | 'resett
 // `enabled` is native permission to touch credentials. `queueable` only permits remembering the
 // creator's choice while the workspace is still arriving. `away` means another place was chosen.
 // Each increase of changeRequest explicitly asks to change the AI provider.
-export default function Model({ title = 'Connect the AI', enabled, queueable = false, paused = false, away = false, primary = true, changeRequest = 0, recoveryTarget, choiceTarget, inline = false, onPlaceCard = false, onState, onSettled, onConnectRequest }: {
-  title?: string; choiceTarget?: HTMLElement | null; inline?: boolean;
+export default function Model({ title = 'Connect the AI', enabled, queueable = false, paused = false, away = false, primary = true, changeRequest = 0, sharedConnection = false, recoveryTarget, choiceTarget, inline = false, onPlaceCard = false, onState, onSettled, onConnectRequest }: {
+  sharedConnection?: boolean; title?: string; choiceTarget?: HTMLElement | null; inline?: boolean;
   enabled: boolean; queueable?: boolean; paused?: boolean; away?: boolean; primary?: boolean; changeRequest?: number; recoveryTarget?: HTMLElement | null; onPlaceCard?: boolean; onState?: (state: ModelState) => void; onSettled?: () => void; onConnectRequest?: () => void;
 }) {
   // In-memory consent only. It never carries a credential and is consumed once.
@@ -40,6 +40,7 @@ export default function Model({ title = 'Connect the AI', enabled, queueable = f
   }, [inline, choiceTarget]);
   const retry = useRef<HTMLButtonElement>(null);
   const removal = useRef<HTMLButtonElement>(null);
+  const doneChange = useRef<HTMLButtonElement>(null);
   const cancelRemoval = useRef<HTMLButtonElement>(null);
   const [confirmRemoval, setConfirmRemoval] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -115,6 +116,7 @@ export default function Model({ title = 'Connect the AI', enabled, queueable = f
     handledChange.current = changeRequest;
     if (changeRequest <= 0) return;
     if (recovery && enabled && !paused && !busy) {
+      if (sharedConnection) return;
       setAnotherProvider(true); setConfirmReset(true); refocus.current = 'connect';
       return;
     }
@@ -122,15 +124,16 @@ export default function Model({ title = 'Connect the AI', enabled, queueable = f
     changeFocus.current = confirm ? 'confirm' : 'choice';
     if (confirm) { setChanging(true); changeFocus.current = 'panel'; }
     else setExpanded(true);
-  }, [changeRequest, hasSignIn, enabled, paused, busy, removalFailed, recovery]);
+  }, [changeRequest, hasSignIn, enabled, paused, busy, removalFailed, recovery, sharedConnection]);
   useEffect(() => {
     // A confirmation focuses once it renders; a hidden card never takes focus.
     if (!changeFocus.current || (changeFocus.current === 'confirm' && !confirmRemoval)) return;
-    if (changeFocus.current === 'panel' && !removal.current || changeFocus.current === 'change' && !changeButton.current) return;
+    const panelAction = sharedConnection ? doneChange.current : removal.current;
+    if (changeFocus.current === 'panel' && !panelAction || changeFocus.current === 'change' && !changeButton.current) return;
     const intent = changeFocus.current;
     changeFocus.current = undefined;
     if (root.current?.closest('[hidden]')) return;
-    const target = intent === 'change' ? changeButton.current : intent === 'panel' ? removal.current : confirmRemoval ? cancelRemoval.current
+    const target = intent === 'change' ? changeButton.current : intent === 'panel' ? panelAction : confirmRemoval ? cancelRemoval.current
       : busy ? heading.current
       : changing || removalFailed ? removal.current
       : root.current?.querySelector<HTMLElement>('.model-choice:not(:disabled) input:checked');
@@ -138,6 +141,7 @@ export default function Model({ title = 'Connect the AI', enabled, queueable = f
   });
   async function perform(action: 'connect' | 'remove' | 'reset') {
     if (!enabled || paused || active.current || (action === 'connect' && ready)) return;
+    if ((action === 'remove' || action === 'reset') && sharedConnection) return;
     if (action === 'reset' && !recovery) return;
     const key = action === 'connect' && choice === 'key' ? keyField.current?.value ?? '' : '';
     if (action === 'connect' && choice === 'key' && (key || !hasSignIn) && !validKey(vendor, key)) {
@@ -198,7 +202,8 @@ export default function Model({ title = 'Connect the AI', enabled, queueable = f
   function chooseKind(kind: 'copilot' | 'key') { clearKey(); setQueued(false); setChoice(kind); setError(undefined); }
   const keyMode = choice === 'key';
   const keyProblem = keyMode && error && !removalFailed;
-  const removalAction = hasSignIn && !busy && <Button ref={removal} type="button" kind={removalFailed ? 'primary' : 'quiet'} className={removalFailed ? undefined : 'button-danger'} disabled={!enabled || paused || !!busy}
+  const sharedNotice = <p>To change provider, use Remove saved connection in the Workspace card. Its confirmation explains removal for all retained workspaces.</p>;
+  const removalAction = sharedConnection ? sharedNotice : hasSignIn && !busy && <Button ref={removal} type="button" kind={removalFailed ? 'primary' : 'quiet'} className={removalFailed ? undefined : 'button-danger'} disabled={!enabled || paused || !!busy}
             onClick={() => {
               refocus.current = document.activeElement === removal.current ? 'remove' : undefined;
               if (removalFailed) void perform('remove'); else setConfirmRemoval(true);
@@ -213,8 +218,8 @@ export default function Model({ title = 'Connect the AI', enabled, queueable = f
       {busy === 'reset' ? <div ref={status} role="status" tabIndex={-1} className="model-state"><StatusPill state="running">Resetting</StatusPill><p>Removing Bridge's saved AI connection. Your workspace and agents aren't touched.</p></div>
         : <div className="workspace-failure" role="alert"><div className="workspace-failure-explanation">
           {resetFailed ? <><h2 className="failure-summary">Bridge couldn't reset the AI connection</h2><p>{resetAttempts > 1 ? 'Reset failed again. Copy the details for whoever helps you with Bridge; Show details lists what Bridge could confirm.' : "Bridge couldn't confirm the saved connection was removed. Try once more. If it fails again, copy the details for whoever helps you with Bridge."}</p></>
-            : <><p className="failure-summary">Bridge's saved AI connection is from an earlier setup.</p><p>This happens after a reinstall. Reset it and choose the AI again. Your agents are safe.</p></>}
-          {confirmReset ? <div role="group" aria-label="Reset AI connection confirmation"><h3>Reset the AI connection?</h3><p>Bridge forgets its saved AI connection for this workspace. Your GitHub account and your agents don't change. Use another provider starts with this same reset.</p><div className="workspace-step-actions">
+            : <><p className="failure-summary">Bridge's saved AI connection is from an earlier setup.</p><p>{sharedConnection ? 'Your agents are safe.' : 'This happens after a reinstall. Reset it and choose the AI again. Your agents are safe.'}</p></>}
+          {sharedConnection ? sharedNotice : confirmReset ? <div role="group" aria-label="Reset AI connection confirmation"><h3>Reset the AI connection?</h3><p>Bridge forgets its saved AI connection for this workspace. Your GitHub account and your agents don't change. Use another provider starts with this same reset.</p><div className="workspace-step-actions">
             <Button ref={retry} kind="primary" disabled={!enabled || paused || !!busy} onClick={() => { refocus.current = 'connect'; void perform('reset'); }}>Reset</Button>
             <Button ref={cancelRemoval} kind="secondary" onClick={() => { refocus.current = 'connect'; setConfirmReset(false); }}>Cancel</Button>
           </div></div> : <div className="workspace-step-actions">
@@ -282,9 +287,9 @@ export default function Model({ title = 'Connect the AI', enabled, queueable = f
         <div className="workspace-step-actions">
           {changing && !confirmRemoval && <fieldset className="workspace-change" aria-label="Change the AI">
             <legend>Change the AI</legend><p>Remove the saved {keyMode ? 'key' : 'sign-in'} before choosing another provider.</p>
-            <div className="workspace-step-actions">{removalAction}<Button type="button" kind="quiet" onClick={closeChange}>Done</Button></div>
+            <div className="workspace-step-actions">{removalAction}<Button ref={doneChange} type="button" kind="quiet" onClick={closeChange}>Done</Button></div>
           </fieldset>}
-          {confirmRemoval ? <div role="group" aria-label={`Remove ${keyMode ? 'key' : 'sign-in'} confirmation`}>
+          {confirmRemoval && !sharedConnection ? <div role="group" aria-label={`Remove ${keyMode ? 'key' : 'sign-in'} confirmation`}>
             <p>{keyMode ? 'Disconnect the AI and remove Bridge’s saved key? This does not revoke the key with the company.' : 'Disconnect the AI and remove Bridge’s saved sign-in? GitHub CLI stays signed in.'}</p>
             <div className="workspace-step-actions">
               <Button ref={cancelRemoval} type="button" kind="primary" onClick={() => {

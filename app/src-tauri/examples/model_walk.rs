@@ -209,6 +209,179 @@ fn fixture_recovery(stage: Option<&str>) -> serde_json::Value {
     recovery
 }
 
+// Phase-selected canned UpgradeStatus DTOs only; no rename, archive, vault or real
+// mutation. `key` is the BRIDGE_SETUP_PROGRESS content with its "upgrade-" prefix
+// (and, for the returning-workspace variant, its "-manage" suffix) stripped.
+#[cfg(all(target_os = "macos", feature = "custom-protocol"))]
+// Finite fixture-only metadata acknowledgement: rejection returns no new DTO;
+// only a subsequent cached read exposes changed bytes, never repaired I/O/history.
+fn upgrade_refresh_bytes(key: &str, refresh: bool, failed: &mut bool) -> Result<i64, &'static str> {
+    let rejection = matches!(key, "refresh-busy" | "refresh-io");
+    if refresh && rejection {
+        *failed = true;
+        return Err(if key == "refresh-busy" {
+            "refreshBusy"
+        } else {
+            "Synthetic owner I/O failure"
+        });
+    }
+    Ok(if !refresh && rejection && *failed {
+        1300000000
+    } else {
+        1200000000
+    })
+}
+
+#[cfg(all(target_os = "macos", feature = "custom-protocol"))]
+fn upgrade_status(key: &str) -> serde_json::Value {
+    use serde_json::json;
+    let transaction = "40000000-0000-4000-8000-000000000004";
+    let mut status = json!({"state":"none", "transaction":null, "createdAt":null,
+        "sourceReleases":["0.1.2"], "targetRelease":"0.1.3",
+        "retainedAllocatedBytes":1200000000_i64, "additionalBytes":2400000000_i64,
+        "credential":"absent", "busy":false, "error":null,
+        "repeated":false, "canReplace":false, "canRestore":false, "canCancel":false});
+    let with_transaction = [
+        "incomplete",
+        "incomplete-stop",
+        "incomplete-forced",
+        "busy",
+        "busy-locked",
+        "refresh-pending",
+        "refresh-busy",
+        "refresh-io",
+        "cancel-requested",
+        "cancel-completed",
+        "cancel-not-cancellable",
+        "forward-cancelled",
+        "fresh-absent",
+        "fresh-eligible",
+        "fresh-attention",
+        "fresh-transferred",
+        "fresh-removed",
+        "consumed",
+        "sourceSelected",
+        "sourceRetained",
+        "restoring",
+        "restored",
+    ]
+    .contains(&key);
+    if with_transaction {
+        status["transaction"] = json!(transaction);
+        status["createdAt"] = json!(1700000000_i64);
+    }
+    match key {
+        "eligible-absent" => {
+            status["state"] = json!("eligible");
+            status["canReplace"] = json!(true);
+        }
+        "eligible-credential" => {
+            status["state"] = json!("eligible");
+            status["credential"] = json!("eligible");
+            status["canReplace"] = json!(true);
+        }
+        "eligible-offline" => {
+            status["state"] = json!("eligible");
+            status["canReplace"] = json!(true);
+            status["error"] = json!("network");
+        }
+        "eligible-nospace" => {
+            status["state"] = json!("eligible");
+            status["canReplace"] = json!(true);
+            status["error"] = json!("noSpace");
+        }
+        "sourceSelected" | "sourceRetained" | "restoring" => {
+            // These are independent canned observations, not a transaction replay.
+            // A distinct visible-details witness prevents identical recovery prose
+            // from acknowledging the preceding sourceSelected scene.
+            if key == "sourceRetained" {
+                status["transaction"] = json!("40000000-0000-4000-8000-000000000005");
+            }
+            status["state"] = json!(key);
+            status["canReplace"] = json!(key != "restoring");
+            status["canRestore"] = json!(true);
+        }
+        "incomplete" => {
+            status["state"] = json!("incomplete");
+            status["canReplace"] = json!(true);
+        }
+        "incomplete-stop" | "incomplete-forced" => {
+            status["state"] = json!("incomplete");
+            status["error"] = json!(if key == "incomplete-stop" {
+                "stopUnconfirmed"
+            } else {
+                "forcedStop"
+            });
+        }
+        "busy"
+        | "busy-locked"
+        | "cancel-requested"
+        | "cancel-completed"
+        | "cancel-not-cancellable" => {
+            status["state"] = json!("sourceSelected");
+            status["busy"] = json!(true);
+            status["canCancel"] = json!(key != "busy-locked");
+            status["canRestore"] = json!(key == "cancel-requested");
+        }
+        "refresh-pending" | "refresh-busy" | "refresh-io" | "forward-cancelled" => {
+            status["state"] = json!("incomplete");
+            status["canReplace"] = json!(true);
+            if key.starts_with("refresh-") {
+                status["canRestore"] = json!(true);
+                status["error"] = json!("unknown");
+            }
+        }
+        "fresh-absent" => {
+            status["state"] = json!("fresh");
+            status["canRestore"] = json!(true);
+        }
+        "fresh-eligible" => {
+            status["state"] = json!("fresh");
+            status["credential"] = json!("eligible");
+            status["canRestore"] = json!(true);
+        }
+        "fresh-attention" => {
+            status["state"] = json!("fresh");
+            status["credential"] = json!("attention");
+            status["canRestore"] = json!(true);
+        }
+        "fresh-transferred" => {
+            status["state"] = json!("fresh");
+            status["credential"] = json!("transferred");
+            status["canRestore"] = json!(true);
+        }
+        "fresh-removed" => {
+            status["state"] = json!("fresh");
+            status["credential"] = json!("removed");
+            status["canRestore"] = json!(true);
+        }
+        "consumed" => {
+            status["state"] = json!("consumed");
+            status["canRestore"] = json!(true);
+        }
+        "restored" => {
+            status["state"] = json!("restored");
+            status["repeated"] = json!(true);
+            status["canReplace"] = json!(true);
+        }
+        "conflict" => {
+            status["state"] = json!("conflict");
+        }
+        _ => {}
+    }
+    status
+}
+
+// Restore fixture-only presentation intent after old-page callbacks have gone away.
+#[cfg(all(target_os = "macos", feature = "custom-protocol"))]
+const UPGRADE_INITIALIZE: &str = r#"
+const upgradeIntent = sessionStorage.getItem('bridge.fixture.upgradeIntent');
+if (upgradeIntent === 'pending' || upgradeIntent === 'attempted') {
+    localStorage.setItem('bridge.firstTest.v1', upgradeIntent);
+    sessionStorage.removeItem('bridge.fixture.upgradeIntent');
+}
+"#;
+
 #[cfg(all(target_os = "macos", feature = "custom-protocol"))]
 fn main() {
     use serde_json::json;
@@ -244,6 +417,8 @@ fn main() {
     // selector creates it; reset clears this flag, never a real store or file.
     let mismatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let first_test_pending = std::sync::atomic::AtomicBool::new(false);
+    let upgrade_scene = std::sync::atomic::AtomicU8::new(0);
+    let upgrade_ack = std::sync::Mutex::new((String::new(), false));
     let cluster_selected = std::sync::atomic::AtomicBool::new(false);
     let target = json!({"id":"42345678-1234-4234-8234-123456789abc",
         "context_id":"52345678-1234-4234-8234-123456789abc", "context_name":"team-dev",
@@ -260,6 +435,7 @@ fn main() {
     let run_source = std::sync::Mutex::new(source.clone());
     let run_attempt = std::sync::Mutex::new(None::<String>);
     tauri::Builder::default()
+        .append_invoke_initialization_script(UPGRADE_INITIALIZE)
         .setup(|app| {
             app.get_webview_window("main")
                 .unwrap()
@@ -269,6 +445,10 @@ fn main() {
         .invoke_handler(move |invoke| {
             let capture_phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
             let account_scene = matches!(capture_phase.as_deref(), Some("cluster-account-picker" | "cluster-account-forbidden"));
+            if capture_phase.as_deref().is_some_and(|phase| phase.starts_with("upgrade-")) {
+                assert!(!matches!(invoke.message.command(), "setup_connect_model" | "agent_run" | "agent_chat_send" | "agent_chat_reconnect" | "setup_select_local"),
+                    "Upgrade capture must never auto-Connect, Test, Chat or start a workspace");
+            }
             let reply = match invoke.message.command() {
                 "overview_files" => {
                     let content = agent.lock().unwrap();
@@ -502,6 +682,33 @@ fn main() {
                         return true;
                     }
                     if command == "setup_status" {
+                        if let Some(p) = phase.as_deref().filter(|p| p.starts_with("upgrade-")) {
+                            let manage = p.ends_with("-manage");
+                            // Interactive scenes get a fresh renderer so component-local acknowledgements
+                            // cannot leak into the next named capture. IDs remain a finite fixture roster.
+                            let group = match p.strip_prefix("upgrade-").and_then(|key| key.strip_suffix("-manage")) {
+                                Some("refresh-pending") => 3,
+                                Some("refresh-busy") => 4,
+                                Some("refresh-io") => 5,
+                                Some("cancel-requested") => 6,
+                                Some("cancel-completed") => 7,
+                                Some("cancel-not-cancellable") => 8,
+                                Some("forward-cancelled") => 9,
+                                Some("busy-locked") => 10,
+                                Some("incomplete-forced") => 11,
+                                _ => if manage { 2 } else { 1 },
+                            };
+                            if upgrade_scene.swap(group, std::sync::atomic::Ordering::SeqCst) != group {
+                                workspace.lock().unwrap().returning = manage;
+                                first_test_pending.store(true, std::sync::atomic::Ordering::SeqCst);
+                                running.store(false, std::sync::atomic::Ordering::SeqCst);
+                                connected.store(false, std::sync::atomic::Ordering::SeqCst);
+                                let intent = if manage { "attempted" } else { "pending" };
+                                invoke.message.webview()
+                                    .eval(format!("sessionStorage.setItem('bridge.fixture.upgradeIntent', '{intent}'); location.reload();"))
+                                    .expect("fixture upgrade renderer reload");
+                            }
+                        }
                         if phase.as_deref() == Some("setup-forced-stop") {
                             let mut state = workspace.lock().unwrap();
                             if state.returning {
@@ -520,6 +727,11 @@ fn main() {
                                 "workspaceProgress":{"phase":"starting", "bytes":null, "totalBytes":null, "elapsedMs":45000, "remainingMs":null}})),
                             Some("image-update" | "image-unsupported") => Some(json!({"selected":"localVm", "localVm":"failed", "model":"locked", "modelSupported":true,
                                 "workspaceFailure":{"operation":"verify", "cause":if phase.as_deref() == Some("image-update") {"workspaceUpdateRequired"} else {"workspaceVersionUnsupported"}, "codes":[]}})),
+                            // Native UpgradeStatus eligibility (below) is what unlocks the card here,
+                            // not this setup_status failure shape, which matches the plain refusal above.
+                            Some(p) if p.starts_with("upgrade-") && p.ends_with("-manage") => Some(json!({"selected":"localVm", "localVm":"ready", "model":"available", "modelSupported":true, "workspaceReplaced":true})),
+                            Some(p) if p.starts_with("upgrade-") => Some(json!({"selected":"localVm", "localVm":"failed", "model":"locked", "modelSupported":true,
+                                "workspaceFailure":{"operation":"verify", "cause":"workspaceUpdateRequired", "codes":[]}})),
                             _ => None,
                         };
                         if let Some(progress) = progress {
@@ -761,6 +973,74 @@ fn main() {
                         return true;
                     }
                     json!({"ready":false})
+                }
+                // Finite synthetic owner transitions only; never VM/filesystem/vault mutation.
+                "workspace_upgrade_status" | "workspace_upgrade_replace" | "workspace_upgrade_retry"
+                | "workspace_upgrade_restore" | "workspace_upgrade_transfer" | "workspace_upgrade_remove"
+                | "workspace_upgrade_cancel" => {
+                    let command = invoke.message.command();
+                    let phase = capture_phase.as_deref().unwrap_or("");
+                    let key = phase.strip_prefix("upgrade-").and_then(|k| k.strip_suffix("-manage")).or_else(|| phase.strip_prefix("upgrade-")).unwrap_or("");
+                    let tauri::ipc::InvokeBody::Json(args) = invoke.message.payload() else {
+                        panic!("Upgrade fixture requires JSON arguments");
+                    };
+                    let empty = args.is_null() || args.as_object().is_some_and(|args| args.is_empty());
+                    let manual = matches!(key, "refresh-pending" | "refresh-busy" | "refresh-io")
+                        && args.as_object().is_some_and(|args| args.len() == 1 && args.get("refresh") == Some(&json!(true)));
+                    let expected_call = match command {
+                        "workspace_upgrade_status" => empty || manual,
+                        "workspace_upgrade_cancel" => matches!(key, "cancel-requested" | "cancel-completed" | "cancel-not-cancellable") && empty,
+                        "workspace_upgrade_retry" => key == "forward-cancelled"
+                            && args.as_object().is_some_and(|args| args.len() == 1 && args.get("transaction") == Some(&json!("40000000-0000-4000-8000-000000000004"))),
+                        _ => false,
+                    };
+                    // Fail the fixture even if React catches an unexpected mutation/error.
+                    assert!(expected_call, "Unexpected upgrade capture call: {command} {args}");
+                    let mut ack = upgrade_ack.lock().unwrap();
+                    if ack.0 != key { *ack = (key.to_owned(), false); }
+                    let mut status = upgrade_status(key);
+                    if ack.1 && key.starts_with("cancel-") {
+                        status["canCancel"] = json!(false);
+                        if key == "cancel-completed" {
+                            status["state"] = json!("incomplete");
+                            status["busy"] = json!(false);
+                            status["canReplace"] = json!(true);
+                        }
+                    }
+                    match command {
+                        "workspace_upgrade_status" => {
+                            let refresh = matches!(invoke.message.payload(), tauri::ipc::InvokeBody::Json(args) if args["refresh"] == true);
+                            match upgrade_refresh_bytes(key, refresh, &mut ack.1) {
+                                Ok(bytes) => status["retainedAllocatedBytes"] = json!(bytes),
+                                Err(error) => {
+                                    invoke.resolver.reject(error);
+                                    return true;
+                                }
+                            }
+                            if refresh && key == "refresh-pending" {
+                                let selector = setup_progress.clone();
+                                let resolver = invoke.resolver;
+                                let selected_phase = phase.to_owned();
+                                tauri::async_runtime::spawn(async move {
+                                    while selector.as_ref().and_then(|path| std::fs::read_to_string(path).ok()).as_deref() == Some(selected_phase.as_str()) {
+                                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                    }
+                                    resolver.resolve(status);
+                                });
+                                return true;
+                            }
+                            status
+                        }
+                        "workspace_upgrade_cancel" if key.starts_with("cancel-") => {
+                            ack.1 = true;
+                            json!(match key { "cancel-requested" => "requested", "cancel-completed" => "completed", _ => "notCancellable" })
+                        }
+                        "workspace_upgrade_replace" | "workspace_upgrade_retry" => {
+                            json!({"outcome":if key == "forward-cancelled" { "cancelled" } else { "completed" }, "status":status})
+                        }
+                        "workspace_upgrade_cancel" => json!("notCancellable"),
+                        _ => status,
+                    }
                 }
                 _ => {
                     invoke

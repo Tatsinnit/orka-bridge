@@ -1,4 +1,5 @@
 import { openLocalSetup } from './test-navigation';
+import { noUpgrade } from './test-upgrade';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { cleanup, fireEvent, render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -14,6 +15,7 @@ function native(initial = 'installing', numbers: { phase: string; bytes: number 
   const status = () => ({ selected, localVm, model: localVm === 'ready' ? 'available' : 'locked', modelSupported: true, workspaceProgress: ['installing', 'starting'].includes(localVm) ? numbers : null, localVmError: localVm === 'failed' ? 'PRIVATE_NATIVE_DETAIL' : null });
   const ipc = vi.fn((command: string) => {
     if (command === 'setup_status') { if (unavailable) throw Error('unreadable'); return status(); }
+    if (command === 'workspace_upgrade_status') return noUpgrade;
     if (command === 'setup_cancel_local') { localVm = 'cancelled'; return status(); }
     if (command === 'setup_select_local') { selected = 'localVm'; localVm = 'installing'; return status(); }
     if (command === 'setup_change_local') { localVm = 'idle'; selected = null; return status(); }

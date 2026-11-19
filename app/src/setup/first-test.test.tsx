@@ -76,6 +76,36 @@ test.each(['submitted', 'existing', 'changed', 'changed-after-run', 'unreadable-
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(existing ? 0 : 1);
 });
 
+test('replacement clears a completed hook pass permanently', async () => {
+  vi.stubGlobal('isTauri', true); armFirstTest();
+  mockIPC(command => {
+    if (command === 'setup_example') return pair;
+    if (command === 'agent_open') return { ...pair, documentId: sample, name: 'web-reader' };
+    if (command === 'agent_run_status') return { ...idle, state: 'complete', report: { verdict: 'passed', cases: [{ id: 'checksum', question: 'Read the checksum', phase: 'Succeeded', answer: 'checksum', completedTools: [], assertions: [{ id: 'a', kind: 'contains', expected: 'checksum', verdict: 'passed' }], verdict: 'passed' }] } };
+    throw Error('Unexpected ' + command);
+  });
+  const view = renderHook(({ retired }) => useFirstTest({ ready: !retired, retired, canOpen: false, sampleDirty: false, onOpen: vi.fn() }), { initialProps: { retired: false } });
+  await waitFor(() => expect(view.result.current).toBe('passed'));
+  view.rerender({ retired: true });
+  expect(view.result.current).toBeUndefined();
+  view.rerender({ retired: false });
+  expect(view.result.current).toBeUndefined();
+});
+
+test('replacement retires the hook verdict and ignores a retired in-flight result', async () => {
+  const { ipc, finish } = native(); armFirstTest();
+  const onSnapshot = vi.fn(); const onOpen = vi.fn();
+  const view = renderHook(({ retired }) => useFirstTest({ ready: !retired, retired, canOpen: true, sampleDirty: false, onOpen, onSnapshot }), { initialProps: { retired: false } });
+  await waitFor(() => expect(view.result.current).toBe('running'));
+  retireFirstTest(); view.rerender({ retired: true });
+  await waitFor(() => expect(view.result.current).toBeUndefined());
+  view.rerender({ retired: false }); finish();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); });
+  expect(view.result.current).toBeUndefined();
+  expect(onOpen).not.toHaveBeenCalled();
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
+});
+
 test('setup prepares the connected example before opening its saved bytes', async () => {
   vi.stubGlobal('isTauri', true); armFirstTest();
   let prepared = false;

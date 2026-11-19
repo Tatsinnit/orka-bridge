@@ -17,6 +17,13 @@ fn main() {
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(&[
             "engine_call",
             "setup_status",
+            "workspace_upgrade_status",
+            "workspace_upgrade_replace",
+            "workspace_upgrade_retry",
+            "workspace_upgrade_restore",
+            "workspace_upgrade_transfer",
+            "workspace_upgrade_remove",
+            "workspace_upgrade_cancel",
             "workspace_catalog",
             "setup_select_local",
             "setup_cancel_local",

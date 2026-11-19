@@ -1,12 +1,36 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import Model from './Model';
+import userEvent from '@testing-library/user-event';
 const { invoke, isTauri } = vi.hoisted(() => ({ invoke: vi.fn(), isTauri: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke, isTauri }));
 beforeEach(() => { invoke.mockReset(); isTauri.mockReturnValue(true); });
 afterEach(cleanup);
 const anthropic = { kind: 'key', vendor: 'anthropic', model: 'claude-sonnet-5-5' };
 const removals = () => invoke.mock.calls.filter(([cmd]) => cmd === 'setup_remove_model');
+
+test('a transferred shared connection directs removal to the workspace confirmation', async () => {
+  invoke.mockResolvedValue({ ready: true, connection: { kind: 'copilot', model: 'gpt-5.6-terra' } });
+  render(<Model enabled sharedConnection />);
+  fireEvent.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Change' }));
+  expect(screen.queryByRole('button', { name: /Remove/ })).toBeNull();
+  expect(screen.getByText(/Remove saved connection in the Workspace card/)).toBeTruthy();
+  expect(removals()).toHaveLength(0);
+});
+
+test('shared Change moves keyboard focus to Done and restores Change on completion', async () => {
+  const user = userEvent.setup();
+  invoke.mockResolvedValue({ ready: true });
+  render(<Model enabled sharedConnection />);
+  await user.click(screen.getByRole('button', { name: 'Connect the AI' }));
+  const change = await screen.findByRole('button', { name: 'Change' });
+  change.focus(); await user.keyboard('{Enter}');
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Done' }));
+  await user.keyboard('{Enter}');
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Change' }));
+  expect(removals()).toHaveLength(0);
+});
 
 test('the heading can take programmatic focus', () => {
   render(<Model enabled />);

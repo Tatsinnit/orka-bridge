@@ -9,12 +9,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 if (process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true') throw Error('Hosted Windows CI only');
 const [executableArgument, outputArgument, captureScope = 'all'] = process.argv.slice(2);
-if (!executableArgument || !outputArgument || process.argv.length > 5) throw Error('Expected executable, output directory and optional capture scope');
-if (!['all', 'core', 'chat-agent-clusters'].includes(captureScope)) throw Error('Unknown capture scope');
+const usage = 'Usage: node native-recovery-windows.mjs <executable> <output-directory> [all|core|chat-agent-clusters|workspace-upgrade]';
+if (!executableArgument || !outputArgument || process.argv.length > 5) throw Error(`Expected executable, output directory and optional capture scope. ${usage}`);
+if (!['all', 'core', 'chat-agent-clusters', 'workspace-upgrade'].includes(captureScope)) throw Error(`Unknown capture scope. ${usage}`);
 const executable = resolve(executableArgument), output = resolve(outputArgument);
-// Keep the added UI matrix out of the existing recovery step's fixed deadline.
-const runCore = captureScope !== 'chat-agent-clusters';
-const runUi = captureScope !== 'core';
+// Partition complete capture groups across fixed three-minute CI steps.
+const runCore = captureScope === 'all' || captureScope === 'core';
+const runUi = captureScope === 'all' || captureScope === 'chat-agent-clusters';
+const runUpgrade = captureScope === 'all' || captureScope === 'workspace-upgrade';
 for (const root of [process.env.APPDATA, process.env.LOCALAPPDATA]) {
   if (!root) throw Error('Missing native profile root');
   for (const leaf of ['setup-v1/local-vm', 'local-vm-v1']) {
@@ -66,7 +68,24 @@ try {
     });
   }
   let contextId;
+  const preferenceContexts = new Set();
+  // Worlds share the native DOM and origin storage, but not scenario intent.
+  // A retired old scene must not overwrite a later scene's first-test marker.
+  const fixtureStorage = `(() => {
+    const values = new Map();
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: {
+      getItem: key => values.get(String(key)) ?? null,
+      setItem: (key, value) => values.set(String(key), String(value)),
+      removeItem: key => values.delete(String(key)), clear: () => values.clear(),
+      key: index => [...values.keys()][index] ?? null, get length() { return values.size; }
+    } });
+  })();`;
   async function evaluate(expression) {
+    if (contextId !== undefined && !preferenceContexts.has(contextId)) {
+      const initialized = await call('Runtime.evaluate', { expression: fixtureStorage, contextId, returnByValue: true });
+      if (initialized.exceptionDetails) throw Error(JSON.stringify(initialized.exceptionDetails));
+      preferenceContexts.add(contextId);
+    }
     const result = await call('Runtime.evaluate', { expression, contextId, awaitPromise: true, returnByValue: true });
     if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
@@ -192,7 +211,7 @@ try {
       };
     })()`);
     const fail = reason => { throw Error(`${name}/${size}: ${reason}: ${JSON.stringify(layout)}`); };
-    if ((layout.designer?.send || name.startsWith('chat-')) && layout.documentScrollHeight > layout.height + 2) fail('document overflows outside the page scroll');
+    if ((layout.designer?.send || name.startsWith('chat-') || name.startsWith('upgrade-')) && layout.documentScrollHeight > layout.height + 2) fail('document overflows outside the page scroll');
     if (layout.scrollWidth > layout.clientWidth + 2) fail('page overflows horizontally');
     if (size === 'setup-fit' && layout.scrollHeight > layout.clientHeight + 2) fail('page overflows vertically');
     if (layout.width > 820 && (layout.tabs.length !== 3 || layout.tabs.some(tab => Math.abs(tab.width - 180) > 1 || tab.grow !== '0') || layout.host.x - layout.tabs.at(-1).right < 16)) fail('wide tabs must stay 180px/non-growing with a 16px host gap');
@@ -276,7 +295,8 @@ try {
     })()`);
     await evaluate(bundle);
     if (localVm === 'ready') {
-      await until(() => evaluate(`!!document.querySelector('[aria-label="This computer"] button')`), 'ready local row');
+      await until(() => evaluate(`['Connect the AI', 'Manage'].includes(document.querySelector('[aria-label="This computer"] button')?.textContent)`), 'ready local row');
+      console.log('Ready setup observation:', await evaluate(`({ action: document.querySelector('[aria-label="This computer"] button')?.textContent, pill: document.querySelector('[aria-label="This computer"] .pill')?.textContent, marker: localStorage.getItem('bridge.firstTest.v1') })`));
       if (!await evaluate(`document.querySelector('[aria-label="This computer"] button').textContent === 'Connect the AI' && document.querySelector('[aria-label="This computer"] .pill.status-needs-you') !== null`)) throw Error('A ready VM without connected AI must not advertise green Running or Manage');
       await clickAction('Connect the AI');
     }
@@ -654,6 +674,11 @@ try {
       window.isTauri = true;
       window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
         if (command === 'setup_status') return status();
+        if (command === 'workspace_upgrade_status') return {
+          state: 'none', transaction: null, createdAt: null, sourceReleases: [], targetRelease: null,
+          retainedAllocatedBytes: null, additionalBytes: null, credential: 'absent', busy: false,
+          error: null, repeated: false, canReplace: false, canRestore: false, canCancel: false,
+        };
         if (command === 'quit_bridge') { window.__bridgeQuits++; return; }
         if (command === 'setup_select_local') { window.__bridgeLocalSelections++; selected = true; stopFailed = false; workspacePhase = workspace ? 'starting' : 'ready'; return status(); }
         if (command === 'setup_cancel_local') {
@@ -1699,12 +1724,224 @@ try {
       await shoot('-expanded-' + scene);
     }
   }
+  // Standalone Workspace Upgrade captures: synthetic workspace_upgrade_* IPC only, in a fresh
+  // isolated world per variant, loading the real compiled bundle like captureSetup/captureActions.
+  // Initial-setup snapshots reuse the existing failed/workspaceUpdateRequired setup_status shape;
+  // Returning variants mount with the saved first-test attempted marker and open Manage
+  // directly. No obsolete Stop walk or polling cycle is needed to prepare a static scene.
+  async function captureUpgrade(theme, size) {
+    // Keep every upgrade variant together without consuming the Core or UI deadline.
+    if (!runUpgrade) return;
+    const transaction = '40000000-0000-4000-8000-000000000004';
+    const base = { transaction: null, createdAt: null, sourceReleases: ['0.1.2'], targetRelease: '0.1.3', retainedAllocatedBytes: 1200000000, additionalBytes: 2400000000, credential: 'absent', busy: false, error: null, repeated: false, canReplace: false, canRestore: false, canCancel: false };
+    const withTx = extra => ({ ...base, transaction, createdAt: 1700000000, ...extra });
+    // Initial-setup group: localVm 'failed' with the plain workspaceUpdateRequired shape, no
+    // workspaceReplaced flag (mirrors Mac's 3 states captured before returning-workspace reload, into SetupProgress).
+    const initial = [
+      ['upgrade-eligible-absent', { ...base, state: 'eligible', canReplace: true }, 'Set up new workspace', 'confirm-dismiss'],
+      ['upgrade-eligible-credential', { ...base, state: 'eligible', credential: 'eligible', canReplace: true }, 'Set up new workspace', 'confirm-only'],
+      ['upgrade-incomplete', withTx({ state: 'incomplete', canReplace: true }), 'Try setup again', 'confirm-only'],
+    ];
+    // Returning Manage group: localVm 'ready' with workspaceReplaced true, matching the parent's
+    // fresh-eligible model_walk key and the real post-replacement SetupSnapshot shape.
+    const manage = [
+      ['upgrade-source-selected', withTx({ state: 'sourceSelected', canReplace: true, canRestore: true }), 'Workspace setup was interrupted', null],
+      ['upgrade-source-retained', withTx({ state: 'sourceRetained', canReplace: true, canRestore: true }), 'Workspace setup was interrupted', null],
+      ['upgrade-restoring', withTx({ state: 'restoring', canRestore: true }), 'Restore was interrupted', null],
+      ['upgrade-restoring-confirm', withTx({ state: 'restoring', canRestore: true }), 'Restore previous workspace', 'confirm-only'],
+      ['upgrade-fresh-absent', withTx({ state: 'fresh', canRestore: true }), 'Enter a new sign-in', null],
+      ['upgrade-fresh-eligible', withTx({ state: 'fresh', credential: 'eligible', canRestore: true }), 'Use saved connection', null],
+      ['upgrade-fresh-attention', withTx({ state: 'fresh', credential: 'attention', canRestore: true }), 'needs attention', null],
+      ['upgrade-fresh-removal-confirm', withTx({ state: 'fresh', credential: 'attention', canRestore: true }), 'Remove saved connection', 'confirm-only'],
+      ['upgrade-fresh-transferred', withTx({ state: 'fresh', credential: 'transferred', canRestore: true }), 'Use Connect in the AI card', null],
+      ['upgrade-fresh-removed', withTx({ state: 'fresh', credential: 'removed', canRestore: true }), 'Enter a new sign-in', null],
+      ['upgrade-consumed-restore-confirm', withTx({ state: 'consumed', canRestore: true }), 'Restore previous workspace', 'confirm-only'],
+      ['upgrade-restored-freshc-confirm', withTx({ state: 'restored', repeated: true, canReplace: true }), 'Set up another new workspace', 'confirm-only'],
+      ['upgrade-conflict', { ...base, state: 'conflict' }, 'needs attention', null],
+      ['upgrade-error-network', withTx({ state: 'fresh', canRestore: true, error: 'network' }), 'could not be downloaded', null],
+      ['upgrade-error-nospace', withTx({ state: 'fresh', canRestore: true, error: 'noSpace' }), 'not enough free space', null],
+      ['upgrade-error-stop', withTx({ state: 'incomplete', error: 'stopUnconfirmed' }), 'could not be stopped safely', null],
+      ['upgrade-busy-cancel', withTx({ state: 'sourceSelected', busy: true, canCancel: true }), 'Cancel update', null],
+      ['upgrade-busy-locked', withTx({ state: 'sourceSelected', busy: true }), 'The workspace is busy. Your agent files are kept.', null],
+      ['upgrade-error-forced', withTx({ state: 'incomplete', error: 'forcedStop' }), 'forcibly stopped', null],
+      ...['pending', 'busy', 'io'].map(kind => [`upgrade-refresh-${kind}`, withTx({ state: 'incomplete', error: 'unknown', canReplace: true, canRestore: true }), 'Check again', null]),
+      ...['requested', 'completed', 'not-cancellable'].map(outcome => [`upgrade-cancel-${outcome}`, withTx({ state: 'sourceSelected', busy: true, canCancel: true }), 'Cancel update', null]),
+      ['upgrade-forward-cancelled', withTx({ state: 'incomplete', canReplace: true }), 'Try setup again', null],
+    ];
+    const variants = [...initial.map(v => ['failed', ...v]), ...manage.map(v => ['ready', ...v])];
+    for (const [localVm, name, status, expected, mode] of variants) {
+      ({ executionContextId: contextId } = await call('Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: `upgrade-${theme}-${size}-${name}` }));
+      await evaluate(`(() => {
+        window.__bridgeUpgradeCalls = [];
+        window.__bridgeUpgradeShown = true;
+        window.__bridgeUpgradeRefreshFailed = false;
+        window.__bridgeUpgradeVm = ${JSON.stringify(localVm)};
+        window.__bridgeUpgradeStatus = ${JSON.stringify(status)};
+        localStorage.setItem('bridge.welcomeSeen.v1', '1');
+        if (${JSON.stringify(localVm === 'ready')}) localStorage.setItem('bridge.firstTest.v1', 'attempted');
+        else localStorage.removeItem('bridge.firstTest.v1');
+        window.isTauri = true;
+        window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+          window.__bridgeUpgradeCalls.push({ command, args: args ?? null });
+          if (command === 'workspace_upgrade_status') {
+            if (args?.refresh === true) {
+              if (['upgrade-refresh-busy', 'upgrade-refresh-io'].includes(${JSON.stringify(name)})) {
+                window.__bridgeUpgradeRefreshFailed = true;
+                throw ${JSON.stringify(name)} === 'upgrade-refresh-busy' ? 'refreshBusy' : 'Synthetic owner I/O failure';
+              }
+              if (${JSON.stringify(name)} === 'upgrade-refresh-pending') return new Promise(resolve => {
+                window.__bridgeFinishUpgradeRefresh = () => resolve(window.__bridgeUpgradeStatus);
+              });
+            }
+            // Controlled metadata acknowledgement of the NEXT cached read, not I/O repair.
+            // Rejection itself leaves the original DTO and transaction/history untouched.
+            if (args?.refresh !== true && window.__bridgeUpgradeRefreshFailed) {
+              window.__bridgeUpgradeStatus = { ...window.__bridgeUpgradeStatus, retainedAllocatedBytes: 1300000000 };
+            }
+            return window.__bridgeUpgradeShown ? window.__bridgeUpgradeStatus : ${JSON.stringify({ ...base, state: 'none' })};
+          }
+          if (command === 'workspace_upgrade_cancel' && ${JSON.stringify(name)}.startsWith('upgrade-cancel-')) {
+            const outcome = ${JSON.stringify(name)}.slice('upgrade-cancel-'.length);
+            window.__bridgeUpgradeStatus = { ...window.__bridgeUpgradeStatus, canCancel: false,
+              ...(outcome === 'completed' ? { state: 'incomplete', busy: false, canReplace: true } : {}) };
+            return outcome === 'not-cancellable' ? 'notCancellable' : outcome;
+          }
+          if (command === 'workspace_upgrade_retry' && ${JSON.stringify(name)} === 'upgrade-forward-cancelled') {
+            return { outcome: 'cancelled', status: window.__bridgeUpgradeStatus };
+          }
+          // No other scene can mutate even the synthetic owner.
+          if (command.startsWith('workspace_upgrade_')) throw Error('Unexpected native mutation call: ' + command);
+          if (command === 'setup_cancel_local') { window.__bridgeUpgradeVm = 'cancelled'; return { selected: 'localVm', localVm: 'cancelled', model: 'locked', workspaceReplaced: true }; }
+          if (command === 'setup_status') return { selected: 'localVm', localVm: window.__bridgeUpgradeVm, model: window.__bridgeUpgradeVm === 'ready' ? 'available' : 'locked', modelSupported: true, ...${JSON.stringify(localVm === 'ready' ? { workspaceReplaced: true } : { workspaceFailure: { operation: 'verify', cause: 'workspaceUpdateRequired', codes: [] } })} };
+          if (command === 'agents_list') return [];
+          if (command === 'agent_creation_root') return null;
+          if (command === 'setup_requirements') return null;
+          if (command === 'cluster_contexts') return [];
+          if (command === 'cluster_places') return { places: [], selectedKey: null, persistenceState: 'complete' };
+          if (command === 'engine_call') throw { kind: 'unavailable' };
+          throw Error('Unmocked fixture command: ' + command);
+        } };
+        document.getElementById('root').replaceWith(Object.assign(document.createElement('div'), { id: 'root' }));
+      })()`);
+      await evaluate(bundle);
+      if (localVm === 'ready') {
+        await clickAction('Manage');
+        await until(() => evaluate(`!!document.querySelector('.returning-workspace')`), 'returning workspace card');
+        if (await evaluate(`localStorage.getItem('bridge.firstTest.v1')`) !== 'attempted') throw Error(name + ': returning intent missing');
+      }
+      await until(() => evaluate(`[...document.querySelectorAll('.workspace-upgrade')].some(item => item.getClientRects().length && item.innerText.includes(${JSON.stringify(expected)}))`), name);
+      if (!await evaluate(`!!document.querySelector('${localVm === 'ready' ? '.returning-workspace' : '.setup-progress'} .workspace-upgrade')`)) throw Error(name + ': wrong setup/Manage fixture mount');
+      if (!await evaluate(`!!document.querySelector('.workspace-upgrade [role="status"]')`)) throw Error(`${name}: missing announced status region`);
+      if (name.startsWith('upgrade-refresh-')) {
+        if (await evaluate(`document.querySelector('.workspace-upgrade').innerText.includes('Workspace files checked on request.')`)) throw Error(name + ': cached observation claimed owner freshness');
+        if (name === 'upgrade-refresh-pending') {
+          const cached = await call('Page.captureScreenshot', { format: 'png' });
+          await writeFile(join(output, `${theme}-${size}-upgrade-refresh-cached.png`), Buffer.from(cached.data, 'base64'));
+        }
+        // Audit and click in one WebView task: no automatic owner request may
+        // hide in the cached screenshot or the action-availability wait.
+        await evaluate(`(() => {
+          if (window.__bridgeUpgradeCalls.some(call => call.command === 'workspace_upgrade_status' && call.args?.refresh === true)) throw Error('owner refresh before Check again');
+          const explicitCheckAgain = [...document.querySelectorAll('.workspace-upgrade button')].find(button => button.textContent === 'Check again' && !button.disabled && button.getClientRects().length);
+          if (!explicitCheckAgain) throw Error('Explicit Check again control unavailable');
+          explicitCheckAgain.click();
+        })()`);
+        const refreshedText = name === 'upgrade-refresh-pending' ? 'Checking workspace' : 'Could not check workspace files. They may still be in use or unavailable. Check again before continuing.';
+        await until(() => evaluate(`document.querySelector('.workspace-upgrade').innerText.includes(${JSON.stringify(refreshedText)})`), name + ' manual refresh result');
+        if (name !== 'upgrade-refresh-pending') {
+          await evaluate('window.dispatchEvent(new Event("focus"))');
+          await until(() => evaluate(`document.querySelector('.workspace-upgrade').innerText.includes('Retained workspace: 1.3 GB allocated.')`), 'rendered cached metadata after refresh failure');
+          if (!await evaluate(`document.querySelector('.workspace-upgrade').innerText.includes(${JSON.stringify(refreshedText)})`)) throw Error(name + ': cached poll erased manual refresh error');
+          if (await evaluate(`document.querySelector('.workspace-upgrade').innerText.includes('Workspace files checked on request.')`)) throw Error(name + ': cached observation claimed owner freshness');
+        }
+      }
+      if (name.startsWith('upgrade-cancel-')) {
+        await clickAction('Cancel update');
+        // Terminal observation can retire the acknowledgement before a native
+        // screenshot. Its stable recovery controls are the completed postcondition.
+        const outcomeText = name === 'upgrade-cancel-requested' ? 'Cancellation requested. Waiting for the workspace operation to stop.'
+          : name === 'upgrade-cancel-completed' ? 'Workspace setup was interrupted. Choose Try setup again to continue. Reopen this version of Bridge if recovery is interrupted again.' : 'This workspace operation can no longer be cancelled. Check the latest status.';
+        await until(() => evaluate(`document.querySelector('.workspace-upgrade').innerText.includes(${JSON.stringify(outcomeText)})`), name + ' cancellation outcome');
+        // These fixtures withdraw canCancel after the ACK; wait for its cached
+        // observation to render before comparing controls with the new DTO.
+        if (name !== 'upgrade-cancel-completed') await until(() => evaluate(`![...document.querySelectorAll('.workspace-upgrade button')].some(b => b.textContent === 'Cancel update')`), name + ' cancellation capability observation');
+        if (name === 'upgrade-cancel-completed') {
+          if (!await evaluate(`![...document.querySelectorAll('.workspace-upgrade button')].some(b => b.textContent === 'Cancel update') && [...document.querySelectorAll('.workspace-upgrade button')].some(b => b.textContent === 'Try setup again' && !b.disabled)`)) throw Error(name + ': completed cancellation must expose terminal recovery');
+        } else if (await evaluate(`[...document.querySelectorAll('.workspace-upgrade button')].some(b => ['Try setup again', 'Restore previous workspace'].includes(b.textContent) && !b.disabled)`)) throw Error(name + ': acknowledgement released operation fence');
+      }
+      if (name === 'upgrade-forward-cancelled') {
+        await clickAction('Try setup again');
+        await clickAction('Keep old workspace and set up new');
+        await until(() => evaluate(`document.querySelector('.workspace-upgrade').innerText.includes('Update cancelled')`), 'forward cancellation is not completion');
+      }
+      // Preserve baseline framing; new integration scenes also prove keyboard modality.
+      if (variants.findIndex(row => row[1] === name) >= 20) {
+        await evaluate(`document.querySelector('.workspace-upgrade summary').focus()`);
+        for (const modifiers of [0, 8]) for (const type of ['keyDown', 'keyUp']) {
+          await call('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers });
+        }
+        await until(() => evaluate(`document.activeElement?.matches('.workspace-upgrade summary:focus-visible')`), 'upgrade keyboard focus');
+      }
+      await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+      const base64 = await call('Page.captureScreenshot', { format: 'png' });
+      // A variant explicitly named -confirm reserves that exact filename for the
+      // open confirmation. Keep its prior observation separately, never *-confirm-confirm.
+      const observationName = mode && name.endsWith('-confirm') ? `${name}-before` : name;
+      await writeFile(join(output, `${theme}-${size}-${observationName}.png`), Buffer.from(base64.data, 'base64'));
+      if (mode) {
+        await clickAction(expected);
+        const confirmCount = await evaluate(`document.querySelectorAll('.workspace-upgrade fieldset.workspace-stop-confirm').length`);
+        if (confirmCount !== 1) throw Error(`${name}: expected exactly one inline confirmation, found ${confirmCount}`);
+        // Tab and Shift-Tab enter keyboard modality without accepting a mutation.
+        await evaluate(`[...document.querySelectorAll('.workspace-upgrade button')].find(button => button.textContent === 'Not now').focus()`);
+        for (const modifiers of [0, 8]) {
+          for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, modifiers });
+        }
+        await until(() => evaluate(`document.activeElement?.textContent === 'Not now' && document.activeElement.matches(':focus-visible')`), 'confirmation keyboard focus');
+        // The fresh-C and restore warnings can sit below the fold; scroll before the separate capture.
+        await evaluate(`document.querySelector('.workspace-upgrade fieldset.workspace-stop-confirm').scrollIntoView({ block: 'center' })`);
+        await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
+        const confirmImage = await call('Page.captureScreenshot', { format: 'png' });
+        const confirmationName = name.endsWith('-confirm') ? name : `${name}-confirm`;
+        await writeFile(join(output, `${theme}-${size}-${confirmationName}.png`), Buffer.from(confirmImage.data, 'base64'));
+        if (mode === 'confirm-dismiss') {
+          await clickAction('Not now');
+          if (await evaluate(`document.querySelectorAll('.workspace-upgrade fieldset.workspace-stop-confirm').length`) !== 0) throw Error(`${name}: Not now must dismiss the inline confirmation`);
+        }
+      }
+      if (await evaluate('window.__bridgeUpgradeStatus.busy')) {
+        const cancellationAllowed = await evaluate('window.__bridgeUpgradeStatus.canCancel');
+        const cancellation = await evaluate(`[...document.querySelectorAll('.workspace-upgrade button')].filter(b => b.textContent === 'Cancel update').map(b => !b.disabled)`);
+        if (cancellationAllowed ? cancellation.length !== 1 || !cancellation[0] : cancellation.length !== 0) throw Error(`${name}: busy cancellation control must match canCancel exactly`);
+        const live = await evaluate(`[...document.querySelectorAll('.workspace-upgrade button')].filter(b => b.textContent !== 'Cancel update' && !b.disabled).length`);
+        if (live !== 0) throw Error(`${name}: busy must disable every ordinary mutation button except Cancel`);
+      }
+      const calls = await evaluate('window.__bridgeUpgradeCalls');
+      for (const { command, args } of calls.filter(call => call.command.startsWith('workspace_upgrade_'))) {
+        const empty = args === null || (typeof args === 'object' && !Array.isArray(args) && Object.keys(args).length === 0);
+        if (command === 'workspace_upgrade_status') {
+          const manual = ['upgrade-refresh-pending', 'upgrade-refresh-busy', 'upgrade-refresh-io'].includes(name) && args?.refresh === true && Object.keys(args).length === 1;
+          if (!empty && !manual) throw Error(`${name}: ${command} received unexpected args: ${JSON.stringify(args)}`);
+        } else if (command === 'workspace_upgrade_cancel' && ['upgrade-cancel-requested', 'upgrade-cancel-completed', 'upgrade-cancel-not-cancellable'].includes(name) && empty) {
+          // Explicit fixture-only click; the subsequent status observation must stay cached.
+        } else if (command === 'workspace_upgrade_retry' && name === 'upgrade-forward-cancelled' && args?.transaction === transaction && Object.keys(args).length === 1) {
+          // Explicit finite transaction, never a renderer path or arbitrary slot.
+        } else throw Error(`${name}: passive capture attempted mutation ${command}`);
+      }
+      if (name.startsWith('upgrade-refresh-') && calls.filter(call => call.command === 'workspace_upgrade_status' && call.args?.refresh === true).length !== 1) throw Error(name + ': expected exactly one owner refresh after Check again');
+      if (calls.some(call => ['setup_connect_model', 'agent_run', 'agent_chat_send', 'agent_chat_reconnect', 'setup_select_local'].includes(call.command))) throw Error(name + ': upgrade must never auto-Connect, Test, Chat or start a workspace');
+      if (name.startsWith('upgrade-cancel-') && calls.some(call => call.command === 'workspace_upgrade_status' && call.args?.refresh)) throw Error(name + ': cancel observation invoked owner refresh');
+      await checkLayout(theme, size, name);
+      console.log(`Captured renderer-synthetic workspace-upgrade fixture, not native IPC safety proof: ${theme}/${size}/${name}`);
+    }
+  }
   const notes = [];
   await resizeTo({ width: 1280, height: 800 }, 'Wide');
   for (const theme of ['light', 'dark']) {
     await call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
     for (const fixture of setupFixtures) await captureSetup(theme, 'wide', fixture);
     for (const name of actionFixtures) await captureActions(theme, 'wide', name);
+    await captureUpgrade(theme, 'wide');
     for (const variant of overviewVariants) await captureOverview(theme, 'wide', variant);
   }
   // Request CSS viewport dimensions, converting once for the real native client area.
@@ -1766,6 +2003,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     await call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] });
     for (const fixture of setupFixtures) await captureSetup(theme, 'compact', fixture);
     for (const name of actionFixtures) await captureActions(theme, 'compact', name);
+    await captureUpgrade(theme, 'compact');
     for (const variant of overviewVariants) await captureOverview(theme, 'compact', variant);
   }
   // Preserve the explicitly named Overview minimum captures alongside the compact suite.
@@ -1779,7 +2017,7 @@ $c = New-Object WinRect; [void][WinSize]::GetClientRect($h, [ref]$c)
     if (runCore) for (const name of ['designer-connected', 'designer-running', 'designer-failed', 'designer-passed', 'designer-stale']) await captureActions(theme, 'minimum', name);
   }
   await writeFile(join(output, 'compact-window.txt'), `Capture scope: ${captureScope}\n` + notes.join('\n') + '\n');
-  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core and chat-agent-clusters artifacts separately; both are required for the complete matrix. The chat-agent-clusters scope owns all overview-* captures (wide, compact and minimum, both themes).\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority, loading/open-error fallback spacing, fixed wide tabs/host gap, compact subtitles/label, quiet padding and themed thin scrollbars. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Send failed/unsupported/earlier-target states retain captured test titles and code IDs; header/result/resources-Details frames prove the bounded action set, unsupported retry absence and captured-result versus selected-destination distinction. These are renderer-only fixtures, not native Send IPC. Chat empty/pending/running/answer, two conversation versions and waitingForSession Succeeded/null or known-answer, New agent form/blank-created, Clusters list, connected success/details/selected list and header, context picker/checking/failure, account picker/Allowed/forbidden-list typed fallback and Designer no-destination guidance are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
+  await writeFile(join(output, 'README.txt'), `Capture scope: ${captureScope}. CI keeps core, chat-agent-clusters and workspace-upgrade artifacts separately; all three are required for the complete matrix. The chat-agent-clusters scope owns all overview-* captures (wide, compact and minimum, both themes).\n` + 'Injected renderer states in the final-head embedded Windows app WebView2. Upgrade states and inline confirmations (upgrade-*) use synthetic IPC in the workspace-upgrade scope, not native mutation or credential proof. Setup-progress states (setup-*), Places and local size states (places-*, local-preflight*, including ready, unknown, blocked and cluster-selected choices), Welcome (welcome*), completed local/Stop pages (local-completed, local-stopped) and action-driven returning-workspace lifecycle states (local-workspace-*, compared with the approved workspace reference), removal confirmation/retry (ai-removal-*), earlier-installation AI reset states beside approved frames 1g/1h (ai-reset-*), Add-a-place stages (cluster-*) and setup actions/first-test/Designer states use synthetic IPC. Local Cancel states (local-cancel-*) exercise renderer controls with synthetic cancellation/worker results, not native cancellation proof. First-test outcomes (first-test-passed, -unknown, -lost-reply) each reload the page and own one synthetic automatic attempt with an identical source; only the acknowledged passed submission may show the first-pass story. Setup Meet/queued, AI idle/key/connected and first-pass captures have *-comparison.png images beside cropped approved light frames 1c, 1d and 1e (dark captures use the light frame). ai-key never types a key. Layout JSON records setup stacks, form widths, row alignment, card insets, Designer priority, loading/open-error fallback spacing, fixed wide tabs/host gap, compact subtitles/label, quiet padding and themed thin scrollbars. Overview states (overview-*, including 540x640 minimum) use synthetic overview_* IPC. Send failed/unsupported/earlier-target states retain captured test titles and code IDs; header/result/resources-Details frames prove the bounded action set, unsupported retry absence and captured-result versus selected-destination distinction. These are renderer-only fixtures, not native Send IPC. Chat empty/pending/running/answer, two conversation versions and waitingForSession Succeeded/null or known-answer, New agent form/blank-created, Clusters list, connected success/details/selected list and header, context picker/checking/failure, account picker/Allowed/forbidden-list typed fallback and Designer no-destination guidance are captured at wide and true 540x640 client sizes in both themes with comparisons. Chat/New agent compare the Designer design system, not a dedicated target frame; cluster states compare the approved cluster cards (light reference for both themes). compact-window.txt records verified native client resizing; an unverified resize fails rather than falling back to viewport emulation. Not native IPC, VM, credential or download-path verification. Download is reserved and unreachable from current native startup. Themes are WebView2 media emulation; system preferences are unchanged.\n');
   // Keep the source identity next to images without inferring it from branch names.
   await writeFile(join(output, 'head.txt'), await readFile(join(output, '..', 'native-lifecycle', 'head.txt')));
 } finally {

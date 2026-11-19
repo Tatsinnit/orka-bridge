@@ -23,11 +23,18 @@ function claim() {
 }
 const text = (value: string) => value.replaceAll('\r\n', '\n');
 
-export function useFirstTest(options: { ready: boolean; canOpen: boolean; sampleDirty: boolean; onOpen: () => void; onPrepared?: () => void; onSource?: (source: SourceId | null) => void; onSnapshot?: (snapshot: RunSnapshot | undefined) => void; onPassed?: (snapshot: RunSnapshot) => void; onUnavailable?: () => void }): CheckStepState | undefined {
+export function useFirstTest(options: { ready: boolean; retired?: boolean; canOpen: boolean; sampleDirty: boolean; onOpen: () => void; onPrepared?: () => void; onSource?: (source: SourceId | null) => void; onSnapshot?: (snapshot: RunSnapshot | undefined) => void; onPassed?: (snapshot: RunSnapshot) => void; onUnavailable?: () => void }): CheckStepState | undefined {
   const latest = useRef(options);
   useEffect(() => { latest.current = options; });
   const [check, setCheck] = useState<CheckStepState>();
   const [prepareAttempt, setPrepareAttempt] = useState(0);
+  const retiredGeneration = useRef(0);
+  useEffect(() => {
+    if (!options.retired) return;
+    ++retiredGeneration.current;
+    clearTimeout(timer.current);
+    setCheck(undefined);
+  }, [options.retired]);
   const mounted = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
@@ -35,14 +42,15 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
     return () => { mounted.current = false; clearTimeout(timer.current); };
   }, []);
   useEffect(() => {
-    if (!options.ready || options.sampleDirty || !firstTestPending()) return;
+    if (options.retired || !options.ready || options.sampleDirty || !firstTestPending()) return;
+    const generation = retiredGeneration.current;
     let cancelled = false;
     let claimed = false;
     let submitted = false;
     let submittedSource: SourceId | undefined;
     let attemptId: string | undefined;
     const finish = async (snapshot?: RunSnapshot) => {
-      if (cancelled || !mounted.current) return;
+      if (cancelled || !mounted.current || generation !== retiredGeneration.current) return;
       const verdict = snapshot?.state === 'complete' ? snapshot.report?.verdict ?? 'unknown' : 'unknown';
       const ownedPass = submitted && verdict === 'passed' && snapshot?.attemptId === attemptId && sameSource(submittedSource, snapshot?.source) === true;
       if (ownedPass && latest.current.ready && latest.current.canOpen && snapshot) {
@@ -50,7 +58,7 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
         let currentSource: SourceId | null = null;
         try { currentSource = (await agentCall('agent_open', undefined, SAMPLE_DOCUMENT_ID)).source ?? null; }
         catch { /* An unreadable current file cannot prove a fresh result. */ }
-        if (cancelled || !mounted.current) return;
+        if (cancelled || !mounted.current || generation !== retiredGeneration.current) return;
         // Status polls replace snapshots; retain the read's source separately so
         // they cannot restore the submitted, now-stale hash or an unreadable file.
         latest.current.onSource?.(currentSource);
@@ -66,12 +74,12 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
     };
     const poll = () => {
       timer.current = setTimeout(() => { void runCall('agent_run_status').then(result => {
-        if (cancelled || !mounted.current) return;
+        if (cancelled || !mounted.current || generation !== retiredGeneration.current) return;
         if (result.ok) void observe(result.snapshot); else poll();
       }); }, 500);
     };
     const observe = (snapshot: RunSnapshot) => {
-      if (cancelled || !mounted.current) return;
+      if (cancelled || !mounted.current || generation !== retiredGeneration.current) return;
       if (snapshot.state !== 'running' && snapshot.busy?.documentId !== SAMPLE_DOCUMENT_ID) { void finish(snapshot); return; }
       latest.current.onSnapshot?.(snapshot);
       setCheck('running');
@@ -79,7 +87,7 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
     };
     // Preparation can update only the pristine managed sample. Finish it before reading saved bytes.
     void loadExample(true).then(async bundled => {
-      if (cancelled || !mounted.current || !latest.current.ready || latest.current.sampleDirty) return;
+      if (cancelled || !mounted.current || generation !== retiredGeneration.current || !latest.current.ready || latest.current.sampleDirty) return;
       if (!bundled.ok && bundled.retryable) {
         timer.current = setTimeout(() => { if (!cancelled && mounted.current) setPrepareAttempt(value => value + 1); }, 500);
         return;
@@ -87,7 +95,7 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
       if (bundled.ok) latest.current.onPrepared?.();
       const [saved, status] = await Promise.all([agentCall('agent_open', undefined, SAMPLE_DOCUMENT_ID), runCall('agent_run_status')]);
       // StrictMode's abandoned effect must not consume the durable one-shot.
-      if (cancelled || !mounted.current || !latest.current.ready || latest.current.sampleDirty || !claim()) return;
+      if (cancelled || !mounted.current || generation !== retiredGeneration.current || !latest.current.ready || latest.current.sampleDirty || !claim()) return;
       claimed = true;
       if (!bundled.ok || text(saved.agent) !== text(bundled.pair.agent) || text(saved.tests) !== text(bundled.pair.tests) || !status.ok) { finish(); return; }
       if (status.snapshot.state !== 'idle') { void observe(status.snapshot); return; }
@@ -100,13 +108,13 @@ export function useFirstTest(options: { ready: boolean; canOpen: boolean; sample
       // Only a readable reply from our submission can own the one-time payoff.
       // Lost replies still reconcile normally, but never invent attempt provenance.
       submitted = result.ok && result.snapshot.attemptId === attemptId;
-      if (cancelled || !mounted.current) return;
+      if (cancelled || !mounted.current || generation !== retiredGeneration.current) return;
       // A lost reply may still own native busy; reconcile read-only until release.
       if (result.ok) void observe(result.snapshot); else poll();
     }).catch(() => { if (!cancelled && mounted.current && claim()) finish(); });
     // Eligibility gates submission, not observation of an already claimed attempt.
     // A transient setup poll failure must not orphan native busy ownership.
     return () => { if (!claimed) cancelled = true; };
-  }, [options.ready, options.sampleDirty, prepareAttempt]);
-  return check;
+  }, [options.ready, options.sampleDirty, options.retired, prepareAttempt]);
+  return options.retired ? undefined : check;
 }

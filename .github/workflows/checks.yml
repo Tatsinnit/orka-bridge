@@ -263,6 +263,15 @@ jobs:
           New-Item -ItemType Directory $env:BRIDGE_DEV_IMAGE_DIR | Out-Null
           node ../scripts/native-recovery-windows.mjs src-tauri/target/debug/orka-bridge.exe windows-artifact/native-chat-agent-clusters chat-agent-clusters
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Windows workspace upgrade renderer fixtures (no VM or credentials)
+        if: runner.os == 'Windows' && matrix.suite == 'bundle'
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $env:BRIDGE_DEV_IMAGE_DIR = Join-Path $env:RUNNER_TEMP "upgrade-empty-$([Guid]::NewGuid().ToString('N'))"
+          New-Item -ItemType Directory $env:BRIDGE_DEV_IMAGE_DIR | Out-Null
+          node ../scripts/native-recovery-windows.mjs src-tauri/target/debug/orka-bridge.exe windows-artifact/native-workspace-upgrade workspace-upgrade
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       # Restored targets do not include generated helper resources. Warm debug
       # dependencies outside the lifecycle walk's six-minute desktop deadline.
       - name: Prepare Mac lifecycle build

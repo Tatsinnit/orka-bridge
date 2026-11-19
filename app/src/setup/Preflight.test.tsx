@@ -1,4 +1,5 @@
 import { openLocalSetup } from './test-navigation';
+import { noUpgrade } from './test-upgrade';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -15,6 +16,7 @@ async function native(preflight: unknown = ready, integrated = true, onPlace = v
   const status = () => ({ selected: started ? 'localVm' : null, localVm: started ? 'starting' : integrated ? 'idle' : 'notIntegrated', model: 'locked' });
   const ipc = vi.fn(command => {
     if (command === 'setup_status') return status();
+    if (command === 'workspace_upgrade_status') return noUpgrade;
     if (command === 'setup_requirements') return integrated ? requirements : null;
     if (command === 'setup_preflight') return value;
     if (command === 'setup_select_local') { started = true; return status(); }

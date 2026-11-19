@@ -1,13 +1,25 @@
 import { openLocalSetup } from './test-navigation';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import App from '../App';
+import type { ComponentProps } from 'react';
+import type Setup from './Setup';
+
+const setupProbe = vi.hoisted(() => ({ onStatus: undefined as ComponentProps<typeof Setup>['onStatus'] }));
+vi.mock('./Setup', async importOriginal => {
+  const { default: RealSetup } = await importOriginal<typeof import('./Setup')>();
+  return { default: function ObservedSetup(props: ComponentProps<typeof RealSetup>) {
+    setupProbe.onStatus = props.onStatus;
+    return <RealSetup {...props} />;
+  } };
+});
 
 const sample = '9b2b93c4-375c-4815-9717-39852a96e411';
 const pair = { agent: '---\nname: web-reader\n---\nRead a page.', tests: 'A checksum test.', source: { agent: 'a'.repeat(64), tests: 'b'.repeat(64) } };
 const other = '12345678-1234-1234-1234-123456789abc';
+const consumedUpgrade = { state: 'consumed', transaction: '10000000-0000-4000-8000-000000000001', createdAt: 1700000000, sourceReleases: ['0.1.2'], targetRelease: '0.1.3', retainedAllocatedBytes: 1200000000, additionalBytes: null, credential: 'absent', canCancel: false, busy: false, error: null, repeated: false, canReplace: false, canRestore: true };
 const idle = { documentId: sample, busy: null, state: 'idle', canRun: true, modelConnected: true, report: null, acknowledged: [], pending: null, error: null };
 function native(holdSave = false, lostReplies = false) {
   vi.stubGlobal('isTauri', true);
@@ -15,10 +27,11 @@ function native(holdSave = false, lostReplies = false) {
   let attemptId: unknown;
   let unreadable = false; let unreadableFiles = false; let verdict = 'passed'; let saved = pair; let modelUnavailable = false;
   const status = () => ({ selected: selected ? 'localVm' : null, localVm: workspaceFailed ? 'failed' : stopped ? 'cancelled' : selected ? 'ready' : 'idle', model: selected && !stopped && !workspaceFailed ? 'available' : 'locked' });
-  const ipc = vi.fn((command: string, payload?: unknown) => {
+  const ipc = vi.fn((command: string, payload?: unknown): unknown => {
     const args = payload as Record<string, unknown> | undefined;
     if (command === 'setup_status') return status();
     if (command === 'setup_requirements') return null;
+    if (command === 'workspace_upgrade_status') return { ...consumedUpgrade, state: 'none', transaction: null, createdAt: null, sourceReleases: [], targetRelease: null, retainedAllocatedBytes: null, canRestore: false };
     if (command === 'setup_select_local') { selected = true; stopped = false; workspaceFailed = false; if (lostReplies) throw Error('Lost selection reply'); return status(); }
     if (command === 'setup_cancel_local') { stopped = true; running = false; return status(); }
     if (command === 'setup_change_local') { selected = false; return status(); }
@@ -54,6 +67,86 @@ async function completeSetup() {
   return user;
 }
 
+test('a replaced workspace retires a stale pending first test even after explicit Connect and renderer reload', async () => {
+  const { ipc } = native(); const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation((command, args) => command === 'setup_status'
+    ? { selected: 'localVm', localVm: 'ready', model: 'available', workspaceReplaced: true }
+    : command === 'workspace_upgrade_status' ? consumedUpgrade : original(command, args));
+  localStorage.setItem('bridge.firstTest.v1', 'pending');
+  const user = userEvent.setup(); const view = render(<App />); await openLocalSetup(user);
+  await user.click(await screen.findByRole('button', { name: 'Connect the AI' }));
+  await waitFor(() => expect(document.querySelector('.model-state')?.textContent).toContain('Connected'));
+  expect(localStorage.getItem('bridge.firstTest.v1')).toBe('attempted');
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([]);
+  view.unmount(); render(<App />); await openLocalSetup(user);
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([]);
+});
+
+test.each(['sourceSelected', 'restoring'] as const)('recovery %s blocks local Designer Run and Chat despite a ready VM and capable snapshots', async state => {
+  const { ipc } = native(); const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation((command, args) => command === 'setup_status'
+    ? { selected: 'localVm', localVm: 'ready', model: 'available', workspaceReplaced: true }
+    : command === 'workspace_upgrade_status' ? { ...consumedUpgrade, state, canReplace: state === 'sourceSelected' }
+    : command === 'agent_chat_status' ? { documentId: sample, state: 'ready', busy: false, canSend: true, versions: [], error: null }
+    : command === 'agent_run_status' ? { ...idle, model: 'capable-run-snapshot' }
+    : original(command, args));
+  localStorage.setItem('bridge.firstTest.v1', 'attempted');
+  const user = userEvent.setup(); render(<App />);
+  await waitFor(() => expect(screen.getByRole('contentinfo').textContent).toContain('Workspace recovery needs attention'));
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  const run = await screen.findByRole('button', { name: 'Run tests' });
+  await within(document.querySelector('.example-run')!).findByText('capable-run-snapshot');
+  expect(run.matches(':disabled')).toBe(true); fireEvent.click(run);
+  await user.click(screen.getByRole('button', { name: 'Chat' }));
+  const message = await screen.findByRole('textbox', { name: 'Message' });
+  fireEvent.change(message, { target: { value: 'Do not send during recovery' } }); fireEvent.keyDown(message, { key: 'Enter' });
+  expect(screen.getByRole('button', { name: 'Send message' }).matches(':disabled')).toBe(true);
+  expect(ipc.mock.calls.filter(([command]) => ['agent_run', 'agent_chat_send', 'setup_connect_model'].includes(command))).toEqual([]);
+});
+test.each(['hung', 'failed'] as const)('unreadable upgrade blocks capable local Run and Chat but leaves file editing available (%s)', async observation => {
+  const { ipc } = native(); const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation((command, args) => {
+    if (command === 'setup_status') return { selected: 'localVm', localVm: 'ready', model: 'available', workspaceReplaced: true };
+    if (command === 'workspace_upgrade_status') {
+      if (observation === 'failed') throw Error('Lost upgrade status');
+      return new Promise(() => {});
+    }
+    if (command === 'agent_chat_status') return { documentId: sample, state: 'ready', busy: false, canSend: true, versions: [], error: null };
+    if (command === 'agent_run_status') return { ...idle, model: 'capable-run-snapshot' };
+    return original(command, args);
+  });
+  localStorage.setItem('bridge.firstTest.v1', 'attempted');
+  const user = userEvent.setup(); render(<App />);
+  await screen.findByRole('region', { name: 'This computer' });
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  const run = await screen.findByRole('button', { name: 'Run tests' });
+  await within(document.querySelector('.example-run')!).findByText('capable-run-snapshot');
+  expect(run.matches(':disabled')).toBe(true);
+  expect(screen.getByRole('textbox', { name: 'Instructions' }).matches(':disabled')).toBe(false);
+  await user.click(screen.getByRole('button', { name: 'Chat' }));
+  const message = await screen.findByRole('textbox', { name: 'Message' });
+  fireEvent.change(message, { target: { value: 'Do not send while upgrade status is unknown' } });
+  fireEvent.keyDown(message, { key: 'Enter' });
+  expect(screen.getByRole('button', { name: 'Send message' }).matches(':disabled')).toBe(true);
+  expect(ipc.mock.calls.filter(([command]) => ['agent_run', 'agent_chat_send', 'setup_connect_model'].includes(command))).toEqual([]);
+});
+
+test.each(['eligible', 'fresh'] as const)('update attention distinguishes required replacement from a usable %s workspace error', async state => {
+  const { ipc } = native(); const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation((command, args) => command === 'setup_status'
+    ? { selected: 'localVm', localVm: 'ready', model: 'available', workspaceReplaced: true }
+    : command === 'workspace_upgrade_status' ? { ...consumedUpgrade, state, error: 'network', ...(state === 'eligible' ? { transaction: null, createdAt: null, canReplace: true, canRestore: false } : {}) }
+    : command === 'agent_run_status' ? { ...idle, model: 'capable-run-snapshot' }
+    : original(command, args));
+  localStorage.setItem('bridge.firstTest.v1', 'attempted');
+  const user = userEvent.setup(); render(<App />);
+  await waitFor(() => expect(screen.getByRole('contentinfo').textContent).toContain('Workspace update needs attention'));
+  await user.click(screen.getByRole('button', { name: 'Designer' }));
+  const run = await screen.findByRole('button', { name: 'Run tests' });
+  await within(document.querySelector('.example-run')!).findByText('capable-run-snapshot');
+  expect(run.matches(':disabled')).toBe(state === 'eligible');
+  expect(ipc.mock.calls.filter(([command]) => ['agent_run', 'agent_chat_send', 'setup_connect_model'].includes(command))).toEqual([]);
+});
 test('first setup stays for its first-pass story, opens only on request and never replays the moment or run', async () => {
   const { ipc, finish } = native(); const user = await completeSetup();
   await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1));
@@ -70,6 +163,72 @@ test('first setup stays for its first-pass story, opens only on request and neve
   await user.click(screen.getByRole('button', { name: 'Open web-reader' }));
   expect(screen.getByRole('button', { name: 'Designer' }).getAttribute('aria-current')).toBe('page');
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toEqual([['agent_run', { documentId: sample, bundledExample: true, attemptId: expect.any(String) }]]);
+});
+
+test('ordinary setup retry preserves a never-replaced first pass without refreshing the owner or replaying tests', async () => {
+  const { ipc, finish } = native(); await completeSetup();
+  await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1));
+  finish(); await screen.findByRole('heading', { name: 'Your first agent passed its test' });
+  const original = ipc.getMockImplementation()!; let failSetup = true; let falselyReplaced = false;
+  ipc.mockImplementation((command, args) => {
+    if (command === 'workspace_upgrade_status' && (args as Record<string, unknown> | undefined)?.refresh) {
+      falselyReplaced = true; throw Error('Busy: own ready journal');
+    }
+    if (command === 'setup_status') {
+      if (failSetup) throw Error('Transient setup observation');
+      return { selected: 'localVm', localVm: 'ready', model: 'available', ...(falselyReplaced ? { workspaceReplaced: true } : {}) };
+    }
+    return original(command, args);
+  });
+  fireEvent(window, new Event('focus'));
+  const retry = await screen.findByRole('button', { name: 'Check again' });
+  const reads = ipc.mock.calls.filter(([c]) => c === 'setup_status').length;
+  failSetup = false; fireEvent.click(retry);
+  await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'setup_status').length).toBeGreaterThan(reads));
+  expect(ipc.mock.calls.filter(([c, a]) => c === 'workspace_upgrade_status' && (a as Record<string, unknown> | undefined)?.refresh)).toEqual([]);
+  expect(falselyReplaced).toBe(false);
+  await waitFor(() => expect(screen.getByRole('contentinfo').textContent).toContain('Workspace ready'));
+  expect(screen.getByRole('button', { name: 'See what it answered' })).toBeTruthy();
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
+  expect(ipc.mock.calls.filter(([c]) => c === 'setup_connect_model')).toHaveLength(1);
+  expect(screen.queryByText(/Could not check workspace files/)).toBeNull();
+});
+
+test.each([false, true])('a late non-pass first-test reply cannot open Designer after replacement observation (replaced: %s)', async replaced => {
+  const { ipc } = native();
+  const original = ipc.getMockImplementation()!;
+  let finish!: (value: unknown) => void;
+  ipc.mockImplementation((command, args) => command === 'agent_run'
+    ? new Promise(resolve => { finish = resolve; }) : original(command, args));
+  await completeSetup();
+  await waitFor(() => expect(finish).toBeTypeOf('function'));
+  expect(screen.getByRole('button', { name: 'Clusters' }).getAttribute('aria-current')).toBe('page');
+  await act(async () => {
+    // Unwrap the native reply, then observe replacement before the first-test
+    // continuation runs and before React flushes replacement's passive effects.
+    finish({ ...idle, state: 'unknown' });
+    await Promise.resolve();
+    await Promise.resolve();
+    if (replaced) setupProbe.onStatus?.({ selected: 'localVm', localVm: 'ready', model: 'available', workspaceReplaced: true });
+    await Promise.resolve();
+  });
+  expect(screen.getByRole('button', { name: replaced ? 'Clusters' : 'Designer' }).getAttribute('aria-current')).toBe('page');
+  expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(1);
+  expect(ipc.mock.calls.filter(([c]) => c === 'setup_connect_model')).toHaveLength(1);
+  expect(localStorage.getItem('bridge.firstTest.v1')).toBe('attempted');
+});
+
+test('replacement never presents the previous workspace pass as a fresh first-pass success', async () => {
+  const { ipc, finish } = native(); await completeSetup();
+  await waitFor(() => expect(ipc.mock.calls.some(([command]) => command === 'agent_run')).toBe(true));
+  finish();
+  await screen.findByRole('heading', { name: 'Your first agent passed its test' });
+  const original = ipc.getMockImplementation()!;
+  ipc.mockImplementation((command, args) => command === 'setup_status'
+    ? { selected: 'localVm', localVm: 'ready', model: 'available', workspaceReplaced: true }
+    : command === 'workspace_upgrade_status' ? consumedUpgrade : original(command, args));
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Your first agent passed its test' })).toBeNull(), { timeout: 2000 });
+  expect(screen.queryByText('Its test passed')).toBeNull();
 });
 
 test('opening Designer during the automatic first test defers catalog discovery until it finishes', async () => {
@@ -261,6 +420,61 @@ test('Check again observes status before any report even while the guarded sampl
   expect(screen.queryByRole('button', { name: 'Run tests' })).toBeNull();
   await waitFor(() => expect(ipc.mock.calls.filter(([c]) => c === 'agent_run_status').length).toBeGreaterThan(before));
   expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(0);
+});
+
+test('replacement cancels Check again polling and held replies cannot restart it after false or missing snapshots', async () => {
+  const { ipc, loseFileReads } = native();
+  localStorage.setItem('bridge.firstTest.v1', 'attempted');
+  const user = await completeSetup(); loseFileReads();
+  await user.click(screen.getByRole('button', { name: 'Read its instructions' }));
+  await screen.findByText('Your agent folder could not be opened. Open it again from Designer.');
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  const original = ipc.getMockImplementation()!;
+  let hold = false; let replaced = false; let missing = false;
+  let falseSnapshot = false;
+  let resolveSetup!: (value: unknown) => void; let rejectSetup!: (reason: unknown) => void;
+  let finish!: (value: unknown) => void;
+  ipc.mockImplementation((command, args) => {
+    if (command === 'setup_status') {
+      if (falseSnapshot || missing) return new Promise((resolve, reject) => { resolveSetup = resolve; rejectSetup = reject; });
+      return { selected: 'localVm', localVm: 'ready', model: 'available', workspaceReplaced: replaced };
+    }
+    if (command === 'agent_run_status') return hold ? new Promise(resolve => { finish = resolve; }) : idle;
+    return original(command, args);
+  });
+  const calls = () => ipc.mock.calls.filter(([c]) => c === 'agent_run_status').length;
+  try {
+    vi.useFakeTimers();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Check again' })); });
+    const before = calls();
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(calls()).toBeGreaterThan(before);
+    hold = true;
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(finish).toBeTypeOf('function');
+    replaced = true;
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    const stopped = calls();
+    await act(async () => { finish(idle); await vi.advanceTimersByTimeAsync(500); });
+    expect(calls()).toBe(stopped);
+    replaced = false; falseSnapshot = true;
+    resolveSetup = undefined!;
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    expect(resolveSetup).toBeTypeOf('function');
+    await act(async () => { resolveSetup({ selected: 'localVm', localVm: 'closed', model: 'locked', workspaceReplaced: false }); });
+    expect(screen.getByRole('contentinfo').textContent).toContain('Workspace stopped');
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(calls()).toBe(stopped);
+    falseSnapshot = false; missing = true;
+    resolveSetup = undefined!; rejectSetup = undefined!;
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    expect(rejectSetup).toBeTypeOf('function');
+    await act(async () => { rejectSetup(Error('Lost setup observation')); });
+    expect(screen.getByRole('contentinfo').textContent).toContain('Workspace unavailable');
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(calls()).toBe(stopped);
+    expect(ipc.mock.calls.filter(([c]) => c === 'agent_run')).toHaveLength(0);
+  } finally { vi.useRealTimers(); }
 });
 
 test('Run it again hands an unsaved sample to the existing disabled Designer Run', async () => {

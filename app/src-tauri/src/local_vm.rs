@@ -1395,6 +1395,7 @@ impl LocalVm {
     }
     fn snapshot(&self, mut snapshot: crate::setup::SetupSnapshot) -> crate::setup::SetupSnapshot {
         let state = self.inner.state.lock().unwrap();
+        snapshot.workspace_replaced = self.workspace_replaced();
         snapshot.workspace_progress = state.progress.as_ref().map(ProgressClock::snapshot);
         snapshot.preflight_failure = if state.phase == LocalVmStatus::Failed {
             state.preflight_failure

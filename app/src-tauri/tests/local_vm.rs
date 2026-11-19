@@ -111,6 +111,21 @@ fn request() -> EngineRequest {
 }
 
 #[tokio::test]
+async fn setup_snapshot_publishes_native_replacement_latch() {
+    use bridge_engine::{local_vm, setup::SetupStore};
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(SetupStore::new(Some(root.path().to_owned())));
+    let vm = LocalVm::unavailable();
+    let initial =
+        serde_json::to_value(local_vm::setup_status(store.clone(), &vm).await.unwrap()).unwrap();
+    assert!(initial.get("workspaceReplaced").is_none());
+    vm.set_workspace_replaced(true);
+    vm.set_workspace_replaced(false);
+    let replaced = serde_json::to_value(local_vm::setup_status(store, &vm).await.unwrap()).unwrap();
+    assert_eq!(replaced["workspaceReplaced"], true);
+}
+
+#[tokio::test]
 async fn cancellation_joins_late_session_before_restart_and_change_clears_choice() {
     use bridge_engine::{local_vm, setup::SetupStore};
     let temp = tempfile::tempdir().unwrap();

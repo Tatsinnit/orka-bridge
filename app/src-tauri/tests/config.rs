@@ -121,6 +121,13 @@ fn agent_commands_are_granted_only_to_local_main_window() {
         "setup_cancel_local",
         "setup_change_local",
         "setup_reset_model",
+        "workspace_upgrade_status",
+        "workspace_upgrade_replace",
+        "workspace_upgrade_retry",
+        "workspace_upgrade_restore",
+        "workspace_upgrade_transfer",
+        "workspace_upgrade_remove",
+        "workspace_upgrade_cancel",
         "setup_open_help",
     ] {
         assert!(authority

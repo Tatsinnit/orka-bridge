@@ -18,6 +18,26 @@ async function mismatch() {
   await screen.findByText("Bridge's saved AI connection is from an earlier setup.");
 }
 
+test('shared mismatch directs to existing shared removal instead of reset', async () => {
+  const view = render(<Model enabled sharedConnection changeRequest={0} />); await mismatch();
+  expect(screen.queryByRole('button', { name: /Reset AI connection|Use another provider/ })).toBeNull();
+  expect(screen.getByText(/Remove saved connection in the Workspace card/)).toBeTruthy();
+  view.rerender(<Model enabled sharedConnection changeRequest={1} />);
+  expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('setup_connect_model');
+});
+
+test('a stale reset confirmation cannot reset after the connection becomes shared', async () => {
+  const view = render(<Model enabled />); await mismatch();
+  fireEvent.click(screen.getByRole('button', { name: 'Reset AI connection' }));
+  const staleReset = screen.getByRole('button', { name: 'Reset' });
+  view.rerender(<Model enabled sharedConnection />);
+  fireEvent.click(staleReset);
+  expect(screen.queryByRole('button', { name: 'Reset' })).toBeNull();
+  expect(screen.getByText(/Remove saved connection in the Workspace card/)).toBeTruthy();
+  expect(invoke).toHaveBeenCalledExactlyOnceWith('setup_connect_model');
+});
+
 test('mismatch has one primary and confirmed reset, excludes duplicates and returns to provider choice', async () => {
   const onState = vi.fn(); render(<Model enabled onState={onState} />); await mismatch();
   expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();

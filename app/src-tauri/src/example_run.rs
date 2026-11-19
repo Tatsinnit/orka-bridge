@@ -155,6 +155,7 @@ mod terminal_claim_tests {
 }
 #[derive(Default)]
 struct State {
+    retired: bool,
     snapshots: HashMap<DocumentId, RunSnapshot>,
     active: Option<DocumentRef>,
     observation: Option<LocalRunObservation>,
@@ -200,7 +201,26 @@ impl ExampleRun {
         self.0.lock().unwrap().active.is_some()
     }
     pub fn overview_observation(&self) -> Option<LocalRunObservation> {
-        self.0.lock().unwrap().observation.clone()
+        let state = self.0.lock().unwrap();
+        (!state.retired)
+            .then(|| state.observation.clone())
+            .flatten()
+    }
+    /// Retires every in-memory run observation after a confirmed
+    /// workspace replacement or restore: a prior pass against the old (or a
+    /// different) installation must never paint as current on this one.
+    /// Saved `LocalResults` history is untouched; it is already installation-scoped.
+    pub fn retire_for_workspace_replacement(&self) {
+        let mut state = self.0.lock().unwrap();
+        state.retired = true;
+        // In-flight work still owns these entries. Let it finish (and save its
+        // installation-scoped history), but suppress all of its live projections.
+        if state.active.is_none() {
+            state.snapshots.clear();
+            state.recovery.clear();
+            state.observation = None;
+            state.recorded_current = false;
+        }
     }
     /// Sample-only compatibility for native setup callers.
     pub fn status(&self, vm: &LocalVm) -> RunSnapshot {
@@ -208,18 +228,23 @@ impl ExampleRun {
     }
     pub fn status_document(&self, vm: &LocalVm, id: DocumentId) -> RunSnapshot {
         let state = self.0.lock().unwrap();
-        let mut snapshot = state
-            .snapshots
-            .get(&id)
-            .cloned()
-            .unwrap_or_else(|| RunSnapshot::idle(id));
+        let mut snapshot = if state.retired {
+            RunSnapshot::idle(id)
+        } else {
+            state
+                .snapshots
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| RunSnapshot::idle(id))
+        };
         snapshot.busy = state.active.clone();
         let cancellable = snapshot.state == RunState::Running;
         // Terminal means admission is released, not merely that the report arrived.
-        if state
-            .active
-            .as_ref()
-            .is_some_and(|job| job.document_id == id)
+        if !state.retired
+            && state
+                .active
+                .as_ref()
+                .is_some_and(|job| job.document_id == id)
         {
             snapshot.state = RunState::Running;
         } else if matches!(snapshot.state, RunState::Complete | RunState::Unknown) {
@@ -234,6 +259,7 @@ impl ExampleRun {
                 .is_some_and(|job| job.document_id == id)
             && snapshot.cancellation == Cancellation::None;
         snapshot.can_check_cancellation = supported
+            && !state.retired
             && state.active.is_none()
             && state.recovery.contains_key(&id)
             && snapshot.cancellation == Cancellation::Unconfirmed
@@ -263,6 +289,10 @@ impl ExampleRun {
         }
         {
             let mut state = self.0.lock().unwrap();
+            if state.retired {
+                drop(state);
+                return self.status_document(&vm, id);
+            }
             if state
                 .active
                 .as_ref()
@@ -285,7 +315,8 @@ impl ExampleRun {
         let recovery = {
             let mut state = self.0.lock().unwrap();
             let recovery = state.recovery.get(&id).cloned().filter(|_| {
-                state.active.is_none()
+                !state.retired
+                    && state.active.is_none()
                     && state.snapshots[&id].cancellation == Cancellation::Unconfirmed
                     && (!retry || state.snapshots[&id].can_retry_cancellation)
             });
@@ -403,15 +434,27 @@ impl ExampleRun {
         if !self.2 {
             return self.status_document(&vm, id);
         }
-        let Some(admission) = vm.try_authoring() else {
-            return self.status_document(&vm, id);
-        };
         let (sender, stop) = watch::channel(false);
-        {
+        let admission = {
             let mut state = self.0.lock().unwrap();
-            if state.active.is_some() {
+            // Acquire admission under the retirement lock, never carry an old
+            // workspace's lease into a newly unretired live snapshot.
+            let admission = vm.try_authoring();
+            if state.active.is_some()
+                || vm.status() != LocalVmStatus::Ready
+                || admission
+                    .as_ref()
+                    .is_none_or(|lease| !vm.authoring_current(lease))
+            {
                 drop(state);
                 return self.status_document(&vm, id);
+            }
+            if state.retired {
+                state.snapshots.clear();
+                state.recovery.clear();
+                state.observation = None;
+                state.recorded_current = false;
+                state.retired = false;
             }
             state.active = Some(folder.document());
             state.recorded_current = false;
@@ -434,7 +477,8 @@ impl ExampleRun {
             // Only this admission may answer for the request; denials keep the old one.
             snapshot.attempt_id = attempt_id;
             // Keep this document's receipts through preflight failures.
-        }
+            admission.unwrap()
+        };
         let owner = self.clone();
         let target = vm.clone();
         self.1.spawn(async move {

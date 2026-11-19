@@ -30,6 +30,9 @@ pub struct WorkspaceProgress {
     pub remaining_ms: Option<u64>,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetupSnapshot {
@@ -46,6 +49,11 @@ pub struct SetupSnapshot {
     /// Present only while the local workspace is failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_failure: Option<crate::runtime::types::WorkspaceFailure>,
+    /// Native-set only. True once this process has observed any upgrade-backed
+    /// destination or an interrupted/restored transaction; never cleared within
+    /// a process. Omitted (not just false) in the ordinary, never-replaced case.
+    #[serde(skip_serializing_if = "is_false")]
+    pub workspace_replaced: bool,
 }
 
 impl SetupSnapshot {
@@ -395,6 +403,7 @@ fn snapshot(root: &Path) -> Result<SetupSnapshot, SetupError> {
         workspace_progress: None,
         preflight_failure: None,
         workspace_failure: None,
+        workspace_replaced: false,
     })
 }
 
@@ -428,6 +437,47 @@ mod tests {
                 supported
             );
         }
+    }
+
+    #[test]
+    fn workspace_replaced_is_omitted_false_and_present_true() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SetupStore::new(Some(tmp.path().to_owned()));
+        let unset = store
+            .status()
+            .unwrap()
+            .with_model_support(false)
+            .with_local_vm("notIntegrated", None)
+            .with_model("locked");
+        let value = serde_json::to_value(unset).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "selected": null,
+                "localVm": "notIntegrated",
+                "localVmError": null,
+                "model": "locked",
+                "modelSupported": false
+            })
+        );
+        let mut replaced = store
+            .status()
+            .unwrap()
+            .with_model_support(false)
+            .with_local_vm("notIntegrated", None)
+            .with_model("locked");
+        replaced.workspace_replaced = true;
+        assert_eq!(
+            serde_json::to_value(replaced).unwrap(),
+            serde_json::json!({
+                "selected": null,
+                "localVm": "notIntegrated",
+                "localVmError": null,
+                "model": "locked",
+                "modelSupported": false,
+                "workspaceReplaced": true
+            })
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
