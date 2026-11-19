@@ -58,5 +58,37 @@ test('bounded YAML aliases accepted by native Run remain available in the previe
 });
 test('unrelated fenced code is ignored with the same exact-fence rules as native Run', () => {
   expect(testDefinitions(file('```text\nnot a test\n```\n' + block('', 'real')))?.map(t => t.id)).toEqual(['real']);
-  expect(testDefinitions(file('```text\n```yaml agent-test\nid: not-a-test\n```\n' + block('', 'real')))).toBeUndefined();
+  expect(testDefinitions(file('```text\n```yaml agent-test\nid: not-a-test\n```\n' + block('', 'real')))?.map(t => t.id)).toEqual(['real']);
+});
+test('inline spans and numbered-list examples cannot hide later tests', () => {
+  for (const between of ['```example```\n', '1. ```example\n   shown code\n   ```\n']) {
+    expect(testDefinitions(file(block('', 'first') + between + block('', 'second')))?.map(t => t.id)).toEqual(['first', 'second']);
+  }
+});
+test('malformed agent-test spans cannot hide a later canonical test', () => {
+  const malformed = block('', 'hidden').replace('```yaml agent-test', '```yaml agent-test `extra`');
+  expect(testDefinitions(file(block('', 'first') + malformed + block('', 'second')))).toBeUndefined();
+});
+test('Unicode-indented test fences are rejected like native Run', () => {
+  for (const indent of [' ', '\t', '\u00a0', '\u2003', '\ufeff']) {
+    const hidden = block('', 'hidden').replace('```yaml agent-test', indent + '```yaml agent-test');
+    expect(testDefinitions(file(block('', 'first') + hidden))).toBeUndefined();
+  }
+});
+test('ordinary fence closing whitespace matches native Run', () => {
+  const second = block('', 'second');
+  for (const suffix of ['\t', '\v', '\f', ' ', '\u0085', '\u00a0', '\u1680', '\u2000', '\u200a', '\u2028', '\u2029', '\u202f', '\u205f', '\u3000', '\ufeff']) {
+    const source = file(block('', 'first') + `\`\`\`text\nignored\n\`\`\`${suffix}\n` + second);
+    expect(testDefinitions(source)?.map(test => test.id)).toEqual(['first', 'second']);
+  }
+});
+test('backtick fences in a YAML literal stay in the displayed question', () => {
+  const source = file('```yaml agent-test\nid: fenced-input\nassertions: [{id: answer, type: contains, value: expected}]\ninput: |\n  Run this:\n  ```\n  echo hello\n  ```\n```\n');
+  expect(testDefinitions(source)).toEqual([{ id: 'fenced-input', question: 'Run this:\n```\necho hello\n```\n' }]);
+});
+test.each(['|+', '>+'])('keep-chomped %s literals preserve trailing lines and CRLF parity', style => {
+  const source = file(`\`\`\`yaml agent-test\nid: keep\nassertions: [{id: answer, type: contains, value: expected}]\ninput: ${style}\n  first\n\n\`\`\`\n`);
+  for (const text of [source, source.replaceAll('\n', '\r\n')]) {
+    expect(testDefinitions(text)).toEqual([{ id: 'keep', question: 'first\n\n' }]);
+  }
 });

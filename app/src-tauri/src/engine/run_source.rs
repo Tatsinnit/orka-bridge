@@ -220,6 +220,134 @@ fn valid_test_title(title: &str) -> bool {
 fn present(s: &str) -> bool {
     !s.trim().is_empty() && !s.contains('\0')
 }
+// Name classification, not authorization or target availability. Keep aligned
+// with KnownBuiltInToolNames at the Orka revision documented in docs/native-run.md.
+fn supported_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "web_search"
+            | "web_fetch"
+            | "code_exec"
+            | "file_read"
+            | "file_write"
+            | "request_approval"
+            | "reply_in_conversation"
+            | "create_ai_task"
+            | "create_pr_monitor"
+            | "create_container_task"
+            | "create_agent_task"
+            | "check_task_progress"
+            | "fetch_task_output"
+            | "wait_for_task"
+            | "cancel_task"
+            | "list_agents"
+            | "list_tools"
+            | "list_tasks"
+            | "list_connections"
+            | "create_agent"
+            | "update_agent"
+            | "delete_agent"
+            | "create_tool"
+            | "delete_tool"
+            | "delete_session"
+            | "delegate_task"
+            | "wait_for_tasks"
+            | "send_message"
+            | "check_messages"
+            | "create_pull_request"
+            | "check_pull_request_ci"
+            | "merge_pull_request"
+            | "auto_merge_pull_request"
+            | "review_pull_request"
+            | "post_review_comment"
+            | "check_pr_review_marker"
+            | "list_issues"
+            | "list_pull_requests"
+            | "get_issue"
+            | "comment_on_issue"
+            | "update_plan"
+            | "recall_memory"
+            | "remember"
+            | "propose_memory"
+            | "search_transcript"
+    )
+}
+
+fn fence_parts(line: &str) -> Option<(u8, usize, &str)> {
+    let character = *line.as_bytes().first()?;
+    if !matches!(character, b'`' | b'~') {
+        return None;
+    }
+    let length = line.bytes().take_while(|byte| *byte == character).count();
+    let info = (length >= 3).then_some(&line[length..])?;
+    Some((character, length, info))
+}
+
+fn fence(line: &str) -> Option<(u8, usize, &str)> {
+    let (character, length, info) = fence_parts(line)?;
+    (character != b'`' || !info.contains('`')).then_some((character, length, info))
+}
+
+fn fence_indent(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'..='\u{000d}'
+            | '\u{0020}'
+            | '\u{0085}'
+            | '\u{00a0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200a}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202f}'
+            | '\u{205f}'
+            | '\u{3000}'
+            | '\u{feff}'
+    )
+}
+
+/// Fence recognition is separate from case YAML decoding. Noncanonical test
+/// fences are refused, never silently dropped beside a valid case.
+fn test_blocks(body: &str) -> Result<Vec<RunCase>, ErrorKind> {
+    let mut cases = Vec::new();
+    let mut ordinary: Option<(u8, usize)> = None;
+    let mut block: Option<String> = None;
+    for line in body.split_inclusive('\n') {
+        let marker = line.trim_end_matches(['\r', '\n']);
+        if let Some(text) = &mut block {
+            if marker == "```" {
+                cases.push(yaml(&block.take().ok_or(ErrorKind::Source)?)?);
+            } else {
+                text.push_str(line);
+            }
+            continue;
+        }
+        if let Some((character, length)) = ordinary {
+            if fence(marker).is_some_and(|(candidate, count, rest)| {
+                candidate == character && count >= length && rest.chars().all(fence_indent)
+            }) {
+                ordinary = None;
+            }
+            continue;
+        }
+        if marker == "```yaml agent-test" {
+            block = Some(String::new());
+            continue;
+        }
+        if fence_parts(marker.trim_start_matches(fence_indent))
+            .is_some_and(|(_, _, info)| info.contains("agent-test"))
+        {
+            return Err(ErrorKind::Source);
+        }
+        if let Some((character, length, _)) = fence(marker) {
+            ordinary = Some((character, length));
+        }
+    }
+    if block.is_some() || ordinary.is_some() || cases.is_empty() || cases.len() > 32 {
+        return Err(ErrorKind::Source);
+    }
+    Ok(cases)
+}
 impl ParsedPair {
     pub fn parse(agent: &[u8], tests: &[u8]) -> Result<Self, ErrorKind> {
         let snapshot = SnapshotId::of(agent, tests);
@@ -229,30 +357,7 @@ impl ParsedPair {
         if tests_header.schema_version != 1 {
             return Err(ErrorKind::Source);
         }
-        let mut cases: Vec<RunCase> = Vec::new();
-        let mut block = None;
-        let mut other_fence = false;
-        for line in body.split_inclusive('\n') {
-            let marker = line.trim_end_matches(['\r', '\n']);
-            if marker == "```yaml agent-test" && !other_fence {
-                if block.is_some() {
-                    return Err(ErrorKind::Source);
-                }
-                block = Some(String::new());
-            } else if marker == "```" && block.is_some() {
-                cases.push(yaml(&block.take().ok_or(ErrorKind::Source)?)?);
-            } else if let Some(text) = &mut block {
-                text.push_str(line);
-            } else if marker.starts_with("```") {
-                if marker.contains("agent-test") {
-                    return Err(ErrorKind::Source);
-                }
-                other_fence = !other_fence;
-            }
-        }
-        if block.is_some() || cases.is_empty() || cases.len() > 32 {
-            return Err(ErrorKind::Source);
-        }
+        let cases = test_blocks(body)?;
         let mut ids = HashSet::new();
         for case in &cases {
             if case
@@ -358,6 +463,13 @@ impl ParsedAgent {
         self.tools()
             .iter()
             .any(|name| NAMES.iter().any(|unsupported| unsupported == name.trim()))
+    }
+    /// Local Agent creation loses the declared kind, so reject unknown builtin
+    /// intent before it could resolve to a same-named custom Tool.
+    pub fn has_unknown_local_builtin(&self) -> bool {
+        self.declared_tools
+            .iter()
+            .any(|tool| tool.kind == ToolKind::Builtin && !supported_builtin(&tool.name))
     }
     pub fn spec(&self, provider: &str) -> serde_json::Value {
         let mut spec = serde_json::json!({"providerRef":{"name":provider},"model":{"name":self.model()},"systemPrompt":{"inline":self.prompt()},"tools":self.tools().iter().map(|name| serde_json::json!({"name":name})).collect::<Vec<_>>()});

@@ -69,13 +69,14 @@ async fn two_turns_reuse_frozen_agent_and_session_and_drain_cursor_events() {
 
 #[tokio::test]
 async fn unsupported_local_tool_preflight_preserves_context_and_removal_restores_chat() {
-    for (kind, name) in [
-        ("builtin", "request_approval"),
-        ("tool", "request_approval"),
-        ("builtin", " request_approval "),
-        ("builtin", "reply_in_conversation"),
-        ("tool", "reply_in_conversation"),
-        ("builtin", " reply_in_conversation "),
+    for (kind, name, error) in [
+        ("builtin", "request_approval", "unsupportedTool"),
+        ("tool", "request_approval", "unsupportedTool"),
+        ("builtin", " request_approval ", "source"),
+        ("builtin", "reply_in_conversation", "unsupportedTool"),
+        ("tool", "reply_in_conversation", "unsupportedTool"),
+        ("builtin", " reply_in_conversation ", "source"),
+        ("builtin", "custom_authorized_tool", "source"),
     ] {
         let f = Fixture::new().await;
         let chat = owner();
@@ -93,10 +94,7 @@ async fn unsupported_local_tool_preflight_preserves_context_and_removal_restores
         chat.send(f.vm.clone(), f.folder.clone(), "Unsupported".into())
             .unwrap();
         let rejected = until(&chat, id, |s| !s.busy).await;
-        assert_eq!(
-            serde_json::to_value(rejected.error).unwrap(),
-            "unsupportedTool"
-        );
+        assert_eq!(serde_json::to_value(rejected.error).unwrap(), error);
         assert_eq!(rejected.state, ChatState::Ready);
         assert!(rejected.can_send);
         assert_eq!(rejected.versions.len(), 1);

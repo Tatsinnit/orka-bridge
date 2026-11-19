@@ -59,13 +59,13 @@ async fn first_test_rejects_files_edited_after_renderer_open_but_manual_run_acce
 
 #[tokio::test]
 async fn unsupported_local_tool_is_rejected_before_posts_and_explicit_removal_restores_run() {
-    for (kind, name) in [
-        ("builtin", "request_approval"),
-        ("tool", "request_approval"),
-        ("builtin", " request_approval "),
-        ("builtin", "reply_in_conversation"),
-        ("tool", "reply_in_conversation"),
-        ("builtin", " reply_in_conversation "),
+    for (kind, name, error) in [
+        ("builtin", "request_approval", "unsupportedTool"),
+        ("tool", "request_approval", "unsupportedTool"),
+        ("builtin", " request_approval ", "source"),
+        ("builtin", "reply_in_conversation", "unsupportedTool"),
+        ("tool", "reply_in_conversation", "unsupportedTool"),
+        ("builtin", " reply_in_conversation ", "source"),
     ] {
         let (vm, posts, _) = fixture(false, false).await;
         let home = tempfile::tempdir().unwrap();
@@ -80,7 +80,7 @@ async fn unsupported_local_tool_is_rejected_before_posts_and_explicit_removal_re
         let run = ExampleRun::new(tokio::runtime::Handle::current(), true, folder.clone());
         run.start(vm.clone());
         let rejected = finished(&run, &vm).await;
-        assert_eq!(rejected.error, Some("unsupportedTool"));
+        assert_eq!(rejected.error, Some(error));
         assert!(rejected.report.is_none());
         assert!(rejected.acknowledged.is_empty() && rejected.pending.is_none());
         assert!(posts.lock().unwrap().is_empty());
@@ -1157,6 +1157,32 @@ async fn malformed_saved_source_refuses_before_any_remote_write() {
     run.start(vm.clone());
     let result = finished(&run, &vm).await;
     assert_eq!(result.error, Some("source"));
+    assert!(posts.lock().unwrap().is_empty());
+    assert!(vm
+        .with_client(|_, client| client.model_status())
+        .await
+        .unwrap()
+        .is_ok());
+    vm.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn unknown_builtin_refuses_before_agent_creation_and_keeps_vm_usable() {
+    let (vm, posts, _) = fixture(false, false).await;
+    let home = tempfile::tempdir().unwrap();
+    let folder = Arc::new(AgentFolder::new(Some(home.path().into())));
+    let source = folder
+        .open()
+        .unwrap()
+        .agent
+        .replace("name: web_fetch", "name: custom_authorized_tool");
+    folder.save(source).unwrap();
+    let run = ExampleRun::new(tokio::runtime::Handle::current(), true, folder);
+    run.start(vm.clone());
+    let result = finished(&run, &vm).await;
+    assert_eq!(result.error, Some("source"));
+    assert!(result.acknowledged.is_empty());
+    assert!(result.pending.is_none());
     assert!(posts.lock().unwrap().is_empty());
     assert!(vm
         .with_client(|_, client| client.model_status())

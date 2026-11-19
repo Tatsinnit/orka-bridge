@@ -138,6 +138,120 @@ fn closed_parser_refuses_unsupported_or_empty_semantics() {
     }
 }
 
+fn case_ids(pair: &ParsedPair) -> Vec<&str> {
+    pair.cases().iter().map(|case| case.id.as_str()).collect()
+}
+
+#[test]
+fn unsupported_test_fences_cannot_hide_beside_a_valid_case() {
+    for opening in [
+        " ```yaml agent-test",
+        "   ```yaml agent-test",
+        "\t```yaml agent-test",
+        "\u{00a0}```yaml agent-test",
+        "\u{2003}```yaml agent-test",
+        "\u{feff}```yaml agent-test",
+        "~~~yaml agent-test",
+        "````yaml agent-test",
+        "```yml agent-test",
+        "```yaml agent-test extra",
+    ] {
+        let hidden = TESTS
+            .replace("```yaml agent-test", opening)
+            .replace("id: checksum", "id: hidden");
+        for source in [hidden.clone(), format!("{TESTS}\n{hidden}")] {
+            assert!(
+                matches!(
+                    ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()),
+                    Err(ErrorKind::Source)
+                ),
+                "{opening}"
+            );
+        }
+    }
+
+    let malformed = TESTS
+        .replace("```yaml agent-test", "```yaml agent-test `extra`")
+        .replace("id: checksum", "id: hidden");
+    let second = TESTS.replace("id: checksum", "id: second");
+    let source = format!("{TESTS}\n{malformed}\n{second}");
+    assert!(matches!(
+        ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()),
+        Err(ErrorKind::Source)
+    ));
+}
+
+#[test]
+fn markdown_prose_and_list_examples_cannot_hide_later_tests() {
+    let second = TESTS.replace("id: checksum", "id: second");
+    for between in ["```example```\n", "1. ```example\n   shown code\n   ```\n"] {
+        let source = format!("{TESTS}\n{between}{second}");
+        let pair = ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()).unwrap();
+        assert_eq!(case_ids(&pair), ["checksum", "second"], "{between}");
+    }
+}
+
+#[test]
+fn ordinary_fences_use_top_level_matching_delimiters() {
+    assert!(matches!(
+        ParsedPair::parse(
+            AGENT.as_bytes(),
+            format!("{TESTS}\n~~~~markdown\n{TESTS}").as_bytes()
+        ),
+        Err(ErrorKind::Source)
+    ));
+    for (open, close) in [("~~~~markdown", "~~~~"), ("````markdown", "````")] {
+        let source =
+            format!("---\nschemaVersion: 1\n---\n{open}\n{TESTS}\n```\n~~~\n{close}\n{TESTS}");
+        let pair = ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()).unwrap();
+        assert_eq!(case_ids(&pair), ["checksum"]);
+    }
+}
+
+#[test]
+fn ordinary_fence_closing_whitespace_is_explicit() {
+    let second = TESTS.replace("id: checksum", "id: second");
+    for suffix in [
+        "\t", "\u{000b}", "\u{000c}", " ", "\u{0085}", "\u{00a0}", "\u{1680}", "\u{2000}",
+        "\u{200a}", "\u{2028}", "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}", "\u{feff}",
+    ] {
+        let source = format!("{TESTS}\n```text\nignored\n```{suffix}\n{second}");
+        let pair = ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()).unwrap();
+        assert_eq!(case_ids(&pair), ["checksum", "second"], "{suffix:?}");
+    }
+}
+
+#[test]
+fn builtin_names_are_exact_while_custom_resources_remain_distinct() {
+    for name in [
+        "custom_authorized_tool",
+        "web_fetc",
+        "WEB_FETCH",
+        " web_fetch",
+        "web_fetch ",
+    ] {
+        let agent = AGENT.replace("name: web_fetch", &format!("name: '{name}'"));
+        let pair = ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()).unwrap();
+        assert!(pair.agent().has_unknown_local_builtin(), "{name}");
+    }
+    for name in [
+        "web_fetch",
+        "file_read",
+        "request_approval",
+        "delegate_task",
+        "list_connections",
+    ] {
+        let agent = AGENT.replace("name: web_fetch", &format!("name: {name}"));
+        let pair = ParsedPair::parse(agent.as_bytes(), TESTS.as_bytes()).unwrap();
+        assert!(!pair.agent().has_unknown_local_builtin(), "{name}");
+    }
+    let resource = AGENT
+        .replace("kind: builtin", "kind: tool")
+        .replace("name: web_fetch", "name: custom_authorized_tool");
+    let pair = ParsedPair::parse(resource.as_bytes(), TESTS.as_bytes()).unwrap();
+    assert!(!pair.agent().has_unknown_local_builtin());
+}
+
 // Removing soul admission or name-only mapping must fail these consumer tests.
 #[tokio::test]
 async fn soul_and_both_tool_kinds_survive_preparation_and_acknowledgment() {
@@ -715,6 +829,51 @@ fn two_cases() -> ParsedPair {
     let tests = format!("{TESTS}\n```yaml agent-test\nid: second\ninput: next\nassertions:\n - id: next-answer\n   type: contains\n   value: next\n```\n");
     ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).unwrap()
 }
+
+#[tokio::test]
+async fn partial_submission_preserves_known_failures_and_missing_cases_stay_unknown() {
+    for (phase, answer, expected) in [
+        ("Failed", Some("secret-expected"), Verdict::Failed),
+        ("Cancelled", Some("secret-expected"), Verdict::Cancelled),
+        ("Succeeded", Some("wrong answer"), Verdict::Failed),
+        ("Succeeded", Some("secret-expected"), Verdict::Unknown),
+        ("Succeeded", None, Verdict::Unknown),
+    ] {
+        let transport = VerdictTransport::new(Behavior {
+            phase,
+            answer,
+            fault: "lost-second-task",
+            ..Behavior::default()
+        });
+        let runner = NativeRunner::with_transport(&transport);
+        let error = runner.submit(two_cases()).await.unwrap_err();
+        assert_eq!(error.handle.tasks().len(), 1);
+        let pending = error.pending.unwrap();
+        assert_eq!(pending.kind, "Task");
+        let before = transport.requests.lock().unwrap().len();
+        let report = runner.observe(&error.handle).await.unwrap();
+        assert_eq!(report.verdict, expected, "{phase} {answer:?}");
+        assert_eq!(report.cases.len(), 2);
+        let missing = &report.cases[1];
+        assert_eq!(missing.id, "second");
+        assert_eq!(missing.question, "next");
+        assert_eq!(missing.phase, "Unacknowledged");
+        assert_eq!(missing.verdict, Verdict::Unknown);
+        assert!(missing.answer.is_none() && missing.completed_tools.is_empty());
+        assert!(missing
+            .assertions
+            .iter()
+            .all(|a| a.verdict == Verdict::Unknown));
+        if expected == Verdict::Failed {
+            assert_eq!(report.cases[0].verdict, Verdict::Failed);
+        }
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(before, 3); // Agent, acknowledged Task, uncertain Task; no retry.
+        assert!(requests[before..]
+            .iter()
+            .all(|(path, mutation)| !mutation && !path.contains(&pending.name)));
+    }
+}
 #[tokio::test]
 async fn reused_agent_checkpoints_its_revision_and_only_creates_fresh_tasks() {
     let (runner, stop, posts) = stopping_runner(usize::MAX, usize::MAX, None);
@@ -1101,6 +1260,31 @@ async fn creates_one_task_per_case_without_reusing_inputs_or_expected_values() {
     assert_eq!(requests[2].1["spec"]["prompt"], "distinct input");
     assert!(!requests[2].1.to_string().contains("different-expected"));
 }
+
+#[tokio::test]
+async fn yaml_literal_fences_remain_in_the_submitted_prompt() {
+    let tests = "---\nschemaVersion: 1\n---\n```yaml agent-test\nid: fenced-input\nassertions:\n  - id: answer\n    type: contains\n    value: expected\ninput: |\n  Run this:\n  ```\n  echo hello\n  ```\n```\n";
+    let pair = ParsedPair::parse(AGENT.as_bytes(), tests.as_bytes()).unwrap();
+    let expected = "Run this:\n```\necho hello\n```\n";
+    assert_eq!(pair.cases()[0].input(), expected);
+    let (runner, receive, posts) = stopping_runner(usize::MAX, usize::MAX, None);
+    runner
+        .submit_prepared(runner.prepare(pair).unwrap(), receive)
+        .await
+        .unwrap();
+    assert_eq!(posts.lock().unwrap()[1]["spec"]["prompt"], expected);
+}
+
+#[test]
+fn keep_chomped_literals_preserve_trailing_lines() {
+    for (style, expected) in [("|+", "first\n\n"), (">+", "first\n\n")] {
+        let tests = format!("---\nschemaVersion: 1\n---\n```yaml agent-test\nid: keep\nassertions: [{{id: answer, type: contains, value: expected}}]\ninput: {style}\n  first\n\n```\n");
+        for source in [tests.clone(), tests.replace('\n', "\r\n")] {
+            let pair = ParsedPair::parse(AGENT.as_bytes(), source.as_bytes()).unwrap();
+            assert_eq!(pair.cases()[0].input(), expected, "{style}");
+        }
+    }
+}
 #[tokio::test]
 async fn credit_phase_uses_only_failed_task_status_evidence_and_never_copies_it() {
     for (phase, message, answer, expected) in [
@@ -1218,14 +1402,16 @@ struct VerdictTransport {
     behavior: Behavior,
     objects: Mutex<HashMap<String, Value>>,
     event_reads: Mutex<usize>,
+    requests: Mutex<Vec<(String, bool)>>,
 }
 impl VerdictTransport {
     fn new(behavior: Behavior) -> Self {
-        assert!(behavior.fault.is_empty());
+        assert!(matches!(behavior.fault, "" | "lost-second-task"));
         Self {
             behavior,
             objects: Mutex::new(HashMap::new()),
             event_reads: Mutex::new(0),
+            requests: Mutex::new(Vec::new()),
         }
     }
 }
@@ -1252,9 +1438,19 @@ impl RunTransport for &VerdictTransport {
     ) -> RunFuture<'a> {
         Box::pin(async move {
             let b = self.behavior;
+            self.requests
+                .lock()
+                .unwrap()
+                .push((path.into(), body.is_some()));
             let mut objects = self.objects.lock().unwrap();
             if let Some(body) = body {
                 assert!(matches!(path, "agents" | "tasks"), "{path}");
+                if path == "tasks"
+                    && b.fault == "lost-second-task"
+                    && objects.values().any(|object| object["kind"] == "Task")
+                {
+                    return Err(ErrorKind::Transport);
+                }
                 let mut resource = json!({
                     "apiVersion": "core.orka.ai/v1alpha1",
                     "kind": if path == "agents" { "Agent" } else { "Task" },
