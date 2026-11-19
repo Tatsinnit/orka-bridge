@@ -721,6 +721,12 @@ fn main() {
             } else {
                 vm.for_recovery()
             };
+            vm.set_workspace_replaced(recovery.as_ref().copied().unwrap_or(true));
+            if let (Ok(data), Ok(local)) =
+                (app.path().app_data_dir(), app.path().app_local_data_dir())
+            {
+                vm.seed_upgrade_status(&data, &local);
+            }
             #[cfg(debug_assertions)]
             startup_marker("local VM configured");
             app.manage(if vm.status() == LocalVmStatus::NotIntegrated {

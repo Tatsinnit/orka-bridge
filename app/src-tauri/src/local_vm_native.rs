@@ -412,6 +412,12 @@ impl JournalCustody {
     all(target_os = "macos", target_arch = "aarch64")
 ))]
 impl LocalFactory for NativeFactory {
+    fn creation_consumed(&self) -> Option<bool> {
+        Some(
+            self.pending.lock().ok()?.0.as_ref()?.record().phase
+                == crate::runtime::journal::StatePhase::Consumed,
+        )
+    }
     fn preflight_replacement(&self, target: &UpgradeTarget) -> Result<(), RuntimeError> {
         self.pending
             .lock()

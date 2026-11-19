@@ -3,7 +3,10 @@ use super::*;
 use crate::local_vm::{
     LocalFactory, LocalProgress, LocalVm, LocalVmStatus, StartFuture, UpgradeTarget,
 };
-use std::sync::{Arc, Mutex};
+use std::{
+    future::Future,
+    sync::{Arc, Mutex},
+};
 
 use crate::engine::{types::EngineRequest, TransportFuture};
 use crate::local_vm::LocalSession;
@@ -68,7 +71,18 @@ impl LocalSession for Session {
         self.0.stop()
     }
 }
+struct StopFailureSession(Session);
+impl LocalSession for StopFailureSession {
+    fn execute(&mut self, request: EngineRequest) -> TransportFuture<'_> {
+        self.0.execute(request)
+    }
+    fn stop(&mut self) -> Result<(), RuntimeError> {
+        self.0 .1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(RuntimeError::Unavailable)
+    }
+}
 struct DestinationFactory {
+    stop_failure: std::sync::atomic::AtomicBool,
     root: PathBuf,
     data: PathBuf,
     destination: Mutex<Option<Journal>>,
@@ -82,6 +96,14 @@ struct DestinationFactory {
     adoption_error: Mutex<Option<RuntimeError>>,
     stop_gate: Arc<Mutex<Option<StopBarrier>>>,
     release_failure: std::sync::atomic::AtomicBool,
+    launch_error: Mutex<Option<(bool, RuntimeError)>>,
+    returned: Arc<Mutex<crate::runtime::journal::JournalCustody>>,
+    after_boot: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     launch_gate: Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
@@ -90,6 +112,11 @@ struct DestinationFactory {
     >,
 }
 impl LocalFactory for DestinationFactory {
+    fn creation_consumed(&self) -> Option<bool> {
+        let returned = self.returned.lock().ok()?;
+        let destination = self.destination.lock().ok()?;
+        Some(returned.0.as_ref().or(destination.as_ref())?.record().phase == StatePhase::Consumed)
+    }
     fn adopt_destination(&self, journal: Journal) -> Result<(), RuntimeError> {
         if let Some((entered, release)) = &self.adoption {
             entered.send(()).unwrap();
@@ -111,6 +138,7 @@ impl LocalFactory for DestinationFactory {
             return Err(RuntimeError::Unavailable);
         }
         self.destination.lock().unwrap().take();
+        self.returned.lock().unwrap().0.take();
         Ok(())
     }
     fn launch(
@@ -125,6 +153,10 @@ impl LocalFactory for DestinationFactory {
             if let Some((entered, release)) = gate {
                 entered.send(()).unwrap();
                 release.await.unwrap();
+            }
+            let error = self.launch_error.lock().unwrap().take();
+            if let Some((false, error)) = error {
+                return Err(error);
             }
             let journal = match self.destination.lock().unwrap().take() {
                 Some(journal) => {
@@ -142,7 +174,12 @@ impl LocalFactory for DestinationFactory {
             let installed = Arc::new(crate::runtime::image_install::open_installed_image(
                 &journal.image_target("new-state")?,
             )?);
-            let mut worker = RuntimeWorker::new(Box::new(Backend), journal, installed)?;
+            let worker = RuntimeWorker::new(Box::new(Backend), journal, installed)?;
+            let mut worker = if matches!(&error, Some((true, _))) {
+                worker.retain_journal(self.returned.clone())
+            } else {
+                worker
+            };
             worker.start()?;
             let boot = worker.boot_request(
                 &bridge_runtime_protocol::StageHello {
@@ -166,10 +203,20 @@ impl LocalFactory for DestinationFactory {
                 }
             );
             self.launched.lock().unwrap().push(installation);
-            Ok(
-                Box::new(Session(worker, self.stops.clone(), self.stop_gate.clone()))
-                    as Box<dyn LocalSession>,
-            )
+            let gate = self.after_boot.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.await.unwrap();
+            }
+            if let Some((true, error)) = error {
+                return Err(worker.startup_failed(error));
+            }
+            let session = Session(worker, self.stops.clone(), self.stop_gate.clone());
+            if self.stop_failure.load(std::sync::atomic::Ordering::SeqCst) {
+                Ok(Box::new(StopFailureSession(session)) as Box<dyn LocalSession>)
+            } else {
+                Ok(Box::new(session) as Box<dyn LocalSession>)
+            }
         })
     }
 }
@@ -181,6 +228,7 @@ fn facade(
     )>,
 ) -> (Arc<LocalVm>, Arc<DestinationFactory>) {
     let factory = Arc::new(DestinationFactory {
+        stop_failure: std::sync::atomic::AtomicBool::new(false),
         root: scene.local.join("local-vm-v1"),
         data: scene.data.clone(),
         destination: Mutex::new(None),
@@ -191,10 +239,133 @@ fn facade(
         adoption_error: Mutex::new(None),
         stop_gate: Arc::new(Mutex::new(None)),
         release_failure: std::sync::atomic::AtomicBool::new(false),
+        launch_error: Mutex::new(None),
+        returned: Arc::new(Mutex::new(crate::runtime::journal::JournalCustody(None))),
+        after_boot: Mutex::new(None),
         launch_gate: Mutex::new(None),
     });
     (LocalVm::new(factory.clone()), factory)
 }
+#[test]
+fn facade_external_repair_is_explicit_and_refresh_latches_observed_history_and_uncertainty() {
+    let scene = Scene::new(ImageTarget::WindowsAmd64);
+    drop(WorkspaceUpgrade::open(&scene.data, &scene.local).unwrap());
+    let intent = scene.local.join(STORE).join("intent.json");
+    fs::write(&intent, b"broken transaction").unwrap();
+    let (vm, factory) = facade(&scene, None);
+    vm.seed_upgrade_status(&scene.data, &scene.local);
+    assert!(vm.workspace_replaced());
+    runtime().block_on(async {
+        let before = vm
+            .upgrade_status(scene.data.clone(), scene.local.clone())
+            .await;
+        assert_eq!(before.error, Some("unknown"));
+        fs::remove_file(&intent).unwrap();
+        let stale = vm
+            .upgrade_status(scene.data.clone(), scene.local.clone())
+            .await;
+        assert_eq!(stale.state, "conflict");
+        assert_eq!(stale.error, Some("unknown"));
+        assert_eq!(
+            vm.refresh_upgrade_status(scene.data.clone(), scene.local.clone())
+                .await
+                .unwrap()
+                .state,
+            "none"
+        );
+        assert_eq!(
+            vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                .await
+                .state,
+            "none"
+        );
+        assert!(vm.workspace_replaced());
+        let (unseeded, _) = facade(&scene, None);
+        fs::write(&intent, b"broken transaction").unwrap();
+        assert!(matches!(
+            unseeded
+                .refresh_upgrade_status(scene.data.clone(), scene.local.clone())
+                .await,
+            Err(RuntimeError::RetainedState)
+        ));
+        assert!(
+            unseeded.workspace_replaced(),
+            "query failure must latch uncertainty"
+        );
+        fs::remove_file(&intent).unwrap();
+        unseeded
+            .refresh_upgrade_status(scene.data.clone(), scene.local.clone())
+            .await
+            .unwrap();
+        assert!(unseeded.workspace_replaced());
+        assert_eq!(factory.stops.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(factory.launched.lock().unwrap().is_empty());
+    });
+    let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+    scene.replace(Some("intent")).unwrap_err();
+    let (vm, _) = facade(&scene, None);
+    runtime().block_on(async {
+        let dto = vm
+            .refresh_upgrade_status(scene.data.clone(), scene.local.clone())
+            .await
+            .unwrap();
+        assert!(dto.transaction.is_some());
+        assert!(
+            vm.workspace_replaced(),
+            "actual transaction observation must latch history"
+        );
+    });
+}
+
+async fn ready_real_journal_refresh_is_busy_without_stopping_or_releasing(
+    scene: &Scene,
+    vm: &Arc<LocalVm>,
+    factory: &DestinationFactory,
+) {
+    let root = scene.local.join("local-vm-v1");
+    assert!(matches!(Journal::open(&root), Err(RuntimeError::Busy)));
+    let stops = factory.stops.load(std::sync::atomic::Ordering::SeqCst);
+    let releases = factory.releases.load(std::sync::atomic::Ordering::SeqCst);
+    let starts = factory.launched.lock().unwrap().len();
+    let before = vm
+        .upgrade_status(scene.data.clone(), scene.local.clone())
+        .await;
+    assert_eq!(before.state, "consumed");
+    assert!(before.transaction.is_some() && before.can_restore);
+    let authoring = vm.try_authoring().unwrap();
+    vm.on_workspace_replaced(Arc::new(|| {
+        panic!("read-only refresh must not retire authoring")
+    }));
+    let result = vm
+        .refresh_upgrade_status(scene.data.clone(), scene.local.clone())
+        .await;
+    assert!(matches!(result, Err(RuntimeError::Busy)));
+    let status = vm
+        .upgrade_status(scene.data.clone(), scene.local.clone())
+        .await;
+    assert_eq!(
+        serde_json::to_value(&status).unwrap(),
+        serde_json::to_value(&before).unwrap(),
+        "Busy must preserve the exact known transaction, metadata and capabilities"
+    );
+    assert_eq!(vm.status(), LocalVmStatus::Ready);
+    assert_eq!(
+        factory.stops.load(std::sync::atomic::Ordering::SeqCst),
+        stops
+    );
+    assert_eq!(
+        factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+        releases
+    );
+    assert_eq!(factory.launched.lock().unwrap().len(), starts);
+    assert!(vm.authoring_current(&authoring));
+    drop(authoring);
+}
+
 fn completed(reply: UpgradeActionReply) -> UpgradeStatusDto {
     match reply {
         UpgradeActionReply::Completed { status } => status,
@@ -700,8 +871,417 @@ fn facade_replace_hands_live_creation_authority_to_launch_and_reports_fresh() {
             StatePhase::Consumed
         );
         assert!(!vm.model_connected());
+        ready_real_journal_refresh_is_busy_without_stopping_or_releasing(&scene, &vm, &factory)
+            .await;
+        vm.on_workspace_replaced(Arc::new(|| {}));
+        vm.cancel().await.unwrap();
+        let restored = vm
+            .restore_workspace(
+                scene.data.clone(),
+                scene.local.clone(),
+                status.transaction.unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(restored.state, "restored");
+        assert_eq!(factory.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(factory.launched.lock().unwrap().len(), 1);
+        assert_eq!(
+            read_record(&scene.local.join("local-vm-v1"))
+                .unwrap()
+                .installation_id,
+            scene.source_id
+        );
         vm.shutdown().await.unwrap();
     });
+}
+
+#[test]
+fn facade_consumption_before_startup_failure_is_visible_on_first_failed_poll() {
+    let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+    seed_cache(&mut scene);
+    let (vm, factory) = facade(&scene, None);
+    *factory.launch_error.lock().unwrap() =
+        Some((true, RuntimeError::Infrastructure("fixture".into())));
+    runtime().block_on(async {
+        let reply = vm
+            .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
+            .await
+            .unwrap();
+        assert_eq!(completed(reply).state, "fresh");
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while vm.status() != LocalVmStatus::Failed {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            factory
+                .returned
+                .lock()
+                .unwrap()
+                .0
+                .as_ref()
+                .unwrap()
+                .record()
+                .phase,
+            StatePhase::Consumed
+        );
+        assert_eq!(
+            vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                .await
+                .state,
+            "consumed"
+        );
+        assert!(matches!(
+            vm.shutdown().await,
+            Err(RuntimeError::Unavailable)
+        ));
+    });
+}
+
+#[test]
+fn facade_cancel_during_boot_consumption_and_late_ok_never_publish_fresh() {
+    for late_ok in [false, true] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        if !late_ok {
+            *factory.launch_error.lock().unwrap() = Some((true, RuntimeError::Closed));
+        }
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *factory.after_boot.lock().unwrap() = Some((entered, release_rx));
+        runtime().block_on(async {
+            let reply = vm
+                .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
+                .await
+                .unwrap();
+            assert_eq!(completed(reply).state, "fresh");
+            tokio::time::timeout(std::time::Duration::from_secs(3), entered_rx)
+                .await
+                .expect(
+                    "launch must reach after_boot handoff after worker.start() and boot_request()",
+                )
+                .unwrap();
+            let cancel = vm.cancel();
+            tokio::pin!(cancel);
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    cancel.as_mut().poll(cx).is_pending()
+                ))
+                .await
+            );
+            assert_eq!(vm.status(), LocalVmStatus::Closing);
+            release.send(()).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), cancel)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(vm.status(), LocalVmStatus::Cancelled);
+            let status = vm
+                .upgrade_status(scene.data.clone(), scene.local.clone())
+                .await;
+            assert_eq!(status.state, "consumed");
+            assert_eq!(
+                read_record(&scene.local.join("local-vm-v1")).unwrap().phase,
+                StatePhase::Consumed
+            );
+            assert_eq!(
+                factory.stops.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(late_ok)
+            );
+            vm.shutdown().await.unwrap();
+        });
+    }
+}
+
+#[test]
+fn facade_late_ok_after_dropped_cancel_quarantines_only_unconfirmed_stop() {
+    for stop_failure in [false, true] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        factory
+            .stop_failure
+            .store(stop_failure, std::sync::atomic::Ordering::SeqCst);
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *factory.after_boot.lock().unwrap() = Some((entered, release_rx));
+        runtime().block_on(async {
+            let store = Arc::new(crate::setup::SetupStore::new(Some(scene.data.clone())));
+            let reply = vm
+                .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
+                .await
+                .unwrap();
+            let transaction = completed(reply).transaction.unwrap();
+            store.select_local().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), entered_rx)
+                .await
+                .expect("late startup must reach the after_boot handoff")
+                .unwrap();
+            {
+                let cancel = vm.cancel();
+                tokio::pin!(cancel);
+                assert!(
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(
+                        cancel.as_mut().poll(cx).is_pending()
+                    ))
+                    .await
+                );
+                assert_eq!(vm.status(), LocalVmStatus::Closing);
+            }
+            release.send(()).unwrap();
+            let expected = if stop_failure {
+                LocalVmStatus::Failed
+            } else {
+                LocalVmStatus::Cancelled
+            };
+            let stopped = tokio::time::timeout(std::time::Duration::from_secs(3), vm.cancel())
+                .await
+                .expect("owned stop must publish its result after the Cancel waiter drops");
+            if stop_failure {
+                assert!(matches!(stopped, Err(RuntimeError::Unavailable)));
+            } else {
+                stopped.unwrap();
+            }
+            assert_eq!(vm.status(), expected);
+            assert_eq!(factory.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            assert_eq!(factory.launched.lock().unwrap().len(), 1);
+            assert_ne!(factory.launched.lock().unwrap()[0], scene.source_id);
+            let status = vm
+                .upgrade_status(scene.data.clone(), scene.local.clone())
+                .await;
+            if stop_failure {
+                assert_eq!(status.error, Some("stopUnconfirmed"));
+                assert_eq!(status.state, "conflict");
+                assert!(status.transaction.is_none());
+                assert!(
+                    !status.busy
+                        && !status.can_restore
+                        && !status.can_replace
+                        && !status.can_cancel
+                );
+                assert!(
+                    vm.try_authoring().is_none(),
+                    "failed stop must deny new Run/Chat leases"
+                );
+                assert!(
+                    matches!(
+                        Journal::open(&scene.local.join("local-vm-v1")),
+                        Err(RuntimeError::Busy)
+                    ),
+                    "failed stop must retain the live session and its journal"
+                );
+                assert!(matches!(vm.cancel().await, Err(RuntimeError::Unavailable)));
+                assert!(crate::local_vm::change_local(store.clone(), &vm)
+                    .await
+                    .is_err());
+                assert!(store.status().unwrap().selected.is_some());
+                vm.start();
+                assert_eq!(vm.status(), LocalVmStatus::Failed);
+                assert!(matches!(
+                    vm.quiesce_for_upgrade().await,
+                    Err(RuntimeError::Unavailable)
+                ));
+                assert_eq!(
+                    factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                assert_eq!(factory.launched.lock().unwrap().len(), 1);
+                assert!(matches!(
+                    vm.shutdown().await,
+                    Err(RuntimeError::Unavailable)
+                ));
+                assert_eq!(
+                    vm.upgrade_status(scene.data.clone(), scene.local.clone())
+                        .await
+                        .error,
+                    Some("stopUnconfirmed")
+                );
+            } else {
+                assert_eq!(status.state, "consumed");
+                assert_eq!(status.transaction, Some(transaction));
+                assert!(status.can_restore);
+                vm.shutdown().await.unwrap();
+            }
+        });
+    }
+}
+
+#[test]
+fn facade_retained_journal_only_proves_fresh_for_typed_preconsumption_refusal() {
+    for case in 0..4 {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        let error = match case {
+            0 => RuntimeError::Image(
+                crate::runtime::image_types::ImageError::WorkspaceVersionUnsupported,
+            ),
+            1 => RuntimeError::Io(std::io::Error::other("ambiguous write")),
+            2 => RuntimeError::StopUnconfirmed("fixture".into()),
+            _ => RuntimeError::Image(
+                crate::runtime::image_types::ImageError::WorkspaceVersionUnsupported,
+            ),
+        };
+        *factory.launch_error.lock().unwrap() = Some((false, error));
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *factory.launch_gate.lock().unwrap() = Some((entered, release_rx));
+        runtime().block_on(async {
+            let reply = vm
+                .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
+                .await
+                .unwrap();
+            assert_eq!(completed(reply).state, "fresh");
+            tokio::time::timeout(std::time::Duration::from_secs(3), entered_rx)
+                .await
+                .expect("launch entry must reach the preconsumption-refusal gate")
+                .unwrap();
+            if case == 3 {
+                let returned = factory.returned.clone();
+                assert!(std::thread::spawn(move || {
+                    let _guard = returned.lock().unwrap();
+                    panic!("poison custody observation");
+                })
+                .join()
+                .is_err());
+            }
+            release.send(()).unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while vm.status() != LocalVmStatus::Failed {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_ne!(
+                factory
+                    .destination
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .record()
+                    .phase,
+                StatePhase::Consumed
+            );
+            let status = vm
+                .upgrade_status(scene.data.clone(), scene.local.clone())
+                .await;
+            assert_eq!(status.state, if case == 0 { "fresh" } else { "conflict" });
+            if case != 0 {
+                assert!(!status.can_replace && !status.can_restore && !status.can_cancel);
+                assert_eq!(
+                    status.error,
+                    Some(if case == 2 {
+                        "stopUnconfirmed"
+                    } else {
+                        "unknown"
+                    })
+                );
+            }
+            if case == 2 {
+                assert_eq!(
+                    factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+            }
+            if case == 0 || case == 3 {
+                vm.shutdown().await.unwrap();
+            } else {
+                assert!(matches!(
+                    vm.shutdown().await,
+                    Err(RuntimeError::Unavailable)
+                ));
+            }
+        });
+    }
+}
+
+#[test]
+fn facade_ready_then_stop_keeps_consumed_but_lost_creator_is_unknown() {
+    for refuse_before_ready in [false, true] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        seed_cache(&mut scene);
+        let (vm, factory) = facade(&scene, None);
+        let (entered, entered_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = tokio::sync::oneshot::channel();
+        *factory.launch_gate.lock().unwrap() = Some((entered, release_rx));
+        runtime().block_on(async {
+            let reply = vm
+                .replace_workspace(scene.data.clone(), scene.local.clone(), target(&scene))
+                .await
+                .unwrap();
+            assert_eq!(completed(reply).state, "fresh");
+            tokio::time::timeout(std::time::Duration::from_secs(3), entered_rx)
+                .await
+                .expect("launch entry must reach the retained-creator gate before Ready")
+                .unwrap();
+            if refuse_before_ready {
+                // Losing the creator forces ordinary reopen, which cannot format Fresh B.
+                drop(factory.destination.lock().unwrap().take());
+            }
+            release.send(()).unwrap();
+            let expected = if refuse_before_ready {
+                LocalVmStatus::Failed
+            } else {
+                LocalVmStatus::Ready
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while vm.status() != expected {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            if !refuse_before_ready {
+                // No upgrade-status poll between actual startup completion and stop.
+                vm.cancel().await.unwrap();
+                assert_eq!(vm.status(), LocalVmStatus::Cancelled);
+            }
+            let status = vm
+                .upgrade_status(scene.data.clone(), scene.local.clone())
+                .await;
+            assert_eq!(
+                status.state,
+                if refuse_before_ready {
+                    "conflict"
+                } else {
+                    "consumed"
+                }
+            );
+            assert_eq!(
+                read_record(&scene.local.join("local-vm-v1")).unwrap().phase
+                    == StatePhase::Consumed,
+                !refuse_before_ready
+            );
+            if refuse_before_ready {
+                assert_eq!(status.error, Some("unknown"));
+                assert!(!status.can_replace && !status.can_restore && !status.can_cancel);
+                assert_eq!(
+                    factory.releases.load(std::sync::atomic::Ordering::SeqCst),
+                    1
+                );
+                assert!(matches!(
+                    vm.shutdown().await,
+                    Err(RuntimeError::Unavailable)
+                ));
+            } else {
+                vm.shutdown().await.unwrap();
+            }
+        });
+    }
 }
 
 #[test]

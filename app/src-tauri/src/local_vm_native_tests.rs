@@ -3,6 +3,235 @@ use crate::runtime::{image_install::open_installed_image, types::WorkspaceCause}
 use sha2::{Digest, Sha256};
 use std::fs;
 
+#[tokio::test]
+async fn merge256_forced_projection_preserves_cache_and_revision() {
+    for stopped in [None, Some(false)] {
+        for initial in ["fresh", "consumed", "stopUnconfirmed", "forcedStop"] {
+            let vm = LocalVm::unavailable();
+            let mut cached = UpgradeStatusDto::none();
+            cached.state = if matches!(initial, "fresh" | "consumed") {
+                initial
+            } else {
+                "conflict"
+            };
+            cached.error = (!matches!(initial, "fresh" | "consumed")).then_some(initial);
+            cached.transaction = Some(bridge_runtime_protocol::Uuid::new_v4());
+            cached.can_replace = true;
+            cached.can_restore = true;
+            vm.cache_upgrade_status(cached);
+            vm.upgrading
+                .store(true, std::sync::atomic::Ordering::Release);
+            vm.inner.fail(
+                "forced cleanup".into(),
+                &RuntimeError::ShutdownForced,
+                WorkspaceOperation::Stop,
+                true,
+            );
+            vm.inner.state.lock().unwrap().stopped = stopped;
+            assert!(
+                vm.try_authoring().is_none(),
+                "forced state must refuse authoring even before stop publication"
+            );
+            let before = serde_json::to_value(vm.upgrade_cache.lock().unwrap().clone()).unwrap();
+            let revision = vm
+                .upgrade_cache_revision
+                .load(std::sync::atomic::Ordering::Relaxed);
+            for _ in 0..2 {
+                let dto = vm
+                    .upgrade_status("unused-data".into(), "unused-local".into())
+                    .await;
+                assert_eq!(dto.error, Some("forcedStop"), "{stopped:?}/{initial}");
+                assert_eq!(dto.state, "conflict");
+                assert!(!dto.busy && !dto.can_replace && !dto.can_restore && !dto.can_cancel);
+                assert!(dto.transaction.is_none());
+                assert_eq!(
+                    serde_json::to_value(vm.upgrade_cache.lock().unwrap().clone()).unwrap(),
+                    before
+                );
+                assert_eq!(
+                    vm.upgrade_cache_revision
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    revision
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn facade_recorded_stop_failure_projects_quarantine_before_stop() {
+    for forced in [false, true] {
+        for contextual in [false, true] {
+            let vm = LocalVm::unavailable();
+            assert!(vm.try_authoring().is_some());
+            vm.inner.state.lock().unwrap().stopped = Some(true);
+            assert!(vm.try_authoring().is_some());
+            vm.inner.state.lock().unwrap().stopped = None;
+            let mut cached = UpgradeStatusDto::none();
+            cached.state = "consumed";
+            cached.transaction = Some(bridge_runtime_protocol::Uuid::new_v4());
+            cached.can_restore = true;
+            vm.cache_upgrade_status(cached);
+            let error = if forced {
+                RuntimeError::ShutdownForced
+            } else {
+                RuntimeError::StopUnconfirmed("fixture".into())
+            };
+            let error = if contextual {
+                RuntimeError::Startup(Box::new(crate::runtime::types::StartupFailure {
+                    error,
+                    operation: WorkspaceOperation::Stop,
+                    diagnostic: "fixture".into(),
+                }))
+            } else {
+                error
+            };
+            vm.inner
+                .fail("fixture".into(), &error, WorkspaceOperation::Start, true);
+            assert_eq!(vm.inner.state.lock().unwrap().stopped, None);
+            let before = serde_json::to_value(vm.upgrade_cache.lock().unwrap().clone()).unwrap();
+            let revision = vm
+                .upgrade_cache_revision
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let dto = vm.upgrade_status("unused".into(), "unused".into()).await;
+            assert_eq!(
+                dto.error,
+                Some(if forced {
+                    "forcedStop"
+                } else {
+                    "stopUnconfirmed"
+                })
+            );
+            assert_eq!(dto.state, "conflict");
+            assert!(!dto.busy && !dto.can_replace && !dto.can_restore && !dto.can_cancel);
+            assert!(dto.transaction.is_none());
+            assert!(vm.try_authoring().is_none());
+            assert_eq!(
+                serde_json::to_value(vm.upgrade_cache.lock().unwrap().clone()).unwrap(),
+                before
+            );
+            assert_eq!(
+                vm.upgrade_cache_revision
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                revision
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn merge256_owned_startup_quarantines_direct_and_contextual_stop_failures() {
+    struct FailedFactory {
+        forced: bool,
+        contextual: bool,
+        consumed: Option<bool>,
+    }
+    impl LocalFactory for FailedFactory {
+        fn creation_consumed(&self) -> Option<bool> {
+            self.consumed
+        }
+        fn launch(
+            &self,
+            _: watch::Receiver<bool>,
+            _: Arc<dyn Fn(LocalProgress) + Send + Sync>,
+        ) -> StartFuture<'_> {
+            Box::pin(async move {
+                let error = if self.forced {
+                    RuntimeError::ShutdownForced
+                } else {
+                    RuntimeError::StopUnconfirmed("held".into())
+                };
+                Err(if self.contextual {
+                    RuntimeError::Startup(Box::new(crate::runtime::types::StartupFailure {
+                        error,
+                        operation: WorkspaceOperation::Stop,
+                        diagnostic: "startup cleanup".into(),
+                    }))
+                } else {
+                    error
+                })
+            })
+        }
+    }
+    for forced in [true, false] {
+        for contextual in [false, true] {
+            for consumed in [Some(true), Some(false), None] {
+                for initial in [None, Some("fresh"), Some("consumed")] {
+                    let vm = LocalVm::new(Arc::new(FailedFactory {
+                        forced,
+                        contextual,
+                        consumed,
+                    }));
+                    let transaction = bridge_runtime_protocol::Uuid::new_v4();
+                    if let Some(state) = initial {
+                        let mut dto = UpgradeStatusDto::none();
+                        dto.state = state;
+                        dto.transaction = Some(transaction);
+                        dto.can_replace = true;
+                        dto.can_restore = true;
+                        vm.cache_upgrade_status(dto);
+                    }
+                    vm.start();
+                    let startup = vm.inner.state.lock().unwrap().startup.take().unwrap();
+                    assert!(
+                        !tokio::time::timeout(std::time::Duration::from_secs(3), startup)
+                            .await
+                            .unwrap()
+                            .unwrap(),
+                        "unclean cleanup must not release original creation custody"
+                    );
+                    assert_eq!(vm.status(), LocalVmStatus::Failed);
+                    assert_eq!(vm.inner.state.lock().unwrap().stopped, None);
+                    assert!(
+                        vm.try_authoring().is_none(),
+                        "unclean startup must refuse authoring before any separate stop: forced={forced}, contextual={contextual}"
+                    );
+                    let cached = vm
+                        .upgrade_cache
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .expect("startup must publish quarantine");
+                    assert_eq!(
+                        cached.error,
+                        Some(if forced {
+                            "forcedStop"
+                        } else {
+                            "stopUnconfirmed"
+                        })
+                    );
+                    assert_eq!(cached.state, "conflict");
+                    assert_eq!(cached.transaction, initial.map(|_| transaction));
+                    assert!(
+                        !cached.busy
+                            && !cached.can_replace
+                            && !cached.can_restore
+                            && !cached.can_cancel
+                    );
+                    assert!(vm.upgrading.load(std::sync::atomic::Ordering::Acquire));
+                    let before = serde_json::to_value(Some(cached)).unwrap();
+                    let revision = vm
+                        .upgrade_cache_revision
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    vm.clear_upgrade_busy();
+                    vm.publish_startup_consumption(Some(true), None);
+                    vm.publish_startup_consumption(Some(true), Some("stopUnconfirmed"));
+                    assert!(vm.upgrading.load(std::sync::atomic::Ordering::Acquire));
+                    assert_eq!(
+                        serde_json::to_value(vm.upgrade_cache.lock().unwrap().clone()).unwrap(),
+                        before
+                    );
+                    assert_eq!(
+                        vm.upgrade_cache_revision
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                        revision
+                    );
+                }
+            }
+        }
+    }
+}
+
 mod infrastructure_tests {
     use super::*;
     use bridge_runtime_protocol::*;
@@ -450,10 +679,22 @@ mod infrastructure_tests {
             .await;
         assert_eq!(dto.error, Some("forcedStop"));
         assert!(!dto.busy && !dto.can_replace && !dto.can_restore);
-        let stale =
-            vm.publish_upgrade_status(0, crate::workspace_upgrade::UpgradeStatusDto::none());
-        assert_eq!(stale.error, Some("forcedStop"));
-        assert!(!stale.busy);
+        let before = serde_json::to_vec(&*vm.upgrade_cache.lock().unwrap()).unwrap();
+        let revision = vm
+            .upgrade_cache_revision
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let current = vm.upgrade_status("unused".into(), "unused".into()).await;
+        assert_eq!(current.error, Some("forcedStop"));
+        assert!(!current.busy);
+        assert_eq!(
+            serde_json::to_vec(&*vm.upgrade_cache.lock().unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(
+            vm.upgrade_cache_revision
+                .load(std::sync::atomic::Ordering::Relaxed),
+            revision
+        );
         vm.start();
         assert_eq!(vm.status(), LocalVmStatus::Failed);
         assert_eq!(

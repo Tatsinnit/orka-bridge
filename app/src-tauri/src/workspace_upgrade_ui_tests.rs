@@ -1,5 +1,42 @@
 use super::*;
 
+#[test]
+fn explicit_status_propagates_owner_and_journal_errors() {
+    let scene = Scene::new(ImageTarget::WindowsAmd64);
+    let root = scene.local.join("local-vm-v1");
+    let journal = Journal::open(&root).unwrap();
+    assert!(matches!(
+        eligible_status(&scene.data, &scene.local, Some(&scene.source)),
+        Err(RuntimeError::Busy)
+    ));
+    drop(journal);
+    fs::write(root.join("record.json"), b"broken journal").unwrap();
+    assert!(
+        eligible_status(&scene.data, &scene.local, Some(&scene.source)).is_err(),
+        "corrupt owner data must not become success-none"
+    );
+}
+
+#[test]
+fn explicit_status_preserves_real_current_image_and_no_predecessor_policy_none() {
+    for current in [false, true] {
+        let mut scene = Scene::new(ImageTarget::WindowsAmd64);
+        let profile = match &mut scene.source {
+            ImageSource::Pinned { profile, .. } => profile,
+            #[cfg(debug_assertions)]
+            ImageSource::Development => unreachable!(),
+        };
+        if current {
+            **profile = *profile.predecessors[0].source.clone();
+        } else {
+            profile.predecessors.clear();
+        }
+        let dto = query_upgrade_status(&scene.data, &scene.local, Some(&scene.source)).unwrap();
+        assert_eq!(dto.state, "none");
+        assert!(!dto.can_replace && !dto.can_restore && !dto.busy);
+    }
+}
+
 fn prepared(target: ImageTarget) -> (Scene, WorkspaceUpgrade) {
     let mut scene = Scene::new(target);
     let mut owner = WorkspaceUpgrade::open(&scene.data, &scene.local).unwrap();
