@@ -74,6 +74,8 @@ describe('Orka ink and paper theme contract', () => {
     expect(designSystem).not.toContain('border-radius: 999px');
     expect(shell).toMatch(/\.tile-overview, \.tile-designer, \.tile-clusters\s*\{[^}]*color: var\(--color-text\);[^}]*background: var\(--color-icon-tile\)/s);
     expect(controls).toMatch(/\.button-danger\s*\{\s*color: var\(--color-text\);/);
+    expect(css).toMatch(/\.view-switch button\[aria-pressed="true"\]\s*\{[^}]*box-shadow: inset 0 0 0 1px var\(--color-border-strong\);/);
+    expect(css).not.toMatch(/\.view-switch button\[aria-pressed="true"\]\s*\{[^}]*outline:/);
     expect(css).toMatch(/input:is\(\[type='radio'\], \[type='checkbox'\]\)\s*\{\s*accent-color: var\(--color-text\);/);
     expect(css).toMatch(/a\s*\{\s*color: var\(--color-text\);/);
     expect(css).not.toContain('color-violet');

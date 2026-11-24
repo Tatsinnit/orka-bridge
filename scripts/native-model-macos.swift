@@ -5,6 +5,7 @@ import AppKit
 import CoreGraphics
 import ApplicationServices
 import Vision
+import ImageIO
 
 // Test scope policy without opening a display or launching the fixture.
 func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
@@ -254,14 +255,33 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         let chatText = !found && (name.hasPrefix("chat-") || name.hasPrefix("cluster-") || name.hasPrefix("local-shell-chat-")) && nativeChatTextIsVisible(value)
         let workspaceControl = !found && name.hasPrefix("local-workspace-") && nativeWorkspaceButtonIsVisible(value)
         let overviewControl = !found && name.hasPrefix("local-") && name.contains("overview") && nativeWorkspaceButtonIsVisible(value)
-        require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl, "Missing \(value) in \(name): \(text)")
+        let overviewHeading = !found && value == "web-reader" && name.hasPrefix("local-overview-")
+            && visible.contains("web-xeader") && nativeOverviewHeadingIsVisible(value)
+        require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl || overviewHeading, "Missing \(value) in \(name): \(text)")
     }
-    guard let bitmap = NSBitmapImageRep(data: try Data(contentsOf: URL(fileURLWithPath: file))),
-          let colour = bitmap.colorAt(x: bitmap.pixelsWide - 20, y: bitmap.pixelsHigh - 20)?.usingColorSpace(.deviceRGB)
-        else { fatalError("Cannot sample native theme") }
-    let expected: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
-    let actual = [colour.redComponent, colour.greenComponent, colour.blueComponent].map { $0 * 255 }
-    require(zip(actual, expected).allSatisfy { abs($0 - $1) < 8 }, "Native fixture does not use Orka paper: \(actual)")
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
+        let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+        let pixel = image.cropping(to: CGRect(x: CGFloat(image.width - 20), y: CGFloat(image.height - 20), width: 1, height: 1)),
+        let space = CGColorSpace(name: CGColorSpace.sRGB) else { fatalError("Cannot decode native theme") }
+    var rgba = [UInt8](repeating: 0, count: 4)
+    let sampled = rgba.withUnsafeMutableBytes { bytes in
+        guard let context = CGContext(data: bytes.baseAddress, width: 1, height: 1,
+            bitsPerComponent: 8, bytesPerRow: 4, space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
+            else { return false }
+        context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return true
+    }
+    require(sampled, "Cannot sample native theme in sRGB")
+    let pickerOpen = enabledButton("Close picker") != nil
+    var expected: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
+    if pickerOpen {
+        expected = theme == "dark" ? expected.map { $0 * 0.45 }
+            : zip(expected, [CGFloat](repeating: 11, count: 3)).map { $0 * 0.82 + $1 * 0.18 }
+    }
+    let actual = rgba.prefix(3).map { CGFloat($0) }
+    let tolerance: CGFloat = pickerOpen ? 3 : 8
+    require(zip(actual, expected).allSatisfy { abs($0 - $1) < tolerance }, "Native fixture does not use Orka paper: \(actual)")
     // Setup frames 1c, 1d (cropped) and 1e exist only in light; dark captures use them as layout references.
     // Frames 1g (AI connection failed) and 1h (AI reset) are approved in both themes.
     let frame: (file: String, label: String)? =
@@ -1042,6 +1062,16 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
             ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == expected }),
             let bounds = nativeBounds(element) else { return false }
         return window()!.1.contains(bounds)
+    }
+}
+func nativeOverviewHeadingIsVisible(_ expected: String) -> Bool {
+    guard let headerBottom = enabledButton("Overview").flatMap(nativeBounds)?.maxY else { return false }
+    return nativeElements().contains { element in
+        guard attribute(element, "AXRole") as? String == "AXHeading",
+            ["AXValue", "AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == expected }),
+            let bounds = nativeBounds(element) else { return false }
+        return bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)
+            && bounds.minY >= headerBottom + 8 && bounds.maxY <= window()!.1.maxY - 32
     }
 }
 func nativeChatTextIsVisible(_ expected: String, aboveFooter: Bool = false) -> Bool {
