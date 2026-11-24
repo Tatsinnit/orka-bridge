@@ -188,7 +188,7 @@ assert.ok(layoutGate.includes('wide tabs must stay 180px'));
 const wide = { width: 1280, scrollWidth: 1000, clientWidth: 1000, scrollHeight: 700, clientHeight: 700, forms: [], rows: [], checks: [],
   tabs: [0, 1, 2].map(i => ({ width: 180, grow: '0', right: 180 * (i + 1) })),
   host: { x: 556 }, hostLabel: { width: 100 }, subtitles: 3, quiet: [{ start: '0px', end: '0px' }],
-  scrollbar: { width: 'thin', color: 'rgb(90, 90, 90) rgb(240, 240, 240)' }, fallback: {} };
+  scrollbar: { width: 'thin', color: 'rgb(90, 90, 90) rgb(240, 240, 240)' }, theme: { page: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 12)' }, fallback: {} };
 async function gate(layout) {
   return Function('evaluate', 'writeFile', 'join', 'output', `${layoutGate}; return checkLayout('light', 'setup-fit', 'probe');`)(
     async () => layout, async () => {}, () => '', '');
@@ -200,6 +200,7 @@ for (const mutation of [
   { tabs: wide.tabs.map(tab => ({ ...tab, grow: '1' })) }, { host: { x: 555 } },
   { width: 540 }, { width: 540, subtitles: 0, hostLabel: { width: 161 } },
   { quiet: [{ start: '4px', end: '0px' }] }, { scrollbar: { width: 'auto', color: 'auto' } },
+  { theme: { page: 'rgb(242, 241, 237)', ink: 'rgb(27, 32, 38)' } },
   { scrollHeight: 703 },
 ]) await assert.rejects(() => gate({ ...wide, ...mutation }));
 // The compact Change image must be framed before requesting its screenshot.
@@ -387,6 +388,7 @@ const model = (await readFile(new URL('./native-model-macos.swift', import.meta.
 const captureManifest = JSON.parse(await readFile(new URL('./native-model-captures.json', import.meta.url), 'utf8'));
 assert.ok(model.includes('let upgradeText = !found && name.hasPrefix("local-upgrade-") && nativeChatTextIsVisible(value, aboveFooter: true)'), 'upgrade OCR fallback must prove the unchanged expected substring in a fully visible native node');
 assert.ok(model.includes('require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl'), 'native upgrade evidence must feed the original hard capture assertion');
+assert.ok(model.includes('theme == "dark" ? [9, 9, 10] : [255, 255, 255]') && model.includes('Native fixture does not use Orka paper'), 'native model captures must verify exact Orka paper in both themes');
 const nativeUpgradeVisibility = model.slice(model.indexOf('func nativeChatTextIsVisible('), model.indexOf('func waitForButton('));
 assert.ok(nativeUpgradeVisibility.includes('text.contains(expected)') && nativeUpgradeVisibility.includes('"AXStaticText"'), 'upgrade fallback must use actual expected native text, not OCR spelling aliases');
 assert.ok(nativeUpgradeVisibility.includes('bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)') && nativeUpgradeVisibility.includes('bounds.maxY <= window()!.1.maxY - 32'), 'hidden, clipped, off-window and footer text cannot satisfy upgrade fallback');
@@ -434,6 +436,8 @@ const overviewShotGate = smoke.slice(smoke.indexOf('    func overviewShot('), sm
 assert.ok(overviewShotGate.includes('afterFrame:') && !overviewShotGate.includes('anchor.minY'), 'capture the already-visible native Overview state; do not scroll it away for cosmetic framing');
 assert.ok(smoke.includes('name.hasPrefix("overview-probe-")'), 'renamed scrolled Overview probes must retain the existing heading exemption');
 assert.ok(smoke.includes('CGFloat(image.width - chromeInset)') && smoke.includes('name.hasPrefix("overview-") ? 20 : 8'), 'Overview theme sampling must avoid its transient edge scrollbar without relaxing the theme tolerance');
+assert.ok(smoke.includes('theme == "dark" ? [9, 9, 10] : [255, 255, 255]') && smoke.includes('Orka paper'), 'native smoke must verify the Orka paper palette in both themes');
+assert.ok(source.includes("theme === 'dark' ? '#09090a' : '#ffffff'") && source.includes("theme === 'dark' ? '#f4f4f5' : '#0b0b0c'"), 'Windows comparisons must use Orka paper and ink');
 assert.ok(!smoke.includes('clickText("Refresh"') && !smoke.includes('clickButton("Refresh")') && !smoke.includes('clickText("By agent"') && !smoke.includes('clickText("By cluster"'), 'native smoke must remove top Refresh and grouping-only Overview paths');
 for (const name of ['chat-long-early-wide', 'chat-long-early-minimum', 'chat-long-end-wide', 'chat-long-end-minimum']) {
   assert.ok(captureManifest.model.includes(name), `long Chat capture must belong to model scope: ${name}`);

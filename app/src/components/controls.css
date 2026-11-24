@@ -1,7 +1,8 @@
-.button { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-1); min-height: 32px; max-width: 100%; padding: 4px 12px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-card); color: var(--color-text); font: var(--type-body); font-weight: 500; text-align: center; }
-.button-primary { background: var(--color-action); color: var(--color-action-text); border-color: transparent; }
-.button-secondary:not(:disabled):hover { background: var(--color-hover); }
-.button-primary:not(:disabled):hover { background: var(--color-action-hover); }
+.button { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-1); min-height: 32px; max-width: 100%; padding: 4px 12px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-card); color: var(--color-text); font: var(--type-body); font-weight: 500; letter-spacing: -.005em; text-align: center; transition: background-color 160ms var(--ease-standard), border-color 160ms var(--ease-standard), color 160ms var(--ease-standard), transform 160ms var(--ease-standard); }
+.button:not(:disabled):active { transform: translateY(1px); }
+.button-primary { background: var(--color-action); color: var(--color-action-text); border-color: var(--color-action); }
+.button-secondary:not(:disabled):hover { background: var(--color-hover); border-color: var(--color-text); }
+.button-primary:not(:disabled):hover { background: var(--color-action-hover); border-color: var(--color-action-hover); }
 .button-quiet { background: transparent; border-color: transparent; border-inline-width: 0; padding-inline: 0; color: var(--color-text-secondary); }
 .button-quiet:not(:disabled):hover { color: var(--color-text); text-decoration: underline; text-underline-offset: 3px; }
 .button-small { min-height: 26px; padding: 2px 10px; }
@@ -9,9 +10,10 @@
 .button-icon { min-height: 26px; width: 26px; height: 26px; padding: 0; flex: none; background: transparent; border-color: transparent; color: var(--color-text-secondary); }
 .button-icon:not(:disabled):hover { background: var(--color-hover); color: var(--color-text); }
 .button:disabled { background: var(--color-hover); border-color: transparent; color: var(--color-text-tertiary); cursor: not-allowed; }
-.button-danger { color: var(--color-status-failed); }
+.button-danger { color: var(--color-text); }
 .action-spaced { margin-top: var(--space-3); }
 .field { min-width: 0; max-width: 100%; min-height: 32px; padding: 4px 12px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); background: var(--color-card); color: var(--color-text); font: inherit; }
+.field::placeholder { color: var(--color-text-secondary); opacity: 1; }
 input.field, select.field { height: 32px; }
 .field:disabled { background-color: var(--color-hover); border-color: transparent; color: var(--color-text-tertiary); cursor: not-allowed; }
 select.field { appearance: none; padding-right: 32px; background-image: linear-gradient(45deg, transparent 50%, var(--color-text-secondary) 50%), linear-gradient(135deg, var(--color-text-secondary) 50%, transparent 50%); background-repeat: no-repeat; background-size: 5px 5px; background-position: right 17px center, right 12px center; }

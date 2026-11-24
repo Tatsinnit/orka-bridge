@@ -17,7 +17,7 @@
 .workspace-options { border: 0; padding: 0; margin: 0; display: grid; gap: 12px; min-width: 0; }
 .workspace-option { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 12px 16px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-row); background: var(--color-page); }
 .workspace-selected { border: 2px solid var(--color-action); padding: 11px 15px; }
-.workspace-option > input { margin: 0; accent-color: var(--color-action); }
+.workspace-option > input { margin: 0; }
 .workspace-option > label { font-weight: 600; }
 
 
@@ -38,7 +38,7 @@
 .workspace-preflight #preflight-memory-help { display: grid; gap: 8px; }
 .workspace-preflight .workspace-step-actions { margin-top: 0; }
 .workspace-coming { position: relative; }
-.workspace-tip { display: none; position: absolute; z-index: 1; bottom: calc(100% + 6px); left: 0; background: var(--color-action); color: var(--color-page); border-radius: var(--radius-control); padding: 4px 8px; font-size: var(--size-small); white-space: nowrap; }
+.workspace-tip { display: none; position: absolute; z-index: 1; bottom: calc(100% + 6px); left: 0; background: var(--color-action); color: var(--color-action-text); border-radius: var(--radius-control); padding: 4px 8px; font-size: var(--size-small); white-space: nowrap; }
 .workspace-coming:hover > .workspace-tip, .workspace-coming:focus-visible > .workspace-tip { display: block; }
 .workspace-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (max-width: 700px) {

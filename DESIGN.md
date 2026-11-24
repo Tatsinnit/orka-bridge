@@ -3,27 +3,28 @@
 How Bridge looks and behaves on screen. Every screen uses these rules. If a screen seems to need something new, change
 this file first, in its own pull request.
 
-The palette, the tab bar, the window and the two-column layouts come from the approved frames. This file extends the
-existing tokens in [`app/src/app.css`](app/src/app.css): `--font-*`, `--type-*`, `--size-*`, `--space-*`, `--radius-*`
-and `--color-*`. Use the [Bridge glossary](https://github.com/orka-agents/orka-bridge/blob/2df7dba2a3c0e751271b25a15b9850221e320abe/docs/glossary.md)
+The palette and type come from the Orka website; the tab bar, window and two-column layouts come from the approved
+frames. This file extends the existing tokens in [`app/src/app.css`](app/src/app.css): `--font-*`, `--type-*`,
+`--size-*`, `--space-*`, `--radius-*` and `--color-*`. Use the
+[Bridge glossary](https://github.com/orka-agents/orka-bridge/blob/2df7dba2a3c0e751271b25a15b9850221e320abe/docs/glossary.md)
 for UI concepts and labels.
 
 In these rules, ink, ink-2 and ink-3 mean `--color-text`, `--color-text-secondary` and `--color-text-tertiary`;
-line-2 means `--color-border-strong`; card and well mean `--color-card` and `--color-chrome`. Teal uses
+line-2 means `--color-border-strong`; card and well mean `--color-card` and `--color-chrome`. Inverse uses
 `--color-action` and `--color-action-text`. These are design rules, not a claim that every screen already follows them.
 
 ## Type
 
-Inter for everything people read. JetBrains Mono only for names the creator chose (agent, test, tool, model, cluster,
+Geist for everything people read. Geist Mono only for names the creator chose (agent, test, tool, model, cluster,
 file path), commands and log lines, and generated values in Details. Never for prose. Ligatures off.
 
 | Step | Size / line · weight | Used for |
 |---|---|---|
-| Title | 21/26 · 680 | Page heading, one per screen |
+| Title | 21/26 · 600 | Page heading, one per screen |
 | Card title | 15/20 · 600 | Card and result heads |
 | Reading | 15/24 · 400 | The prompt, a test's question, the agent's answer |
 | Body | 13/18 · 400, 500 | Everything else, including help text and status sentences |
-| Small | 11.5/16 · 400, 550 | Times, counts, pills, tab subtitles, the status bar |
+| Small | 11.5/16 · 400, 500 | Times, counts, pills, tab subtitles, the status bar |
 | Section label | 11.5/16 · 600, uppercase | Section names inside long cards only |
 
 - Four sizes. If something seems to need a fifth, use weight, ink-2 or a section label instead.
@@ -34,7 +35,8 @@ file path), commands and log lines, and generated values in Details. Never for p
 
 - Spacing steps: 4, 8, 12, 16, 24, 32. Nothing else.
 - 24 px page margins. Everything starts on the left margin; no centred columns under a left heading.
-- Radii: 6 controls and chips, 8 rows and callouts, 12 cards, fully round pills.
+- One 6 px radius for controls, chips, pills, rows, callouts and cards. Circles and status dots are geometric icons,
+  not another container radius.
 - Rows inside a card stay inside the card's 16 px padding, borders included.
 
 ## Controls
@@ -50,14 +52,15 @@ Button kinds:
 
 | Kind | Look | Use |
 |---|---|---|
-| Primary | Teal fill, white text (dark: dark text) | The one next step. At most one per card, and one per page head |
+| Primary | Inverse ink fill and inverse text | The one next step. At most one per card, and one per page head |
 | Secondary | Card fill, line-2 ring, ink text, same in light and dark | Other real actions |
 | Quiet | No box, ink-2, underline on hover | Back, Change, Remove, Show me how, help links |
 | Icon | 26 px square, no box until hover, with a label for screen readers | Close (X), Copy |
 
 - Disabled: well fill, no ring, ink-3. A disabled control says why next to it or in its tooltip. A status is never a
   disabled button.
-- Destructive actions are secondary or quiet with the failed colour on the word, and always confirm first.
+- Destructive actions are secondary or quiet in ink, and always confirm first. Red reports a failed state; it does not
+  decorate an action.
 - A card holds one primary, at most two secondaries and any quiet actions. More than that goes behind Details or into
   the screen the action belongs to.
 - Actions sit in one row, in this order: primary, secondaries, quiet. They sit at the bottom of the card they act on,
@@ -65,8 +68,10 @@ Button kinds:
 
 Fields:
 
-- Inputs and selects have card fill and a line-2 ring in both themes. The page tone is for read-only code only.
+- Inputs and selects have card fill and a line-2 ring in both themes. Placeholder text uses ink-2. The page tone is
+  for read-only code only.
 - Selects are drawn by Bridge (chevron at the right), never the system control, so they match the theme.
+- Radios and checkboxes use ink, not the operating system accent colour. Links use ink and an underline.
 - A form is one column 520 px wide. Fields, help text and errors share that width. A short field (a name, a model)
   may be narrower, never wider.
 - Help text sits under its field in ink-2. An error replaces it in the failed colour, above the action that retries.
@@ -74,7 +79,7 @@ Fields:
 Choices:
 
 - Two to four exclusive views (Agent, Chat, File; By cluster, By agent) are a segmented control: a well track, the
-  chosen one raised on card fill. Not a row of secondary buttons.
+  chosen one on card fill with a line-2 edge. Not a row of secondary buttons.
 - Pickers open as a popover over the page. They close with the X at the top right, Escape, or a click outside.
 
 ## Disclosure
@@ -126,7 +131,7 @@ The colour values are the tokens `--color-status-*` and `--color-tint-*`.
 
 ## Focus
 
-- Every control shows a 2 px teal ring, 3 px out, when focused from the keyboard. Never remove it.
+- Every control shows a 2 px ink ring, 2 px out, when focused from the keyboard. Never remove it.
 - A heading that takes focus after navigation (so screen readers announce the page) shows no ring.
 - Focus moves to the page heading on navigation, and back to the control that opened a popover when it closes.
 
@@ -138,5 +143,10 @@ The colour values are the tokens `--color-status-*` and `--color-tint-*`.
 
 ## Light and dark
 
-The theme follows the system. Both themes use the same rules; only the token values change. Card edges in light use
-line-2 (17%). Secondary buttons and fields look the same in both: card fill and a ring, never a filled beige.
+The theme follows the system. Both themes use the same rules; only the token values change. Paper, surface, soft,
+line, ink and inverse values match the Orka website. Secondary buttons and fields use card fill and a line-2 edge.
+
+- Colour appears only when it communicates status: amber needs you, blue running, green passed and red failed. The
+  label or icon shape must still communicate the state without colour.
+- All text, including status text on its tint, meets WCAG AA contrast of at least 4.5:1. Decorative separators are not
+  text or control boundaries.

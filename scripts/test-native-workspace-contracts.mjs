@@ -90,6 +90,7 @@ for (const name of ['native-lifecycle-macos.swift', 'native-lifecycle-windows.ps
   assert.ok(!driver.includes('Stop the local cluster and quit'), `${name}: obsolete native menu label`);
   assert.ok(!driver.includes('Close quit instead of hiding'), `${name}: idle must exit, not hide`);
   assert.ok(!driver.includes('first-close-notice'), `${name}: no native Ready producer, no notice claim`);
+  assert.ok(driver.includes(name.endsWith('.swift') ? 'theme == "dark" ? [9, 9, 10] : [255, 255, 255]' : "if ($script:theme -eq 'dark') { @(9, 9, 10) } else { @(255, 255, 255) }"), `${name}: Orka paper palette assertion missing`);
 }
 const captures = JSON.parse(await read('./native-model-captures.json'));
 // Upgrade frames share the destination journey but have their own exact matrix gate.

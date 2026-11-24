@@ -259,8 +259,9 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     guard let bitmap = NSBitmapImageRep(data: try Data(contentsOf: URL(fileURLWithPath: file))),
           let colour = bitmap.colorAt(x: bitmap.pixelsWide - 20, y: bitmap.pixelsHigh - 20)?.usingColorSpace(.deviceRGB)
         else { fatalError("Cannot sample native theme") }
-    let brightness = (colour.redComponent + colour.greenComponent + colour.blueComponent) / 3
-    require(theme == "dark" ? brightness < 0.25 : brightness > 0.8, "Wrong system theme")
+    let expected: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
+    let actual = [colour.redComponent, colour.greenComponent, colour.blueComponent].map { $0 * 255 }
+    require(zip(actual, expected).allSatisfy { abs($0 - $1) < 8 }, "Native fixture does not use Orka paper: \(actual)")
     // Setup frames 1c, 1d (cropped) and 1e exist only in light; dark captures use them as layout references.
     // Frames 1g (AI connection failed) and 1h (AI reset) are approved in both themes.
     let frame: (file: String, label: String)? =

@@ -5,7 +5,7 @@
 .status-needs-you { --status: var(--color-status-pending); --status-tint: var(--color-tint-pending); }
 .status-not-started { --status: var(--color-text-tertiary); --status-tint: transparent; }
 .status-icon { color: var(--status); flex: none; width: 16px; height: 16px; }
-.pill { display: inline-flex; align-items: center; gap: var(--space-1); padding: 2px var(--space-2); border-radius: 999px; font: var(--type-small); font-weight: 550; color: var(--status, var(--color-text-secondary)); background: var(--status-tint, var(--color-tint-stale)); max-width: 100%; }
+.pill { display: inline-flex; align-items: center; gap: var(--space-1); padding: 2px var(--space-2); border-radius: var(--radius-control); font: var(--type-small); font-weight: 500; color: var(--status, var(--color-text-secondary)); background: var(--status-tint, var(--color-tint-stale)); max-width: 100%; }
 .chip { display: inline-flex; align-items: center; gap: var(--space-1); padding: var(--space-1) var(--space-2); border-radius: var(--radius-control); background: var(--color-tint-stale); color: var(--color-text-secondary); }
 .section-label { font: var(--type-small); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--color-text-tertiary); margin: 0; }
 .long-card { min-width: 0; }

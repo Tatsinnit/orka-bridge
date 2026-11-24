@@ -393,15 +393,16 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         return true
     }
     require(sampled, "Cannot sample screenshot in sRGB")
-    var expected: [CGFloat] = theme == "dark" ? [26, 29, 33] : [228, 226, 219]
+    var expected: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
     if name.hasPrefix("cluster-picker-open") || name == "cluster-reload-options" {
         require(visibleButtons("Close picker").count == 1, "Context picker must be visibly open")
-        // Its 12% black backdrop composites over the footer; the theme check still applies.
-        expected = expected.map { $0 * 0.88 }
+        // The themed backdrop composites over paper; the theme check still applies.
+        expected = theme == "dark" ? expected.map { $0 * 0.45 }
+            : zip(expected, [CGFloat](repeating: 11, count: 3)).map { $0 * 0.82 + $1 * 0.18 }
     }
     let actual = rgba.prefix(3).map { CGFloat($0) }
     require(zip(actual, expected).allSatisfy { abs($0 - $1) < 8 },
-            "Native screenshot does not show the expected \(theme) Estuary chrome: \(actual)")
+            "Native screenshot does not show the expected \(theme) Orka paper: \(actual)")
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     try VNImageRequestHandler(url: URL(fileURLWithPath: file)).perform([request])
