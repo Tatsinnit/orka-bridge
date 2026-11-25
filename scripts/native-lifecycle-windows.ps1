@@ -262,12 +262,32 @@ function Find-PopupControl([string]$Name) {
         if ($p) { return [Drawing.Point]::new($p[0], $p[1]) }
     }
 }
-function Tray-Menu {
+function Dismiss-NativePopup {
+    [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+}
+function Open-TrayPopup($Point) {
+    [NativeWalk]::SetCursorPos([int]$Point.X, [int]$Point.Y) | Out-Null
+    Start-Sleep -Milliseconds 100
+    [NativeWalk]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
+    [NativeWalk]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
+}
+function Find-BridgeTrayPoint([string]$Label) {
     $taskbar = [NativeWalk]::FindWindow('Shell_TrayWnd', $null)
     $notify = [NativeWalk]::FindWindowEx($taskbar, [IntPtr]::Zero, 'TrayNotifyWnd', $null)
     if ($notify -eq [IntPtr]::Zero) { throw 'Native notification area missing (interactive CI desktop required)' }
     $area = [System.Windows.Automation.AutomationElement]::FromHandle($notify)
-    $point = Find-TrayPoint $area 'visible'
+    $point = Find-TrayPoint $area "visible$Label"
+    if (!$point) {
+        $overflowHandle = [NativeWalk]::FindWindow('NotifyIconOverflowWindow', $null)
+        if ($overflowHandle -ne [IntPtr]::Zero -and [NativeWalk]::IsWindowVisible($overflowHandle)) {
+            $overflow = [System.Windows.Automation.AutomationElement]::FromHandle($overflowHandle)
+            $point = Find-TrayPoint $overflow "overflow$Label"
+            if (!$point) {
+                Dismiss-NativePopup
+                Wait-For 'Native notification overflow did not close' { ![NativeWalk]::IsWindowVisible($overflowHandle) } | Out-Null
+            }
+        }
+    }
     if (!$point) {
         $chevron = Find-Control $area 'Show hidden icons' $button
         if (!$chevron) { $chevron = Find-Control $area 'Notification Chevron' $button }
@@ -279,16 +299,37 @@ function Tray-Menu {
         if (!$chevron) { throw 'Native notification chevron missing in UIA and MSAA' }
         Press $chevron
         $overflow = Wait-For 'Native notification overflow not visible' { $h = [NativeWalk]::FindWindow('NotifyIconOverflowWindow', $null); if ($h -ne [IntPtr]::Zero -and [NativeWalk]::IsWindowVisible($h)) { [System.Windows.Automation.AutomationElement]::FromHandle($h) } }
-        $point = Wait-For 'Native Bridge notification icon missing' { Find-TrayPoint $overflow 'overflow' }
+        $point = Wait-For 'Native Bridge notification icon missing' { Find-TrayPoint $overflow "overflow$Label" }
     }
-    # Right-click the actual Explorer notification icon; do not invoke a product test command.
-    [NativeWalk]::SetCursorPos([int]$point.X, [int]$point.Y) | Out-Null
-    [NativeWalk]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
-    [NativeWalk]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
-    # Both providers require enabled, on-screen native items; MSAA yields real click points.
-    $open = Wait-For 'Open Bridge menu item missing' { Find-PopupControl 'Open Bridge' }
-    $stop = Wait-For 'Quit Bridge menu item missing' { Find-PopupControl 'Quit Bridge' }
-    return @($open, $stop)
+    return $point
+}
+function Tray-Menu {
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        if ($attempt -gt 0) {
+            # Dismiss an Explorer taskbar popup before resolving the moving tray icon again.
+            Dismiss-NativePopup
+            Start-Sleep -Milliseconds 200
+        }
+        try {
+            $label = if ($attempt -eq 0) { '' } else { "-retry-$attempt" }
+            $point = Find-BridgeTrayPoint $label
+            # Right-click the actual Explorer notification icon; do not invoke a product test command.
+            Open-TrayPopup $point
+            # Both providers require enabled, on-screen native items; MSAA yields real click points.
+            $open = Wait-For 'Open Bridge menu item missing' { Find-PopupControl 'Open Bridge' }
+            $stop = Wait-For 'Quit Bridge menu item missing' { Find-PopupControl 'Quit Bridge' }
+            return @($open, $stop)
+        } catch {
+            $transient = @(
+                'Native notification overflow did not close',
+                'Native notification overflow not visible',
+                'Native Bridge notification icon missing',
+                'Open Bridge menu item missing',
+                'Quit Bridge menu item missing'
+            )
+            if ($attempt -eq 2 -or $_.Exception.Message -notin $transient) { throw }
+        }
+    }
 }
 function Retained {
     $script:app.Refresh()

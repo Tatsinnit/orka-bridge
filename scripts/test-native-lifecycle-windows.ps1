@@ -7,6 +7,50 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'native-lifecycle-windows.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw "Lifecycle script parse errors: $errors" }
+$trayMenu = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Tray-Menu' }, $true)
+$trayPoint = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-BridgeTrayPoint' }, $true)
+if (!$trayMenu -or !$trayPoint -or
+    !$trayPoint.Extent.Text.Contains("Wait-For 'Native notification overflow did not close'") -or
+    !$trayMenu.Extent.Text.Contains("Wait-For 'Open Bridge menu item missing'") -or
+    !$trayMenu.Extent.Text.Contains("Wait-For 'Quit Bridge menu item missing'")) {
+    throw 'Tray menu must reset a stale overflow and retain exact menu-item assertions'
+}
+& {
+    $state = [pscustomobject]@{ Mode = 'retry'; Attempts = 0; Clicks = 0; Dismissals = 0 }
+    function Find-BridgeTrayPoint([string]$Label) {
+        $state.Attempts++
+        if ($state.Mode -eq 'provider-error') { throw 'Native provider invariant failed' }
+        [pscustomobject]@{ X = 100; Y = 200 }
+    }
+    function Open-TrayPopup($Point) { $state.Clicks++ }
+    function Dismiss-NativePopup { $state.Dismissals++ }
+    function Find-PopupControl([string]$Name) {
+        if ($state.Mode -eq 'always-missing' -or ($state.Mode -eq 'retry' -and $state.Attempts -eq 1 -and $Name -ceq 'Open Bridge')) { return }
+        "$Name/$($state.Attempts)"
+    }
+    function Wait-For([string]$Message, [scriptblock]$Predicate) {
+        $value = & $Predicate
+        if ($value) { return $value }
+        throw $Message
+    }
+    . ([scriptblock]::Create($trayMenu.Extent.Text))
+
+    $commands = @(Tray-Menu)
+    if (($commands -join '|') -cne 'Open Bridge/2|Quit Bridge/2' -or $state.Attempts -ne 2 -or $state.Clicks -ne 2 -or $state.Dismissals -ne 1) {
+        throw 'Tray menu did not retry from a freshly resolved icon and return the exact native commands'
+    }
+
+    $state.Mode = 'provider-error'; $state.Attempts = 0; $state.Clicks = 0; $state.Dismissals = 0
+    $failure = try { Tray-Menu | Out-Null; $null } catch { $_.Exception.Message }
+    if ($failure -cne 'Native provider invariant failed' -or $state.Attempts -ne 1) { throw 'Tray menu swallowed or retried an unrelated provider failure' }
+
+    $state.Mode = 'always-missing'; $state.Attempts = 0; $state.Clicks = 0; $state.Dismissals = 0
+    $failure = try { Tray-Menu | Out-Null; $null } catch { $_.Exception.Message }
+    if ($failure -cne 'Open Bridge menu item missing' -or $state.Attempts -ne 3 -or $state.Clicks -ne 3 -or $state.Dismissals -ne 2) {
+        throw 'Tray menu did not stop after three exact native-menu attempts'
+    }
+}
+Write-Host 'PASS tray menu bounds native retries, returns exact items and preserves unrelated failures'
 # Timestamp writes must stay off the success pipeline: callers return controls/handles.
 foreach ($name in @('Write-StartupEvent', 'Test-NativeReady')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)

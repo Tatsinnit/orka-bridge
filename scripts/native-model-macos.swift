@@ -196,18 +196,21 @@ try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
     let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-    let owned = list.filter {
-        ($0[kCGWindowOwnerPID as String] as? Int32) == child.processIdentifier &&
-        ($0[kCGWindowLayer as String] as? Int) == 0
+    var largest: (CGWindowID, CGRect)?
+    var largestArea: CGFloat = -1
+    for candidate in list {
+        guard (candidate[kCGWindowOwnerPID as String] as? Int32) == child.processIdentifier,
+            (candidate[kCGWindowLayer as String] as? Int) == 0,
+            let id = candidate[kCGWindowNumber as String] as? UInt32,
+            let bounds = candidate[kCGWindowBounds as String] as? [String: Any],
+            let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
+        let area = rect.width * rect.height
+        if area > largestArea {
+            largest = (id, rect)
+            largestArea = area
+        }
     }
-    guard let w = owned.max(by: { left, right in
-        let l = (left[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
-        let r = (right[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
-        return (l?.width ?? 0) * (l?.height ?? 0) < (r?.width ?? 0) * (r?.height ?? 0)
-    }), let id = w[kCGWindowNumber as String] as? UInt32,
-        let bounds = w[kCGWindowBounds as String] as? [String: Any],
-        let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
-    return (id, rect)
+    return largest
 }
 for _ in 0..<30 {
     if window() != nil { break }
