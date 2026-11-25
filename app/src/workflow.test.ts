@@ -47,16 +47,32 @@ describe('App workflow cache ownership', () => {
     ]);
   });
 
-  test('extends only the demonstrated cold Windows release budget', () => {
+  test('extends only the demonstrated cold release and bundle budgets', () => {
     expect(workflow.jobs.native['timeout-minutes']).toBe('${{ matrix.timeout || 30 }}');
     const rows = workflow.jobs.native.strategy?.matrix?.include ?? [];
     const overrides = rows.filter(row => row.timeout !== undefined);
-    expect(overrides).toEqual([expect.objectContaining({
-      os: 'windows-2022',
-      artifact: 'windows-release-checks',
-      suite: 'release-checks',
-      timeout: 45,
-    })]);
+    expect(overrides).toEqual([
+      expect.objectContaining({
+        os: 'windows-2022',
+        artifact: 'windows-release-checks',
+        suite: 'release-checks',
+        timeout: 45,
+      }),
+      expect.objectContaining({
+        os: 'macos-15',
+        artifact: 'macos-arm64-light',
+        suite: 'bundle',
+        theme: 'light',
+        timeout: 45,
+      }),
+      expect.objectContaining({
+        os: 'macos-15',
+        artifact: 'macos-arm64-dark',
+        suite: 'bundle',
+        theme: 'dark',
+        timeout: 45,
+      }),
+    ]);
   });
 
   test('publishes successful Rust output only from main', () => {

@@ -107,16 +107,19 @@ jobs:
             rust-cache: app-macos-15-model-fixtures-rust-1.98.1
             rust-cache-legacy: app-macos-15-fixtures-rust-1.98.1
             rust-cache-restore: app-macos-15-bundle-rust-1.98.1
-          # Each GUI theme has its own existing 30m job budget.
+          # Cold bundle builds and their native walks need the longer budget;
+          # all other rows keep the 30-minute default below.
           - os: macos-15
             artifact: macos-arm64-light
             suite: bundle
             theme: light
+            timeout: 45
             rust-cache: app-macos-15-bundle-rust-1.98.1
           - os: macos-15
             artifact: macos-arm64-dark
             suite: bundle
             theme: dark
+            timeout: 45
             rust-cache: app-macos-15-bundle-rust-1.98.1
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout || 30 }}
