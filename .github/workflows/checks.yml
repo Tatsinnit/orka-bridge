@@ -9,7 +9,9 @@ permissions:
 
 concurrency:
   group: app-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Main publishes the shared Rust caches; let it finish while superseded PR
+  # and branch runs still stop promptly.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   shared-cluster-rbac:
@@ -142,13 +144,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             app/src-tauri/target
-          key: ${{ matrix.rust-cache }}-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
+          # Rotate away from existing PR-scoped caches so they cannot shadow
+          # the default branch's newly owned entries on old pull requests.
+          key: ${{ matrix.rust-cache }}-shared-v2-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
           restore-keys: |
-            ${{ matrix.rust-cache }}-
-            ${{ matrix.rust-cache-legacy || matrix.rust-cache }}-
-            ${{ matrix.rust-cache-restore || matrix.rust-cache }}-
-            app-${{ matrix.os }}-rust-1.98.1-${{ hashFiles('app/src-tauri/Cargo.lock', 'app/src-tauri/Cargo.toml') }}
-            app-${{ matrix.os }}-rust-1.98.1-
+            ${{ matrix.rust-cache }}-shared-v2-
+            ${{ matrix.rust-cache-legacy || matrix.rust-cache }}-shared-v2-
+            ${{ matrix.rust-cache-restore || matrix.rust-cache }}-shared-v2-
       - run: npm ci
       - run: npm run build
       - name: Clean Intel Mac shell resource check
@@ -208,7 +210,7 @@ jobs:
           cargo +1.98.1 clippy --release --manifest-path src-tauri/Cargo.toml --locked --all-targets --features custom-protocol -- -D warnings
       # Keep successful compilation/tests even if the later desktop walk fails.
       - name: Preserve verified Rust cache
-        if: (matrix.suite == 'debug-checks' || matrix.suite == 'release-checks') && steps.rust-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (matrix.suite == 'debug-checks' || matrix.suite == 'release-checks') && steps.rust-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -418,24 +420,6 @@ jobs:
           osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to $dark"
           test "$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')" = "$dark"
           swift ../scripts/native-smoke.swift "native-walk/$theme" "$PWD/smoke-app/Bridge.app" "$theme"
-      - name: Preserve native bundle cache
-        if: (matrix.suite == 'bundle' || matrix.suite == 'lifecycle-fixtures' || matrix.suite == 'model-fixtures') && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            app/src-tauri/target
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-      - name: Preserve compiled dependencies after a failed native check
-        if: failure() && matrix.suite != 'lifecycle-fixtures' && matrix.suite != 'model-fixtures' && steps.rust-cache.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            app/src-tauri/target
-          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always() && runner.os == 'Windows' && matrix.suite == 'bundle'
         with:
@@ -459,6 +443,15 @@ jobs:
           path: app/${{ matrix.capture }}/
           retention-days: 3
           if-no-files-found: error
+      - name: Preserve native bundle cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (matrix.suite == 'bundle' || matrix.suite == 'lifecycle-fixtures' || matrix.suite == 'model-fixtures') && steps.rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src-tauri/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
 
   gate:
     name: App gate
