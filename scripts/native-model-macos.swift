@@ -5,6 +5,11 @@ import AppKit
 import CoreGraphics
 import ApplicationServices
 import Vision
+import ImageIO
+
+func nativeSelectedControlLabelMatches(_ value: String, label: String, expected: String) -> Bool {
+    value == "\(label): \(expected)"
+}
 
 // Test scope policy without opening a display or launching the fixture.
 func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
@@ -27,6 +32,9 @@ func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
     for bad in [[], ["output"], ["output", "fixture"], ["output", "fixture", "sepia"], normal + ["unknown"], normal + ["all", "extra"], ["--self-test", "extra"]] {
         try rejects("invalid invocation \(bad)") { _ = try parseNativeModelArguments(bad) }
     }
+    try check(nativeSelectedControlLabelMatches("ServiceAccount: team-runner", label: "ServiceAccount", expected: "team-runner"), "selected control exact value")
+    try check(!nativeSelectedControlLabelMatches("ServiceAccount: task-reader", label: "ServiceAccount", expected: "team-runner"), "selected control rejects wrong value")
+    try check(!nativeSelectedControlLabelMatches("ServiceAccount", label: "ServiceAccount", expected: "team-runner"), "selected control rejects label without value")
     try manifest.validate()
     try check(manifest.model.count == 208 && manifest.destinationsWorkspace.count == 121, "208/121 including Overview list, long-Chat and upgrade captures")
     for name in ["local-catalog-no-destination-wide", "local-workspace-ready-wide", "local-workspace-stop-failed-details-minimum", "local-designer-waiting-chat-minimum", "local-workspace-image-update-minimum", "local-workspace-image-unsupported-minimum"] {
@@ -154,7 +162,12 @@ func restoreDisplay() {
     }
 }
 func require(_ value: Bool, _ message: String) {
-    if !value { fputs("\(message)\n", stderr); restoreDisplay(); exit(1) }
+    if !value { fail(message) }
+}
+func fail(_ message: String) -> Never {
+    fputs("\(message)\n", stderr)
+    restoreDisplay()
+    exit(1)
 }
 // The preceding native walk restores the hosted Mac's small default display.
 // Enlarge only that disposable CI display for the local 540x900 result captures.
@@ -195,13 +208,21 @@ try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
     let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-    guard let w = list.first(where: {
-        ($0[kCGWindowOwnerPID as String] as? Int32) == child.processIdentifier &&
-        ($0[kCGWindowLayer as String] as? Int) == 0
-    }), let id = w[kCGWindowNumber as String] as? UInt32,
-        let bounds = w[kCGWindowBounds as String] as? [String: Any],
-        let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
-    return (id, rect)
+    var largest: (CGWindowID, CGRect)?
+    var largestArea: CGFloat = -1
+    for candidate in list {
+        guard (candidate[kCGWindowOwnerPID as String] as? Int32) == child.processIdentifier,
+            (candidate[kCGWindowLayer as String] as? Int) == 0,
+            let id = candidate[kCGWindowNumber as String] as? UInt32,
+            let bounds = candidate[kCGWindowBounds as String] as? [String: Any],
+            let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { continue }
+        let area = rect.width * rect.height
+        if area > largestArea {
+            largest = (id, rect)
+            largestArea = area
+        }
+    }
+    return largest
 }
 for _ in 0..<30 {
     if window() != nil { break }
@@ -212,9 +233,10 @@ NSRunningApplication(processIdentifier: child.processIdentifier)?.activate(optio
 Thread.sleep(forTimeInterval: 2)
 func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextObservation] {
     let file = "\(output)/\(name).png"
+    guard let capturedWindow = window() else { fatalError("Cannot locate native model window") }
     let command = Process()
     command.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    command.arguments = ["-x", "-o", "-l", String(window()!.0), file]
+    command.arguments = ["-x", "-o", "-l", String(capturedWindow.0), file]
     try command.run(); command.waitUntilExit()
     require(command.terminationStatus == 0, "Cannot capture native model UI")
     let request = VNRecognizeTextRequest()
@@ -251,16 +273,52 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         // Upgrade expectations are paragraph substrings, as in the OCR check.
         // Match unchanged text in a fully visible native node, never an OCR spelling alias.
         let upgradeText = !found && name.hasPrefix("local-upgrade-") && nativeChatTextIsVisible(value, aboveFooter: true)
-        let chatText = !found && (name.hasPrefix("chat-") || name.hasPrefix("cluster-") || name.hasPrefix("local-shell-chat-")) && nativeChatTextIsVisible(value)
+        let accountExpectation = value == "team-runner" && name.hasPrefix("cluster-account-allowed-")
+        let chatText = !found && !accountExpectation
+            && (name.hasPrefix("chat-") || name.hasPrefix("cluster-") || name.hasPrefix("local-shell-chat-"))
+            && nativeChatTextIsVisible(value)
         let workspaceControl = !found && name.hasPrefix("local-workspace-") && nativeWorkspaceButtonIsVisible(value)
         let overviewControl = !found && name.hasPrefix("local-") && name.contains("overview") && nativeWorkspaceButtonIsVisible(value)
-        require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl, "Missing \(value) in \(name): \(text)")
+        let overviewHeading = !found && value == "web-reader"
+            && (name.hasPrefix("local-overview-") || name.hasPrefix("local-controls-overview-"))
+            && ["web-xeader", "WeD-reader"].contains(where: visible.contains) && nativeOverviewHeadingIsVisible(value)
+        let accountValue = !found && value == "team-runner" && name.hasPrefix("cluster-account-allowed-")
+            && nativeControlShowsObservedOCRValue("ServiceAccount", value, ["team- runner", "Team- Tunne t"], rows, capturedWindow)
+        require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl || overviewHeading || accountValue, "Missing \(value) in \(name): \(text)")
     }
-    guard let bitmap = NSBitmapImageRep(data: try Data(contentsOf: URL(fileURLWithPath: file))),
-          let colour = bitmap.colorAt(x: bitmap.pixelsWide - 20, y: bitmap.pixelsHigh - 20)?.usingColorSpace(.deviceRGB)
-        else { fatalError("Cannot sample native theme") }
-    let brightness = (colour.redComponent + colour.greenComponent + colour.blueComponent) / 3
-    require(theme == "dark" ? brightness < 0.25 : brightness > 0.8, "Wrong system theme")
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
+        let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+        let space = CGColorSpace(name: CGColorSpace.sRGB) else { fail("Cannot decode native theme") }
+    let windowFrame = capturedWindow.1
+    let titlebarHeight = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable]).height - 100
+    // This blank tab-bar point is always --color-page and lies outside every picker.
+    let pagePoint = CGPoint(x: (12 * CGFloat(image.width) / windowFrame.width).rounded(.down),
+        y: ((titlebarHeight + 2) * CGFloat(image.height) / windowFrame.height).rounded(.down))
+    guard let pixel = image.cropping(to: CGRect(origin: pagePoint, size: CGSize(width: 1, height: 1)))
+        else { fail("Cannot locate native theme sample") }
+    var rgba = [UInt8](repeating: 0, count: 4)
+    let sampled = rgba.withUnsafeMutableBytes { bytes in
+        guard let context = CGContext(data: bytes.baseAddress, width: 1, height: 1,
+            bitsPerComponent: 8, bytesPerRow: 4, space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
+            else { return false }
+        context.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return true
+    }
+    require(sampled, "Cannot sample native theme in sRGB")
+    let pickerOpen = enabledButton("Close picker") != nil
+    let page: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
+    let actual = rgba.prefix(3).map { CGFloat($0) }
+    if pickerOpen {
+        let backdrop: [CGFloat] = theme == "dark" ? [0, 0, 0] : [11, 11, 12]
+        let opacity: CGFloat = theme == "dark" ? 0.55 : 0.18
+        let expected = zip(page, backdrop).map { $0 * (1 - opacity) + $1 * opacity }
+        require(zip(actual, expected).allSatisfy { abs($0 - $1) < 3 },
+            "Native fixture picker backdrop does not use the Orka paper composite: \(actual)")
+    } else {
+        require(zip(actual, page).allSatisfy { abs($0 - $1) < 8 }, "Native fixture does not use Orka paper: \(actual)")
+    }
     // Setup frames 1c, 1d (cropped) and 1e exist only in light; dark captures use them as layout references.
     // Frames 1g (AI connection failed) and 1h (AI reset) are approved in both themes.
     let frame: (file: String, label: String)? =
@@ -1001,8 +1059,8 @@ func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
 }
-func nativeElements() -> [AXUIElement] {
-    var elements = [AXUIElementCreateApplication(child.processIdentifier)]
+func nativeElements(_ root: AXUIElement? = nil) -> [AXUIElement] {
+    var elements = [root ?? AXUIElementCreateApplication(child.processIdentifier)]
     var index = 0
     while index < elements.count && elements.count < 4000 {
         let element = elements[index]; index += 1
@@ -1041,6 +1099,54 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
             ["AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == expected }),
             let bounds = nativeBounds(element) else { return false }
         return window()!.1.contains(bounds)
+    }
+}
+func nativeControl(_ label: String, _ expected: String) -> (AXUIElement, CGRect)? {
+    let controls = nativeElements().filter { element in
+        ["AXButton", "AXPopUpButton"].contains(attribute(element, "AXRole") as? String ?? "")
+            && ["AXTitle", "AXDescription"].contains {
+                guard let value = attribute(element, $0) as? String else { return false }
+                return nativeSelectedControlLabelMatches(value, label: label, expected: expected)
+            }
+            && nativeBounds(element).map { window()!.1.contains($0) && $0.maxY <= window()!.1.maxY - 32 } == true
+    }
+    guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control) else { return nil }
+    return (control, bounds)
+}
+func nativeControlShowsObservedOCRValue(_ label: String, _ expected: String, _ observed: [String],
+    _ rows: [VNRecognizedTextObservation], _ captured: (CGWindowID, CGRect)) -> Bool {
+    guard let current = window(), current.0 == captured.0, current.1 == captured.1,
+        let (_, bounds) = nativeControl(label, expected) else { return false }
+    let frame = captured.1
+    let matches = rows.filter { row in
+        guard let text = row.topCandidates(1).first?.string, observed.contains(text) else { return false }
+        let box = row.boundingBox
+        let ocrBounds = CGRect(x: frame.minX + box.minX * frame.width,
+            y: frame.maxY - box.maxY * frame.height,
+            width: box.width * frame.width, height: box.height * frame.height)
+        return bounds.insetBy(dx: -2, dy: -2).contains(ocrBounds)
+    }
+    return matches.count == 1
+}
+func nativeOverviewHeadingIsVisible(_ expected: String) -> Bool {
+    guard let headerBottom = enabledButton("Overview").flatMap(nativeBounds)?.maxY else { return false }
+    return nativeElements().contains { element in
+        guard attribute(element, "AXRole") as? String == "AXHeading",
+            ["AXValue", "AXTitle", "AXDescription"].contains(where: { attribute(element, $0) as? String == expected }),
+            let bounds = nativeBounds(element) else { return false }
+        return bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)
+            && bounds.minY >= headerBottom + 8 && bounds.maxY <= window()!.1.maxY - 32
+    }
+}
+func nativeOverviewResultIsVisible(_ agent: String, before nextAgent: String, _ expected: String) -> Bool {
+    guard let start = enabledButton("Show places for \(agent)").flatMap(nativeBounds),
+        let end = enabledButton("Show places for \(nextAgent)").flatMap(nativeBounds) else { return false }
+    return nativeElements().contains { element in
+        guard attribute(element, "AXRole") as? String == "AXStaticText",
+            attribute(element, "AXValue") as? String == expected,
+            let bounds = nativeBounds(element) else { return false }
+        return bounds.width > 1 && bounds.height > 1 && window()!.1.contains(bounds)
+            && bounds.minY >= start.maxY && bounds.maxY <= end.minY
     }
 }
 func nativeChatTextIsVisible(_ expected: String, aboveFooter: Bool = false) -> Bool {
@@ -1547,7 +1653,12 @@ for (width, height, size) in [(1280, 800, "wide"), (540, 900, "compact"), (540, 
         _ = try seek(scene == "draft" ? expected[0] : expected[1], -150)
         let proof = try capture("local-controls-overview-expanded-\(scene)-\(size)", expected)
         let pixels = proof.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(expected.allSatisfy { pixels.contains($0) }, "Expanded Overview result must be visible in OCR")
+        let failedCountMiss = theme == "dark" && size == "wide" && scene == "earlier-failed"
+            && pixels.contains("lot & passed, derore your edle")
+            && pixels.contains("Failed") && pixels.contains("Run tests")
+            && nativeOverviewResultIsVisible("pr-summary", before: "release-notes", "1 of 2 passed, before your edit")
+        require(expected.allSatisfy { pixels.contains($0) } || failedCountMiss,
+            "Expanded Overview result must have exact OCR or paired native evidence")
         scroll(4000)
         setOverviewExpanded(agent, false)
     }

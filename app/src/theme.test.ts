@@ -6,33 +6,47 @@ const palettes = [...css.matchAll(/:root\s*\{([^}]+)\}/g)].map(([, block]) =>
   Object.fromEntries([...block.matchAll(/--([\w-]+):\s*([^;]+);/g)].map(([, name, value]) => [name, value.trim()])),
 );
 
-describe('Estuary theme contract', () => {
+const luminance = (hex: string) => {
+  const rgb = hex.slice(1).match(/../g)!.map(channel => parseInt(channel, 16) / 255)
+    .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+};
+const contrast = (foreground: string, background: string) => {
+  const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+};
+
+describe('Orka ink and paper theme contract', () => {
   it.each([
-    ['light', 0, '#f2f1ed', '#1b2026', '#1f62b0', '#17793f'],
-    ['dark', 1, '#1f2226', '#e6e4df', '#8ab8ea', '#7cc598'],
-  ] as const)('%s keeps neutral chrome and Orka phase meanings', (_, index, page, ink, running, succeeded) => {
+    ['light', 0, '#ffffff', '#f6f6f7', '#f0f0f2', '#0b0b0c', '#a64b00', '#0369a1', '#047857', '#be123c'],
+    ['dark', 1, '#09090a', '#1b1b1e', '#1b1b1e', '#f4f4f5', '#f5b544', '#4cb8f5', '#4ade80', '#f87171'],
+  ] as const)('%s uses the Orka neutrals and state colours', (_, index, page, surface, soft, ink, pending, running, succeeded, failed) => {
     expect(palettes[index]).toMatchObject({
-      'color-page': page, 'color-text': ink,
-      'color-status-running': running, 'color-status-succeeded': succeeded,
+      'color-page': page, 'color-chrome': surface, 'color-hover': soft,
+      'color-text': ink, 'color-action': ink, 'color-status-pending': pending,
+      'color-status-running': running, 'color-status-succeeded': succeeded, 'color-status-failed': failed,
     });
   });
-  it.each([0, 1])('keeps secondary, faint and failure text readable in palette %s', index => {
+  it.each([0, 1])('keeps every text role readable on shared surfaces in palette %s', index => {
     const palette = palettes[index];
-    const luminance = (hex: string) => {
-      const rgb = hex.slice(1).match(/../g)!.map(channel => parseInt(channel, 16) / 255)
-        .map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
-      return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
-    };
-    const components = readFileSync('src/components/design-system.css', 'utf8');
-    const stale = components.match(/\.status-stale\s*\{\s*--status:\s*var\(--([\w-]+)\);\s*--status-tint:\s*var\(--([\w-]+)\)/)!;
-    const [staleInk, staleSurface] = [luminance(palette[stale[1]]), luminance(palette[stale[2]])].sort((a, b) => b - a);
-    expect((staleInk + 0.05) / (staleSurface + 0.05)).toBeGreaterThanOrEqual(4.5);
-    for (const ink of ['color-text-secondary', 'color-text-tertiary', 'color-status-failed']) {
+    for (const ink of ['color-text-secondary', 'color-text-tertiary', 'color-status-pending', 'color-status-running', 'color-status-succeeded', 'color-status-failed']) {
       for (const surface of ['color-page', 'color-card', 'color-chrome', 'color-hover']) {
-        const [a, b] = [luminance(palette[ink]), luminance(palette[surface])].sort((a, b) => b - a);
-        expect((a + 0.05) / (b + 0.05)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(palette[ink], palette[surface])).toBeGreaterThanOrEqual(4.5);
       }
     }
+    expect(contrast(palette['color-action-text'], palette['color-action'])).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(palette['color-action-text'], palette['color-action-hover'])).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(palette['color-terminal-text'], palette['color-terminal'])).toBeGreaterThanOrEqual(4.5);
+  });
+  it.each([0, 1])('keeps every status tint readable in palette %s', index => {
+    const palette = palettes[index];
+    for (const [ink, surface] of [
+      ['color-status-pending', 'color-tint-pending'],
+      ['color-status-running', 'color-tint-running'],
+      ['color-status-succeeded', 'color-tint-succeeded'],
+      ['color-status-failed', 'color-tint-failed'],
+      ['color-text-secondary', 'color-tint-stale'],
+    ]) expect(contrast(palette[ink], palette[surface])).toBeGreaterThanOrEqual(4.5);
   });
   it('declares themed thin scrollbars and non-growing wide tabs', () => {
     const shell = readFileSync('src/shell.css', 'utf8');
@@ -44,7 +58,26 @@ describe('Estuary theme contract', () => {
   });
   it('uses the system dark preference and bundled reading and code families', () => {
     expect(css).toContain('@media (prefers-color-scheme: dark)');
-    expect(palettes[0]['font-ui']).toContain('Inter Variable');
-    expect(palettes[0]['font-mono']).toContain('JetBrains Mono Variable');
+    expect(palettes[0]['font-ui']).toContain('Geist Variable');
+    expect(palettes[0]['font-mono']).toContain('Geist Mono Variable');
+  });
+  it('uses one six-pixel radius and reserves colour for state', () => {
+    expect(palettes[0]).toMatchObject({
+      radius: '6px',
+      'radius-control': 'var(--radius)',
+      'radius-row': 'var(--radius)',
+      'radius-card': 'var(--radius)',
+    });
+    const designSystem = readFileSync('src/components/design-system.css', 'utf8');
+    const shell = readFileSync('src/shell.css', 'utf8');
+    const controls = readFileSync('src/components/controls.css', 'utf8');
+    expect(designSystem).not.toContain('border-radius: 999px');
+    expect(shell).toMatch(/\.tile-overview, \.tile-designer, \.tile-clusters\s*\{[^}]*color: var\(--color-text\);[^}]*background: var\(--color-icon-tile\)/s);
+    expect(controls).toMatch(/\.button-danger\s*\{\s*color: var\(--color-text\);/);
+    expect(css).toMatch(/\.view-switch button\[aria-pressed="true"\]\s*\{[^}]*box-shadow: inset 0 0 0 1px var\(--color-border-strong\);/);
+    expect(css).not.toMatch(/\.view-switch button\[aria-pressed="true"\]\s*\{[^}]*outline:/);
+    expect(css).toMatch(/input:is\(\[type='radio'\], \[type='checkbox'\]\)\s*\{\s*accent-color: var\(--color-text\);/);
+    expect(css).toMatch(/a\s*\{\s*color: var\(--color-text\);/);
+    expect(css).not.toContain('color-violet');
   });
 });

@@ -191,9 +191,9 @@ func capture(_ name: String, menu: Bool = false) throws {
             return true
         }
         check(sampled, "Cannot sample screenshot in sRGB")
-        let expected: [CGFloat] = theme == "dark" ? [26, 29, 33] : [228, 226, 219]
+        let expected: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
         let actual = rgba.prefix(3).map { CGFloat($0) }
-        check(zip(actual, expected).allSatisfy { abs($0 - $1) < 8 }, "Window did not follow requested Estuary system theme: \(actual)")
+        check(zip(actual, expected).allSatisfy { abs($0 - $1) < 8 }, "Window did not follow requested Orka system theme: \(actual)")
     }
 }
 func launch() throws -> AXUIElement {

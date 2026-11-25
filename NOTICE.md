@@ -81,9 +81,10 @@ Their upstream notices are shipped as `licenses/tempfile-MIT.txt` and
 
 ## Fonts
 
-Inter and JetBrains Mono are bundled under the SIL Open Font License 1.1.
-Their complete notices are in `app/public/licenses/` and are included in app
-artifacts. These licenses do not replace this project's Microsoft MIT license.
+Geist and Geist Mono are bundled under the SIL Open Font License 1.1. Their
+complete notices are in `app/public/licenses/` and are included in app
+artifacts. The existing Inter and JetBrains Mono notices remain preserved there.
+These licenses do not replace this project's Microsoft MIT license.
 
 The app's Microsoft MIT notice is shipped as `licenses/Orka-MIT.txt`.
 Third-party trademarks remain subject to their owners' policies.

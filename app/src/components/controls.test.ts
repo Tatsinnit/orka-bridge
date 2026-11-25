@@ -8,13 +8,14 @@ describe('shared control styles', () => {
     expect(css).toMatch(/\.button\s*\{[^}]*min-height: 32px/s);
     expect(css).toMatch(/\.button-small\s*\{[^}]*min-height: 26px/s);
     expect(css).toMatch(/\.button-icon\s*\{[^}]*width: 26px/s);
-    expect(readFileSync('src/app.css', 'utf8')).toContain(':focus-visible { outline: 2px solid var(--color-action); outline-offset: 3px; }');
+    expect(readFileSync('src/app.css', 'utf8')).toContain(':focus-visible { outline: 2px solid var(--color-text); outline-offset: 2px; }');
     expect(css).toMatch(/h1\[tabindex="-1"\]:focus\s*\{\s*outline: none;/);
   });
   it('shares theme-aware field chrome and draws a native select chevron', () => {
     expect(css).toMatch(/\.field\s*\{[^}]*background: var\(--color-card\)/s);
     expect(css).toMatch(/select\.field\s*\{[^}]*appearance: none/s);
     expect(css).toMatch(/input\.field, select\.field\s*\{\s*height: 32px;/);
+    expect(css).toMatch(/\.field::placeholder\s*\{[^}]*color: var\(--color-text-secondary\);[^}]*opacity: 1;/);
     expect(readFileSync('src/app.css', 'utf8')).toMatch(/\.tool-picker:popover-open\s*\{[^}]*height: fit-content;[^}]*align-content: start;/s);
     expect(css).toContain('background-image: linear-gradient(');
     expect(css).not.toContain('data:');

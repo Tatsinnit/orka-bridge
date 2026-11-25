@@ -507,7 +507,19 @@ fn dropping_live_owner_reaps_before_releasing_its_lock() {
     assert_reaped(&d);
     // Another app spawn may transiently inherit even CLOEXEC files between fork
     // and exec. Check release after in-flight guarded spawns cross that boundary.
-    super::super::spawn_guard::run_blocking(|| probe.try_lock().unwrap());
+    super::super::spawn_guard::run_blocking(|| {
+        let end = Instant::now() + Duration::from_secs(1);
+        loop {
+            let result: Result<(), std::fs::TryLockError> = probe.try_lock();
+            match result {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < end => {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                result => result.unwrap(),
+            }
+        }
+    });
 }
 #[test]
 fn unobserved_start_exit_is_distinct_and_drop_retains_lock_without_retry() {

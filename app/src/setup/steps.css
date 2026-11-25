@@ -14,7 +14,7 @@
 .steps-four > li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--color-border); }
 .steps-four > li:first-child { padding-top: 0; }
 .steps-four > li:last-child { border-bottom: 0; }
-.steps-four b { font-weight: 550; user-select: none; }
+.steps-four b { font-weight: 500; user-select: none; }
 .step-result { color: var(--color-text-secondary); font-size: var(--size-body); }
 .step-waiting b { color: var(--color-text-secondary); }
 .step-failed [role="alert"] { color: var(--color-status-failed); }
@@ -24,7 +24,7 @@
 .steps-head h2 { font: var(--type-card); margin: 0; }
 .workspace-steps > p { font-size: var(--size-body); margin: 0 0 8px; }
 .infra-bar { height: 5px; border-radius: var(--radius-control); overflow: hidden; margin: 12px 0; background: var(--color-border); position: relative; }
-.infra-bar > span { display: block; height: 100%; background: var(--color-action); border-radius: var(--radius-control); transition: width .4s ease; }
+.infra-bar > span { display: block; height: 100%; background: var(--color-status-running); border-radius: var(--radius-control); transition: width .4s ease; }
 .infra-bar.indeterminate > span { position: absolute; inset: 0 auto 0 0; width: 35%; animation: workspace-sweep 1.5s linear infinite; }
 @keyframes workspace-sweep { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
 @media (prefers-reduced-motion: reduce) { .infra-bar > span { transition: none; } .infra-bar.indeterminate > span { animation: none; transform: translateX(95%); } }
@@ -56,7 +56,7 @@
 .workspace-step-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
 .workspace-step-actions .muted { font-size: var(--size-body); }
 .setup.workspace-setup-failed { grid-template-columns: minmax(0, 1fr); max-width: 760px; }
-.workspace-failure-explanation { color: var(--color-text); background: color-mix(in srgb, var(--color-status-failed) 8%, transparent); border-radius: var(--radius-control); padding: 12px; }
+.workspace-failure-explanation { color: var(--color-text); background: var(--color-tint-failed); border-radius: var(--radius-control); padding: 12px; }
 .step-failed .workspace-failure[role="alert"] { color: var(--color-text); }
 .workspace-failure .failure-summary { color: var(--color-status-failed); font-weight: 600; }
 .workspace-failure .workspace-step-actions { margin: 12px 0; gap: 8px; }

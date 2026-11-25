@@ -200,6 +200,7 @@ try {
         subtitles: shown('.tab-copy small').filter(node => getComputedStyle(node).display !== 'none').length,
         quiet: shown('.button-quiet').map(node => ({ start: getComputedStyle(node).paddingInlineStart, end: getComputedStyle(node).paddingInlineEnd })),
         scrollbar: { width: getComputedStyle(main).scrollbarWidth, color: getComputedStyle(main).scrollbarColor },
+        theme: { page: getComputedStyle(document.body).backgroundColor, ink: getComputedStyle(document.body).color },
         hostTone: document.querySelector('.host-chip .live-dot')?.className,
         overview: document.querySelector('#tab-status-Overview')?.textContent,
         forms: shown('.cluster-card > :not(.cluster-actions):not([role="group"]), .local-preflight > .card').map(node => ({ ...rect(node), limit: node.matches('.local-preflight > .card') ? 554 : 520 })),
@@ -218,6 +219,8 @@ try {
     if (layout.width <= 820 && (layout.subtitles || layout.hostLabel.width > 160)) fail('compact subtitles/host label exceed their bounds');
     if (layout.quiet.some(item => item.start !== '0px' || item.end !== '0px')) fail('quiet control has inline padding');
     if (layout.scrollbar.width !== 'thin' || layout.scrollbar.color === 'auto') fail('page scrollbar must be thin and themed');
+    const expectedTheme = theme === 'dark' ? { page: 'rgb(9, 9, 10)', ink: 'rgb(244, 244, 245)' } : { page: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 12)' };
+    if (layout.theme.page !== expectedTheme.page || layout.theme.ink !== expectedTheme.ink) fail('page does not use Orka paper and ink');
     if (['ai-reset-mismatch', 'ai-removal-retry'].includes(name) && !layout.hostTone?.split(' ').includes('ready')) fail('AI failure changed the ready workspace host tone');
     if (name === 'setup-failed' && !layout.hostTone?.split(' ').includes('bad')) fail('workspace failure lost its failed host tone');
     // Preflight card includes its 16px padding and 1px border on both sides.
@@ -399,9 +402,9 @@ try {
       const canvas = document.createElement('canvas');
       canvas.width = width * 2 + 48; canvas.height = Math.max(actual.height, referenceHeight) + 58;
       const ctx = canvas.getContext('2d');
-      ctx.fillStyle = ${JSON.stringify(theme === 'dark' ? '#1f2226' : '#f2f1ed')}; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = ${JSON.stringify(theme === 'dark' ? '#09090a' : '#ffffff')}; ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(actual, 16, 42); ctx.drawImage(reference, width + 32, 42, width, referenceHeight);
-      ctx.fillStyle = ${JSON.stringify(theme === 'dark' ? '#e6e4df' : '#1b2026')}; ctx.font = '14px sans-serif';
+      ctx.fillStyle = ${JSON.stringify(theme === 'dark' ? '#f4f4f5' : '#0b0b0c')}; ctx.font = '14px sans-serif';
       ctx.fillText('Native Bridge, synthetic test data', 16, 26);
       ctx.fillText(${JSON.stringify(frame.label)}, width + 32, 26);
       actual.close(); reference.close();
