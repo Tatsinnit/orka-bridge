@@ -59,6 +59,7 @@ jobs:
           - os: windows-2022
             artifact: windows-release-checks
             suite: release-checks
+            timeout: 45
             rust-cache: app-windows-2022-release-rust-1.98.1
           - os: windows-2022
             artifact: windows-x64
@@ -118,7 +119,7 @@ jobs:
             theme: dark
             rust-cache: app-macos-15-bundle-rust-1.98.1
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout || 30 }}
     defaults:
       run:
         shell: bash

@@ -6,7 +6,7 @@ type Step = { id?: string; name?: string; uses?: string; run?: string; if?: stri
 type Workflow = {
   on: Record<string, unknown>;
   concurrency: { group: string; 'cancel-in-progress': string };
-  jobs: Record<string, { if?: string; uses?: string; steps?: Step[] }>;
+  jobs: Record<string, { if?: string; uses?: string; 'timeout-minutes'?: string; strategy?: { matrix?: { include?: Record<string, unknown>[] } }; steps?: Step[] }>;
 };
 
 const workflow = parse(readFileSync('../.github/workflows/checks.yml', 'utf8')) as Workflow;
@@ -45,6 +45,18 @@ describe('App workflow cache ownership', () => {
       '${{ matrix.rust-cache-legacy || matrix.rust-cache }}-shared-v2-',
       '${{ matrix.rust-cache-restore || matrix.rust-cache }}-shared-v2-',
     ]);
+  });
+
+  test('extends only the demonstrated cold Windows release budget', () => {
+    expect(workflow.jobs.native['timeout-minutes']).toBe('${{ matrix.timeout || 30 }}');
+    const rows = workflow.jobs.native.strategy?.matrix?.include ?? [];
+    const overrides = rows.filter(row => row.timeout !== undefined);
+    expect(overrides).toEqual([expect.objectContaining({
+      os: 'windows-2022',
+      artifact: 'windows-release-checks',
+      suite: 'release-checks',
+      timeout: 45,
+    })]);
   });
 
   test('publishes successful Rust output only from main', () => {
