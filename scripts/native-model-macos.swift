@@ -271,7 +271,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
             && (name.hasPrefix("local-overview-") || name.hasPrefix("local-controls-overview-"))
             && ["web-xeader", "WeD-reader"].contains(where: visible.contains) && nativeOverviewHeadingIsVisible(value)
         let accountValue = !found && value == "team-runner" && name.hasPrefix("cluster-account-allowed-")
-            && ["team- runner", "Team- Tunne t"].contains(where: visible.contains) && nativeControlValueIsVisible("ServiceAccount", value)
+            && nativeControlShowsObservedOCRValue("ServiceAccount", value, ["team- runner", "Team- Tunne t"], rows, capturedWindow)
         require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl || overviewHeading || accountValue, "Missing \(value) in \(name): \(text)")
     }
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
@@ -1089,7 +1089,7 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
         return window()!.1.contains(bounds)
     }
 }
-func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
+func nativeControl(_ label: String, _ expected: String) -> (AXUIElement, CGRect)? {
     func labelledValue(_ value: String) -> Bool {
         guard value.hasPrefix(label) else { return false }
         let suffix = value.dropFirst(label.count).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
@@ -1103,23 +1103,23 @@ func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
             }
             && nativeBounds(element).map { window()!.1.contains($0) && $0.maxY <= window()!.1.maxY - 32 } == true
     }
-    guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control),
-        window()!.1.contains(bounds), bounds.maxY <= window()!.1.maxY - 32 else { return false }
-    return ["AXValue", "AXTitle", "AXDescription"].contains {
-        guard let value = attribute(control, $0) as? String else { return false }
-        return value == expected || labelledValue(value)
+    guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control) else { return nil }
+    return (control, bounds)
+}
+func nativeControlShowsObservedOCRValue(_ label: String, _ expected: String, _ observed: [String],
+    _ rows: [VNRecognizedTextObservation], _ captured: (CGWindowID, CGRect)) -> Bool {
+    guard let current = window(), current.0 == captured.0, current.1 == captured.1,
+        let (_, bounds) = nativeControl(label, expected) else { return false }
+    let frame = captured.1
+    let matches = rows.filter { row in
+        guard let text = row.topCandidates(1).first?.string, observed.contains(text) else { return false }
+        let box = row.boundingBox
+        let ocrBounds = CGRect(x: frame.minX + box.minX * frame.width,
+            y: frame.maxY - box.maxY * frame.height,
+            width: box.width * frame.width, height: box.height * frame.height)
+        return bounds.insetBy(dx: -2, dy: -2).contains(ocrBounds)
     }
-        // WebKit can expose the described code through duplicate wrappers or
-        // a sibling role. The exact string must still sit inside this control.
-        || nativeElements().contains { element in
-            ["AXValue", "AXTitle", "AXDescription", "AXHelp"].contains {
-                attribute(element, $0) as? String == expected
-            }
-                && nativeBounds(element).map {
-                    $0.width > 1 && $0.height > 1 && window()!.1.contains($0)
-                        && bounds.insetBy(dx: -2, dy: -2).contains($0)
-                } == true
-        }
+    return matches.count == 1
 }
 func nativeOverviewHeadingIsVisible(_ expected: String) -> Bool {
     guard let headerBottom = enabledButton("Overview").flatMap(nativeBounds)?.maxY else { return false }
