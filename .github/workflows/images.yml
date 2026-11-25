@@ -221,13 +221,15 @@ jobs:
           bundle=src-tauri/target/release/bundle/macos/Bridge.app
           bash ../scripts/check-vm-helper-bundle-macos.sh "$bundle"
           test "$(lipo -archs "$bundle/Contents/MacOS/orka-bridge")" = arm64
-          codesign --verify --ignore-resources "$bundle/Contents/MacOS/orka-bridge"
+          # Same ad hoc seal as checks.yml; without it a browser download is "damaged".
+          codesign --force --sign - "$bundle"
           mkdir "$RUNNER_TEMP/macos-delivery"
           tar -czf "$RUNNER_TEMP/macos-delivery/bridge-macos-arm64.tar.gz" -C src-tauri/target/release/bundle/macos Bridge.app
           mkdir "$RUNNER_TEMP/smoke-app"
           tar -xzf "$RUNNER_TEMP/macos-delivery/bridge-macos-arm64.tar.gz" -C "$RUNNER_TEMP/smoke-app"
           test -x "$RUNNER_TEMP/smoke-app/Bridge.app/Contents/MacOS/orka-bridge"
           bash ../scripts/check-vm-helper-bundle-macos.sh "$RUNNER_TEMP/smoke-app/Bridge.app"
+          bash ../scripts/check-app-opens-macos.sh "$RUNNER_TEMP/smoke-app/Bridge.app"
           cmp "$bundle/Contents/MacOS/orka-bridge" "$RUNNER_TEMP/smoke-app/Bridge.app/Contents/MacOS/orka-bridge"
           for notice in public/licenses/*.txt; do cmp "$notice" "$RUNNER_TEMP/smoke-app/Bridge.app/Contents/Resources/licenses/${notice##*/}"; done
       - name: Measure final Mac asset

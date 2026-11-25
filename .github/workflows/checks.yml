@@ -157,11 +157,12 @@ jobs:
           test ! -e src-tauri/gen/apple-helper/BridgeVM
           rustup target add x86_64-apple-darwin --toolchain 1.98.1
           cargo +1.98.1 check --manifest-path src-tauri/Cargo.toml --locked --target x86_64-apple-darwin --features custom-protocol
-      - name: Apple helper build and tests
+      - name: Apple helper and app open tests
         if: runner.os == 'macOS' && matrix.suite == 'debug-checks'
         run: |
           bash ../scripts/build-vm-helper-macos.sh
           bash ../scripts/test-vm-helper-macos.sh
+          bash ../scripts/test-app-opens-macos.sh
           cargo +1.98.1 test --manifest-path ../runtime/Cargo.toml --locked -p bridge-runtime-protocol --test runtime_core --test windows_backend --test agents
       - name: Build opt-in physical Mac shutdown driver (no VM)
         if: runner.os == 'macOS' && matrix.suite == 'release-checks'
@@ -379,12 +380,15 @@ jobs:
           bundle=src-tauri/target/release/bundle/macos/Bridge.app
           bash ../scripts/check-vm-helper-bundle-macos.sh "$bundle"
           test "$(lipo -archs "$bundle/Contents/MacOS/orka-bridge")" = arm64
-          codesign --verify --ignore-resources "$bundle/Contents/MacOS/orka-bridge"
+          # Seal the finished bundle ad hoc. Without a seal, a browser download is
+          # "damaged" with no Open Anyway. No --deep: the helper keeps its own signature.
+          codesign --force --sign - "$bundle"
           tar -czf bridge-macos-arm64.tar.gz -C src-tauri/target/release/bundle/macos Bridge.app
           mkdir smoke-app
           tar -xzf bridge-macos-arm64.tar.gz -C smoke-app
           test -x smoke-app/Bridge.app/Contents/MacOS/orka-bridge
           bash ../scripts/check-vm-helper-bundle-macos.sh smoke-app/Bridge.app
+          bash ../scripts/check-app-opens-macos.sh smoke-app/Bridge.app
           cmp "$bundle/Contents/MacOS/orka-bridge" smoke-app/Bridge.app/Contents/MacOS/orka-bridge
           for notice in public/licenses/*.txt; do cmp "$notice" "smoke-app/Bridge.app/Contents/Resources/licenses/${notice##*/}"; done
           # The matrix covers both themes and keyboard navigation; restore preferences.
