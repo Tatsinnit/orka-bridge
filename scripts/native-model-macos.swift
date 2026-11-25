@@ -264,7 +264,8 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         let chatText = !found && (name.hasPrefix("chat-") || name.hasPrefix("cluster-") || name.hasPrefix("local-shell-chat-")) && nativeChatTextIsVisible(value)
         let workspaceControl = !found && name.hasPrefix("local-workspace-") && nativeWorkspaceButtonIsVisible(value)
         let overviewControl = !found && name.hasPrefix("local-") && name.contains("overview") && nativeWorkspaceButtonIsVisible(value)
-        let overviewHeading = !found && value == "web-reader" && name.hasPrefix("local-overview-")
+        let overviewHeading = !found && value == "web-reader"
+            && (name.hasPrefix("local-overview-") || name.hasPrefix("local-controls-overview-"))
             && ["web-xeader", "WeD-reader"].contains(where: visible.contains) && nativeOverviewHeadingIsVisible(value)
         let accountValue = !found && value == "team-runner" && name.hasPrefix("cluster-account-allowed-")
             && ["team- runner", "Team- Tunne t"].contains(where: visible.contains) && nativeControlValueIsVisible("ServiceAccount", value)
@@ -1101,17 +1102,17 @@ func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
     }
     guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control),
         window()!.1.contains(bounds), bounds.maxY <= window()!.1.maxY - 32 else { return false }
-    // WebKit exposes aria-describedby as AXHelp on macOS. Require its entire
-    // value to be the selected account; do not accept unrelated help text.
-    return ["AXValue", "AXTitle", "AXDescription", "AXHelp"].contains {
+    return ["AXValue", "AXTitle", "AXDescription"].contains {
         guard let value = attribute(control, $0) as? String else { return false }
         return value == expected || labelledValue(value)
     }
-        || nativeElements(control).dropFirst().contains { element in
+        // WebKit can expose the described code as a sibling AX node. It must
+        // still be exact and geometrically contained by this unique control.
+        || nativeElements().filter { element in
             attribute(element, "AXRole") as? String == "AXStaticText"
                 && attribute(element, "AXValue") as? String == expected
-                && nativeBounds(element).map { bounds.contains($0) } == true
-        }
+                && nativeBounds(element).map { $0.width > 1 && $0.height > 1 && bounds.contains($0) } == true
+        }.count == 1
 }
 func nativeOverviewHeadingIsVisible(_ expected: String) -> Bool {
     guard let headerBottom = enabledButton("Overview").flatMap(nativeBounds)?.maxY else { return false }

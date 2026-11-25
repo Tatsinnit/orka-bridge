@@ -90,8 +90,8 @@ if (!(Test-Path $env:BRIDGE_DEV_IMAGE_DIR -PathType Container) -or @(Get-ChildIt
 if (Get-Process -Name orka-bridge -ErrorAction SilentlyContinue) { throw 'Bridge is already running' }
 $desktop = $null
 $children = [System.Windows.Automation.TreeScope]::Descendants
-function Wait-For([string]$Message, [scriptblock]$Predicate) {
-    for ($i = 0; $i -lt 100; $i++) {
+function Wait-For([string]$Message, [scriptblock]$Predicate, [int]$MaxAttempts = 100) {
+    for ($i = 0; $i -lt $MaxAttempts; $i++) {
         $value = & $Predicate
         if ($value) { return $value }
         Start-Sleep -Milliseconds 100
@@ -371,7 +371,7 @@ try {
         $script:originalPid = $script:app.Id
         Write-StartupEvent 'clusters-wait-begin'
         try {
-            $clusters = Wait-For 'Clusters button missing' { Find-ReadyClusters }
+            $clusters = Wait-For 'Clusters button missing' { Find-ReadyClusters } 600
             Write-StartupEvent 'clusters-found'
         } catch {
             Write-StartupEvent 'clusters-wait-failed'

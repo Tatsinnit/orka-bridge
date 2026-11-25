@@ -7,6 +7,26 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'native-lifecycle-windows.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw "Lifecycle script parse errors: $errors" }
+$coldClusterWait = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-For' -and
+        $node.CommandElements[1].Value -eq 'Clusters button missing'
+}, $true))
+$idleClusterWait = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-For' -and
+        $node.CommandElements[1].Value -eq 'Clusters button missing after idle relaunch'
+}, $true))
+$explicitWaitBudgets = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-For' -and
+        $node.CommandElements.Count -gt 3
+}, $true))
+if ($coldClusterWait.Count -ne 1 -or $coldClusterWait[0].CommandElements[-1].Extent.Text -ne '600' -or
+    $idleClusterWait.Count -ne 1 -or $idleClusterWait[0].CommandElements.Count -ne 3 -or
+    $explicitWaitBudgets.Count -ne 1 -or $explicitWaitBudgets[0].Extent.Text -cne $coldClusterWait[0].Extent.Text) {
+    throw 'Only cold renderer startup gets the bounded sixty-second hosted-WebView budget'
+}
 $trayMenu = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Tray-Menu' }, $true)
 $trayPoint = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Find-BridgeTrayPoint' }, $true)
 if (!$trayMenu -or !$trayPoint -or
@@ -122,7 +142,27 @@ $savedWait = $ast.Find({
         $node.CommandElements[1].Value -eq 'Native editor change not saved'
 }, $true)
 if (!$wait -or !$savedWait) { throw 'Saved-file wait missing' }
+if (!$wait.Extent.Text.Contains('[int]$MaxAttempts = 100') -or
+    !$wait.Extent.Text.Contains('$i -lt $MaxAttempts') -or
+    !$wait.Extent.Text.Contains('Start-Sleep -Milliseconds 100')) {
+    throw 'Wait-For must retain its default ten-second polling contract and bind explicit budgets'
+}
 . ([scriptblock]::Create($wait.Extent.Text))
+$boundedPolls = [ref]0
+$boundedFailure = try {
+    Wait-For 'Explicit wait budget expired' { $boundedPolls.Value++; $false } 2 | Out-Null
+    $null
+} catch { $_.Exception.Message }
+if ($boundedFailure -cne 'Explicit wait budget expired' -or $boundedPolls.Value -ne 2) {
+    throw 'Wait-For ignored its explicit failure budget'
+}
+$boundedPolls.Value = 0
+$bounded = Wait-For 'Custom wait budget was ignored' {
+    $boundedPolls.Value++
+    if ($boundedPolls.Value -eq 3) { 'ready' }
+} 3
+if ($bounded -cne 'ready' -or $boundedPolls.Value -ne 3) { throw 'Wait-For did not honor its explicit success budget' }
+Write-Host 'PASS startup waits can use a bounded hosted-WebView budget'
 $savedPredicate = $savedWait.CommandElements[2].ScriptBlock.GetScriptBlock()
 $owned = [IO.Path]::GetTempFileName()
 $script:marker = ' lifecycle-sharing-regression'
