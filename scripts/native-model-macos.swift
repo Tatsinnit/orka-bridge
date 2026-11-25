@@ -7,6 +7,10 @@ import ApplicationServices
 import Vision
 import ImageIO
 
+func nativeSelectedControlLabelMatches(_ value: String, label: String, expected: String) -> Bool {
+    value == "\(label): \(expected)"
+}
+
 // Test scope policy without opening a display or launching the fixture.
 func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
     func check(_ value: Bool, _ message: String) throws {
@@ -28,6 +32,9 @@ func runNativeModelScopeTests(_ manifest: NativeModelCaptureManifest) throws {
     for bad in [[], ["output"], ["output", "fixture"], ["output", "fixture", "sepia"], normal + ["unknown"], normal + ["all", "extra"], ["--self-test", "extra"]] {
         try rejects("invalid invocation \(bad)") { _ = try parseNativeModelArguments(bad) }
     }
+    try check(nativeSelectedControlLabelMatches("ServiceAccount: team-runner", label: "ServiceAccount", expected: "team-runner"), "selected control exact value")
+    try check(!nativeSelectedControlLabelMatches("ServiceAccount: task-reader", label: "ServiceAccount", expected: "team-runner"), "selected control rejects wrong value")
+    try check(!nativeSelectedControlLabelMatches("ServiceAccount", label: "ServiceAccount", expected: "team-runner"), "selected control rejects label without value")
     try manifest.validate()
     try check(manifest.model.count == 208 && manifest.destinationsWorkspace.count == 121, "208/121 including Overview list, long-Chat and upgrade captures")
     for name in ["local-catalog-no-destination-wide", "local-workspace-ready-wide", "local-workspace-stop-failed-details-minimum", "local-designer-waiting-chat-minimum", "local-workspace-image-update-minimum", "local-workspace-image-unsupported-minimum"] {
@@ -155,7 +162,12 @@ func restoreDisplay() {
     }
 }
 func require(_ value: Bool, _ message: String) {
-    if !value { fputs("\(message)\n", stderr); restoreDisplay(); exit(1) }
+    if !value { fail(message) }
+}
+func fail(_ message: String) -> Never {
+    fputs("\(message)\n", stderr)
+    restoreDisplay()
+    exit(1)
 }
 // The preceding native walk restores the hosted Mac's small default display.
 // Enlarge only that disposable CI display for the local 540x900 result captures.
@@ -276,7 +288,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     }
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
         let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-        let space = CGColorSpace(name: CGColorSpace.sRGB) else { fatalError("Cannot decode native theme") }
+        let space = CGColorSpace(name: CGColorSpace.sRGB) else { fail("Cannot decode native theme") }
     let windowFrame = capturedWindow.1
     let titlebarHeight = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
         styleMask: [.titled, .closable, .miniaturizable, .resizable]).height - 100
@@ -284,7 +296,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     let pagePoint = CGPoint(x: (12 * CGFloat(image.width) / windowFrame.width).rounded(.down),
         y: ((titlebarHeight + 2) * CGFloat(image.height) / windowFrame.height).rounded(.down))
     guard let pixel = image.cropping(to: CGRect(origin: pagePoint, size: CGSize(width: 1, height: 1)))
-        else { fatalError("Cannot locate native theme sample") }
+        else { fail("Cannot locate native theme sample") }
     var rgba = [UInt8](repeating: 0, count: 4)
     let sampled = rgba.withUnsafeMutableBytes { bytes in
         guard let context = CGContext(data: bytes.baseAddress, width: 1, height: 1,
@@ -1090,16 +1102,11 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
     }
 }
 func nativeControl(_ label: String, _ expected: String) -> (AXUIElement, CGRect)? {
-    func labelledValue(_ value: String) -> Bool {
-        guard value.hasPrefix(label) else { return false }
-        let suffix = value.dropFirst(label.count).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-        return suffix == expected
-    }
     let controls = nativeElements().filter { element in
         ["AXButton", "AXPopUpButton"].contains(attribute(element, "AXRole") as? String ?? "")
             && ["AXTitle", "AXDescription"].contains {
                 guard let value = attribute(element, $0) as? String else { return false }
-                return value == label || labelledValue(value)
+                return nativeSelectedControlLabelMatches(value, label: label, expected: expected)
             }
             && nativeBounds(element).map { window()!.1.contains($0) && $0.maxY <= window()!.1.maxY - 32 } == true
     }

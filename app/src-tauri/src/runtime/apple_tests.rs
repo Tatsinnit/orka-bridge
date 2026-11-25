@@ -510,7 +510,8 @@ fn dropping_live_owner_reaps_before_releasing_its_lock() {
     super::super::spawn_guard::run_blocking(|| {
         let end = Instant::now() + Duration::from_secs(1);
         loop {
-            match probe.try_lock() {
+            let result: Result<(), std::fs::TryLockError> = probe.try_lock();
+            match result {
                 Ok(()) => break,
                 Err(std::fs::TryLockError::WouldBlock) if Instant::now() < end => {
                     std::thread::sleep(Duration::from_millis(2));

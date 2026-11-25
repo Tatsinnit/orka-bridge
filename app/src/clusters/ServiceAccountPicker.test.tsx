@@ -46,8 +46,9 @@ test('choosing a listed account previews only it, and only explicit Use sends it
   expect(screen.queryByRole('button', { name: 'default' })).toBeNull();
   await user.click(screen.getByRole('button', { name: 'team-runner' }));
   await screen.findByText('Required Orka permissions: Allowed');
-  const description = screen.getByRole('button', { name: 'ServiceAccount' }).getAttribute('aria-describedby');
-  expect(description && document.getElementById(description)?.textContent).toBe('team-runner');
+  const selected = screen.getByRole('button', { name: 'ServiceAccount: team-runner' });
+  expect(screen.queryByRole('button', { name: 'ServiceAccount: task-reader' })).toBeNull();
+  expect(selected.getAttribute('aria-describedby')).toBeNull();
   expect(screen.getByText('Name/group preview only. Actual token permissions are checked on Use. Connection and broader access not verified.')).toBeTruthy();
   expect(use.matches(':disabled')).toBe(false);
   expect(ipc.mock.calls.filter(([c]) => c === 'cluster_service_account_preview')).toEqual([['cluster_service_account_preview', { targetId: target.id, saName: 'team-runner' }]]);
@@ -138,7 +139,7 @@ test('a late permission result cannot replace the newly selected account result'
   await user.click(await screen.findByRole('button', { name: 'ServiceAccount' }));
   await user.click(screen.getByRole('button', { name: 'team-runner' }));
   await screen.findByText('Required Orka permissions: Checking');
-  await user.click(screen.getByRole('button', { name: 'ServiceAccount' }));
+  await user.click(screen.getByRole('button', { name: 'ServiceAccount: team-runner' }));
   await user.click(screen.getByRole('button', { name: 'task-reader' }));
   await screen.findByText('Required Orka permissions: Allowed');
   await act(async () => finish({ status: 'denied', checks: checks.map((c, i) => ({ ...c, status: i ? 'notChecked' : 'denied' })) }));
@@ -160,5 +161,5 @@ test('closing restores focus, and reloading while a preview waits discards the o
   await user.click(screen.getByRole('button', { name: 'Reload kubeconfig' }));
   await act(async () => finish({ status: 'allowed', checks }));
   expect(screen.queryByText('Required Orka permissions: Allowed')).toBeNull();
-  expect(screen.queryByRole('button', { name: 'ServiceAccount' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^ServiceAccount/ })).toBeNull();
 });
