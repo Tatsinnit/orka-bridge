@@ -256,13 +256,22 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
         let workspaceControl = !found && name.hasPrefix("local-workspace-") && nativeWorkspaceButtonIsVisible(value)
         let overviewControl = !found && name.hasPrefix("local-") && name.contains("overview") && nativeWorkspaceButtonIsVisible(value)
         let overviewHeading = !found && value == "web-reader" && name.hasPrefix("local-overview-")
-            && visible.contains("web-xeader") && nativeOverviewHeadingIsVisible(value)
-        require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl || overviewHeading, "Missing \(value) in \(name): \(text)")
+            && ["web-xeader", "WeD-reader"].contains(where: visible.contains) && nativeOverviewHeadingIsVisible(value)
+        let accountValue = !found && value == "team-runner" && name.hasPrefix("cluster-account-allowed-")
+            && ["team- runner", "Team- Tunne t"].contains(where: visible.contains) && nativeControlValueIsVisible("ServiceAccount", value)
+        require(found || nativeText || upgradeText || chatText || workspaceControl || overviewControl || overviewHeading || accountValue, "Missing \(value) in \(name): \(text)")
     }
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
         let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-        let pixel = image.cropping(to: CGRect(x: CGFloat(image.width - 20), y: CGFloat(image.height - 20), width: 1, height: 1)),
         let space = CGColorSpace(name: CGColorSpace.sRGB) else { fatalError("Cannot decode native theme") }
+    let windowFrame = window()!.1
+    let titlebarHeight = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+        styleMask: [.titled, .closable, .miniaturizable, .resizable]).height - 100
+    // This blank tab-bar point is always --color-page and lies outside every picker.
+    let pagePoint = CGPoint(x: 12 * CGFloat(image.width) / windowFrame.width,
+        y: (titlebarHeight + 2) * CGFloat(image.height) / windowFrame.height)
+    guard let pixel = image.cropping(to: CGRect(origin: pagePoint, size: CGSize(width: 1, height: 1)))
+        else { fatalError("Cannot locate native theme sample") }
     var rgba = [UInt8](repeating: 0, count: 4)
     let sampled = rgba.withUnsafeMutableBytes { bytes in
         guard let context = CGContext(data: bytes.baseAddress, width: 1, height: 1,
@@ -274,14 +283,17 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     }
     require(sampled, "Cannot sample native theme in sRGB")
     let pickerOpen = enabledButton("Close picker") != nil
-    var expected: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
-    if pickerOpen {
-        expected = theme == "dark" ? expected.map { $0 * 0.45 }
-            : zip(expected, [CGFloat](repeating: 11, count: 3)).map { $0 * 0.82 + $1 * 0.18 }
-    }
+    let page: [CGFloat] = theme == "dark" ? [9, 9, 10] : [255, 255, 255]
     let actual = rgba.prefix(3).map { CGFloat($0) }
-    let tolerance: CGFloat = pickerOpen ? 3 : 8
-    require(zip(actual, expected).allSatisfy { abs($0 - $1) < tolerance }, "Native fixture does not use Orka paper: \(actual)")
+    if pickerOpen {
+        let backdrop: [CGFloat] = theme == "dark" ? [0, 0, 0] : [11, 11, 12]
+        let opacity: CGFloat = theme == "dark" ? 0.55 : 0.18
+        let expected = zip(page, backdrop).map { $0 * (1 - opacity) + $1 * opacity }
+        require(zip(actual, expected).allSatisfy { abs($0 - $1) < 3 },
+            "Native fixture picker backdrop does not use the Orka paper composite: \(actual)")
+    } else {
+        require(zip(actual, page).allSatisfy { abs($0 - $1) < 8 }, "Native fixture does not use Orka paper: \(actual)")
+    }
     // Setup frames 1c, 1d (cropped) and 1e exist only in light; dark captures use them as layout references.
     // Frames 1g (AI connection failed) and 1h (AI reset) are approved in both themes.
     let frame: (file: String, label: String)? =
@@ -1022,8 +1034,8 @@ func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
     var value: CFTypeRef?
     return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
 }
-func nativeElements() -> [AXUIElement] {
-    var elements = [AXUIElementCreateApplication(child.processIdentifier)]
+func nativeElements(_ root: AXUIElement? = nil) -> [AXUIElement] {
+    var elements = [root ?? AXUIElementCreateApplication(child.processIdentifier)]
     var index = 0
     while index < elements.count && elements.count < 4000 {
         let element = elements[index]; index += 1
@@ -1063,6 +1075,16 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
             let bounds = nativeBounds(element) else { return false }
         return window()!.1.contains(bounds)
     }
+}
+func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
+    guard let control = enabledButton(label), let bounds = nativeBounds(control),
+        window()!.1.contains(bounds), bounds.maxY <= window()!.1.maxY - 32 else { return false }
+    return ["AXValue", "AXTitle", "AXDescription"].contains { attribute(control, $0) as? String == expected }
+        || nativeElements(control).dropFirst().contains { element in
+            attribute(element, "AXRole") as? String == "AXStaticText"
+                && attribute(element, "AXValue") as? String == expected
+                && nativeBounds(element).map { bounds.contains($0) } == true
+        }
 }
 func nativeOverviewHeadingIsVisible(_ expected: String) -> Bool {
     guard let headerBottom = enabledButton("Overview").flatMap(nativeBounds)?.maxY else { return false }

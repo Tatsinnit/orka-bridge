@@ -117,7 +117,9 @@ test.each(['starting', 'ready'] as const)('accepted ordinary restart retires the
   render(<Setup onOpenExample={() => {}} onStatus={observed} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Set up new workspace' }));
   fireEvent.click(screen.getByRole('button', { name: 'Keep old workspace and set up new' }));
+  const reads = observed.mock.calls.length;
   fireEvent(window, new Event('focus'));
+  await waitFor(() => expect(observed.mock.calls.length).toBeGreaterThan(reads));
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel update' }));
   await screen.findByText(/Cancellation requested/);
   phase = 'cancelled'; cached = fresh;
