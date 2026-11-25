@@ -196,9 +196,14 @@ try child.run()
 defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
 func window() -> (CGWindowID, CGRect)? {
     let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-    guard let w = list.first(where: {
+    let owned = list.filter {
         ($0[kCGWindowOwnerPID as String] as? Int32) == child.processIdentifier &&
         ($0[kCGWindowLayer as String] as? Int) == 0
+    }
+    guard let w = owned.max(by: { left, right in
+        let l = (left[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+        let r = (right[kCGWindowBounds as String] as? [String: Any]).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+        return (l?.width ?? 0) * (l?.height ?? 0) < (r?.width ?? 0) * (r?.height ?? 0)
     }), let id = w[kCGWindowNumber as String] as? UInt32,
         let bounds = w[kCGWindowBounds as String] as? [String: Any],
         let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary) else { return nil }
@@ -213,9 +218,10 @@ NSRunningApplication(processIdentifier: child.processIdentifier)?.activate(optio
 Thread.sleep(forTimeInterval: 2)
 func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextObservation] {
     let file = "\(output)/\(name).png"
+    guard let capturedWindow = window() else { fatalError("Cannot locate native model window") }
     let command = Process()
     command.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    command.arguments = ["-x", "-o", "-l", String(window()!.0), file]
+    command.arguments = ["-x", "-o", "-l", String(capturedWindow.0), file]
     try command.run(); command.waitUntilExit()
     require(command.terminationStatus == 0, "Cannot capture native model UI")
     let request = VNRecognizeTextRequest()
@@ -264,7 +270,7 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
         let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
         let space = CGColorSpace(name: CGColorSpace.sRGB) else { fatalError("Cannot decode native theme") }
-    let windowFrame = window()!.1
+    let windowFrame = capturedWindow.1
     let titlebarHeight = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
         styleMask: [.titled, .closable, .miniaturizable, .resizable]).height - 100
     // This blank tab-bar point is always --color-page and lies outside every picker.
@@ -1088,6 +1094,7 @@ func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
                 guard let value = attribute(element, $0) as? String else { return false }
                 return value == label || labelledValue(value)
             }
+            && nativeBounds(element).map { window()!.1.contains($0) && $0.maxY <= window()!.1.maxY - 32 } == true
     }
     guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control),
         window()!.1.contains(bounds), bounds.maxY <= window()!.1.maxY - 32 else { return false }

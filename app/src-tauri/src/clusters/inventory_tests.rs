@@ -76,6 +76,23 @@ async fn confirmation_persists_check_time_and_duplicate_identity_replaces_withou
     assert!(rows[0].stale);
     assert!(rows[0].agents.is_empty());
     let bytes = std::fs::read_to_string(root.path().join("clusters-v1.json")).unwrap();
+    let persisted: serde_json::Value = serde_json::from_str(&bytes).unwrap();
+    fn contains(value: &serde_json::Value, forbidden: &str) -> bool {
+        match value {
+            serde_json::Value::Object(fields) => fields
+                .iter()
+                .any(|(key, value)| key.contains(forbidden) || contains(value, forbidden)),
+            serde_json::Value::Array(values) => {
+                values.iter().any(|value| contains(value, forbidden))
+            }
+            serde_json::Value::String(value) => value.contains(forbidden),
+            serde_json::Value::Number(value) => forbidden
+                .parse::<u64>()
+                .ok()
+                .is_some_and(|n| value.as_u64() == Some(n)),
+            _ => false,
+        }
+    }
     for forbidden in [
         "127.0.0.1",
         "credential",
@@ -86,7 +103,7 @@ async fn confirmation_persists_check_time_and_duplicate_identity_replaces_withou
         "contextId",
         "controller",
     ] {
-        assert!(!bytes.contains(forbidden), "persisted {forbidden}");
+        assert!(!contains(&persisted, forbidden), "persisted {forbidden}");
     }
     inventory.forget(&key).unwrap();
     assert!(Inventory::with_storage(Some(root.path().into()))
