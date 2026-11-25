@@ -1077,13 +1077,24 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
     }
 }
 func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
+    func labelledValue(_ value: String) -> Bool {
+        guard value.hasPrefix(label) else { return false }
+        let suffix = value.dropFirst(label.count).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        return suffix == expected
+    }
     let controls = nativeElements().filter { element in
         ["AXButton", "AXPopUpButton"].contains(attribute(element, "AXRole") as? String ?? "")
-            && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == label }
+            && ["AXTitle", "AXDescription"].contains {
+                guard let value = attribute(element, $0) as? String else { return false }
+                return value == label || labelledValue(value)
+            }
     }
     guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control),
         window()!.1.contains(bounds), bounds.maxY <= window()!.1.maxY - 32 else { return false }
-    return ["AXValue", "AXTitle", "AXDescription"].contains { attribute(control, $0) as? String == expected }
+    return ["AXValue", "AXTitle", "AXDescription"].contains {
+        guard let value = attribute(control, $0) as? String else { return false }
+        return value == expected || labelledValue(value)
+    }
         || nativeElements(control).dropFirst().contains { element in
             attribute(element, "AXRole") as? String == "AXStaticText"
                 && attribute(element, "AXValue") as? String == expected
