@@ -574,7 +574,9 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
     }
     if name.hasPrefix("cluster-manage") {
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
-        require(text.contains("Back to clusters") || text.contains("Pack to clusters") && nativeTextIsVisible("Back to clusters", exact: true), "Manage is not a Places subview: \(text)")
+        let backMiss = ["Pack to clusters", "back to clusters"].contains(where: text.contains)
+        require(text.contains("Back to clusters") || backMiss && visibleButtons("Back to clusters").count == 1,
+                "Manage is not a Places subview: \(text)")
         if name == "cluster-manage-change" { // Change context only reveals the select.
             require(text.contains("kubectl context") || nativeTextIsVisible("kubectl context"), "Change context did not reveal the context choice: \(text)")
         } else {

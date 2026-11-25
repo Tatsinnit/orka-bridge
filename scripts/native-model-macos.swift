@@ -268,8 +268,8 @@ func capture(_ name: String, _ expected: [String]) throws -> [VNRecognizedTextOb
     let titlebarHeight = NSWindow.frameRect(forContentRect: CGRect(x: 0, y: 0, width: 100, height: 100),
         styleMask: [.titled, .closable, .miniaturizable, .resizable]).height - 100
     // This blank tab-bar point is always --color-page and lies outside every picker.
-    let pagePoint = CGPoint(x: 12 * CGFloat(image.width) / windowFrame.width,
-        y: (titlebarHeight + 2) * CGFloat(image.height) / windowFrame.height)
+    let pagePoint = CGPoint(x: (12 * CGFloat(image.width) / windowFrame.width).rounded(.down),
+        y: ((titlebarHeight + 2) * CGFloat(image.height) / windowFrame.height).rounded(.down))
     guard let pixel = image.cropping(to: CGRect(origin: pagePoint, size: CGSize(width: 1, height: 1)))
         else { fatalError("Cannot locate native theme sample") }
     var rgba = [UInt8](repeating: 0, count: 4)
@@ -1077,7 +1077,11 @@ func nativeWorkspaceButtonIsVisible(_ expected: String) -> Bool {
     }
 }
 func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
-    guard let control = enabledButton(label), let bounds = nativeBounds(control),
+    let controls = nativeElements().filter { element in
+        ["AXButton", "AXPopUpButton"].contains(attribute(element, "AXRole") as? String ?? "")
+            && ["AXTitle", "AXDescription"].contains { attribute(element, $0) as? String == label }
+    }
+    guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control),
         window()!.1.contains(bounds), bounds.maxY <= window()!.1.maxY - 32 else { return false }
     return ["AXValue", "AXTitle", "AXDescription"].contains { attribute(control, $0) as? String == expected }
         || nativeElements(control).dropFirst().contains { element in
