@@ -1101,7 +1101,9 @@ func nativeControlValueIsVisible(_ label: String, _ expected: String) -> Bool {
     }
     guard controls.count == 1, let control = controls.first, let bounds = nativeBounds(control),
         window()!.1.contains(bounds), bounds.maxY <= window()!.1.maxY - 32 else { return false }
-    return ["AXValue", "AXTitle", "AXDescription"].contains {
+    // WebKit exposes aria-describedby as AXHelp on macOS. Require its entire
+    // value to be the selected account; do not accept unrelated help text.
+    return ["AXValue", "AXTitle", "AXDescription", "AXHelp"].contains {
         guard let value = attribute(control, $0) as? String else { return false }
         return value == expected || labelledValue(value)
     }
