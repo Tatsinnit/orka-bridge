@@ -222,7 +222,7 @@ async fn partial_writes_retain_owned_work_without_restoring_creation_authority()
     let scene = Scene::with_disk(&data);
     let mut target = scene.target();
     target.point = Some(Arc::new(|p| {
-        if p == "copy-chunk" {
+        if p == "copy-chunk" || p == "clone" {
             Err(ImageError::Storage(std::io::ErrorKind::Other))
         } else {
             Ok(())
@@ -265,7 +265,7 @@ async fn cancelled_prefix_is_compared_and_resume_does_not_recopy_it() {
         let scene = Scene::with_disk(&data);
         let mut target = scene.target();
         target.point = Some(Arc::new(|p| {
-            if p == "copy-chunk" {
+            if p == "copy-chunk" || p == "clone" {
                 Err(ImageError::Cancelled)
             } else {
                 Ok(())

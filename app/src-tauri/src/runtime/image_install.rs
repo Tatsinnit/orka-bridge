@@ -885,6 +885,43 @@ fn resume_prefix(
     source.rewind().map_err(storage)?;
     Ok((0, Sha256::new()))
 }
+/// On APFS the private copy shares the verified cache file's blocks until the guest writes,
+/// so it costs no space or copying. Any refusal (another volume, no clone support) copies instead.
+#[cfg(target_os = "macos")]
+fn clone(context: &Context, stage: &Dir, name: &str, source: &File) -> Result<bool, ImageError> {
+    use std::os::fd::AsRawFd;
+    context.stop()?;
+    // Tests refuse the clone to exercise the copy that other volumes get.
+    #[cfg(test)]
+    if context.point.as_ref().is_some_and(|p| p("clone").is_err()) {
+        return Ok(false);
+    }
+    let path = std::ffi::CString::new(name).map_err(|_| ImageError::UnsafePath)?;
+    // fclonefileat creates the name only if absent and reads its arguments only during the call.
+    if unsafe { libc::fclonefileat(source.as_raw_fd(), stage.as_raw_fd(), path.as_ptr(), 0) } != 0 {
+        return Ok(false);
+    }
+    // A clone carries the cache file's mode and flags; give it what a fresh copy would have,
+    // or remove it so a retry never trusts a clone by its bytes alone.
+    let normalized = regular(stage, name, false, false).is_ok_and(|file| {
+        // Both calls act on this open descriptor only.
+        let (flags, mode) = unsafe {
+            (
+                libc::fchflags(file.as_raw_fd(), 0),
+                libc::fchmod(file.as_raw_fd(), 0o644),
+            )
+        };
+        flags == 0 && mode == 0
+    });
+    if !normalized {
+        stage.remove_file(name).map_err(storage)?;
+    }
+    Ok(normalized)
+}
+#[cfg(not(target_os = "macos"))]
+fn clone(_: &Context, _: &Dir, _: &str, _: &File) -> Result<bool, ImageError> {
+    Ok(false)
+}
 fn copy(
     context: &Context,
     stage: &Dir,
@@ -895,16 +932,19 @@ fn copy(
     total: u64,
 ) -> Result<Payload, ImageError> {
     let (bytes, sha) = expected;
-    let reusable = match read_file(stage, name) {
+    let (reusable, absent) = match read_file(stage, name) {
         Ok(mut file) => match digest(&mut file, bytes, sha, || context.stop()) {
-            Ok(()) => true,
-            Err(ImageError::Integrity) => false,
+            Ok(()) => (true, false),
+            Err(ImageError::Integrity) => (false, false),
             Err(error) => return Err(error),
         },
-        Err(e) if missing(&e) => false,
+        Err(e) if missing(&e) => (false, true),
         Err(e) => return Err(e),
     };
-    if !reusable {
+    if !reusable && absent && clone(context, stage, name, &source)? {
+        // A clone is written whole; interruption tests stop here as they would mid-copy.
+        context.point("copy-chunk")?;
+    } else if !reusable {
         let mut output = regular(stage, name, true, true)?;
         let (mut count, mut hashed) = resume_prefix(context, &mut output, &mut source, bytes)?;
         context.space(bytes - count)?;
