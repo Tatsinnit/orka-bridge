@@ -79,6 +79,8 @@ you meant to download from this repository; keep system protections enabled.
 2. Open the app. If blocked as unidentified or unnotarized, open **System
    Settings > Privacy & Security**, find Bridge and choose **Open Anyway**.
    Confirm **Open** and authenticate if asked; wording varies by macOS version.
+   If your account isn't an administrator, macOS asks for an administrator's
+   name and password: ask whoever manages your Mac, or your IT team.
 3. If no exception is offered, or macOS reports malware or a damaged app,
    [ask for help](#report-a-problem). Don't remove quarantine or disable Gatekeeper.
 

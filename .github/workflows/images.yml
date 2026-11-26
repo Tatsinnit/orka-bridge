@@ -2,9 +2,9 @@ name: Image assets
 
 on:
   pull_request:
-    paths: ['images/**', 'app/src-tauri/src/runtime/manifest.rs', 'app/src-tauri/src/runtime/image_types.rs', 'app/src-tauri/tests/image_manifest.rs', 'runtime/protocol/tests/image_manifest.rs', '.github/workflows/images.yml']
+    paths: ['images/**', 'docs/release-page.md', 'app/src-tauri/src/runtime/manifest.rs', 'app/src-tauri/src/runtime/image_types.rs', 'app/src-tauri/tests/image_manifest.rs', 'runtime/protocol/tests/image_manifest.rs', '.github/workflows/images.yml']
   push:
-    paths: ['images/**', 'app/src-tauri/src/runtime/manifest.rs', 'app/src-tauri/src/runtime/image_types.rs', 'app/src-tauri/tests/image_manifest.rs', 'runtime/protocol/tests/image_manifest.rs', '.github/workflows/images.yml']
+    paths: ['images/**', 'docs/release-page.md', 'app/src-tauri/src/runtime/manifest.rs', 'app/src-tauri/src/runtime/image_types.rs', 'app/src-tauri/tests/image_manifest.rs', 'runtime/protocol/tests/image_manifest.rs', '.github/workflows/images.yml']
   workflow_dispatch:
     inputs:
       stage:

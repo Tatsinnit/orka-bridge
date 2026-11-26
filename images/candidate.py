@@ -22,6 +22,7 @@ from images import qualify as q
 
 POLICY = q.ROOT / "images/release-set.json"
 MANIFESTS = q.ROOT / "images/release"
+APP_RELEASE_PAGE = q.ROOT / "docs/release-page.md"
 BASE = "repos/" + q.REPOSITORY
 require = q.require
 
@@ -119,7 +120,7 @@ def release_identity(spec, r, created):
             and r["prerelease"] is True and r["published_at"] is None, "created draft identity changed")
 
 
-def exact_draft(spec, files, out, verify):
+def exact_draft(spec, files, out, verify, body="Provisional candidate; publication remains operator-owned."):
     """Draft-only primitive; caller admits files first and verifies readback semantics."""
     require(all(not f.is_symlink() and f.is_file() for f in files.values()), "invalid candidate file")
     total = budget(f.stat().st_size for f in files.values())
@@ -127,7 +128,7 @@ def exact_draft(spec, files, out, verify):
     hashes = {n: q.file_hash(f) for n, f in files.items()}
     check_available(spec)
     r = q.gh(BASE + "/releases", body=dict(tag_name=spec["tag"], target_commitish=spec["sourceCommit"],
-             name=spec["title"], draft=True, prerelease=True, body="Provisional candidate; publication remains operator-owned."))
+             name=spec["title"], draft=True, prerelease=True, body=body))
     created = r["id"]
     release_identity(spec, r, created)
     print("Created draft " + str(created) + "; failure retains it. Recovery needs a new tag and repin.", flush=True)
@@ -390,7 +391,8 @@ def apps(out, tag):
         public_files = {name: path for name, path in files.items() if name in APP_PUBLIC_FILES}
         return exact_draft(dict(tag=tag, title="Bridge preview — " + tag, sourceCommit=a["buildCommit"]), public_files, out,
                            lambda readback: require({f.name for f in readback.iterdir()} == APP_PUBLIC_FILES,
-                                                    "app readback inventory mismatch"))
+                                                    "app readback inventory mismatch"),
+                           body=APP_RELEASE_PAGE.read_text(encoding="utf-8"))
 
 
 def main():

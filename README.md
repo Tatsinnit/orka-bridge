@@ -12,14 +12,24 @@
 **Build and test an agent locally, then deploy the same agent to your team's [Orka](https://github.com/orka-agents/orka) cluster.**
 
 Building an agent for Orka today starts with setting up a cluster, installing Orka, connecting a model, and learning
-the YAML. Bridge handles that setup so you can focus on the agent itself.
+the YAML. Bridge does that setup on your own computer, so you can start with the agent itself.
 
-Invited to the local preview? Start with the [tester guide](docs/preview.md).
+## What works today
 
-## The first hour
+Bridge is a preview for Apple-silicon Macs and Windows x64 PCs. Download it from
+[Releases](https://github.com/orka-agents/orka-bridge/releases) and follow the [setup guide](docs/preview.md).
+
+- Bridge starts a small Linux VM with Orka inside. You don't install Kubernetes, Docker or Orka.
+- It connects GitHub Copilot through your GitHub CLI sign-in.
+- It opens an example agent, `web-reader`, that fetches a web page. Its test passes only if the agent really fetched it.
+- You change the agent's instructions, run its tests again and read the answer and the tools it used.
+
+Sending an agent to your team's cluster isn't part of the preview yet.
+
+## Where Bridge is going
 
 Open Bridge and it starts a local Orka environment for you, or connects to a cluster you already have. An example agent is ready to use, with a prompt, the
-`web_search` tool enabled, and a test that requires a search to pass.
+`web_fetch` tool enabled, and a test that passes only if it fetched the page.
 
 Click Run to execute the test on your Orka, local or connected. You'll see whether it passed, along with the tool calls. Change the
 prompt, add your own tests, and run them again.
@@ -39,8 +49,7 @@ Bridge has three tabs: Overview, Designer, and Clusters.
 On first launch, Clusters asks one question: start a local VM, or connect an existing cluster that has Orka on it.
 For the local VM, Bridge downloads and starts a VM image with Orka already installed, connects a model, and runs a
 test task to verify everything works. Run in the Designer then targets whichever you chose: the local VM, or the
-cluster you connected. The existing-cluster choice is planned to land first; the local VM choice follows once the
-VM image is built.
+cluster you connected.
 
 Setup happens on a single screen with progress indicators. If something goes wrong, Bridge shows what's missing.
 
@@ -78,8 +87,8 @@ The proposed namespace and access model for team clusters is described in
   own Orka API or Kubernetes integration.
 - **Local VM:** The Bridge app itself is small. On first run it downloads a VM image, published as a GitHub release
   asset, containing a container runtime, [kind](https://kind.sigs.k8s.io/), a preconfigured Orka cluster, and kmx.
-  No separate installation is required. The planned runtimes are Apple's Virtualization framework on Apple silicon,
-  WSL2 on Windows, and QEMU/KVM on Linux. The image and build pipeline are not implemented yet. For scale: Orka's
+  No separate installation is required. The VM runs under Apple's Virtualization framework on Apple silicon and under
+  QEMU with Windows Hypervisor Platform on Windows. For scale: Orka's
   own images plus the kind node image are about 800 MB compressed, before the VM's operating system.
 - **Models:** Bridge uses your existing GitHub Copilot sign-in through a model gateway inside the VM. This route has
   been verified on a kind cluster: a native Orka agent fetched a real web page through Copilot with no API key and no
@@ -97,7 +106,7 @@ The initial focus is the local development and deployment experience described a
 - Teams and Telegram messaging
 - Skills and MCP tools in Designer
 - Session history across clusters
-- The VM image build, which the local VM choice needs, and its updates
+- VM image updates
 - Shared team clusters
 - Repository-based development with coding agents
 
@@ -107,9 +116,6 @@ issues for opportunities to contribute. The initial screens will land through ma
 one, comment on the relevant issue first to avoid duplicating work.
 
 ## Development
-
-The native shell opens Overview, Designer and Clusters with empty screens.
-It does not connect to kmx or a cluster yet.
 
 Install Node 26.5.0, npm 11.17.0, Rust 1.98.1 and the
 [Tauri system prerequisites](https://v2.tauri.app/start/prerequisites/).
