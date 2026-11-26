@@ -8,7 +8,7 @@ Bridge runs an AI agent on your own computer and checks its answer with a test. 
 - GitHub CLI, signed in to an account with Copilot (`gh auth login --hostname github.com`). Bridge copies this sign-in into its VM, so use an account you're comfortable sharing with it.
 - Mac: if GitHub CLI isn't installed, download the `.pkg` from the [GitHub CLI releases page](https://github.com/cli/cli/releases/latest). macOS can't verify that installer either, so open it once, then choose Open Anyway in Privacy & Security; on an account that isn't an administrator, both that step and the install ask for an administrator's name and password.
 - 16 GB of memory recommended; the VM uses 6 GB.
-- About 75 GB free disk on a Mac, or 60 GB on Windows.
+- About 65 GB free disk on a Mac, or 60 GB on Windows.
 - Windows: turn on **Windows Hypervisor Platform** in Turn Windows features on or off, and install the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if it's missing.
 
 **Install and first open.** The app isn't signed by a known developer, so your computer asks once:
@@ -18,7 +18,7 @@ Bridge runs an AI agent on your own computer and checks its answer with a test. 
 
 If macOS says Bridge is damaged, or offers no Open Anyway, stop and [report it](https://github.com/orka-agents/orka-bridge/blob/main/docs/preview.md#report-a-problem). Don't turn off Gatekeeper.
 
-Most of the setup time is a 2 GB download. Follow the [setup guide](https://github.com/orka-agents/orka-bridge/blob/main/docs/preview.md).
+Most of the setup time is the download: 2.4 GB on a Mac, 2.0 GB on Windows. On a Mac, the workspace is ready about 2 minutes after it ends. Follow the [setup guide](https://github.com/orka-agents/orka-bridge/blob/main/docs/preview.md).
 
 **New in this release**
 

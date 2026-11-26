@@ -40,21 +40,25 @@ setup. The VM runs locally, but model requests go to Copilot over the internet.
 
 ### Disk space
 
-Budget **60 GiB free on Windows** or **75 GiB on Mac** on the drive holding
+Budget **60 GiB free on Windows** or **65 GiB on Mac** on the drive holding
 your user profile. This includes room for the app, cached image, private VM
 copy, disk growth and working space. If you download the app to another drive,
 that drive also needs room for its archive and extraction.
+
+Setup itself checks for about 23 GiB free on a Mac, or 13 GiB on Windows,
+before it writes the image. The choice screen shows the figure for your build.
 
 Approximate sizes, rounded from measured packages:
 
 | Item | Windows | Mac |
 | --- | ---: | ---: |
 | Image download | 1.84 GiB | 2.23 GiB |
-| Image cache and private copy, before VM writes | 8.91 GiB | 34.30 GiB |
+| Image cache and private copy, before VM writes | 8.80 GiB | 6.52 GiB |
 | App archive / unpacked files | 53 / 425 MiB | 9 / 29 MiB |
 
 The sparse 32 GiB state disk grows as used. Windows's system disk can grow
-to 16 GiB; Mac's is already 16 GiB. Budgets allow for this growth.
+to 16 GiB. Mac's starts as a clone that shares the cached image's blocks and
+grows as the VM writes, up to 16 GiB. Budgets allow for this growth.
 Use the app release's budget if revised there.
 
 ## Open the app

@@ -861,7 +861,7 @@ fn main() {
                 "setup_example" => json!({"agent":original, "tests":tests}),
                 // Sizing is synthetic, distinct from transfer progress above. The renderer
                 // must show decimal GB without treating materialized image bytes as a download.
-                "setup_requirements" => json!({"memoryBytes":4294967296_u64, "imageBytes":3006477107_u64, "stateDiskBytes":21474836480_u64, "downloadBytes":2800000000_u64}),
+                "setup_requirements" => json!({"memoryBytes":4294967296_u64, "stateDiskBytes":21474836480_u64, "downloadBytes":2800000000_u64, "setupDiskBytes":null, "freeDiskBytes":null, "readySeconds":null}),
                 "setup_preflight" => {
                     let phase = setup_progress.as_ref().and_then(|path| std::fs::read_to_string(path).ok());
                     let unknown = phase.as_deref() == Some("preflight-unknown");

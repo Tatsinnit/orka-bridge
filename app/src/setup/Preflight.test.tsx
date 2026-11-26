@@ -7,7 +7,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import Setup from './SetupHarness';
 import App from '../App';
 
-const requirements = { memoryBytes: 6442450944, imageBytes: 3651994962, stateDiskBytes: 34359738368, downloadBytes: null };
+const requirements = { memoryBytes: 6442450944, stateDiskBytes: 34359738368, downloadBytes: null, setupDiskBytes: null, freeDiskBytes: null, readySeconds: null };
 const ready = { platform: 'windows', virtualization: 'ready', memory: 'ready', installedMemoryBytes: 8589934592, requiredMemoryBytes: 6442450944 };
 async function native(preflight: unknown = ready, integrated = true, onPlace = vi.fn()) {
   vi.stubGlobal('isTauri', true);
