@@ -257,3 +257,79 @@ fn cache_root_symlink_is_not_adopted() {
     ));
     assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
 }
+fn sparse_disk() -> Vec<u8> {
+    // Zero runs on and off block boundaries, single non-zero bytes at both block edges, a zero tail.
+    let mut disk = vec![7u8; 5000];
+    disk.resize(disk.len() + (1 << 20), 0);
+    let edge = disk.len() + (4096 - disk.len() % 4096);
+    disk.resize(edge + 4096, 0);
+    disk[edge] = 1;
+    disk[edge + 4095] = 2;
+    disk.resize(disk.len() + 8192, 0);
+    disk.push(3);
+    disk.resize(disk.len() + (1 << 20) + 123, 0);
+    disk
+}
+#[test]
+fn zero_runs_decode_to_the_same_hash_into_a_sparse_file() {
+    use std::io::Write;
+    let disk = sparse_disk();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&disk).unwrap();
+    let compressed = encoder.finish().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("asset-0"), &compressed).unwrap();
+    let dir = Dir::open_ambient_dir(temp.path(), cap_std::ambient_authority()).unwrap();
+    let mut image = image();
+    image.assets = vec![ImageAsset {
+        location: AssetLocation {
+            base: "https://fixtures.invalid/".into(),
+            leaf: "part-0000".into(),
+        },
+        role: ImageAssetRole::Chunk(0),
+        bytes: compressed.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(&compressed)),
+    }];
+    image.limits.compressed_bytes = compressed.len() as u64;
+    image.limits.disk_bytes = disk.len() as u64;
+    image.compressed_bytes = compressed.len() as u64;
+    image.compressed_sha256 = format!("{:x}", Sha256::digest(&compressed));
+    image.disk_bytes = disk.len() as u64;
+    image.disk_sha256 = format!("{:x}", Sha256::digest(&disk));
+    let output = std::fs::File::create(temp.path().join("output")).unwrap();
+    let (_tx, closed) = tokio::sync::watch::channel(false);
+    decode_gzip(&image, &dir, output, &closed).unwrap();
+    let written = std::fs::read(temp.path().join("output")).unwrap();
+    assert_eq!(written.len(), disk.len());
+    assert_eq!(format!("{:x}", Sha256::digest(&written)), image.disk_sha256);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let allocated = std::fs::metadata(temp.path().join("output"))
+            .unwrap()
+            .blocks()
+            * 512;
+        assert!(allocated < 256 * 1024, "{allocated} bytes allocated");
+    }
+}
+#[test]
+fn sparse_output_keeps_every_non_zero_byte_across_unaligned_writes() {
+    let disk = sparse_disk();
+    for split in [1, 7, 4095, 4096, 4097, 65536] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut output = SparseOutput {
+            file: std::fs::File::create(temp.path().join("output")).unwrap(),
+            length: 0,
+            hole: 0,
+        };
+        for piece in disk.chunks(split) {
+            output.write(piece).unwrap();
+        }
+        output.finish().unwrap();
+        assert_eq!(
+            std::fs::read(temp.path().join("output")).unwrap(),
+            disk,
+            "split {split}"
+        );
+    }
+}
