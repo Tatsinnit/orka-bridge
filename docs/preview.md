@@ -29,6 +29,12 @@ setup. The VM runs locally, but model requests go to Copilot over the internet.
   with an account that has Copilot access. In a terminal, run
   `gh auth login --hostname github.com`, then check the account with
   `gh auth status --hostname github.com`. Bridge doesn't sign you in itself.
+- Mac: if GitHub CLI isn't installed, download the `.pkg` from the
+  [GitHub CLI releases page](https://github.com/cli/cli/releases/latest).
+  macOS can't verify that installer either, so open it once, then choose
+  **Open Anyway** in **Privacy & Security**. On an account that isn't an
+  administrator, both that step and the install ask for an administrator's
+  name and password.
 - Internet access to GitHub downloads and Copilot. Images download anonymously
   from public GitHub assets; only model connection uses your token.
 

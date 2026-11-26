@@ -6,6 +6,7 @@ Bridge runs an AI agent on your own computer and checks its answer with a test. 
 **Before you start**
 
 - GitHub CLI, signed in to an account with Copilot (`gh auth login --hostname github.com`). Bridge copies this sign-in into its VM, so use an account you're comfortable sharing with it.
+- Mac: if GitHub CLI isn't installed, download the `.pkg` from the [GitHub CLI releases page](https://github.com/cli/cli/releases/latest). macOS can't verify that installer either, so open it once, then choose Open Anyway in Privacy & Security; on an account that isn't an administrator, both that step and the install ask for an administrator's name and password.
 - 16 GB of memory recommended; the VM uses 6 GB.
 - About 75 GB free disk on a Mac, or 60 GB on Windows.
 - Windows: turn on **Windows Hypervisor Platform** in Turn Windows features on or off, and install the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) if it's missing.
