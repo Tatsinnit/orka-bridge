@@ -130,7 +130,7 @@ fn gzip_uses_the_shared_python_member_padding_and_refusal_vectors() {
         let output = std::fs::File::create(temp.path().join("output")).unwrap();
         let (_tx, closed) = tokio::sync::watch::channel(false);
         assert_eq!(
-            decode_gzip(&image, &dir, output, &closed).is_ok(),
+            decode_gzip(&image, chunk_stream(&dir, &image), output, &closed).is_ok(),
             valid,
             "{}",
             row["invariant"]
@@ -212,8 +212,6 @@ fn empty_read_does_not_consume_or_validate_a_chunk_prematurely() {
         expected: None,
         bytes: 0,
         hash: Sha256::new(),
-        total: 0,
-        whole: Sha256::new(),
     };
     assert_eq!(chunks.read(&mut []).unwrap(), 0);
     assert_eq!(chunks.next, 0);
@@ -298,7 +296,7 @@ fn zero_runs_decode_to_the_same_hash_into_a_sparse_file() {
     image.disk_sha256 = format!("{:x}", Sha256::digest(&disk));
     let output = std::fs::File::create(temp.path().join("output")).unwrap();
     let (_tx, closed) = tokio::sync::watch::channel(false);
-    decode_gzip(&image, &dir, output, &closed).unwrap();
+    decode_gzip(&image, chunk_stream(&dir, &image), output, &closed).unwrap();
     let written = std::fs::read(temp.path().join("output")).unwrap();
     assert_eq!(written.len(), disk.len());
     assert_eq!(format!("{:x}", Sha256::digest(&written)), image.disk_sha256);

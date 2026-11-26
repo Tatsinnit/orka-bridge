@@ -857,10 +857,9 @@ fn resume_prefix(
     output: &mut File,
     source: &mut File,
     bytes: u64,
-) -> Result<(u64, Sha256), ImageError> {
+) -> Result<u64, ImageError> {
     let len = output.metadata().map_err(storage)?.len();
     let mut count = 0;
-    let mut hashed = Sha256::new();
     let mut retained = [0; 65536];
     let mut original = [0; 65536];
     if len <= bytes {
@@ -872,18 +871,17 @@ fn resume_prefix(
             if retained[..n] != original[..n] {
                 break;
             }
-            hashed.update(&retained[..n]);
             count += n as u64;
         }
         if count == len {
-            return Ok((count, hashed));
+            return Ok(count);
         }
     }
     context.stop()?;
     output.set_len(0).map_err(storage)?;
     output.rewind().map_err(storage)?;
     source.rewind().map_err(storage)?;
-    Ok((0, Sha256::new()))
+    Ok(0)
 }
 /// On APFS the private copy shares the verified cache file's blocks until the guest writes,
 /// so it costs no space or copying. Any refusal (another volume, no clone support) copies instead.
@@ -946,7 +944,7 @@ fn copy(
         context.point("copy-chunk")?;
     } else if !reusable {
         let mut output = regular(stage, name, true, true)?;
-        let (mut count, mut hashed) = resume_prefix(context, &mut output, &mut source, bytes)?;
+        let mut count = resume_prefix(context, &mut output, &mut source, bytes)?;
         context.space(bytes - count)?;
         context
             .events
@@ -968,7 +966,6 @@ fn copy(
                 .ok_or(ImageError::Integrity)?;
             context.space(n as u64)?;
             output.write_all(&buffer[..n]).map_err(storage)?;
-            hashed.update(&buffer[..n]);
             context
                 .events
                 .blocking_send(ImageProgress::Materializing {
@@ -978,9 +975,7 @@ fn copy(
                 .map_err(|_| ImageError::Cancelled)?;
             context.point("copy-chunk")?;
         }
-        if count != bytes || format!("{:x}", hashed.finalize()) != sha {
-            return Err(ImageError::Integrity);
-        }
+        // The reread below is the copy's one hash.
         output.sync_all().map_err(storage)?;
         drop(output);
     } else {
@@ -1059,7 +1054,9 @@ fn run(image: PreparedImage, context: Context) -> Result<InstalledImageSet, Imag
     };
     let boot = &image.boot;
     let images = directory(&context.root, std::ffi::OsStr::new("image"))?;
-    let binding = if let Some(generation) = read_directory(&images, "1")? {
+    let published = read_directory(&images, "1")?;
+    let copied = published.is_none();
+    let binding = if let Some(generation) = published {
         let existing: Intent = json(&generation, "intent.json")?;
         if existing != intent {
             return Err(ImageError::RetainedImage);
@@ -1190,7 +1187,8 @@ fn run(image: PreparedImage, context: Context) -> Result<InstalledImageSet, Imag
         return Err(ImageError::RetainedImage);
     }
     validate_binding(&binding, &context.target())?;
-    verify_files(&context.root, &binding, true, || context.stop())?;
+    // Files copied in this run were reread after writing; an earlier run's are reread here.
+    verify_files(&context.root, &binding, !copied, || context.stop())?;
     context.point("generation-verified")?;
     sync_namespace(&context.target(), &binding)?;
     write_json(&context.root, "image-binding.pending", &binding)?;

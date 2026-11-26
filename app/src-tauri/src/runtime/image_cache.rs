@@ -8,7 +8,10 @@ use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
     path::Path,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 
 #[path = "image_cache_fs.rs"]
@@ -38,6 +41,7 @@ pub struct CacheTransaction {
     image: ResolvedImage,
     _lock: OwnerLock,
     published: bool,
+    decoded: AtomicBool,
     closed: Option<tokio::sync::watch::Receiver<bool>>,
     #[cfg(test)]
     point: Option<tests::recovery::Point>,
@@ -273,7 +277,7 @@ impl ImageCache {
         if !marker(&stage, "generation.json", &record(image, "generation"))? {
             return Err(ImageError::Integrity);
         }
-        verify_set(&stage, image, closed)?;
+        verify_set(&stage, image, closed, true)?;
         Ok(Some(VerifiedImageSet {
             directory: Arc::new(stage),
             image: image.clone(),
@@ -349,6 +353,7 @@ impl ImageCache {
             image: image.clone(),
             _lock: lock,
             published,
+            decoded: AtomicBool::new(false),
             closed: None,
             #[cfg(test)]
             point: None,
@@ -390,8 +395,6 @@ struct Chunks<'a> {
     expected: Option<(u64, &'a str)>,
     bytes: u64,
     hash: Sha256,
-    total: u64,
-    whole: Sha256,
 }
 impl Read for Chunks<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
@@ -407,18 +410,7 @@ impl Read for Chunks<'_> {
                         .checked_add(n as u64)
                         .filter(|n| *n <= self.expected.unwrap().0)
                         .ok_or(io::ErrorKind::InvalidData)?;
-                    self.total = self
-                        .total
-                        .checked_add(n as u64)
-                        .filter(|n| {
-                            *n <= self
-                                .image
-                                .compressed_bytes
-                                .min(self.image.limits.compressed_bytes)
-                        })
-                        .ok_or(io::ErrorKind::InvalidData)?;
                     self.hash.update(&buffer[..n]);
-                    self.whole.update(&buffer[..n]);
                     return Ok(n);
                 }
                 let (length, hash) = self.expected.take().unwrap();
@@ -461,8 +453,44 @@ fn chunk_stream<'a>(stage: &'a Dir, image: &'a ResolvedImage) -> Chunks<'a> {
         expected: None,
         bytes: 0,
         hash: Sha256::new(),
-        total: 0,
-        whole: Sha256::new(),
+    }
+}
+/// Counts and hashes the whole compressed stream, refusing more than its pinned size.
+struct Compressed<'a, R> {
+    source: R,
+    image: &'a ResolvedImage,
+    total: u64,
+    whole: Sha256,
+}
+impl<'a, R: Read> Compressed<'a, R> {
+    fn new(image: &'a ResolvedImage, source: R) -> Self {
+        let whole = Sha256::new();
+        Self {
+            source,
+            image,
+            total: 0,
+            whole,
+        }
+    }
+    fn matches(&self) -> bool {
+        self.total == self.image.compressed_bytes
+            && format!("{:x}", self.whole.clone().finalize()) == self.image.compressed_sha256
+    }
+}
+impl<R: Read> Read for Compressed<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let n = self.source.read(buffer)?;
+        let limit = self
+            .image
+            .compressed_bytes
+            .min(self.image.limits.compressed_bytes);
+        self.total = self
+            .total
+            .checked_add(n as u64)
+            .filter(|n| *n <= limit)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        self.whole.update(&buffer[..n]);
+        Ok(n)
     }
 }
 /// Leaves all-zero blocks of a fresh, empty file unwritten, so filesystems with holes store them free.
@@ -537,13 +565,12 @@ impl SparseOutput {
 }
 fn decode_gzip(
     image: &ResolvedImage,
-    stage: &Dir,
+    source: impl Read,
     output: File,
     closed: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), ImageError> {
     use std::io::{BufRead, BufReader};
-    let chunks = chunk_stream(stage, image);
-    let mut source = BufReader::with_capacity(65536, chunks);
+    let mut source = BufReader::with_capacity(65536, Compressed::new(image, source));
     let mut output = SparseOutput {
         file: output,
         length: 0,
@@ -598,11 +625,9 @@ fn decode_gzip(
         }
         first = false;
     }
-    let chunks = source.get_ref();
     if bytes != image.disk_bytes
         || format!("{:x}", digest.finalize()) != image.disk_sha256
-        || chunks.total != image.compressed_bytes
-        || format!("{:x}", chunks.whole.clone().finalize()) != image.compressed_sha256
+        || !source.get_ref().matches()
     {
         return Err(ImageError::Integrity);
     }
@@ -675,20 +700,12 @@ impl CacheTransaction {
         #[cfg(test)]
         let point = |name: &str| self.point.as_ref().map_or(Ok(()), |p| p(name));
         cancelled(closed)?;
-        if !self.published {
-            match regular(&self.stage, "os.disk", false, false) {
-                Ok(_) => {} // The complete set is revalidated below before publication.
-                Err(ImageError::Storage(io::ErrorKind::NotFound)) => {
-                    let file = regular(&self.stage, "disk.pending", true, true)?;
-                    file.set_len(0).map_err(storage)?;
-                    self.space(self.image.disk_bytes)?;
-                    decode_gzip(&self.image, &self.stage, file, closed)?;
-                    fs::link(&self.stage, "disk.pending", "os.disk")?;
-                }
-                Err(e) => return Err(e),
-            }
+        if self.needs_disk()? {
+            self.decode(chunk_stream(&self.stage, &self.image), closed)?;
         }
-        verify_set(&self.stage, &self.image, Some(closed))?;
+        // A disk this owner decoded was hashed as it was written; an older one is reread.
+        let reread = !self.decoded.load(Ordering::Acquire);
+        verify_set(&self.stage, &self.image, Some(closed), reread)?;
         if !self.published {
             publish_marker(
                 &self.stage,
@@ -724,7 +741,8 @@ impl CacheTransaction {
         )? {
             return Err(ImageError::Integrity);
         }
-        verify_set(&committed, &self.image, Some(closed))?;
+        // The rename kept the files just checked; installs reread the disk they copy.
+        verify_set(&committed, &self.image, Some(closed), false)?;
         cancelled(closed)?;
         #[cfg(test)]
         point("before-selector")?;
@@ -736,6 +754,52 @@ impl CacheTransaction {
             directory: Arc::new(committed),
             image: self.image.clone(),
         })
+    }
+    /// Whether the OS disk is still to be decoded; acquisition then streams chunks into `decode`.
+    pub(crate) fn needs_disk(&self) -> Result<bool, ImageError> {
+        if self.published {
+            return Ok(false);
+        }
+        match regular(&self.stage, "os.disk", false, false) {
+            Ok(_) => Ok(false),
+            Err(ImageError::Storage(io::ErrorKind::NotFound)) => Ok(true),
+            Err(e) => Err(e),
+        }
+    }
+    /// Names the disk `os.disk` only after both the compressed and raw hashes match.
+    pub(crate) fn decode(
+        &self,
+        source: impl Read,
+        closed: &tokio::sync::watch::Receiver<bool>,
+    ) -> Result<(), ImageError> {
+        let file = regular(&self.stage, "disk.pending", true, true)?;
+        file.set_len(0).map_err(storage)?;
+        self.space(self.image.disk_bytes)?;
+        decode_gzip(&self.image, source, file, closed)?;
+        fs::link(&self.stage, "disk.pending", "os.disk")?;
+        self.decoded.store(true, Ordering::Release);
+        Ok(())
+    }
+    /// Hands a chunk kept from an earlier run to a decoder that starts from the first byte.
+    #[allow(dead_code)] // Image-only harnesses omit the acquisition caller.
+    pub(crate) fn replay(
+        &self,
+        index: usize,
+        decoder: &std::sync::mpsc::SyncSender<Vec<u8>>,
+    ) -> Result<(), ImageError> {
+        let mut file = regular(&self.stage, &format!("asset-{index}"), false, false)?;
+        loop {
+            self.closed.as_ref().map_or(Ok(()), cancelled)?;
+            let mut bytes = vec![0; 65536];
+            let n = file.read(&mut bytes).map_err(storage)?;
+            if n == 0 {
+                return Ok(());
+            }
+            bytes.truncate(n);
+            decoder
+                .send(bytes)
+                .map_err(|_| ImageError::Storage(io::ErrorKind::BrokenPipe))?;
+        }
     }
     pub(crate) fn start_asset(&self, index: usize) -> Result<Option<File>, ImageError> {
         self.closed.as_ref().map_or(Ok(()), cancelled)?;
