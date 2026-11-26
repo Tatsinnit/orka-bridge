@@ -20,13 +20,14 @@ type Props = {
   modelRecoveryRef?: Ref<HTMLDivElement>; modelChoiceRef?: Ref<HTMLDivElement>;
   status: SetupStatus; busy: boolean; stopping: boolean; error?: string; modelState?: ModelState; firstCheck?: CheckStepState;
   modelUnavailable?: boolean;
+  job?: boolean;
   firstTestResult?: { failed: number }; initialAutomatic?: boolean; onCheckFirstTest?: () => void; onChooseProvider?: () => void;
   onCancel: () => void; onRestart: () => void; onCluster?: () => void; onOpenExample: () => void;
 };
 const rowClass: Record<Status, string> = { passed: 'step-done', failed: 'step-failed', running: 'step-current', 'needs-you': 'step-current', stale: 'step-waiting', 'not-started': 'step-waiting' };
 // Completed rows stay in place; only the active row opens its progress.
-function stepRows({ status, stopping, updating, updateBlocked, error, modelState = 'idle', firstCheck, initialAutomatic }: Pick<Props, 'status' | 'stopping' | 'updating' | 'updateBlocked' | 'error' | 'modelState' | 'firstCheck' | 'initialAutomatic'>) {
-  const view = setupView(status, { stopping, model: modelState, check: firstCheck, initialAutomatic });
+function stepRows({ status, stopping, updating, updateBlocked, error, modelState = 'idle', firstCheck, initialAutomatic, job = false }: Pick<Props, 'status' | 'stopping' | 'updating' | 'updateBlocked' | 'error' | 'modelState' | 'firstCheck' | 'initialAutomatic' | 'job'>) {
+  const view = setupView(status, { stopping, model: modelState, check: firstCheck, initialAutomatic, job });
   const failed = status.localVm === 'failed';
   const paused = status.localVm === 'cancelled' || status.localVm === 'closed';
   const connected = modelState === 'connected';
@@ -45,9 +46,11 @@ function stepRows({ status, stopping, updating, updateBlocked, error, modelState
   const test: [Status, string] = firstCheck && status.localVm === 'ready' && connected ? [{ running: 'running', passed: 'passed', failed: 'failed', unknown: 'stale', stale: 'stale' }[firstCheck] as Status,
     { running: 'Running', passed: 'Its test passed', failed: 'Its test failed', unknown: 'Result unknown', stale: 'Needs running' }[firstCheck]]
     : connected ? ['needs-you', 'Needs you'] : ['not-started', 'Waiting'];
-  const names = ['Where agents run', 'Get your workspace ready', 'Connect the AI', 'Run your first agent'];
+  const names = job ? ['Set up', 'Connect the AI', 'Run your job'] : ['Where agents run', 'Get your workspace ready', 'Connect the AI', 'Run your first agent'];
   // After an unreadable poll the snapshot is last known, not observed: keep the words but nothing runs or is current.
-  const rows = [ ['passed', 'On this computer'] as [Status, string], workspace, model, test].map(([state, result], i) => ({ name: names[i], state: error ? 'not-started' as Status : state, result: error ? `Last known: ${result}` : result }));
+  const jobRun: [Status, string] = connected ? ['not-started', 'Runtime needed'] : ['not-started', 'Waiting'];
+  const values = job ? [workspace, model, jobRun] : [['passed', 'On this computer'] as [Status, string], workspace, model, test];
+  const rows = values.map(([state, result], i) => ({ name: names[i], state: error ? 'not-started' as Status : state, result: error ? `Last known: ${result}` : result }));
   return { view, failed, paused, infra, rows };
 }
 
@@ -87,6 +90,11 @@ export function SetupProgress(props: Props) {
     {view.done && <span className="status-description">{view.line !== 'Workspace ready' ? view.line : undefined}</span>}
     <p role="status" className={paused || error || status.localVm === 'notIntegrated' ? undefined : 'sr-only'}>{view.done || paused || error || ready || stopping || status.localVm === 'notIntegrated' ? stateLine : failed ? 'Setup needs attention' : view.line}</p>
     <SetupSteps {...props} workspaceDetails={workspaceDetails} />
+    {props.job && ready && props.modelState === 'connected' && !error && <div className="first-job-runtime" role="status">
+      <p><b>Your job is saved.</b> The local coding and review runtime is not included in this build yet, so Bridge has not run it.</p>
+      <p className="muted">The workspace and AI connection are ready. You can use the separate example while job execution is being added.</p>
+      <Button type="button" kind="secondary" onClick={onOpenExample}>See an example first</Button>
+    </div>}
     {ready && !error && props.onChooseProvider && props.modelState === 'connected' && needsModel && <div className="first-test-recovery">
       <p>The first test could not be confirmed. If the AI could not be reached, check your connection or choose another provider.</p>
       <p className="muted">Changing provider first asks you to remove the current sign-in or key. Your agent files are kept.</p>
@@ -97,7 +105,7 @@ export function SetupProgress(props: Props) {
       {['preparing', 'installing', 'starting'].includes(status.localVm) && <><Button type="button" kind="secondary" disabled={busy || !!error} onClick={onCancel}>Cancel</Button><span className="muted">Cancel pauses setup. Your downloaded files are kept.</span></>}
       {status.localVm === 'notIntegrated' && onCluster && <Button type="button" kind="secondary" disabled={busy} onClick={onCluster}>Use a cluster you already have instead</Button>}
       {paused && (props.ordinaryRecovery ?? !props.upgrade) && <Button type="button" kind="primary" disabled={busy || !!error} onClick={onRestart}>Start again</Button>}
-      {ready && <>{props.modelState === 'connected' && !needsModel && <>
+      {ready && !props.job && <>{props.modelState === 'connected' && !needsModel && <>
         {props.firstCheck === 'stale' ? <Button type="button" kind="primary" disabled={busy || !!error} onClick={onOpenExample}>Run it again</Button>
           : (props.firstCheck === 'unknown' || ((props.firstCheck === 'passed' || props.firstCheck === 'failed') && !props.firstTestResult)) ? <Button type="button" kind="primary" disabled={busy || !!error || !props.onCheckFirstTest} onClick={props.onCheckFirstTest}>Check again</Button>
           : !props.firstCheck && <Button type="button" kind="primary" disabled={busy || !!error} onClick={onOpenExample}>Open your first agent</Button>}
@@ -107,16 +115,16 @@ export function SetupProgress(props: Props) {
   </section>;
 }
 
-export function SetupSteps(props: Pick<Props, 'status' | 'busy' | 'stopping' | 'error' | 'modelState' | 'firstCheck' | 'initialAutomatic' | 'onRestart' | 'onCluster' | 'upgrade' | 'updating' | 'updateBlocked' | 'ordinaryRecovery'> & { workspaceDetails?: ReactNode; modelRecoveryRef?: Ref<HTMLDivElement>; modelChoiceRef?: Ref<HTMLDivElement> }) {
+export function SetupSteps(props: Pick<Props, 'status' | 'busy' | 'stopping' | 'error' | 'modelState' | 'firstCheck' | 'initialAutomatic' | 'onRestart' | 'onCluster' | 'upgrade' | 'updating' | 'updateBlocked' | 'ordinaryRecovery' | 'job'> & { workspaceDetails?: ReactNode; modelRecoveryRef?: Ref<HTMLDivElement>; modelChoiceRef?: Ref<HTMLDivElement> }) {
   const { status, busy, error, onRestart, onCluster } = props;
   const { view, failed, rows } = stepRows(props);
   return <ol className="steps-four" aria-label="Setup steps">
       {rows.map(({ name, state, result }, index) => {
         return <li key={name} className={rowClass[state]} aria-current={!view.done && index + 1 === view.step && ['running', 'needs-you'].includes(state) ? 'step' : undefined}>
         <StatusIcon state={state} /><b>{name}</b><span className="step-result">{result}</span>
-        {index === 1 && props.workspaceDetails && <div className="step-more">{props.workspaceDetails}</div>}
-        {index === 2 && <><div ref={props.modelChoiceRef} className="step-more model-choice-slot" /><div ref={props.modelRecoveryRef} className="step-more model-recovery-slot" /></>}
-        {failed && (props.ordinaryRecovery ?? !props.upgrade) && index === 1 && <div className="step-more">
+        {index === (props.job ? 0 : 1) && props.workspaceDetails && <div className="step-more">{props.workspaceDetails}</div>}
+        {index === (props.job ? 1 : 2) && <><div ref={props.modelChoiceRef} className="step-more model-choice-slot" /><div ref={props.modelRecoveryRef} className="step-more model-recovery-slot" /></>}
+        {failed && (props.ordinaryRecovery ?? !props.upgrade) && index === (props.job ? 0 : 1) && <div className="step-more">
           <Recovery key={status.localVmError} detail={status.localVmError} preflightFailure={status.preflightFailure} failure={status.workspaceFailure} disabled={busy || !!error} onRetry={onRestart} onCluster={onCluster} /></div>}
       </li>; })}
     </ol>;

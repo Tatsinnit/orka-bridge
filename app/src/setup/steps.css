@@ -76,6 +76,7 @@
 .workspace-tool code { color: var(--color-text-secondary); font-size: .92em; }
 .workspace-heading[hidden] { display: none; }
 .first-test-recovery { margin-top: 16px; }
+.first-job-runtime { display: grid; justify-items: start; gap: var(--space-2); margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
 .first-pass { max-width: 700px; padding: 24px 0; }
 .first-pass > .status-icon { width: 32px; height: 32px; margin-bottom: 16px; }
 .first-pass h1 { font: var(--type-title); margin: 0 0 12px; }

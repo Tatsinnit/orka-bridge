@@ -57,6 +57,25 @@ test.each(['true', 1, null, {}])('rejects malformed native model support %j', as
   expect((await setupStatus()).ok).toBe(false);
   expect((await selectLocal()).ok).toBe(false);
 });
+test('preserves one exact native-owned first job across setup observations', async () => {
+  vi.stubGlobal('isTauri', true);
+  const firstJob = { id: '12345678-1234-4abc-8def-123456789abc', prompt: 'Summarize the release notes', phase: 'setup' };
+  const value = { ...snapshot, firstJob };
+  mockIPC(() => value);
+  expect(await setupStatus()).toEqual({ ok: true, status: value });
+});
+test.each([
+  null,
+  { id: '12345678-1234-4abc-8def-123456789abc', prompt: '', phase: 'setup' },
+  { id: '00000000-0000-0000-0000-000000000000', prompt: 'job', phase: 'setup' },
+  { id: '12345678-1234-4abc-8def-123456789abc', prompt: 'job', phase: 'running' },
+  { id: '12345678-1234-4abc-8def-123456789abc', prompt: 'job', phase: 'setup', path: 'SECRET_MARKER' },
+])('rejects malformed first-job state %j without leaking it', async firstJob => {
+  vi.stubGlobal('isTauri', true); mockIPC(() => ({ ...snapshot, firstJob }));
+  const result = await setupStatus();
+  expect(result.ok).toBe(false);
+  expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
+});
 test('no-argument selection requires an acknowledgement of that selection', async () => {
   vi.stubGlobal('isTauri', true);
   const ipc = vi.fn(() => snapshot); mockIPC(ipc);

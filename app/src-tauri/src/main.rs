@@ -4,9 +4,10 @@ use bridge_engine::agent_folder::{AgentFolder, AgentPair, DocumentId};
 use bridge_engine::agents::Agents;
 use bridge_engine::chat::{ChatError, ChatOwner, ChatSnapshot};
 use bridge_engine::engine::{types::*, EngineState};
+use bridge_engine::first_job::FirstJobStore;
 use bridge_engine::local_vm::{self, LocalVm, LocalVmStatus};
 use bridge_engine::send::{SendOwner, SendStatus};
-use bridge_engine::setup::{SetupError, SetupSnapshot, SetupStore};
+use bridge_engine::setup::{FirstJobSnapshot, SetupError, SetupSnapshot, SetupStore};
 use bridge_engine::shutdown::TerminalShutdown;
 use std::sync::Arc;
 use tauri::Manager;
@@ -29,29 +30,72 @@ async fn engine_call(
 async fn setup_status(
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
+    jobs: tauri::State<'_, Arc<FirstJobStore>>,
 ) -> Result<SetupSnapshot, SetupError> {
-    local_vm::setup_status(Arc::clone(state.inner()), vm.inner()).await
+    let snapshot = local_vm::setup_status(Arc::clone(state.inner()), vm.inner()).await?;
+    attach_first_job(snapshot, jobs.inner().clone()).await
 }
 #[tauri::command]
 async fn setup_select_local(
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
+    jobs: tauri::State<'_, Arc<FirstJobStore>>,
 ) -> Result<SetupSnapshot, SetupError> {
-    local_vm::select_local(Arc::clone(state.inner()), vm.inner()).await
+    let snapshot = local_vm::select_local(Arc::clone(state.inner()), vm.inner()).await?;
+    attach_first_job(snapshot, jobs.inner().clone()).await
 }
 #[tauri::command]
 async fn setup_cancel_local(
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
+    jobs: tauri::State<'_, Arc<FirstJobStore>>,
 ) -> Result<SetupSnapshot, SetupError> {
-    local_vm::cancel_local(Arc::clone(state.inner()), vm.inner()).await
+    let snapshot = local_vm::cancel_local(Arc::clone(state.inner()), vm.inner()).await?;
+    attach_first_job(snapshot, jobs.inner().clone()).await
 }
 #[tauri::command]
 async fn setup_change_local(
     state: tauri::State<'_, Arc<SetupStore>>,
     vm: tauri::State<'_, Arc<LocalVm>>,
+    jobs: tauri::State<'_, Arc<FirstJobStore>>,
 ) -> Result<SetupSnapshot, SetupError> {
-    local_vm::change_local(Arc::clone(state.inner()), vm.inner()).await
+    let snapshot = local_vm::change_local(Arc::clone(state.inner()), vm.inner()).await?;
+    attach_first_job(snapshot, jobs.inner().clone()).await
+}
+
+async fn attach_first_job(
+    snapshot: SetupSnapshot,
+    jobs: Arc<FirstJobStore>,
+) -> Result<SetupSnapshot, SetupError> {
+    let first_job = tauri::async_runtime::spawn_blocking(move || jobs.status())
+        .await
+        .map_err(|_| SetupError::storage())?
+        .map_err(|_| SetupError::storage())?;
+    Ok(snapshot.with_first_job(first_job))
+}
+
+#[tauri::command]
+async fn first_job_begin(
+    prompt: String,
+    state: tauri::State<'_, Arc<FirstJobStore>>,
+) -> Result<FirstJobSnapshot, &'static str> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.begin(prompt))
+        .await
+        .map_err(|_| "The job could not be saved.")?
+        .map_err(|_| "The job could not be saved. Check the text and try again.")
+}
+
+#[tauri::command]
+async fn first_job_discard(
+    id: bridge_runtime_protocol::Uuid,
+    state: tauri::State<'_, Arc<FirstJobStore>>,
+) -> Result<(), &'static str> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || state.discard(id))
+        .await
+        .map_err(|_| "The saved job could not be discarded.")?
+        .map_err(|_| "The saved job could not be discarded.")
 }
 #[tauri::command]
 fn setup_requirements() -> Option<bridge_engine::setup::SetupRequirements> {
@@ -840,6 +884,9 @@ fn main() {
             });
             app.manage(store.clone());
             app.manage(vm.clone());
+            app.manage(Arc::new(FirstJobStore::new(
+                app.path().app_local_data_dir().ok(),
+            )));
             let chat = ChatOwner::new(tauri::async_runtime::handle().inner().clone());
             app.manage(chat.clone());
             let session = bridge_engine::clusters::commands::ClusterSession::with_storage(
@@ -889,6 +936,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             engine_call,
             setup_status,
+            first_job_begin,
+            first_job_discard,
             setup_select_local,
             setup_cancel_local,
             quit_bridge,

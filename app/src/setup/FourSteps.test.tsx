@@ -67,3 +67,19 @@ test('unreadable status suppresses progress and current step without dropping ro
   expect(screen.getAllByRole('listitem')).toHaveLength(4);
   expect(document.querySelector('[aria-current="step"]')).toBeNull();
 });
+
+test('a submitted job projects the same workspace and model states onto three truthful rows', () => {
+  const view = render(<SetupProgress {...actions} job status={status('installing')} />);
+  let list = screen.getByRole('list', { name: 'Setup steps' });
+  expect(within(list).getAllByRole('listitem').map(row => row.querySelector('b')?.textContent)).toEqual(['Set up', 'Connect the AI', 'Run your job']);
+  expect(within(list).getAllByRole('listitem')[0].querySelector('[role="progressbar"]')).toBeTruthy();
+  expect(setupView(status('installing'), { job: true })).toMatchObject({ step: 1, tabLine: 'Setting up, step 1 of 3', footerLine: 'Getting your workspace ready, step 1 of 3' });
+  expect(setupView(status('ready'), { job: true })).toMatchObject({ step: 2, tabLine: 'Setting up, step 2 of 3', action: 'Connect the AI' });
+  expect(setupView(status('ready'), { job: true, model: 'connected' })).toMatchObject({ step: 3, line: 'Run your job', done: false, status: 'not-started' });
+  view.rerender(<SetupProgress {...actions} job status={status('ready')} modelState="connected" />);
+  list = screen.getByRole('list', { name: 'Setup steps' });
+  expect(within(list).getByText('Run your job', { selector: 'b' }).closest('li')?.textContent).toBe('Run your jobRuntime needed');
+  expect(screen.getByText(/local coding and review runtime is not included/)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Open your first agent' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Read its instructions' })).toBeNull();
+});

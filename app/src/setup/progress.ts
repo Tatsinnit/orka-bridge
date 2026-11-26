@@ -9,6 +9,7 @@ import type { SetupStatus } from './state';
 // One derivation feeds the tab, footer and step list so their counters cannot disagree.
 // Infrastructure substages share one workspace step; the file bar measures only file work.
 export const setupSteps = 4;
+export const firstJobSteps = 3;
 
 // busy = the app is working (blue); needs-you = the creator's move (amber); ready = finished (green).
 export type Tone = 'wait' | 'busy' | 'needs-you' | 'ready' | 'bad' | 'stale';
@@ -29,13 +30,14 @@ export function workspaceView(status: SetupStatus, { stopping = false, starting 
   if (status.localVm === 'ready') return { word: 'Ready', detail: 'The workspace is ready on this computer.', status: 'passed', tone: 'ready' };
   return { word: 'Stopped', detail: 'The workspace is stopped. Your agents and their files are kept.', status: 'not-started', tone: 'wait' };
 }
-export function setupView(status: SetupStatus | undefined, { checking = false, stopping = false, starting = false, workspace = false, model = 'idle', check, initialAutomatic = false }: { checking?: boolean; stopping?: boolean; starting?: boolean; workspace?: boolean; model?: ModelState; check?: CheckStepState; initialAutomatic?: boolean } = {}): SetupView {
+export function setupView(status: SetupStatus | undefined, { checking = false, stopping = false, starting = false, workspace = false, model = 'idle', check, initialAutomatic = false, job = false }: { checking?: boolean; stopping?: boolean; starting?: boolean; workspace?: boolean; model?: ModelState; check?: CheckStepState; initialAutomatic?: boolean; job?: boolean } = {}): SetupView {
+  const count = job ? firstJobSteps : setupSteps;
   const view = (place: SetupView['place'], step: number, line: string, detail: string, tone: Tone, done = false): SetupView => ({
     place, step, done, line, detail, tone,
-    tabLine: !done && step > 0 && (tone === 'busy' || tone === 'needs-you') ? `Setting up, step ${step} of ${setupSteps}` : line,
-    footerLine: !done && step > 0 && (tone === 'busy' || tone === 'needs-you') ? `${step === 2 ? 'Getting your workspace ready' : line}, step ${step} of ${setupSteps}` : line,
+    tabLine: !done && step > 0 && (tone === 'busy' || tone === 'needs-you') ? `Setting up, step ${step} of ${count}` : line,
+    footerLine: !done && step > 0 && (tone === 'busy' || tone === 'needs-you') ? `${step === (job ? 1 : 2) ? 'Getting your workspace ready' : line}, step ${step} of ${count}` : line,
     status: ({ busy: 'running', 'needs-you': 'needs-you', wait: 'not-started', ready: 'passed', bad: 'failed', stale: 'stale' } as const)[tone],
-    action: done ? 'Manage' : step === 3 ? 'Connect the AI' : place === 'local' ? 'Continue setup' : 'Set up',
+    action: done ? 'Manage' : step === (job ? 2 : 3) ? 'Connect the AI' : place === 'local' ? 'Continue setup' : 'Set up',
   });
   if (!status) return checking ? view('checking', 0, 'Checking the workspace…', 'Checking the workspace…', 'busy') : view('unavailable', 0, 'Workspace unavailable', 'Workspace unavailable', 'needs-you');
   if (workspace) {
@@ -45,32 +47,36 @@ export function setupView(status: SetupStatus | undefined, { checking = false, s
   }
   const place = status.selected === 'localVm' ? 'local' : 'none';
   if (status.localVm === 'notIntegrated') return view(place, 0, 'Workspace unavailable', 'Workspace unavailable', 'needs-you');
-  if (place === 'none') return view(place, 0, 'Choose where agents run', 'Choose where agents run', 'wait');
-  if (stopping) return view(place, status.localVm === 'ready' ? 4 : 0, 'Stopping the workspace', 'Stopping the workspace', 'busy', status.localVm === 'ready');
+  if (place === 'none') return job ? view(place, 1, 'Set up', 'Your job is saved.', 'needs-you') : view(place, 0, 'Choose where agents run', 'Choose where agents run', 'wait');
+  if (stopping) return view(place, status.localVm === 'ready' ? (job ? 3 : 4) : 0, 'Stopping the workspace', 'Stopping the workspace', 'busy', status.localVm === 'ready');
+  const workspaceStep = job ? 1 : 2;
+  const modelStep = job ? 2 : 3;
+  const runStep = job ? 3 : 4;
   switch (status.localVm) {
-    case 'starting': return view(place, 2, 'Starting the workspace', 'Starting the workspace', 'busy');
+    case 'starting': return view(place, workspaceStep, 'Starting the workspace', 'Starting the workspace', 'busy');
     case 'failed': {
       const line = status.preflightFailure ? preflightRecovery(status.preflightFailure).summary : 'Setup failed';
-      return view(place, 2, line, status.preflightFailure ? line : workspaceRecovery(status.workspaceFailure).summary, 'bad');
+      return view(place, workspaceStep, line, status.preflightFailure ? line : workspaceRecovery(status.workspaceFailure).summary, 'bad');
     }
     case 'closing': return view(place, 0, 'Stopping the workspace', 'Stopping the workspace', 'busy');
-    case 'closed': return view(place, 2, 'Workspace stopped', 'Workspace stopped', 'wait');
-    case 'cancelled': return view(place, 2, 'Setup paused', 'Downloaded files are kept', 'wait');
+    case 'closed': return view(place, workspaceStep, 'Workspace stopped', 'Workspace stopped', 'wait');
+    case 'cancelled': return view(place, workspaceStep, 'Setup paused', 'Downloaded files are kept', 'wait');
     case 'idle': return view(place, 0, 'Not set up', 'Not set up', 'wait');
     case 'ready': {
-      if (status.model === 'locked') return view(place, 3, 'AI not connected', 'AI not connected', 'wait');
-      if (model === 'failed' || model === 'resetFailed' || model === 'removalFailed') return view(place, 3, 'AI not connected', 'The AI needs to be set up again', 'needs-you');
+      if (status.model === 'locked') return view(place, modelStep, 'AI not connected', 'AI not connected', 'wait');
+      if (model === 'failed' || model === 'resetFailed' || model === 'removalFailed') return view(place, modelStep, 'AI not connected', 'The AI needs to be set up again', 'needs-you');
       if (model !== 'connected') {
         const detail = { resetting: 'Resetting the AI connection…', connecting: 'Connecting the AI…', removing: 'Removing the AI sign-in…', queued: 'AI queued', idle: 'Connect the AI' }[model];
-        return view(place, 3, detail, detail, model === 'idle' ? 'needs-you' : model === 'queued' ? 'wait' : 'busy');
+        return view(place, modelStep, detail, detail, model === 'idle' ? 'needs-you' : model === 'queued' ? 'wait' : 'busy');
       }
+      if (job) return view(place, runStep, 'Run your job', 'The job drafting and checking runtime is not included in this build.', 'wait');
       // Test evidence can need attention after setup; only the initial automatic run is a setup stage.
       const done = !initialAutomatic;
       const tone = check === 'failed' ? 'bad' : check === 'passed' ? 'ready' : check === 'running' ? 'busy' : check === 'stale' || check === 'unknown' ? 'stale' : initialAutomatic ? 'needs-you' : 'wait';
       const line = !done ? 'Run your first agent' : check ? { passed: 'Workspace ready', failed: 'Its test failed', running: 'Running test', stale: 'Tests need running', unknown: 'Test result unknown' }[check] : 'Workspace ready';
-      return view(place, 4, line, 'AI connected', check || !done ? tone : 'ready', done);
+      return view(place, runStep, line, 'AI connected', check || !done ? tone : 'ready', done);
     }
-    default: return view(place, 2, 'Getting the workspace ready', 'Getting the workspace ready', 'busy');
+    default: return view(place, workspaceStep, 'Getting the workspace ready', 'Getting the workspace ready', 'busy');
   }
 }
 

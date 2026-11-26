@@ -380,9 +380,9 @@ try {
         Press $clusters
         Save-BrowserDiagnostics 'loaded'
         # The dark walk reuses the light walk's profile, so the welcome may already be dismissed.
-        Wait-For 'Welcome or Places did not appear' { (Find-Control $script:window 'Get started' $button) -or (Find-Action $script:window 'Set up') } | Out-Null
-        $start = Find-Control $script:window 'Get started' $button
-        if ($start) { Press $start }
+        Wait-For 'Job start or Places did not appear' { (Find-Control $script:window 'See an example first' $button) -or (Find-Action $script:window 'Set up') } | Out-Null
+        $example = Find-Control $script:window 'See an example first' $button
+        if ($example) { Press $example; Press (Wait-For 'Clusters button missing after example' { Find-ReadyClusters }) }
         # Places owns the local entry: this computer's Set up action beside an empty cluster list.
         $setUp = Wait-For 'Set up action missing on Places' { $control = Find-Action $script:window 'Set up'; if ($control -and $control.Current.IsEnabled -and ((Get-UiNames $script:window) -match 'No other clusters added yet')) { $control } }
         Capture 'places-empty'

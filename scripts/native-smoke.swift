@@ -115,12 +115,10 @@ while Date() < rendererDeadline {
         let names = Set(buttons.flatMap { element in
             ["AXTitle", "AXDescription"].compactMap { attribute(element, $0) as? String }
         })
-        // Navigation/footer controls can render before setup_status settles.
-        // Observe the welcome or the actual release setup result, not a button
-        // that merely happens to be below the header.
-        // The text viewport also needs the tab bar; do not query it during renderer startup.
-        if Set(["Overview", "Designer", "Clusters"]).isSubset(of: names)
-            && (names.contains("Get started") || nativeTextIsVisible("Choose where agents run")) { found = true; break }
+        // The first-job screen intentionally hides navigation. Returning setup
+        // still proves the complete tab bar before this walk proceeds.
+        if names.contains("See an example first") || Set(["Overview", "Designer", "Clusters"]).isSubset(of: names)
+            && nativeTextIsVisible("Choose where agents run") { found = true; break }
     }
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
 }
@@ -218,10 +216,8 @@ func nativeButtons(_ label: String, root: AXUIElement? = nil) -> [AXUIElement] {
 // bar is shorter than the wide one, so take its bottom from the actual native tab, not a fixed 110px.
 func bodyBounds() -> CGRect {
     let rect = window()!.1
-    guard let tabsBottom = nativeButtons("Clusters").compactMap({ nativeBounds($0) }).map({ $0.maxY }).max() else {
-        fail("Cannot locate the native tab bar for the page viewport")
-    }
-    let top = tabsBottom + 8
+    let tabsBottom = nativeButtons("Clusters").compactMap({ nativeBounds($0) }).map({ $0.maxY }).max()
+    let top = (tabsBottom ?? rect.minY) + 8
     return CGRect(x: rect.minX, y: top, width: rect.width, height: max(0, rect.maxY - 32 - top))
 }
 func visibleButtons(_ label: String) -> [CGRect] {
@@ -599,7 +595,7 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
     if page == "Clusters" {
         let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ")
         // Vision can read the capital I in AI as lowercase l. Match the rest of the heading.
-        let welcome = text.contains("Build an") && text.contains("does a real job") || !nativeButtons("Get started").isEmpty
+        let welcome = text.contains("What do you want done") || !nativeButtons("See an example first").isEmpty
         let places = text.contains("Choose where agents run") || nativeTextIsVisible("Choose where agents run")
         let detail = text.contains("Back to clusters") || text.contains("Where should your agents run?") || !nativeButtons("Continue").isEmpty
         require(welcome || places || detail, "Places heading or subview not visible; observed: \(text)")
@@ -793,7 +789,8 @@ try FileManager.default.createDirectory(atPath: output, withIntermediateDirector
 setContent(1280, 800)
 var initial = try capture("initial", "Clusters")
 // Each theme owns a fresh runner profile; verify retention after its own restart.
-let initiallyWelcome = initial.contains { $0.topCandidates(1).first?.string == "Get started" }
+let initiallyWelcome = initial.contains { $0.topCandidates(1).first?.string.contains("What do you want done") == true }
+    || !nativeButtons("See an example first").isEmpty
 require(initiallyWelcome, "Expected a first-run welcome in the fresh \(theme) job")
 for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum", CGFloat(540), CGFloat(640))] {
     setContent(width, height)
@@ -801,15 +798,18 @@ for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum",
     try capture("welcome-\(size)", "Clusters")
     scrollMain(-4000)
     try capture("welcome-\(size)-end", "Clusters")
-    require(visibleButtons("Get started").count == 1 && nativeTextIsVisible("About 5 minutes, mostly a download"),
-            "Welcome next action and time cue must remain reachable at \(size)")
-    require(nativeStrings().contains { $0.contains("Send it to your team's cluster (preview).") }, "Welcome lost the team-cluster preview caveat")
+    require(visibleButtons("See an example first").count == 1 && nativeButtons("Set up and run").count == 1
+        && nativeTextIsVisible("Nothing leaves this computer during setup. No account is created."),
+            "Job intake routes and privacy contract must remain reachable at \(size)")
+    require(nativeButtons("Set up and run").allSatisfy { attribute($0, "AXEnabled") as? Bool == false },
+            "Blank job submission must stay disabled")
     requireNoLocalWorkspace()
 }
 setContent(1280, 800)
 scrollMain(4000)
-if initial.contains(where: { $0.topCandidates(1).first?.string == "Get started" }) {
-    clickText("Get started", in: initial)
+if initiallyWelcome {
+    clickButton("See an example first")
+    clickButton("Clusters")
     initial = try capture("places-empty", "Clusters")
 }
 try localPreflight("local-preflight")
@@ -932,7 +932,7 @@ app = try launch()
 app.activate(options: [])
 waitForWorkspaceRenderer()
 let retained = try capture("places-retained", "Clusters")
-require(!retained.contains { $0.topCandidates(1).first?.string == "Get started" },
+require(nativeButtons("See an example first").isEmpty,
         "Restart must retain welcome dismissal without starting a workspace")
 clickTab("Overview", retained)
 _ = try capture("overview", "Overview")

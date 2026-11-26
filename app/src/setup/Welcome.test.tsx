@@ -8,16 +8,30 @@ import App from '../App';
 
 const preference = 'bridge.welcomeSeen.v1';
 const unselected = { selected: null, localVm: 'idle', model: 'locked' };
+const jobId = '12345678-1234-4abc-8def-123456789abc';
 const requirements = { memoryBytes: 6442450944, imageBytes: 3651994962, stateDiskBytes: 34359738368, downloadBytes: 2800000000 };
 function native(initial: object = unselected, sizing: unknown = requirements) {
   vi.stubGlobal('isTauri', true);
   let status = initial;
-  const ipc = vi.fn((command: string) => {
+  const ipc = vi.fn((command: string, args?: unknown) => {
     if (command === 'workspace_upgrade_status') return noUpgrade;
     if (command === 'setup_status') return status;
     if (command === 'setup_requirements') return sizing;
+    if (command === 'first_job_begin') {
+      const prompt = String(typeof args === 'object' && args !== null && !Array.isArray(args) && 'prompt' in args ? args.prompt : '');
+      const existing = 'firstJob' in status ? status.firstJob as { prompt: string } : undefined;
+      if (existing && existing.prompt !== prompt) throw Error('different job');
+      const job = existing ?? { id: jobId, prompt, phase: 'setup' };
+      status = { ...status, firstJob: job };
+      return job;
+    }
+    if (command === 'first_job_discard') {
+      status = { ...status };
+      delete (status as { firstJob?: unknown }).firstJob;
+      return;
+    }
     if (command === 'setup_select_local') {
-      status = { selected: 'localVm', localVm: 'starting', model: 'locked' };
+      status = { ...status, selected: 'localVm', localVm: 'starting', model: 'locked' };
       return status;
     }
     throw new Error('Unsupported command');
@@ -28,43 +42,88 @@ function native(initial: object = unselected, sizing: unknown = requirements) {
 beforeEach(() => { localStorage.clear(); });
 afterEach(() => { cleanup(); clearMocks(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
 
-test('Get started remembers the welcome without starting a workspace, including on remount', async () => {
+test('job intake saves native intent before setup and restores it without the renderer preference', async () => {
   const ipc = native(); const user = userEvent.setup(); const first = render(<App />);
-  expect(await screen.findByRole('heading', { name: 'Build an AI agent that does a real job' })).toBeTruthy();
-  await waitFor(() => expect(document.querySelector('#tab-status-Overview')?.textContent).toBe(''));
-  expect(screen.getByText('Write it')).toBeTruthy();
-  expect(screen.getByText('Test it')).toBeTruthy();
-  expect(screen.getByText('Share it')).toBeTruthy();
-  expect(screen.getByText('About 5 minutes, mostly a download').parentElement).toBe(screen.getByRole('button', { name: 'Get started' }).parentElement);
-  expect(screen.getByText("Send it to your team's cluster (preview).")).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Get started' }));
-  const heading = await screen.findByRole('heading', { name: 'Clusters' });
+  expect(await screen.findByRole('heading', { name: 'What do you want done?' })).toBeTruthy();
+  expect(screen.queryByRole('navigation', { name: 'Main' })).toBeNull();
+  expect(screen.queryByRole('contentinfo')).toBeNull();
+  const field = screen.getByRole('textbox', { name: 'What do you want done?' });
+  const submit = screen.getByRole('button', { name: 'Set up and run' });
+  expect(submit.matches(':disabled')).toBe(true);
+  await user.type(field, 'Summarize the release notes');
+  await user.click(submit);
+  const heading = await screen.findByRole('heading', { name: 'Getting your workspace ready' });
   expect(document.activeElement).toBe(heading);
+  expect(screen.getByText('Summarize the release notes')).toBeTruthy();
   expect(localStorage.getItem(preference)).toBe('1');
-  first.unmount(); render(<App />);
-  expect(await screen.findByRole('button', { name: 'Set up' })).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
+  expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
+  localStorage.clear(); first.unmount(); render(<App />);
+  expect(await screen.findByRole('heading', { name: 'Getting your workspace ready' })).toBeTruthy();
+  expect(screen.getByText('Summarize the release notes')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'What do you want done?' })).toBeNull();
+  expect(ipc.mock.calls.filter(([command]) => command === 'first_job_begin')).toHaveLength(1);
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
 });
 
-test('welcome chrome advances only after Get started, including with denied preference storage', async () => {
-  native(); vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Denied', 'SecurityError'); });
+test('starter jobs fill and focus the box without saving or starting anything', async () => {
+  const ipc = native(); const user = userEvent.setup(); render(<App />);
+  await screen.findByRole('heading', { name: 'What do you want done?' });
+  await user.click(screen.getByRole('button', { name: 'Compare two approaches' }));
+  const field = screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'What do you want done?' });
+  expect(field.value).toBe('Compare two approaches');
+  expect(document.activeElement).toBe(field);
+  expect(screen.getByRole('button', { name: 'Set up and run' }).matches(':disabled')).toBe(false);
+  expect(ipc.mock.calls.some(([command]) => ['first_job_begin', 'setup_select_local'].includes(command))).toBe(false);
+});
+
+test('job setup keeps preflight authoritative and never arms the bundled first test', async () => {
+  const ipc = native(); const user = userEvent.setup(); render(<App />);
+  await user.type(await screen.findByRole('textbox', { name: 'What do you want done?' }), 'Summarize https://example.com');
+  await user.click(screen.getByRole('button', { name: 'Set up and run' }));
+  expect(await screen.findByRole('group', { name: 'Local workspace' })).toBeTruthy();
+  expect(screen.queryByRole('radio', { name: 'On a cluster you already have' })).toBeNull();
+  expect(screen.getByRole('region', { name: 'Computer requirements' })).toBeTruthy();
+  const next = screen.getByRole('button', { name: 'Continue setup' });
+  expect(next.matches(':disabled')).toBe(false);
+  expect(localStorage.getItem('bridge.firstTest.v1')).toBeNull();
+  await user.click(next);
+  expect(await screen.findByRole('list', { name: 'Setup steps' })).toBeTruthy();
+  expect(screen.getAllByRole('listitem').map(row => row.querySelector('b')?.textContent)).toEqual(['Set up', 'Connect the AI', 'Run your job']);
+  expect(within(screen.getByRole('navigation')).getByText('Setting up, step 1 of 3')).toBeTruthy();
+  expect(localStorage.getItem('bridge.firstTest.v1')).toBeNull();
+  expect(ipc.mock.calls.filter(([command]) => command === 'setup_select_local')).toHaveLength(1);
+  expect(ipc.mock.calls.some(([command]) => ['setup_example', 'agent_run'].includes(command))).toBe(false);
+});
+
+test('a failed native save keeps the typed job and starts no setup side effect', async () => {
+  const ipc = native(); mockIPC((command, args) => command === 'first_job_begin' ? Promise.reject('PRIVATE_PATH') : ipc(command, args));
   const user = userEvent.setup(); render(<App />);
-  expect(await within(screen.getByRole('navigation')).findByText('Start here')).toBeTruthy();
-  expect(within(screen.getByRole('contentinfo')).getByText('Nothing is set up yet')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Get started' }));
-  expect(within(screen.getByRole('navigation')).getByText('Choose where agents run')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Designer' }));
-  expect(document.querySelectorAll('#page-title')).toHaveLength(1);
-  await user.click(screen.getByRole('button', { name: 'Clusters' }));
-  expect(await screen.findByRole('button', { name: 'Set up' })).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
+  const field = await screen.findByRole<HTMLTextAreaElement>('textbox', { name: 'What do you want done?' });
+  await user.type(field, 'Keep this exact draft');
+  await user.click(screen.getByRole('button', { name: 'Set up and run' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('The job could not be saved. Check the text and try again.');
+  expect(field.value).toBe('Keep this exact draft');
+  expect(document.activeElement).toBe(field);
+  expect(document.body.textContent).not.toContain('PRIVATE_PATH');
+  expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
+});
+
+test('discard removes only the saved job and returns to intake without changing the workspace', async () => {
+  const firstJob = { id: jobId, prompt: 'A saved job', phase: 'setup' };
+  const ipc = native({ ...unselected, firstJob }); const user = userEvent.setup(); render(<App />);
+  expect(await screen.findByText('A saved job')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Discard job' }));
+  expect(await screen.findByRole('heading', { name: 'What do you want done?' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Set up and run' }).matches(':disabled')).toBe(true);
+  expect(screen.queryByText('A saved job')).toBeNull();
+  expect(ipc.mock.calls.filter(([command]) => command === 'first_job_discard')).toEqual([['first_job_discard', { id: jobId }]]);
+  expect(ipc.mock.calls.some(([command]) => ['setup_select_local', 'setup_change_local'].includes(command))).toBe(false);
 });
 
 test('a saved native choice skips welcome even without a renderer preference', async () => {
   const ipc = native({ selected: 'localVm', localVm: 'starting', model: 'locked' }); render(<App />);
   expect(await screen.findByText('Starting the workspace…')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'What do you want done?' })).toBeNull();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
 });
 
@@ -122,11 +181,12 @@ test('debug requirements without a download retain RAM checks and disk facts wit
   await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' }).matches(':disabled')).toBe(false));
 });
 
-test('release welcome exposes unavailability before Get started without replacing the workflow copy', async () => {
+test('release welcome exposes unavailability before job submission', async () => {
   const ipc = native({ ...unselected, localVm: 'notIntegrated' }, null); render(<App />);
-  expect(await screen.findByRole('button', { name: 'Get started' })).toBeTruthy();
+  expect(await screen.findByRole('button', { name: 'Set up and run' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Set up and run' }).matches(':disabled')).toBe(true);
   expect(screen.getByText('Workspace setup is not included in this build. Nothing will be downloaded or started.')).toBeTruthy();
-  expect(screen.getByText('Share it')).toBeTruthy();
+  expect(screen.getByText('Run your job')).toBeTruthy();
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
 });
 
@@ -139,8 +199,10 @@ test('release-unavailable setup stays explicit and does not invent requirements'
 test.each(['getItem', 'setItem'] as const)('denied preference %s does not prevent setup', async method => {
   native(); vi.spyOn(Storage.prototype, method).mockImplementation(() => { throw new DOMException('Denied', 'SecurityError'); });
   const user = userEvent.setup(); render(<App />);
-  await user.click(await screen.findByRole('button', { name: 'Get started' }));
-  expect(await screen.findByRole('button', { name: 'Set up' })).toBeTruthy();
+  await user.type(await screen.findByRole('textbox', { name: 'What do you want done?' }), 'Explain the API');
+  await user.click(screen.getByRole('button', { name: 'Set up and run' }));
+  expect(await screen.findByRole('heading', { name: 'Getting your workspace ready' })).toBeTruthy();
+  expect(screen.getByText('Explain the API')).toBeTruthy();
 });
 
 test.each([
@@ -166,7 +228,7 @@ test('an unseen welcome cannot hide a failed status read or overwrite its prefer
     : command === 'setup_requirements' ? requirements : Promise.reject({ kind: 'unavailable' }));
   mockIPC(ipc); const user = userEvent.setup(); render(<App />);
   expect(await screen.findByRole('alert')).toBeTruthy();
-  expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'What do you want done?' })).toBeNull();
   expect(localStorage.getItem(preference)).toBeNull();
   failed = false;
   await user.click(screen.getByRole('button', { name: 'Check again' }));
@@ -181,8 +243,8 @@ test('a delayed initial status cannot flash welcome over an existing workspace',
   mockIPC(command => command === 'workspace_upgrade_status' ? noUpgrade : command === 'setup_status' ? new Promise(resolve => { complete = resolve; })
     : command === 'setup_requirements' ? requirements : Promise.reject({ kind: 'unavailable' }));
   render(<App />);
-  expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'What do you want done?' })).toBeNull();
   complete({ selected: 'localVm', localVm: 'starting', model: 'locked' });
   await waitFor(() => expect(screen.getByText('Starting the workspace…')).toBeTruthy());
-  expect(screen.queryByRole('button', { name: 'Get started' })).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'What do you want done?' })).toBeNull();
 });

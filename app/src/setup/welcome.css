@@ -1,15 +1,27 @@
-.welcome-screen { max-width: 760px; display: grid; gap: var(--space-6); justify-items: start; font: var(--type-body); }
+.welcome-screen { width: min(100%, 900px); min-height: calc(100dvh - 48px); display: grid; grid-template-rows: auto auto auto auto auto 1fr auto; gap: var(--space-6); justify-items: start; font: var(--type-body); }
+.welcome-topline { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.welcome-brand { display: flex; align-items: center; gap: var(--space-2); font: var(--type-card); }
 .welcome-mark { filter: var(--mark-filter); }
-.welcome-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
-.welcome-actions p { flex: 1 0 100%; max-width: 46ch; }
 .welcome-screen .welcome-expert { padding-inline: 0; text-decoration: underline; text-underline-offset: 3px; }
 .welcome-screen h1 { font: var(--type-title); letter-spacing: -.017em; text-wrap: balance; }
-.welcome-lede { font-size: var(--size-reading); line-height: 1.625; color: var(--color-text-secondary); max-width: 58ch; }
-.welcome-journey { list-style: none; margin: 0; padding: 24px 0 0; width: 100%; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; border-top: 1px solid var(--color-border); }
+.job-intake { width: min(100%, 704px); display: grid; border: 1px solid var(--color-border-strong); border-radius: var(--radius-card); background: var(--color-card); }
+.job-intake textarea { width: 100%; min-height: 112px; resize: vertical; border: 0; border-radius: var(--radius-card) var(--radius-card) 0 0; padding: var(--space-4); background: transparent; color: var(--color-text); font: var(--type-reading); }
+.job-intake textarea:focus-visible { position: relative; z-index: 1; }
+.job-intake-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: 0 var(--space-4) var(--space-4); }
+.job-intake > [role="alert"] { margin: 0 var(--space-4) var(--space-4); color: var(--color-status-failed); }
+.welcome-journey { list-style: none; margin: 0; padding: var(--space-4) 0 0; width: min(100%, 704px); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--color-border-strong); }
 .welcome-journey li { display: grid; gap: 4px; align-content: start; }
+.welcome-journey li + li { border-left: 1px solid var(--color-border-strong); padding-left: var(--space-4); }
+.welcome-journey li:not(:last-child) { padding-right: var(--space-4); }
 .welcome-journey b { font-size: var(--size-reading); line-height: 1.33333; }
 .welcome-journey span { color: var(--color-text-secondary); }
-.journey-number { font: var(--type-small); font-family: var(--font-mono); }
+.journey-number { font: var(--type-card); font-family: var(--font-mono); }
+.job-starters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.welcome-privacy { align-self: end; color: var(--color-text-secondary); font: var(--type-small); text-transform: uppercase; letter-spacing: .03em; }
+.first-job-summary { display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--space-2) var(--space-4); max-width: 70ch; overflow-wrap: anywhere; }
+.first-job-summary > p { display: flex; gap: var(--space-2); }
+.first-job-summary b { flex: none; }
+.first-job-summary [role="alert"] { flex-basis: 100%; color: var(--color-status-failed); }
 .workspace-heading { display: grid; gap: 8px; margin-bottom: 16px; }
 .workspace-heading h1 { font: var(--type-title); }
 .workspace-heading p { font: var(--type-body); }
@@ -42,7 +54,12 @@
 .workspace-coming:hover > .workspace-tip, .workspace-coming:focus-visible > .workspace-tip { display: block; }
 .workspace-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (max-width: 700px) {
-  .welcome-journey { gap: 16px; }
+  .welcome-screen { min-height: calc(100dvh - 32px); }
+  .welcome-topline, .job-intake-actions { align-items: flex-start; }
+  .job-intake-actions { flex-direction: column; }
+  .welcome-journey { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+  .welcome-journey li + li { border-left: 0; border-top: 1px solid var(--color-border); padding: var(--space-4) 0 0; }
+  .welcome-journey li:not(:last-child) { padding-right: 0; }
   .workspace-option { grid-template-columns: auto minmax(0, 1fr); }
   .workspace-option > .pill, .workspace-option > .chip { grid-column: 2; justify-self: start; }
   .workspace-option-detail { grid-column: 2; }

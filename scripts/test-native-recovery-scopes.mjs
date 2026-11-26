@@ -179,7 +179,7 @@ assert.throws(() => checkQueued({ ...queuedState, cancel: true }, 'setup-transfe
 const welcomeGuard = source.split('\n').find(line => line.includes('if (!welcome.primary'));
 assert.ok(welcomeGuard);
 const checkWelcome = Function('welcome', welcomeGuard);
-const welcomeState = { primary: true, expert: true, text: "Send it to your team's cluster (preview)." };
+const welcomeState = { primary: true, disabled: true, expert: true, example: true, textbox: true, text: 'Set up Connect AI Run your job Nothing leaves this computer during setup' };
 assert.doesNotThrow(() => checkWelcome(welcomeState));
 assert.throws(() => checkWelcome({ ...welcomeState, primary: false }));
 // Exercise the real layout gate with measurements, without pretending to render a native window.

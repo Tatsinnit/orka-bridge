@@ -196,7 +196,7 @@ export default function App() {
   const checks = remote && localChecks ? `This computer: ${localChecks}` : localChecks;
   const firstTest = useFirstTest({
     retired: !!setup?.workspaceReplaced,
-    ready: !upgradeNotice && !setup?.workspaceReplaced && setup?.selected === 'localVm' && setup.localVm === 'ready' && model === 'connected' && !workspaceBusy && !remote,
+    ready: !setup?.firstJob && !upgradeNotice && !setup?.workspaceReplaced && setup?.selected === 'localVm' && setup.localVm === 'ready' && model === 'connected' && !workspaceBusy && !remote,
     canOpen: page === 'Clusters' && localSetupView && setup?.localVm === 'ready' && !workspaceBusy && !remote,
     sampleDirty,
     onOpen: () => { if (!replacementObserved.current) openDesigner(SAMPLE_DOCUMENT_ID); },
@@ -213,7 +213,7 @@ export default function App() {
   // Tab, footer and Setup share the stage. The chip names the place, not AI or test health.
   const initialAutomatic = firstTest === 'running' || (model === 'connected' && firstTestPending() && (!sample || sample.state === 'idle'));
   const firstTestResult = !setup?.workspaceReplaced && sampleSource !== null && sample?.report ? { failed: sample.report.cases.filter(check => check.verdict === 'failed').length } : undefined;
-  const ordinaryView = setupView(setup, { checking, stopping: workspaceStopping, starting: workspaceBusy && !workspaceStopping, workspace: returningWorkspace, model, check: firstCheck, initialAutomatic });
+  const ordinaryView = setupView(setup, { checking, stopping: workspaceStopping, starting: workspaceBusy && !workspaceStopping, workspace: returningWorkspace, model, check: firstCheck, initialAutomatic, job: !!setup?.firstJob });
   const updating = workspaceUpdating && !!setup;
   const recovery = upgradeNotice === 'recovery' && !!setup;
   const required = upgradeNotice === 'required' && !!setup;
@@ -324,8 +324,8 @@ export default function App() {
     if (sampleSource === null) openDesigner(SAMPLE_DOCUMENT_ID);
   };
   return (
-    <div className="app-shell">
-      <header className="tab-bar">
+    <div className={`app-shell${welcome ? ' welcome-mode' : ''}`}>
+      <header className="tab-bar" hidden={welcome}>
         <span className="brand"><img src={mark} width="32" height="32" alt="Orka" /><b>Bridge</b></span>
         <nav className="page-nav" aria-label="Main">
           {pages.map(name => (
@@ -370,7 +370,7 @@ export default function App() {
           onChooseWorkspace={() => setPage('Clusters')} />
         {page === 'Designer' && !exampleOpen && <p role="status">Opening your agent…</p>}
       </main>
-      <footer className="status-bar">
+      <footer className="status-bar" hidden={welcome}>
         {footer.map((part, index) => <span key={index}>{index > 0 && <span aria-hidden="true"> · </span>}<span aria-live={index > 0 ? 'polite' : undefined}>{part}</span></span>)}
         {checks && <span className="checks-status">{checks}</span>}
         <span className="sr-only" role="status" aria-atomic="true">{[

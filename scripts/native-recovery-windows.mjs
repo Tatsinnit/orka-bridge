@@ -1259,16 +1259,20 @@ try {
       return;
     }
     const expected = { welcome: 'About 5 minutes, mostly a download', 'chat-empty': 'Enter sends · Shift+Enter for a new line', 'chat-pending': 'Waiting for your agent to start…', 'chat-running': 'Waiting for your agent’s reply…', 'chat-answer': 'The page says fixture-checksum.', 'chat-session-null': 'Waiting for the conversation to finish saving…', 'chat-session-answer': 'The page says fixture-checksum.', 'chat-two-versions': 'Conversation 2', 'new-agent-form': 'Starts blank, with one empty test.', 'new-agent-created': 'Your first test is incomplete.', 'cluster-picker-open': 'Find a context', 'cluster-checking': 'Checking the cluster', 'cluster-failure': "Can't reach team-dev. Check your network or VPN.", 'cluster-account-picker-open': 'Find an account', 'cluster-account-allowed': 'Required Orka permissions: Allowed', 'cluster-account-forbidden': 'cannot list ServiceAccounts in agents', 'designer-no-destination': 'Open Clusters to load tools and models on This computer.', 'places-empty': 'No other clusters added yet', 'places-populated': 'Not checked yet', 'local-preflight': 'Step 1 of 4', 'local-preflight-missing': 'Step 1 of 4', 'local-preflight-unknown': "Bridge couldn't check virtualization or memory yet.", 'local-preflight-blocked': 'Virtualization:', 'local-preflight-memory': 'This computer has 2.1 GB of memory; Bridge needs 4.3 GB.', 'local-preflight-mixed': "Bridge couldn't check virtualization yet.", 'local-preflight-cluster': 'Virtualization:', 'ai-cli-missing': 'gh auth login --hostname github.com --web', 'designer-loading': 'Opening your agent', 'designer-open-error': 'Your agent folder could not be opened.', 'ai-key': 'Where do I get a key?', 'ai-idle': 'GitHub CLI must be installed and signed in', 'ai-connecting': 'Connecting', 'ai-connected': 'Connected', 'first-test-running': 'Run your first agentRunning', 'first-test-result': 'No checksum was given.', 'local-completed': 'Workspace ready', 'ai-removal-confirmation': 'Disconnect the AI and remove Bridge’s saved sign-in?', 'ai-removal-retry': 'Press Retry removal', 'switch-place': 'Add a cluster', designer: 'Instructions and settings', 'designer-connected': 'Instructions and settings', 'designer-catalog-busy': 'Instructions and settings', 'designer-file': 'web-reader.agent.md', 'designer-reply-saved': 'Reply in a conversation', 'designer-failed': 'checks failed', 'designer-passed': 'The test passed.', 'designer-stale': 'Not run since your edit', 'designer-running': 'Waiting for answers and evaluating tests', 'designer-remote': 'Instructions and settings' };
+    expected.welcome = 'What do you want done?';
     await until(() => evaluate(`document.body.textContent.includes(${JSON.stringify(expected[name])}) && ${['designer-loading', 'designer-open-error'].includes(name) ? "!!document.querySelector('.designer > .designer-file')?.getClientRects().length" : 'true'}`), `${name} action state`).catch(async error => {
       throw Error(`${error.message}: ${await evaluate('document.body.innerText')}`);
     });
     if (name === 'welcome') {
       const welcome = await evaluate(`(() => {
         const root = document.querySelector('.welcome-screen');
-        const start = [...root.querySelectorAll('button')].find(button => button.textContent === 'Get started');
-        return { text: root.innerText, primary: start?.classList.contains('button-primary'), expert: [...root.querySelectorAll('button')].some(button => button.textContent.includes('I already run Orka on a cluster')) };
+        const start = [...root.querySelectorAll('button')].find(button => button.textContent.includes('Set up and run'));
+        return { text: root.innerText, primary: start?.classList.contains('button-primary'), disabled: start?.disabled,
+          expert: [...root.querySelectorAll('button')].some(button => button.textContent.includes('I already run Orka on a cluster')),
+          example: [...root.querySelectorAll('button')].some(button => button.textContent === 'See an example first'),
+          textbox: !!root.querySelector('#first-job-prompt') };
       })()`);
-      if (!welcome.primary || !welcome.expert || !welcome.text.includes("Send it to your team's cluster (preview).")) throw Error('Welcome lost its primary, expert route or preview caveat: ' + JSON.stringify(welcome));
+      if (!welcome.primary || !welcome.disabled || !welcome.expert || !welcome.example || !welcome.textbox || !['Set up', 'Connect AI', 'Run your job', 'Nothing leaves this computer during setup'].every(text => welcome.text.includes(text))) throw Error('Welcome lost its job intake, routes or setup contract: ' + JSON.stringify(welcome));
     }
     if (preflight) {
       if (name !== 'local-preflight-missing') await until(() => evaluate(`document.querySelector('[aria-label="Computer requirements"]')?.getAttribute('aria-busy') === 'false'`), 'settled computer checks');
@@ -1389,7 +1393,7 @@ try {
       // The compact loop uses 540×640; preserve the choice and its scrolled action.
       await evaluate(`document.querySelector('main').scrollTop = document.querySelector('main').scrollHeight`);
       await evaluate('document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))');
-      const actionLabel = name === 'welcome' ? 'Get started' : 'Continue';
+      const actionLabel = name === 'welcome' ? 'See an example first' : 'Continue';
       const reachable = await evaluate(`(() => {
         const button = [...document.querySelectorAll('button')].find(button => button.textContent === ${JSON.stringify(actionLabel)} && button.getClientRects().length);
         const r = button?.getBoundingClientRect(), main = document.querySelector('main').getBoundingClientRect();
@@ -1399,8 +1403,8 @@ try {
       const end = await call('Page.captureScreenshot', { format: 'png' });
       await writeFile(join(output, `${theme}-${size}-${name}-end.png`), Buffer.from(end.data, 'base64'));
       if (name === 'welcome') {
-        await clickAction('Get started');
-        await until(() => evaluate(`document.body.innerText.includes('Choose where agents run') && !document.querySelector('.welcome-screen')`), 'Get started retains Places navigation');
+        await clickAction('See an example first');
+        await until(() => evaluate(`document.body.innerText.includes('web-reader') && !document.querySelector('.welcome-screen')`), 'example route opens the bundled agent');
       } else if (name === 'local-preflight-cluster') {
         await clickAction('Continue');
         await until(() => evaluate(`!!document.querySelector('.cluster-card')?.getClientRects().length`), 'existing cluster chooser');

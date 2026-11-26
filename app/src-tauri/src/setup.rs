@@ -1,5 +1,5 @@
 use crate::runtime::credential_store::{NativeCall, StoreError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     io::ErrorKind,
@@ -11,6 +11,20 @@ use std::{
 #[serde(rename_all = "camelCase")]
 pub enum SetupChoice {
     LocalVm,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FirstJobPhase {
+    Setup,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FirstJobSnapshot {
+    pub id: bridge_runtime_protocol::Uuid,
+    pub prompt: String,
+    pub phase: FirstJobPhase,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -54,6 +68,8 @@ pub struct SetupSnapshot {
     /// a process. Omitted (not just false) in the ordinary, never-replaced case.
     #[serde(skip_serializing_if = "is_false")]
     pub workspace_replaced: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_job: Option<FirstJobSnapshot>,
 }
 
 impl SetupSnapshot {
@@ -68,6 +84,10 @@ impl SetupSnapshot {
     pub fn with_local_vm(mut self, state: &'static str, error: Option<String>) -> Self {
         self.local_vm = state;
         self.local_vm_error = error;
+        self
+    }
+    pub fn with_first_job(mut self, first_job: Option<FirstJobSnapshot>) -> Self {
+        self.first_job = first_job;
         self
     }
 }
@@ -273,6 +293,9 @@ impl SetupError {
             recovery: None,
         }
     }
+    pub fn storage() -> Self {
+        storage_error()
+    }
 }
 fn storage_error() -> SetupError {
     SetupError {
@@ -404,6 +427,7 @@ fn snapshot(root: &Path) -> Result<SetupSnapshot, SetupError> {
         preflight_failure: None,
         workspace_failure: None,
         workspace_replaced: false,
+        first_job: None,
     })
 }
 
