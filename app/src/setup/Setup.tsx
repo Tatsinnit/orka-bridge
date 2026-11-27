@@ -311,7 +311,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   function chooseComputer() { publishPlace({ kind: 'thisComputer' }); }
   function openExample() { if (firstPass) setPayoffDismissed(true); chooseComputer(); onOpenExample(); }
   function back() { focusChoice.current = true; setPanel('places'); }
-  function openLocal() { focusChoice.current = true; if (status?.selected === 'localVm' && status.localVm !== 'notIntegrated' && firstCheck && !firstTestPending() && (!firstPass || payoffDismissed)) setWorkspace(true); setLocation('local'); setPreflightBlocked(true); setPanel('local'); }
+  function openLocal() { focusChoice.current = true; if (!firstJob && status?.selected === 'localVm' && status.localVm !== 'notIntegrated' && firstCheck && !firstTestPending() && (!firstPass || payoffDismissed)) setWorkspace(true); setLocation('local'); setPreflightBlocked(true); setPanel('local'); }
   function removed(key: string, targetId: string | undefined, navigate: boolean) {
     const current = currentPlaceRef.current;
     if (targetId && current.kind === 'cluster' && current.target?.id === targetId) publishPlace({ kind: 'cluster' });

@@ -1,6 +1,6 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, expect, test, vi } from 'vitest';
-import { beginFirstJob, discardFirstJob } from './first-job';
+import { beginFirstJob, discardFirstJob, prepareFirstJobPrompt } from './first-job';
 
 afterEach(() => { clearMocks(); vi.unstubAllGlobals(); });
 
@@ -10,6 +10,15 @@ test('begin sends only the prompt and accepts the closed native snapshot', async
   const ipc = vi.fn(() => job); mockIPC(ipc);
   expect(await beginFirstJob(job.prompt)).toEqual({ ok: true, job });
   expect(ipc).toHaveBeenCalledExactlyOnceWith('first_job_begin', { prompt: job.prompt });
+});
+
+test('prompt preparation matches native normalization and its UTF-8 byte limit', async () => {
+  expect(prepareFirstJobPrompt('  Explain\r\nthis\rAPI  ')).toEqual({ ok: true, prompt: 'Explain\nthis\nAPI' });
+  expect(prepareFirstJobPrompt('界'.repeat(3000))).toEqual({ ok: false, message: 'This job is too long. Shorten it to 8,192 bytes or less.' });
+  vi.stubGlobal('isTauri', true);
+  const ipc = vi.fn(); mockIPC(ipc);
+  expect(await beginFirstJob('界'.repeat(3000))).toEqual({ ok: false, message: 'This job is too long. Shorten it to 8,192 bytes or less.' });
+  expect(ipc).not.toHaveBeenCalled();
 });
 
 test.each([

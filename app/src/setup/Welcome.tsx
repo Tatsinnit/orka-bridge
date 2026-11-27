@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { Button } from '../components/Button';
 import mark from '../assets/orka-mark.svg';
+import { prepareFirstJobPrompt } from './first-job';
 import { setupTime, type WorkspaceRequirements } from './requirements';
 
 export const welcomePreference = 'bridge.welcomeSeen.v1';
@@ -19,10 +20,11 @@ export default function Welcome({ titleId, onStart, onCluster, onExample, unavai
   useEffect(() => { if (error && !busy) field.current?.focus(); }, [busy, error]);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const job = prompt.trim();
-    if (!job || busy || unavailable) return;
+    if (busy || unavailable) return;
+    const prepared = prepareFirstJobPrompt(prompt);
+    if (!prepared.ok) { setError(prepared.message); return; }
     setBusy(true); setError(undefined);
-    const failure = await onStart(job);
+    const failure = await onStart(prepared.prompt);
     setBusy(false); setError(failure);
   }
   return <section className="welcome-screen">
@@ -34,7 +36,7 @@ export default function Welcome({ titleId, onStart, onCluster, onExample, unavai
     <form className="job-intake" onSubmit={event => { void submit(event); }}>
       <label className="sr-only" htmlFor="first-job-prompt">What do you want done?</label>
       <textarea ref={field} id="first-job-prompt" rows={4} maxLength={8192} value={prompt} disabled={busy || !!unavailable}
-        onChange={event => { setPrompt(event.currentTarget.value); setError(undefined); }} />
+        aria-invalid={!!error} onChange={event => { setPrompt(event.currentTarget.value); setError(undefined); }} />
       <div className="job-intake-actions">
         <span className="muted">Runs in a private workspace on this computer. {setupTime(requirements)}.</span>
         <Button kind="primary" type="submit" disabled={busy || !!unavailable || !prompt.trim()}>{busy ? 'Saving job…' : 'Save job and set up'} <span aria-hidden="true">→</span></Button>

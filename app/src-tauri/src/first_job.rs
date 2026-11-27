@@ -14,7 +14,9 @@ const RECORD: &str = "intent.json";
 const OWNER: &str = "owner.lock";
 const VERSION: u32 = 1;
 const MAX_PROMPT: usize = 8 * 1024;
-const MAX_RECORD: usize = 16 * 1024;
+// Every accepted byte can require two JSON bytes (quotes, slashes, newlines or
+// tabs). Keep a fixed allowance for the version, UUID, phase and object keys.
+const MAX_RECORD: usize = MAX_PROMPT * 2 + 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -211,6 +213,17 @@ mod tests {
                 .kind(),
             io::ErrorKind::AlreadyExists
         );
+    }
+
+    #[test]
+    fn maximum_escaped_prompt_fits_the_bounded_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = Some(temp.path().join("local"));
+        let store = FirstJobStore::new(path.clone());
+        let prompt = "\"".repeat(MAX_PROMPT);
+        let saved = store.begin(prompt.clone()).unwrap();
+        assert_eq!(saved.prompt, prompt);
+        assert_eq!(FirstJobStore::new(path).status().unwrap(), Some(saved));
     }
 
     #[test]

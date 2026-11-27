@@ -1,10 +1,11 @@
 import { noUpgrade } from './test-upgrade';
 import { openLocalSetup } from './test-navigation';
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import App from '../App';
+import SetupHarness from './SetupHarness';
 
 const preference = 'bridge.welcomeSeen.v1';
 const unselected = { selected: null, localVm: 'idle', model: 'locked' };
@@ -108,6 +109,17 @@ test('a failed native save keeps the typed job and starts no setup side effect',
   expect(ipc.mock.calls.some(([command]) => command === 'setup_select_local')).toBe(false);
 });
 
+test('oversized UTF-8 input is explained before native save', async () => {
+  const ipc = native(); const user = userEvent.setup(); render(<App />);
+  const field = await screen.findByRole<HTMLTextAreaElement>('textbox', { name: 'What do you want done?' });
+  fireEvent.change(field, { target: { value: '界'.repeat(3000) } });
+  await user.click(screen.getByRole('button', { name: 'Save job and set up' }));
+  expect((await screen.findByRole('alert')).textContent).toBe('This job is too long. Shorten it to 8,192 bytes or less.');
+  expect(field.getAttribute('aria-invalid')).toBe('true');
+  expect(document.activeElement).toBe(field);
+  expect(ipc.mock.calls.some(([command]) => command === 'first_job_begin')).toBe(false);
+});
+
 test('discard removes only the saved job and returns to intake without changing the workspace', async () => {
   const firstJob = { id: jobId, prompt: 'A saved job', phase: 'setup' };
   const ipc = native({ ...unselected, firstJob }); const user = userEvent.setup(); render(<App />);
@@ -118,6 +130,19 @@ test('discard removes only the saved job and returns to intake without changing 
   expect(screen.queryByText('A saved job')).toBeNull();
   expect(ipc.mock.calls.filter(([command]) => command === 'first_job_discard')).toEqual([['first_job_discard', { id: jobId }]]);
   expect(ipc.mock.calls.some(([command]) => ['setup_select_local', 'setup_change_local'].includes(command))).toBe(false);
+});
+
+test('reopening local setup keeps the saved job steps instead of returning-workspace mode', async () => {
+  const firstJob = { id: jobId, prompt: 'Keep this job visible', phase: 'setup' };
+  native({ selected: 'localVm', localVm: 'ready', model: 'available', firstJob });
+  const user = userEvent.setup(); render(<SetupHarness onOpenExample={() => {}} firstCheck="passed" />);
+  expect(await screen.findByText('Keep this job visible')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Clusters' }));
+  const local = await screen.findByRole('region', { name: 'This computer' });
+  await user.click(within(local).getByRole('button', { name: 'Connect the AI' }));
+  expect(await screen.findByRole('list', { name: 'Setup steps' })).toBeTruthy();
+  expect(screen.getByText('Run your job', { selector: 'li b' })).toBeTruthy();
+  expect(screen.queryByRole('region', { name: 'Workspace' })).toBeNull();
 });
 
 test('a late status reply cannot erase an acknowledged saved job', async () => {
