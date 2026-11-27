@@ -218,7 +218,10 @@ func bodyBounds() -> CGRect {
     let rect = window()!.1
     let tabsBottom = nativeButtons("Clusters").compactMap({ nativeBounds($0) }).map({ $0.maxY }).max()
     let top = (tabsBottom ?? rect.minY) + 8
-    return CGRect(x: rect.minX, y: top, width: rect.width, height: max(0, rect.maxY - 32 - top))
+    // Job intake hides both tab and status bars. Do not reserve a phantom
+    // footer that would exclude its visible privacy line from native evidence.
+    let bottom = tabsBottom == nil ? rect.maxY - 8 : rect.maxY - 32
+    return CGRect(x: rect.minX, y: top, width: rect.width, height: max(0, bottom - top))
 }
 func visibleButtons(_ label: String) -> [CGRect] {
     nativeButtons(label).filter { attribute($0, "AXEnabled") as? Bool == true }

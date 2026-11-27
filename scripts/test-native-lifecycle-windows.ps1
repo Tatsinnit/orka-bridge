@@ -7,10 +7,10 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'native-lifecycle-windows.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw "Lifecycle script parse errors: $errors" }
-$coldClusterWait = @($ast.FindAll({
+$coldStartupWait = @($ast.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-For' -and
-        $node.CommandElements[1].Value -eq 'Clusters button missing'
+        $node.CommandElements[1].Value -eq 'Job start or settled Places missing'
 }, $true))
 $idleClusterWait = @($ast.FindAll({
     param($node)
@@ -22,9 +22,9 @@ $explicitWaitBudgets = @($ast.FindAll({
     $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Wait-For' -and
         $node.CommandElements.Count -gt 3
 }, $true))
-if ($coldClusterWait.Count -ne 1 -or $coldClusterWait[0].CommandElements[-1].Extent.Text -ne '600' -or
+if ($coldStartupWait.Count -ne 1 -or $coldStartupWait[0].CommandElements[-1].Extent.Text -ne '600' -or
     $idleClusterWait.Count -ne 1 -or $idleClusterWait[0].CommandElements.Count -ne 3 -or
-    $explicitWaitBudgets.Count -ne 1 -or $explicitWaitBudgets[0].Extent.Text -cne $coldClusterWait[0].Extent.Text) {
+    $explicitWaitBudgets.Count -ne 1 -or $explicitWaitBudgets[0].Extent.Text -cne $coldStartupWait[0].Extent.Text) {
     throw 'Only cold renderer startup gets the bounded sixty-second hosted-WebView budget'
 }
 $trayMenu = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Tray-Menu' }, $true)
