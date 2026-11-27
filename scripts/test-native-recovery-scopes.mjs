@@ -189,12 +189,16 @@ const wide = { width: 1280, scrollWidth: 1000, clientWidth: 1000, scrollHeight: 
   tabs: [0, 1, 2].map(i => ({ width: 180, grow: '0', right: 180 * (i + 1) })),
   host: { x: 556 }, hostLabel: { width: 100 }, subtitles: 3, quiet: [{ start: '0px', end: '0px' }],
   scrollbar: { width: 'thin', color: 'rgb(90, 90, 90) rgb(240, 240, 240)' }, theme: { page: 'rgb(255, 255, 255)', ink: 'rgb(11, 11, 12)' }, fallback: {} };
-async function gate(layout) {
-  return Function('evaluate', 'writeFile', 'join', 'output', `${layoutGate}; return checkLayout('light', 'setup-fit', 'probe');`)(
-    async () => layout, async () => {}, () => '', '');
+async function gate(layout, name = 'probe') {
+  return Function('evaluate', 'writeFile', 'join', 'output', 'name', `${layoutGate}; return checkLayout('light', 'setup-fit', name);`)(
+    async () => layout, async () => {}, () => '', '', name);
 }
 await gate(wide);
 await gate({ ...wide, width: 540, subtitles: 0 });
+const welcome = { ...wide, tabs: [], host: { x: 0, width: 0 }, hostLabel: { width: 0 }, subtitles: 0 };
+await gate(welcome, 'welcome');
+await assert.rejects(() => gate({ ...welcome, tabs: wide.tabs }, 'welcome'));
+await assert.rejects(() => gate({ ...welcome, host: { x: 0, width: 100 } }, 'welcome'));
 for (const mutation of [
   { tabs: wide.tabs.map(tab => ({ ...tab, width: 181.5 })) },
   { tabs: wide.tabs.map(tab => ({ ...tab, grow: '1' })) }, { host: { x: 555 } },
@@ -458,6 +462,7 @@ const overviewShotGate = smoke.slice(smoke.indexOf('    func overviewShot('), sm
 assert.ok(overviewShotGate.includes('afterFrame:') && !overviewShotGate.includes('anchor.minY'), 'capture the already-visible native Overview state; do not scroll it away for cosmetic framing');
 assert.ok(smoke.includes('name.hasPrefix("overview-probe-")'), 'renamed scrolled Overview probes must retain the existing heading exemption');
 assert.ok(smoke.includes('CGFloat(image.width - chromeInset)') && smoke.includes('name.hasPrefix("overview-") ? 20 : 8'), 'Overview theme sampling must avoid its transient edge scrollbar without relaxing the theme tolerance');
+assert.ok(smoke.includes('clickButton("See an example first")\n    clickTab("Clusters", [])'), 'native smoke must use the visible header-tab path after leaving job intake');
 assert.ok(smoke.includes('theme == "dark" ? [9, 9, 10] : [255, 255, 255]') && smoke.includes('Orka paper'), 'native smoke must verify the Orka paper palette in both themes');
 assert.ok(source.includes("theme === 'dark' ? '#09090a' : '#ffffff'") && source.includes("theme === 'dark' ? '#f4f4f5' : '#0b0b0c'"), 'Windows comparisons must use Orka paper and ink');
 assert.ok(!smoke.includes('clickText("Refresh"') && !smoke.includes('clickButton("Refresh")') && !smoke.includes('clickText("By agent"') && !smoke.includes('clickText("By cluster"'), 'native smoke must remove top Refresh and grouping-only Overview paths');

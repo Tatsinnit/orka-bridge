@@ -820,7 +820,7 @@ setContent(1280, 800)
 scrollMain(4000)
 if initiallyWelcome {
     clickButton("See an example first")
-    clickButton("Clusters")
+    clickTab("Clusters", [])
     initial = try capture("places-empty", "Clusters")
 }
 try localPreflight("local-preflight")
