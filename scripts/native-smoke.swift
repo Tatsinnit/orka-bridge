@@ -376,7 +376,7 @@ func capture(_ name: String, _ page: String, searching: Bool = false, afterFrame
         try png.write(to: URL(fileURLWithPath: "\(output)/\(name)-comparison.png"))
     }
     // Overview's scrolled evidence can paint an overlay scrollbar at the window edge.
-    let chromeInset = name == "overview" || name.hasPrefix("overview-") ? 20 : 8
+    let chromeInset = name.hasPrefix("welcome-") ? 20 : name == "overview" || name.hasPrefix("overview-") ? 20 : 8
     // Render the PNG's profile into sRGB bytes; NSColor calibration changed the sampled values.
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: file) as CFURL, nil),
         let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
