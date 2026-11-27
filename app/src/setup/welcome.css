@@ -17,7 +17,7 @@
 .welcome-journey span { color: var(--color-text-secondary); }
 .journey-number { font: var(--type-card); font-family: var(--font-mono); }
 .job-starters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.welcome-privacy { align-self: end; color: var(--color-text-secondary); font: var(--type-small); text-transform: uppercase; letter-spacing: .03em; }
+.welcome-privacy { align-self: end; color: var(--color-text-secondary); font: var(--type-small); letter-spacing: .03em; }
 .first-job-summary { display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--space-2) var(--space-4); max-width: 70ch; overflow-wrap: anywhere; }
 .first-job-summary > p { display: flex; gap: var(--space-2); }
 .first-job-summary b { flex: none; }

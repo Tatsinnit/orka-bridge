@@ -1276,7 +1276,7 @@ try {
           example: [...root.querySelectorAll('button')].some(button => button.textContent === 'See an example first'),
           textbox: !!root.querySelector('#first-job-prompt') };
       })()`);
-      if (!welcome.primary || !welcome.disabled || !welcome.expert || !welcome.example || !welcome.textbox || !['Set up', 'Connect AI', 'Run your job', 'not included in this build yet', 'Nothing leaves this computer during setup'].every(text => welcome.text.includes(text))) throw Error('Welcome lost its job intake, routes or setup contract: ' + JSON.stringify(welcome));
+      if (!welcome.primary || !welcome.disabled || !welcome.expert || !welcome.example || !welcome.textbox || !['Set up', 'Connect AI', 'Run your job', 'not included in this build yet', 'NOTHING LEAVES THIS COMPUTER DURING SETUP'].every(text => welcome.text.includes(text))) throw Error('Welcome lost its job intake, routes or setup contract: ' + JSON.stringify(welcome));
     }
     if (preflight) {
       if (name !== 'local-preflight-missing') await until(() => evaluate(`document.querySelector('[aria-label="Computer requirements"]')?.getAttribute('aria-busy') === 'false'`), 'settled computer checks');

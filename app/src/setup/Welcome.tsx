@@ -39,7 +39,7 @@ export default function Welcome({ titleId, onStart, onCluster, onExample, unavai
         aria-invalid={!!error} onChange={event => { setPrompt(event.currentTarget.value); setError(undefined); }} />
       <div className="job-intake-actions">
         <span className="muted">Runs in a private workspace on this computer. {setupTime(requirements)}.</span>
-        <Button kind="primary" type="submit" disabled={busy || !!unavailable || !prompt.trim()}>{busy ? 'Saving job…' : 'Save job and set up'} <span aria-hidden="true">→</span></Button>
+        <Button kind="primary" type="submit" aria-label={busy ? 'Saving job' : 'Save job and set up'} disabled={busy || !!unavailable || !prompt.trim()}>{busy ? 'Saving job…' : 'Save job and set up'} <span aria-hidden="true">→</span></Button>
       </div>
       {error && <p role="alert">{error}</p>}
       {unavailable && <p className="muted">{unavailable}</p>}
@@ -51,6 +51,6 @@ export default function Welcome({ titleId, onStart, onCluster, onExample, unavai
     </ol>
     <div className="job-starters"><span className="muted">Or try</span>{starters.map(starter => <Button key={starter} size="small" type="button" disabled={busy || !!unavailable} onClick={() => { setPrompt(starter); setError(undefined); field.current?.focus(); }}>{starter}</Button>)}</div>
     <Button kind="quiet" type="button" disabled={busy} onClick={onExample}>See an example first</Button>
-    <p className="welcome-privacy">Nothing leaves this computer during setup. No account is created.</p>
+    <p className="welcome-privacy">NOTHING LEAVES THIS COMPUTER DURING SETUP. NO ACCOUNT IS CREATED.</p>
   </section>;
 }

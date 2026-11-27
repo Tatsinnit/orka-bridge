@@ -801,11 +801,14 @@ for (size, width, height) in [("wide", CGFloat(1280), CGFloat(800)), ("minimum",
     try capture("welcome-\(size)", "Clusters")
     scrollMain(-4000)
     try capture("welcome-\(size)-end", "Clusters")
-    require(visibleButtons("See an example first").count == 1 && nativeButtons("Save job and set up").count == 1
-        && nativeTextIsVisible("Nothing leaves this computer during setup. No account is created."),
-            "Job intake routes and privacy contract must remain reachable at \(size)")
-    require(nativeButtons("Save job and set up").allSatisfy { attribute($0, "AXEnabled") as? Bool == false },
+    require(visibleButtons("See an example first").count == 1,
+            "Job intake example route must remain reachable at \(size)")
+    let submit = nativeButtons("Save job and set up")
+    require(submit.count == 1, "Job intake needs one exact native Save job and set up control at \(size)")
+    require(submit.allSatisfy { attribute($0, "AXEnabled") as? Bool == false },
             "Blank job submission must stay disabled")
+    require(nativeTextIsVisible("NOTHING LEAVES THIS COMPUTER DURING SETUP. NO ACCOUNT IS CREATED."),
+            "Job intake privacy contract must remain visible at \(size)")
     // A release build names its download; the bare fallback means the sizes never arrived.
     let sizedLine = { nativeStrings().contains { $0.range(of: #"Mostly a \d+\.\d GB download"#, options: .regularExpression) != nil } }
     let sizedDeadline = Date(timeIntervalSinceNow: 10)
