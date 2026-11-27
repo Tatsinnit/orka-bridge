@@ -14,25 +14,68 @@ pub const IMAGE_BYTES: Option<u64> = if cfg!(all(target_os = "macos", target_arc
     None
 };
 
+#[cfg(any(test, not(debug_assertions)))]
+fn pinned_manifest(target: crate::runtime::image_types::ImageTarget) -> &'static [u8] {
+    use crate::runtime::image_types::ImageTarget;
+    match target {
+        ImageTarget::MacosArm64 => include_bytes!("../../../images/release/macos-arm64.json"),
+        ImageTarget::WindowsAmd64 => include_bytes!("../../../images/release/windows-amd64.json"),
+    }
+}
+/// Bytes of the compressed OS plus the direct-boot files, or of the installed OS instead.
+#[cfg(any(test, not(debug_assertions)))]
+fn image_bytes(manifest: &[u8], os: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_slice(manifest).ok()?;
+    value["artifact"][os]
+        .as_u64()?
+        .checked_add(value["directBoot"]["kernel"]["bytes"].as_u64()?)?
+        .checked_add(value["directBoot"]["initrd"]["bytes"].as_u64()?)
+}
 /// Image payload only: compressed OS plus the direct-boot files, not installed disk capacity.
 #[cfg(any(test, not(debug_assertions)))]
 pub(crate) fn image_download_bytes(
     target: crate::runtime::image_types::ImageTarget,
 ) -> Option<u64> {
-    use crate::runtime::image_types::ImageTarget;
-    let manifest = match target {
-        ImageTarget::MacosArm64 => {
-            include_bytes!("../../../images/release/macos-arm64.json").as_slice()
-        }
-        ImageTarget::WindowsAmd64 => {
-            include_bytes!("../../../images/release/windows-amd64.json").as_slice()
-        }
-    };
-    let value: serde_json::Value = serde_json::from_slice(manifest).ok()?;
-    value["artifact"]["compressedBytes"]
-        .as_u64()?
-        .checked_add(value["directBoot"]["kernel"]["bytes"].as_u64()?)?
-        .checked_add(value["directBoot"]["initrd"]["bytes"].as_u64()?)
+    image_bytes(pinned_manifest(target), "compressedBytes")
+}
+/// First runs measured with each pinned image, by manifest SHA-256: disk in use before the VM's
+/// first write, and seconds from the end of the download until the workspace is ready. The Mac
+/// was timed on an Apple-silicon Mac; the Windows image ran the app's own code in a Linux
+/// container, and no Windows boot has been timed. Another pin has no figures until it's measured.
+#[cfg(any(test, not(debug_assertions)))]
+const FIRST_RUNS: [(&str, u64, Option<u64>); 2] = [
+    (
+        "f8c2d2b1423aa63b9f9b626eb428c944e5283277303872e47df655ee6064709e",
+        6_997_696_512,
+        Some(134),
+    ),
+    (
+        "be18ce4298a22b28bec2de5776288726bc5bd020c2dc9a62c360fc256a9718e9",
+        9_453_699_072,
+        None,
+    ),
+];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FirstRun {
+    pub(crate) disk_bytes: u64,
+    pub(crate) free_bytes: u64,
+    pub(crate) ready_seconds: Option<u64>,
+}
+#[cfg(any(test, not(debug_assertions)))]
+pub(crate) fn first_run(target: crate::runtime::image_types::ImageTarget) -> Option<FirstRun> {
+    measured(pinned_manifest(target))
+}
+#[cfg(any(test, not(debug_assertions)))]
+fn measured(manifest: &[u8]) -> Option<FirstRun> {
+    use sha2::{Digest, Sha256};
+    let pin = format!("{:x}", Sha256::digest(manifest));
+    let (_, disk_bytes, ready_seconds) = FIRST_RUNS.iter().find(|(sha, ..)| *sha == pin)?;
+    Some(FirstRun {
+        disk_bytes: *disk_bytes,
+        // Installing checks for a whole private copy while the cache holds its share.
+        free_bytes: disk_bytes.checked_add(image_bytes(manifest, "uncompressedBytes")?)?,
+        ready_seconds: *ready_seconds,
+    })
 }
 
 /// Only connection contention is transient; guest and binding failures need explicit refresh.
@@ -230,6 +273,21 @@ mod tests {
                 serde_json::to_value(CatalogError::from(error)).unwrap(),
                 "catalogUnavailable"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod first_run_tests {
+    #[test]
+    fn another_pinned_manifest_has_no_figures_until_it_is_measured() {
+        use crate::runtime::image_types::ImageTarget;
+        for target in [ImageTarget::MacosArm64, ImageTarget::WindowsAmd64] {
+            let pinned = super::pinned_manifest(target);
+            assert!(super::measured(pinned).is_some());
+            let mut repinned = pinned.to_vec();
+            repinned.push(b'\n');
+            assert_eq!(super::measured(&repinned), None);
         }
     }
 }

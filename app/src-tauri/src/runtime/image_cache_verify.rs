@@ -45,6 +45,7 @@ pub(super) fn verify_set(
     stage: &Dir,
     image: &ResolvedImage,
     closed: Option<&tokio::sync::watch::Receiver<bool>>,
+    disk: bool,
 ) -> Result<(), ImageError> {
     use std::io::{Seek, SeekFrom};
     if !marker(stage, "manifest.json", image.manifest_bytes())? {
@@ -63,7 +64,15 @@ pub(super) fn verify_set(
             return Err(ImageError::Integrity);
         }
     }
-    let mut chunks = chunk_stream(stage, image);
+    let mut file = regular(stage, "os.disk", false, false)?;
+    if !disk {
+        // The caller already hashed these bytes; only the size is rechecked.
+        if file.metadata().map_err(storage)?.len() != image.disk_bytes {
+            return Err(ImageError::Integrity);
+        }
+        return Ok(());
+    }
+    let mut chunks = Compressed::new(image, chunk_stream(stage, image));
     let mut buffer = [0; 65536];
     loop {
         if let Some(closed) = closed {
@@ -77,17 +86,10 @@ pub(super) fn verify_set(
             break;
         }
     }
-    if chunks.total != image.compressed_bytes
-        || format!("{:x}", chunks.whole.finalize()) != image.compressed_sha256
-    {
+    if !chunks.matches() {
         return Err(ImageError::Integrity);
     }
-    verify_checked(
-        &mut regular(stage, "os.disk", false, false)?,
-        image.disk_bytes,
-        &image.disk_sha256,
-        closed,
-    )
+    verify_checked(&mut file, image.disk_bytes, &image.disk_sha256, closed)
 }
 impl VerifiedImageSet {
     pub fn open_disk(&self) -> Result<File, ImageError> {

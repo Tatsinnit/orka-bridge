@@ -230,13 +230,12 @@ let root = try launch()
 let pid = app!.processIdentifier
 let originalID = windowInfo()!.0
 var main = find(root, "main-window") { attribute($0, "AXRole") as? String == "AXWindow" }
-press(find(main, "Clusters") { pressable($0, "Clusters") })
 // The dark walk reuses the light walk's profile, so the welcome may already be dismissed.
 wait("Job start or Places did not appear") { nodes(main).contains { pressable($0, "See an example first") || pressableAction($0, "Set up") } }
 if let example = nodes(main).first(where: { pressable($0, "See an example first") }) {
     press(example)
-    press(find(main, "Clusters after example") { pressable($0, "Clusters") })
 }
+press(find(main, "Clusters after startup") { pressable($0, "Clusters") })
 // Places owns the local entry: this computer's Set up action beside an empty cluster list.
 let setUp = find(main, "places-set-up") {
     pressableAction($0, "Set up") && shownStrings(main).contains { $0.contains("No other clusters added yet") }
@@ -249,12 +248,12 @@ wait("Computer requirements did not settle") {
         ["These checks do not change this computer.", "This computer has", "Virtualization:", "Bridge couldn't check"].contains { line.contains($0) }
     }
 }
-// Required memory and maximum data-disk growth stay visible; installed image size is disclosed.
+// Required memory and maximum data-disk growth stay visible; the disclosure opens.
 press(find(main, "workspace-inside") { pressable($0, "What's inside") })
 currentStage = "local-size-block"; print("STAGE: \(currentStage)")
 wait("Local size facts did not settle") {
     let shown = shownStrings(main)
-    return [#"Needs virtualization and \d+\.\d GB of memory"#, #"image size is \d+\.\d GB after installation, not the amount downloaded"#, #"Data disk can grow to \d+\.\d GB"#].allSatisfy { pattern in
+    return [#"Needs virtualization(,| and) \d+\.\d GB of memory"#, #"Data disk can grow to \d+\.\d GB"#, #"Bridge checks the download before starting it\."#].allSatisfy { pattern in
         shown.contains { $0.range(of: pattern, options: .regularExpression) != nil }
     } && !shown.contains { $0.hasPrefix("Reading") || $0.contains("Unavailable in this build") }
 }

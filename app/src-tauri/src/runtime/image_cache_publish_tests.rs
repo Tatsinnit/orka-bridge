@@ -131,3 +131,67 @@ fn complete_unselected_generation_recovers_without_rewriting_assets() {
     tx.commit(&closed).unwrap();
     assert!(cache.verified(&image).unwrap().is_some());
 }
+fn rewrite(path: &std::path::Path) {
+    // In place, so the file keeps the identity its owner recorded.
+    let length = std::fs::metadata(path).unwrap().len() as usize;
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.write_all(&vec![b'z'; length]).unwrap();
+}
+#[test]
+fn a_streamed_disk_is_named_only_after_both_hashes_match() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ImageCache::open(&temp.path().join("cache")).unwrap();
+    let (image, files) = complete_image();
+    let (_sender, closed) = tokio::sync::watch::channel(false);
+    let tx = cache.begin(&image).unwrap();
+    fill(&tx, &files);
+    // A changed gzip timestamp decodes to the same disk; only the compressed hash differs.
+    let mut stamped = files[0].clone();
+    stamped[4] ^= 1;
+    let truncated = &files[0][..files[0].len() / 2];
+    for source in [&stamped[..], truncated] {
+        assert!(matches!(
+            tx.decode(source, &closed),
+            Err(ImageError::Integrity)
+        ));
+        assert!(tx.needs_disk().unwrap());
+    }
+    tx.decode(&files[0][..], &closed).unwrap();
+    assert!(!tx.needs_disk().unwrap());
+    tx.commit(&closed).unwrap();
+    assert!(cache.verified(&image).unwrap().is_some());
+}
+#[test]
+fn a_disk_left_by_an_earlier_owner_is_reread_before_selection() {
+    for stage in ["staging", "generation-1"] {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = ImageCache::open(&temp.path().join("cache")).unwrap();
+        let (image, files) = complete_image();
+        let (_sender, closed) = tokio::sync::watch::channel(false);
+        let mut tx = cache.begin(&image).unwrap();
+        fill(&tx, &files);
+        if stage == "staging" {
+            tx.decode(&files[0][..], &closed).unwrap();
+            drop(tx);
+        } else {
+            tx.point = Some(Arc::new(|p| match p {
+                "generation-published" => Err(ImageError::Storage(io::ErrorKind::Interrupted)),
+                _ => Ok(()),
+            }));
+            assert!(tx.commit(&closed).is_err());
+        }
+        let root = temp.path().join("cache/images/v2");
+        rewrite(
+            &root
+                .join(&image.identity().manifest_sha256)
+                .join(stage)
+                .join("os.disk"),
+        );
+        let tx = cache.begin(&image).unwrap();
+        assert!(
+            matches!(tx.commit(&closed), Err(ImageError::Integrity)),
+            "{stage}"
+        );
+        assert!(cache.verified(&image).unwrap().is_none(), "{stage}");
+    }
+}

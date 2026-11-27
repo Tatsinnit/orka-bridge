@@ -191,19 +191,43 @@ impl ImageHttpClient {
     }
 }
 
+type Decoder = std::sync::mpsc::SyncSender<Vec<u8>>;
 struct AssetWriter {
     file: std::sync::Arc<std::fs::File>,
     owner: std::sync::Arc<super::image_cache::CacheTransaction>,
+    decoder: Option<Decoder>,
     pending: Option<tokio::task::JoinHandle<std::io::Result<usize>>>,
 }
 fn asset_writer(
     file: std::fs::File,
     owner: std::sync::Arc<super::image_cache::CacheTransaction>,
+    decoder: Option<Decoder>,
 ) -> AssetWriter {
     AssetWriter {
         file: std::sync::Arc::new(file),
         owner,
+        decoder,
         pending: None,
+    }
+}
+/// Chunk bytes as they are written; the last sender dropping ends the stream.
+struct Received {
+    receive: std::sync::mpsc::Receiver<Vec<u8>>,
+    bytes: Vec<u8>,
+    offset: usize,
+}
+impl std::io::Read for Received {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        while self.offset == self.bytes.len() {
+            let Ok(bytes) = self.receive.recv() else {
+                return Ok(0);
+            };
+            (self.bytes, self.offset) = (bytes, 0);
+        }
+        let n = buffer.len().min(self.bytes.len() - self.offset);
+        buffer[..n].copy_from_slice(&self.bytes[self.offset..self.offset + n]);
+        self.offset += n;
+        Ok(n)
     }
 }
 impl tokio::io::AsyncWrite for AssetWriter {
@@ -217,11 +241,21 @@ impl tokio::io::AsyncWrite for AssetWriter {
             if bytes.is_empty() {
                 return Poll::Ready(Ok(0));
             }
-            let (file, owner, bytes) = (self.file.clone(), self.owner.clone(), bytes.to_vec());
+            let (file, owner, mut bytes) = (self.file.clone(), self.owner.clone(), bytes.to_vec());
+            let decoder = self.decoder.clone();
             // The actual I/O job owns the pin even if the caller drops its future.
             self.pending = Some(tokio::task::spawn_blocking(move || {
                 let _owner = owner;
-                (&*file).write(&bytes)
+                let n = (&*file).write(&bytes)?;
+                bytes.truncate(n);
+                // A full queue holds the download back until the decoder catches up.
+                match decoder {
+                    Some(decoder) if n > 0 => decoder
+                        .send(bytes)
+                        .map(|_| n)
+                        .map_err(|_| std::io::ErrorKind::BrokenPipe.into()),
+                    _ => Ok(n),
+                }
             }));
         }
         match std::pin::Pin::new(self.pending.as_mut().unwrap()).poll(cx) {
@@ -297,44 +331,90 @@ pub async fn acquire_image(
             Err(error) => return Err(error),
         }
     };
+    // The disk decodes from chunks as they land, so it is ready when the download ends.
+    let owner = tx.clone();
+    let (decoder, decoding) = if blocking(move || owner.needs_disk()).await? {
+        let (decoder, receive) = std::sync::mpsc::sync_channel(16);
+        let (owner, stop) = (tx.clone(), closed.clone());
+        let source = Received {
+            receive,
+            bytes: Vec::new(),
+            offset: 0,
+        };
+        // Its own thread: it waits on writes that need the blocking pool.
+        let (done, job) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let decoded = owner.decode(source, &stop);
+            // Release the cache before the result, so a returned acquisition owns nothing.
+            drop(owner);
+            done.send(decoded)
+        });
+        (Some(decoder), Some(job))
+    } else {
+        (None, None)
+    };
     let mut done = 0;
     progress(ImageProgress::Download { bytes: done, total });
-    for (index, asset) in image.assets().iter().enumerate() {
-        let (owner, stop) = (tx.clone(), closed.clone());
-        let pending = blocking(move || {
-            super::image_cache::verification::cancelled(&stop)?;
-            owner.start_asset(index)
-        })
-        .await?;
-        if let Some(file) = pending {
-            let mut file = asset_writer(file, tx.clone());
-            let url = format!("{}{}", asset.location().base(), asset.location().leaf());
-            client
-                .transfer(
-                    &url,
-                    &mut file,
-                    asset.bytes(),
-                    (Some(asset.bytes()), asset.sha256()),
-                    closed.clone(),
-                    |bytes| {
-                        progress(ImageProgress::Download {
-                            bytes: done + bytes,
-                            total,
-                        })
-                    },
-                )
-                .await?;
-            drop(file);
+    let fed: Result<(), ImageError> = async {
+        for (index, asset) in image.assets().iter().enumerate() {
             let (owner, stop) = (tx.clone(), closed.clone());
-            blocking(move || {
+            let pending = blocking(move || {
                 super::image_cache::verification::cancelled(&stop)?;
-                owner.finish_asset(index)
+                owner.start_asset(index)
             })
             .await?;
+            let chunk = matches!(asset.role(), super::image_types::ImageAssetRole::Chunk(_));
+            let decoder = decoder.clone().filter(|_| chunk);
+            if let (None, Some(decoder)) = (&pending, decoder.clone()) {
+                // Kept from an earlier run and rehashed above; the decoder starts over.
+                let owner = tx.clone();
+                blocking(move || owner.replay(index, &decoder)).await?;
+            }
+            if let Some(file) = pending {
+                let mut file = asset_writer(file, tx.clone(), decoder);
+                let url = format!("{}{}", asset.location().base(), asset.location().leaf());
+                client
+                    .transfer(
+                        &url,
+                        &mut file,
+                        asset.bytes(),
+                        (Some(asset.bytes()), asset.sha256()),
+                        closed.clone(),
+                        |bytes| {
+                            progress(ImageProgress::Download {
+                                bytes: done + bytes,
+                                total,
+                            })
+                        },
+                    )
+                    .await?;
+                drop(file);
+                let (owner, stop) = (tx.clone(), closed.clone());
+                blocking(move || {
+                    super::image_cache::verification::cancelled(&stop)?;
+                    owner.finish_asset(index)
+                })
+                .await?;
+            }
+            done += asset.bytes();
+            progress(ImageProgress::Download { bytes: done, total });
         }
-        done += asset.bytes();
-        progress(ImageProgress::Download { bytes: done, total });
+        Ok(())
     }
+    .await;
+    drop(decoder);
+    if let Some(job) = decoding {
+        let decoded = job
+            .await
+            .map_err(|_| ImageError::Storage(std::io::ErrorKind::Other))?;
+        // A stopped decoder is why a write failed; otherwise the download failed first.
+        if let (Err(ImageError::Storage(std::io::ErrorKind::BrokenPipe)) | Ok(()), Err(error)) =
+            (&fed, decoded)
+        {
+            return Err(error);
+        }
+    }
+    fed?;
     progress(ImageProgress::Verifying);
     let tx = std::sync::Arc::try_unwrap(tx).map_err(|_| ImageError::Busy)?;
     let set = blocking(move || tx.commit(&closed)).await?;

@@ -240,6 +240,14 @@ function Find-ReadyClusters {
     }
     Find-Control $script:window 'Clusters' $button
 }
+function Find-StartupControl {
+    $clusters = Find-ReadyClusters
+    if (!$script:window) { return }
+    $example = Find-Control $script:window 'See an example first' $button
+    if ($example -and $example.Current.IsEnabled) { return $example }
+    $setUp = Find-Action $script:window 'Set up'
+    if ($clusters -and $setUp) { return $clusters }
+}
 function Find-TrayPoint($Root, [string]$Label) {
     $all = @($Root.FindAll($children, [System.Windows.Automation.Condition]::TrueCondition))
     @("UIA descendants=$($all.Count)"; $all | ForEach-Object { "Name=$($_.Current.Name); Type=$($_.Current.ControlType.ProgrammaticName); Offscreen=$($_.Current.IsOffscreen)" }) | Set-Content (Join-Path $script:themeOutput "tray-$Label.txt")
@@ -369,20 +377,21 @@ try {
         Broadcast-Theme
         Start-Bridge
         $script:originalPid = $script:app.Id
-        Write-StartupEvent 'clusters-wait-begin'
+        Write-StartupEvent 'startup-control-wait-begin'
         try {
-            $clusters = Wait-For 'Clusters button missing' { Find-ReadyClusters } 600
-            Write-StartupEvent 'clusters-found'
+            $startup = Wait-For 'Job start or settled Places missing' { Find-StartupControl } 600
+            Write-StartupEvent 'startup-control-found'
         } catch {
-            Write-StartupEvent 'clusters-wait-failed'
+            Write-StartupEvent 'startup-control-wait-failed'
             throw
         }
+        if ($startup.Current.Name -eq 'See an example first') {
+            Press $startup
+            $clusters = Wait-For 'Clusters button missing after example' { Find-ReadyClusters }
+        } else { $clusters = $startup }
         Press $clusters
         Save-BrowserDiagnostics 'loaded'
         # The dark walk reuses the light walk's profile, so the welcome may already be dismissed.
-        Wait-For 'Job start or Places did not appear' { (Find-Control $script:window 'See an example first' $button) -or (Find-Action $script:window 'Set up') } | Out-Null
-        $example = Find-Control $script:window 'See an example first' $button
-        if ($example) { Press $example; Press (Wait-For 'Clusters button missing after example' { Find-ReadyClusters }) }
         # Places owns the local entry: this computer's Set up action beside an empty cluster list.
         $setUp = Wait-For 'Set up action missing on Places' { $control = Find-Action $script:window 'Set up'; if ($control -and $control.Current.IsEnabled -and ((Get-UiNames $script:window) -match 'No other clusters added yet')) { $control } }
         Capture 'places-empty'
@@ -392,12 +401,12 @@ try {
             $lines = (Get-UiNames $requirements) -join ' '
             $lines.Contains('These checks do not change this computer.') -or $lines.Contains('This computer has') -or $lines.Contains('Virtualization:') -or $lines.Contains("Bridge couldn't check")
         } | Out-Null
-        # Required RAM and maximum data-disk growth stay visible; installed image size is disclosed.
+        # Required RAM and maximum data-disk growth stay visible; the disclosure opens.
         Press (Wait-For 'Workspace details disclosure missing' { Find-Control $script:window "What's inside" $button })
         Wait-For 'Local size facts did not settle' {
             $names = Get-UiNames $script:window
             $text = ($names -join ' ') -replace '\s+', ' '
-            ($text -cmatch 'Needs virtualization and \d+\.\d GB of memory') -and ($text -cmatch 'image size is \d+\.\d GB after installation, not the amount downloaded') -and ($text -cmatch 'Data disk can grow to \d+\.\d GB') -and !($names -cmatch '^Reading|Unavailable in this build')
+            ($text -cmatch 'Needs virtualization(,| and) \d+\.\d GB of memory') -and ($text -cmatch 'Data disk can grow to \d+\.\d GB') -and ($text -cmatch 'Bridge checks the download before starting it\.') -and !($names -cmatch '^Reading|Unavailable in this build')
         } | Out-Null
         # Observe the real runner; never inject Ready or select a local workspace.
         Capture 'computer-requirements'

@@ -9,7 +9,7 @@ import { armFirstTest, firstTestAttempted, firstTestPending, retireFirstTest } f
 import Model, { type ModelState } from './Model';
 import Preflight from './Preflight';
 import { canQueueModel, setupView } from './progress';
-import { formatRequirementGB, type WorkspaceRequirements, workspaceRequirements } from './requirements';
+import { setupNeeds, type WorkspaceRequirements, workspaceRequirements } from './requirements';
 import { type CheckStepState, Meet, SetupProgress } from './Steps';
 import { cancelLocal, type LocalVmState, type SetupStatus, selectLocal, setupStatus } from './state';
 import Welcome, { hasSeenWelcome, welcomePreference } from './Welcome';
@@ -268,20 +268,34 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   }
   async function startJob(prompt: string) {
     if (!status || mutation.current || busy || status.localVm === 'notIntegrated') return runtimeCopy.notIntegrated;
+    clearTimeout(timer.current);
+    ++epoch.current;
+    mutation.current = true;
     const saved = await beginFirstJob(prompt);
+    mutation.current = false;
+    if (!mounted.current) return saved.ok ? undefined : saved.message;
+    setCheck(value => value + 1);
     if (!saved.ok) return saved.message;
-    setStatus(current => current && { ...current, firstJob: saved.job });
+    const next = { ...status, firstJob: saved.job };
+    setStatus(next); onStatus?.(next);
     try { localStorage.setItem(welcomePreference, '1'); } catch { /* Native intent, not this preference, owns setup. */ }
     setSeen(true); setLocation('local'); setPreflightBlocked(true); setPanel('local'); focusChoice.current = true;
     return undefined;
   }
   async function discardJob() {
-    if (!firstJob || discardingJob) return;
+    if (!firstJob || discardingJob || mutation.current) return;
+    clearTimeout(timer.current);
+    ++epoch.current;
+    mutation.current = true;
     setDiscardingJob(true); setJobError(undefined);
     const result = await discardFirstJob(firstJob.id);
+    mutation.current = false;
+    if (!mounted.current) return;
     setDiscardingJob(false);
+    setCheck(value => value + 1);
     if (!result.ok) { setJobError(result.message); return; }
-    setStatus(current => current && { ...current, firstJob: undefined });
+    const next = { ...status, firstJob: undefined };
+    setStatus(next); onStatus?.(next);
     if (status?.selected === 'localVm') { focusChoice.current = true; setPanel('places'); }
     else {
       try { localStorage.removeItem(welcomePreference); } catch { /* Native deletion already owns the result. */ }
@@ -346,7 +360,7 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
   useImperativeHandle(ref, () => ({ showPlaces() { if (view !== 'places') back(); } }));
   const titleId = active ? 'page-title' : undefined;
   if (!status && !error) return <><h1 id={titleId}>Clusters</h1><p role="status">Checking the workspace…</p></>;
-  if (welcome && status) return <Welcome titleId={titleId} onStart={startJob} onCluster={() => chooseCluster()} onExample={() => { start(); openExample(); }} unavailable={status.localVm === 'notIntegrated' ? runtimeCopy.notIntegrated : undefined} />;
+  if (welcome && status) return <Welcome titleId={titleId} onStart={startJob} onCluster={() => chooseCluster()} onExample={() => { start(); openExample(); }} unavailable={status.localVm === 'notIntegrated' ? runtimeCopy.notIntegrated : undefined} requirements={requirements} />;
   const selected = status?.selected === 'localVm';
   const modelRecovery = ['failed', 'resetFailed', 'removalFailed', 'resetting'].includes(modelState);
   const aiHeadings: Partial<Record<ModelState, string>> = {
@@ -380,19 +394,18 @@ export default function Setup({ ref, onOpenExample, onOpenAgent, onStatus, onMod
       <div className={workspace ? 'setup workspace-setup-grid' : selected ? `setup workspace-setup-grid${status?.localVm === 'failed' || modelRecovery ? ' workspace-setup-failed' : ''}` : 'workspace-choice local-preflight'}>
         {!selected && !workspace && <>
           <section className="card">
-             <p className="workspace-choice-step muted">{firstJob ? 'Your job starts after setup' : 'Step 1 of 4'}</p>
+             <p className="workspace-choice-step muted">{firstJob ? 'Job saved; execution runtime not included yet' : 'Step 1 of 4'}</p>
             <fieldset className="workspace-options">
               <legend className="workspace-sr-only">{firstJob ? 'Local workspace' : 'Where agents run'}</legend>
               <div className={`workspace-option${location === 'local' ? ' workspace-selected' : ''}`}>
                 <input id="workspace-local" name="workspace-location" type="radio" value="local" checked={location === 'local'} onChange={() => { setPreflightBlocked(true); setLocation('local'); }} />
                 <label htmlFor="workspace-local">On this computer</label><span className="chip">Recommended</span>
                 <div className="workspace-option-detail">
-                  <p>{requirements ? `${requirements.downloadBytes !== null ? `Downloads about ${formatRequirementGB(requirements.downloadBytes)}. ` : ''}Needs virtualization and ${formatRequirementGB(requirements.memoryBytes)} of memory. Data disk can grow to ${formatRequirementGB(requirements.stateDiskBytes)}.` : requirements === undefined ? "Reading this build's requirements…" : 'Requirements are not available yet for this build.'}</p>
+                  <p>{requirements ? setupNeeds(requirements) : requirements === undefined ? "Reading this build's requirements…" : 'Requirements are not available yet for this build.'}</p>
                   {location === 'local' && view === 'local' && !error && status && requirements && status.localVm !== 'notIntegrated' && <Preflight requiredMemoryBytes={requirements.memoryBytes} onBlocked={setPreflightBlocked} onCluster={() => { if (firstJob) chooseCluster(); else { setLocation('cluster'); document.getElementById('workspace-cluster')?.focus(); } }} />}
                   <Disclosure label="What's inside" open={inside} controls="workspace-inside" onOpenChange={setInside}>
                     <div id="workspace-inside" hidden={!inside}>
                       <p>The workspace includes Orka and the tools your agents use. Bridge checks the download before starting it.</p>
-                      {requirements && <p>{`This build's image size is ${formatRequirementGB(requirements.imageBytes)} after installation, not the amount downloaded.`}</p>}
                     </div>
                   </Disclosure>
                 </div>

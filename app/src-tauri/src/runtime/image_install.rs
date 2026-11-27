@@ -857,10 +857,9 @@ fn resume_prefix(
     output: &mut File,
     source: &mut File,
     bytes: u64,
-) -> Result<(u64, Sha256), ImageError> {
+) -> Result<u64, ImageError> {
     let len = output.metadata().map_err(storage)?.len();
     let mut count = 0;
-    let mut hashed = Sha256::new();
     let mut retained = [0; 65536];
     let mut original = [0; 65536];
     if len <= bytes {
@@ -872,18 +871,54 @@ fn resume_prefix(
             if retained[..n] != original[..n] {
                 break;
             }
-            hashed.update(&retained[..n]);
             count += n as u64;
         }
         if count == len {
-            return Ok((count, hashed));
+            return Ok(count);
         }
     }
     context.stop()?;
     output.set_len(0).map_err(storage)?;
     output.rewind().map_err(storage)?;
     source.rewind().map_err(storage)?;
-    Ok((0, Sha256::new()))
+    Ok(0)
+}
+/// On APFS the private copy shares the verified cache file's blocks until the guest writes,
+/// so it costs no space or copying. Any refusal (another volume, no clone support) copies instead.
+#[cfg(target_os = "macos")]
+fn clone(context: &Context, stage: &Dir, name: &str, source: &File) -> Result<bool, ImageError> {
+    use std::os::fd::AsRawFd;
+    context.stop()?;
+    // Tests refuse the clone to exercise the copy that other volumes get.
+    #[cfg(test)]
+    if context.point.as_ref().is_some_and(|p| p("clone").is_err()) {
+        return Ok(false);
+    }
+    let path = std::ffi::CString::new(name).map_err(|_| ImageError::UnsafePath)?;
+    // fclonefileat creates the name only if absent and reads its arguments only during the call.
+    if unsafe { libc::fclonefileat(source.as_raw_fd(), stage.as_raw_fd(), path.as_ptr(), 0) } != 0 {
+        return Ok(false);
+    }
+    // A clone carries the cache file's mode and flags; give it what a fresh copy would have,
+    // or remove it so a retry never trusts a clone by its bytes alone.
+    let normalized = regular(stage, name, false, false).is_ok_and(|file| {
+        // Both calls act on this open descriptor only.
+        let (flags, mode) = unsafe {
+            (
+                libc::fchflags(file.as_raw_fd(), 0),
+                libc::fchmod(file.as_raw_fd(), 0o644),
+            )
+        };
+        flags == 0 && mode == 0
+    });
+    if !normalized {
+        stage.remove_file(name).map_err(storage)?;
+    }
+    Ok(normalized)
+}
+#[cfg(not(target_os = "macos"))]
+fn clone(_: &Context, _: &Dir, _: &str, _: &File) -> Result<bool, ImageError> {
+    Ok(false)
 }
 fn copy(
     context: &Context,
@@ -895,18 +930,21 @@ fn copy(
     total: u64,
 ) -> Result<Payload, ImageError> {
     let (bytes, sha) = expected;
-    let reusable = match read_file(stage, name) {
+    let (reusable, absent) = match read_file(stage, name) {
         Ok(mut file) => match digest(&mut file, bytes, sha, || context.stop()) {
-            Ok(()) => true,
-            Err(ImageError::Integrity) => false,
+            Ok(()) => (true, false),
+            Err(ImageError::Integrity) => (false, false),
             Err(error) => return Err(error),
         },
-        Err(e) if missing(&e) => false,
+        Err(e) if missing(&e) => (false, true),
         Err(e) => return Err(e),
     };
-    if !reusable {
+    if !reusable && absent && clone(context, stage, name, &source)? {
+        // A clone is written whole; interruption tests stop here as they would mid-copy.
+        context.point("copy-chunk")?;
+    } else if !reusable {
         let mut output = regular(stage, name, true, true)?;
-        let (mut count, mut hashed) = resume_prefix(context, &mut output, &mut source, bytes)?;
+        let mut count = resume_prefix(context, &mut output, &mut source, bytes)?;
         context.space(bytes - count)?;
         context
             .events
@@ -928,7 +966,6 @@ fn copy(
                 .ok_or(ImageError::Integrity)?;
             context.space(n as u64)?;
             output.write_all(&buffer[..n]).map_err(storage)?;
-            hashed.update(&buffer[..n]);
             context
                 .events
                 .blocking_send(ImageProgress::Materializing {
@@ -938,9 +975,7 @@ fn copy(
                 .map_err(|_| ImageError::Cancelled)?;
             context.point("copy-chunk")?;
         }
-        if count != bytes || format!("{:x}", hashed.finalize()) != sha {
-            return Err(ImageError::Integrity);
-        }
+        // The reread below is the copy's one hash.
         output.sync_all().map_err(storage)?;
         drop(output);
     } else {
@@ -1019,7 +1054,9 @@ fn run(image: PreparedImage, context: Context) -> Result<InstalledImageSet, Imag
     };
     let boot = &image.boot;
     let images = directory(&context.root, std::ffi::OsStr::new("image"))?;
-    let binding = if let Some(generation) = read_directory(&images, "1")? {
+    let published = read_directory(&images, "1")?;
+    let copied = published.is_none();
+    let binding = if let Some(generation) = published {
         let existing: Intent = json(&generation, "intent.json")?;
         if existing != intent {
             return Err(ImageError::RetainedImage);
@@ -1150,7 +1187,8 @@ fn run(image: PreparedImage, context: Context) -> Result<InstalledImageSet, Imag
         return Err(ImageError::RetainedImage);
     }
     validate_binding(&binding, &context.target())?;
-    verify_files(&context.root, &binding, true, || context.stop())?;
+    // Files copied in this run were reread after writing; an earlier run's are reread here.
+    verify_files(&context.root, &binding, !copied, || context.stop())?;
     context.point("generation-verified")?;
     sync_namespace(&context.target(), &binding)?;
     write_json(&context.root, "image-binding.pending", &binding)?;

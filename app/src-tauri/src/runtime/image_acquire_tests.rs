@@ -1,6 +1,6 @@
 use super::super::super::{
     image_cache,
-    image_types::{ImageAssetRole, ImageProgress},
+    image_types::{ImageAsset, ImageAssetRole, ImageProgress, ResolvedImage},
 };
 use super::*;
 use image_cache::ImageCache;
@@ -22,7 +22,7 @@ fn dropping_the_writer_keeps_the_transaction_owned_until_queued_io_finishes() {
     let (image, _) = image_cache::tests::publication::complete_image();
     let owner = Arc::new(cache.begin(&image).unwrap());
     let file = owner.start_asset(0).unwrap().unwrap();
-    let mut writer = asset_writer(file, owner.clone());
+    let mut writer = asset_writer(file, owner.clone(), None);
     let (release, wait) = std::sync::mpsc::channel();
     let blocker = runtime.spawn_blocking(move || wait.recv().unwrap());
     runtime.block_on(async {
@@ -99,7 +99,7 @@ fn cancellation_returns_while_an_owned_write_is_still_queued() {
         let file = owner.start_asset(0).unwrap().unwrap();
         let queued = Arc::new(tokio::sync::Notify::new());
         let mut writer = SignalWriter {
-            inner: asset_writer(file, owner.clone()),
+            inner: asset_writer(file, owner.clone(), None),
             queued: queued.clone(),
         };
         let (release, wait) = std::sync::mpsc::channel();
@@ -463,4 +463,142 @@ async fn pinned_preparation_downloads_then_reuses_the_committable_private_source
     installed.revalidate(&target).unwrap();
     assert!(path.join(installed.kernel_path()).is_file());
     assert_eq!(server.calls.load(Ordering::SeqCst), files.len() + 1);
+}
+
+/// The same image with its compressed disk in two chunks, so decoding spans downloads.
+fn two_chunk_image() -> (ResolvedImage, Vec<Vec<u8>>) {
+    let (mut image, mut files) = image_cache::tests::publication::complete_image();
+    let half = files[0].len() / 2;
+    let second = files[0].split_off(half);
+    let pin = |asset: &mut ImageAsset, data: &[u8]| {
+        asset.bytes = data.len() as u64;
+        asset.sha256 = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(data));
+    };
+    let mut asset = image.assets[0].clone();
+    asset.location.leaf = "fixture-3".into();
+    asset.role = ImageAssetRole::Chunk(1);
+    pin(&mut asset, &second);
+    pin(&mut image.assets[0], &files[0]);
+    image.assets.insert(1, asset);
+    files.insert(1, second);
+    (image, files)
+}
+fn route(server: &Server, leaf: &str, data: &[u8]) {
+    let mut response =
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", data.len()).into_bytes();
+    response.extend(data);
+    server
+        .routes
+        .lock()
+        .unwrap()
+        .insert(format!("/{leaf}"), response);
+}
+async fn serve(image: &mut ResolvedImage, files: &[Vec<u8>]) -> (Server, ImageHttpClient) {
+    let server = Server::start(b"HTTP/1.1 503 Busy\r\nContent-Length: 0\r\n\r\n").await;
+    let mut client = server.client(true, "image.invalid");
+    client.pin.manifest_sha256 = image.identity().manifest_sha256.clone();
+    for (asset, data) in image.assets.iter_mut().zip(files) {
+        asset.location.base = client.pin.asset_base.clone();
+        route(&server, &asset.location.leaf, data);
+    }
+    (server, client)
+}
+fn undecoded(cache: &ImageCache, image: &ResolvedImage) -> bool {
+    cache.verified(image).unwrap().is_none() && cache.begin(image).unwrap().needs_disk().unwrap()
+}
+#[tokio::test]
+async fn the_disk_decodes_during_download_and_a_retry_replays_kept_chunks() {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let (mut image, files) = two_chunk_image();
+    let (server, client) = serve(&mut image, &files).await;
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ImageCache::open(&temp.path().join("cache")).unwrap();
+    // The second chunk fails on the first run, after the first is complete.
+    let leaf = format!("/{}", image.assets[1].location.leaf);
+    let second = server.routes.lock().unwrap().remove(&leaf).unwrap();
+    let (_sender, closed) = watch::channel(false);
+    let result = acquire_image(&image, &cache, &client, closed.clone(), |_| {}).await;
+    assert!(matches!(result, Err(ImageError::Network(_))));
+    // The first chunk was already decoding before the download stopped.
+    let pending = temp
+        .path()
+        .join("cache/images/v2")
+        .join(&image.identity().manifest_sha256)
+        .join("staging/disk.pending");
+    assert!(std::fs::metadata(pending).unwrap().len() > 0);
+    assert!(undecoded(&cache, &image));
+    server.routes.lock().unwrap().insert(leaf, second);
+    let set = acquire_image(&image, &cache, &client, closed, |_| {})
+        .await
+        .unwrap();
+    // The first chunk came from disk; only the rest was fetched again.
+    assert_eq!(server.calls.load(Ordering::SeqCst), 2 + files.len() - 1);
+    let mut disk = Vec::new();
+    set.open_disk().unwrap().read_to_end(&mut disk).unwrap();
+    assert_eq!(format!("{:x}", Sha256::digest(&disk)), image.disk_sha256());
+}
+#[tokio::test]
+async fn a_chunk_that_matches_its_pin_but_does_not_decode_is_refused() {
+    use sha2::{Digest, Sha256};
+    let (mut image, mut files) = two_chunk_image();
+    files[0] = b"pinned bytes that are not gzip".to_vec();
+    image.assets[0].bytes = files[0].len() as u64;
+    image.assets[0].sha256 = format!("{:x}", Sha256::digest(&files[0]));
+    let compressed = [&files[0][..], &files[1][..]].concat();
+    image.compressed_bytes = compressed.len() as u64;
+    image.compressed_sha256 = format!("{:x}", Sha256::digest(&compressed));
+    let (_server, client) = serve(&mut image, &files).await;
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ImageCache::open(&temp.path().join("cache")).unwrap();
+    let (_sender, closed) = watch::channel(false);
+    let result = acquire_image(&image, &cache, &client, closed, |_| {}).await;
+    // The decoder's refusal, not the write it stopped.
+    assert!(
+        matches!(result, Err(ImageError::Integrity)),
+        "{:?}",
+        result.err()
+    );
+    assert!(undecoded(&cache, &image));
+}
+#[tokio::test]
+async fn a_changed_download_is_refused_and_a_clean_retry_repairs_it() {
+    let (mut image, files) = two_chunk_image();
+    let (server, client) = serve(&mut image, &files).await;
+    let mut changed = files[1].clone();
+    changed[0] ^= 1;
+    route(&server, &image.assets[1].location.leaf, &changed);
+    let temp = tempfile::tempdir().unwrap();
+    let cache = ImageCache::open(&temp.path().join("cache")).unwrap();
+    let (_sender, closed) = watch::channel(false);
+    let result = acquire_image(&image, &cache, &client, closed.clone(), |_| {}).await;
+    assert!(
+        matches!(result, Err(ImageError::Integrity)),
+        "{:?}",
+        result.err()
+    );
+    assert!(undecoded(&cache, &image));
+    route(&server, &image.assets[1].location.leaf, &files[1]);
+    acquire_image(&image, &cache, &client, closed, |_| {})
+        .await
+        .unwrap();
+    assert!(cache.verified(&image).unwrap().is_some());
+}
+#[test]
+fn decoding_needs_no_thread_from_the_blocking_pool() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (mut image, files) = two_chunk_image();
+        let (_server, client) = serve(&mut image, &files).await;
+        let temp = tempfile::tempdir().unwrap();
+        let cache = ImageCache::open(&temp.path().join("cache")).unwrap();
+        let (_sender, closed) = watch::channel(false);
+        let acquire = acquire_image(&image, &cache, &client, closed, |_| {});
+        let result = tokio::time::timeout(std::time::Duration::from_secs(20), acquire).await;
+        assert!(result.expect("acquisition stalled").is_ok());
+    });
 }

@@ -222,7 +222,7 @@ async fn partial_writes_retain_owned_work_without_restoring_creation_authority()
     let scene = Scene::with_disk(&data);
     let mut target = scene.target();
     target.point = Some(Arc::new(|p| {
-        if p == "copy-chunk" {
+        if p == "copy-chunk" || p == "clone" {
             Err(ImageError::Storage(std::io::ErrorKind::Other))
         } else {
             Ok(())
@@ -265,7 +265,7 @@ async fn cancelled_prefix_is_compared_and_resume_does_not_recopy_it() {
         let scene = Scene::with_disk(&data);
         let mut target = scene.target();
         target.point = Some(Arc::new(|p| {
-            if p == "copy-chunk" {
+            if p == "copy-chunk" || p == "clone" {
                 Err(ImageError::Cancelled)
             } else {
                 Ok(())
@@ -504,3 +504,43 @@ async fn complete_retained_private_copies_do_not_need_the_fresh_copy_budget() {
 mod review;
 #[path = "image_install_safety_tests.rs"]
 mod safety;
+fn rewrite(path: &std::path::Path) {
+    use std::io::Write;
+    // In place, so the file keeps the identity the binding records.
+    let length = std::fs::metadata(path).unwrap().len() as usize;
+    let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.write_all(&vec![b'z'; length]).unwrap();
+}
+#[tokio::test]
+async fn the_reread_after_writing_refuses_a_changed_private_disk() {
+    let scene = Scene::new();
+    let mut target = scene.target();
+    let disk = scene.path().join("image/.pending-1/os.disk");
+    target.point = Some(Arc::new(move |p| {
+        if p == "written-os.disk" {
+            rewrite(&disk);
+        }
+        Ok(())
+    }));
+    let (_sender, closed) = watch::channel(false);
+    let result = materialize_image(&scene.image, &target, closed, |_| {}).await;
+    assert_eq!(result.err(), Some(ImageError::Integrity));
+    assert!(!scene.path().join("image-binding.json").exists());
+}
+#[tokio::test]
+async fn a_retry_rereads_a_private_disk_an_earlier_run_published() {
+    let scene = Scene::new();
+    let mut target = scene.target();
+    target.point = Some(Arc::new(|p| match p {
+        "generation-published" => Err(ImageError::Storage(std::io::ErrorKind::Interrupted)),
+        _ => Ok(()),
+    }));
+    let (_sender, closed) = watch::channel(false);
+    materialize_image(&scene.image, &target, closed.clone(), |_| {})
+        .await
+        .unwrap_err();
+    rewrite(&scene.path().join("image/1/os.disk"));
+    let result = materialize_image(&scene.image, &scene.target(), closed, |_| {}).await;
+    assert_eq!(result.err(), Some(ImageError::Integrity));
+    assert!(!scene.path().join("image-binding.json").exists());
+}
